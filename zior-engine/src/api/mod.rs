@@ -1,0 +1,29 @@
+pub mod handlers;
+pub mod types;
+
+use axum::{
+    routing::{get, post},
+    Router,
+};
+use std::sync::Arc;
+use tower_http::trace::TraceLayer;
+
+use crate::api::handlers::ZiorState;
+
+pub fn router(state: Arc<ZiorState>) -> Router {
+    Router::new()
+        // Audio ingestion
+        .route("/upload", post(handlers::upload_track))
+        // Signal query (content-service reads this)
+        .route("/signal/:track_id", get(handlers::get_signal))
+        .route("/signals", get(handlers::list_signals))
+        // Behavioral event ingestion
+        .route("/events", post(handlers::ingest_events))
+        // Similarity / clustering
+        .route("/similar/:track_id", get(handlers::similar_tracks))
+        .route("/clusters", get(handlers::get_clusters))
+        // Health
+        .route("/health", get(handlers::health))
+        .layer(TraceLayer::new_for_http())
+        .with_state(state)
+}

@@ -1,0 +1,78 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "title": "F33D3R · Overview",
+  "tags": ["f33d3r", "platform"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Brains up",
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
+      "targets": [ { "expr": "count(up == 1)", "refId": "A" } ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value" }
+    },
+    {
+      "type": "stat",
+      "title": "Brains down",
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 0 },
+      "targets": [ { "expr": "count(up == 0)", "refId": "A" } ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value" },
+      "fieldConfig": { "defaults": { "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] } } }
+    },
+    {
+      "type": "stat",
+      "title": "Host CPU (5m avg)",
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 0 },
+      "targets": [ { "expr": "avg(rate(process_cpu_seconds_total[5m]))", "refId": "A" } ],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 0.4 }, { "color": "red", "value": 0.6 } ] } } }
+    },
+    {
+      "type": "stat",
+      "title": "Egress (24h)",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "targets": [ { "expr": "sum(increase(node_network_transmit_bytes_total[24h]))", "refId": "A" } ],
+      "fieldConfig": { "defaults": { "unit": "bytes" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Request rate (per brain)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "targets": [ { "expr": "sum by (brain) (rate(http_requests_total[1m]))", "legendFormat": "{{brain}}", "refId": "A" } ]
+    },
+    {
+      "type": "timeseries",
+      "title": "p95 latency (per brain)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "targets": [ { "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (brain, le))", "legendFormat": "{{brain}}", "refId": "A" } ],
+      "fieldConfig": { "defaults": { "unit": "s", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 0.2 }, { "color": "red", "value": 0.3 } ] } } }
+    },
+    {
+      "type": "timeseries",
+      "title": "5xx error rate (per brain)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "targets": [ { "expr": "sum by (brain) (rate(http_requests_total{status=~\"5..\"}[5m])) / sum by (brain) (rate(http_requests_total[5m]))", "legendFormat": "{{brain}}", "refId": "A" } ],
+      "fieldConfig": { "defaults": { "unit": "percentunit" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Postgres pool size (PgBouncer)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "targets": [ { "expr": "pgbouncer_databases_pool_size", "legendFormat": "{{database}}", "refId": "A" } ]
+    },
+    {
+      "type": "logs",
+      "title": "Recent errors across all brains",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 20 },
+      "targets": [ { "expr": "{cluster=\"f33d3r-local\"} |= \"level=error\" or |= \"\\\"level\\\":\\\"error\\\"\"", "refId": "A" } ]
+    }
+  ]
+}

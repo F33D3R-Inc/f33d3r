@@ -1,0 +1,32 @@
+[server]
+host = "0.0.0.0"
+port = 8082
+
+[aethyr]
+content_store_url      = "http://localhost:8080"
+signal_push_timeout_ms = 500
+
+[audio]
+max_upload_bytes    = 52428800
+target_sample_rate  = 22050
+fft_window_size     = 2048
+hop_size            = 512
+min_duration_secs   = 5.0
+max_duration_secs   = 1800.0
+
+[jung]
+vector_dim         = 8
+audio_weight       = 0.65
+behavioral_weight  = 0.35
+
+[mood]
+major_key_valence_boost = 0.25
+high_bpm_threshold      = 130.0
+low_bpm_threshold       = 80.0
+
+[velocity]
+window_hours     = 1.0
+half_life_hours  = 24.0
+
+[safety]
+explicit_threshold = 0.70

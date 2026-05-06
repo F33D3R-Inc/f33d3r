@@ -1,0 +1,151 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nantar
+  namespace: f33d3r
+  labels:
+    brain: nantar
+    app: feed-engine
+    version: "1.0"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      brain: nantar
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        brain: nantar
+        app: feed-engine
+    spec:
+      containers:
+        - name: nantar
+          image: registry.gitlab.com/f33d3r-core/platform/nantar:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8081
+              name: http
+          env:
+            - name: PORT
+              value: "8081"
+            - name: HOST
+              value: "0.0.0.0"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: f33d3r-secrets
+                  key: feed-db-url
+            - name: SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: f33d3r-secrets
+                  key: session-secret
+            - name: AETHYRRANK_URL
+              value: "http://aethyrrank:8080"
+            - name: ZIOR_URL
+              value: "http://zior:8082"
+            - name: AIN_SOPH_URL
+              value: "http://ain-soph:8089"
+            - name: VOVIN_URL
+              value: "http://vovin:8092"
+            - name: ELOHIM_VENI_URL
+              value: "http://elohim-veni:8093"
+            - name: ZODACARE_URL
+              value: "http://zodacare:8090"
+            - name: SHOW_SCORES
+              value: "false"
+            - name: RUST_LOG
+              value: "info"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 8081
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 8081
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          volumeMounts:
+            - name: uploads
+              mountPath: /app/web/static/uploads
+      volumes:
+        - name: uploads
+          persistentVolumeClaim:
+            claimName: nantar-uploads-pvc
+      imagePullSecrets:
+        - name: gitlab-registry-secret
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nantar
+  namespace: f33d3r
+  labels:
+    brain: nantar
+spec:
+  selector:
+    brain: nantar
+  ports:
+    - port: 8081
+      targetPort: 8081
+      name: http
+  type: ClusterIP
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nantar-uploads-pvc
+  namespace: f33d3r
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 50Gi
+  storageClassName: longhorn
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: nantar-hpa
+  namespace: f33d3r
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: nantar
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80

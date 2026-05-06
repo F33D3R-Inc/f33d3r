@@ -1,0 +1,128 @@
+{{define "title"}}{{if .SearchQuery}}{{.SearchQuery}} · Search{{else}}Search{{end}} · F33D3R{{end}}
+{{define "nav-active-explore"}}active{{end}}
+{{define "mob-active-explore"}}active{{end}}
+{{define "body"}}
+  <main class="f33d3r-main">
+    <header class="top-bar">
+      <h1>Search</h1>
+    </header>
+
+    <div class="explore-search-wrap">
+      <form action="/search" method="GET" style="position:relative">
+        <div class="search-bar" style="margin-bottom:0">
+          <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+          <input type="text" name="q" placeholder="Search posts, @people, #tags…"
+                 value="{{.SearchQuery}}"
+                 class="search-input" autocomplete="off" autofocus>
+        </div>
+      </form>
+    </div>
+
+    {{if .SearchQuery}}
+    <!-- Filter tabs -->
+    <div style="display:flex;gap:0;border-bottom:1px solid var(--border);margin-bottom:4px">
+      <button id="tab-posts" onclick="showTab('posts')"
+        style="flex:1;padding:12px 0;font-size:14px;font-weight:500;border:none;background:none;cursor:pointer;border-bottom:2px solid var(--accent);color:var(--text-primary)">Posts</button>
+      <button id="tab-people" onclick="showTab('people')"
+        style="flex:1;padding:12px 0;font-size:14px;font-weight:500;border:none;background:none;cursor:pointer;border-bottom:2px solid transparent;color:var(--text-secondary)">People</button>
+    </div>
+
+    <!-- Posts tab -->
+    <div id="panel-posts">
+    {{if .SearchResults}}
+    <div style="padding:12px 16px;font-size:13px;color:var(--text-muted)">{{len .SearchResults}} posts matching <strong style="color:var(--text-primary)">{{.SearchQuery}}</strong></div>
+    {{range .SearchResults}}
+    {{$p := .}}
+    <article class="post-card" onclick="window.location='/post/{{$p.ID}}'">
+      <div style="display:flex;gap:12px">
+        <a href="/u/{{$p.AuthorHandle}}" onclick="event.stopPropagation()">
+          <div class="post-avatar flex-shrink-0" style="{{if $p.AvatarURL}}padding:0;overflow:hidden{{else}}{{$colors := avatarColors $p.AuthorHandle}}background:linear-gradient(135deg,{{index $colors 0}},{{index $colors 1}}){{end}}">
+            {{if $p.AvatarURL}}<img src="{{$p.AvatarURL}}" style="width:100%;height:100%;object-fit:cover">
+            {{else}}{{firstChar $p.AuthorName}}{{end}}
+          </div>
+        </a>
+        <div style="flex:1;min-width:0">
+          <div style="display:flex;align-items:baseline;gap:6px;margin-bottom:4px;flex-wrap:wrap">
+            <a href="/u/{{$p.AuthorHandle}}" onclick="event.stopPropagation()" style="font-size:14px;font-weight:500;color:var(--text-primary);text-decoration:none">{{$p.AuthorName}}</a>
+            <span class="post-handle">@{{$p.AuthorHandle}}</span>
+            <span class="post-time" style="margin-left:auto">{{$p.TimeAgo}}</span>
+          </div>
+          <p class="post-body" style="color:var(--text-primary)">{{safeHTML $p.Body}}</p>
+          <div style="display:flex;gap:16px;margin-top:8px;font-size:12px;color:var(--text-secondary)">
+            <span>❤ {{$p.Likes}}</span>
+            <span>💬 {{$p.Comments}}</span>
+          </div>
+        </div>
+      </div>
+    </article>
+    {{end}}
+    {{else}}
+    {{template "stateEmpty" (dict
+      "Icon"     "⌕"
+      "Title"    (printf "No posts found for \"%s\"" .SearchQuery)
+      "Subtitle" "Try different keywords or check your spelling.")}}
+    {{end}}
+    </div>
+
+    <!-- People tab -->
+    <div id="panel-people" style="display:none">
+    {{if .PeopleResults}}
+    <div style="padding:12px 16px;font-size:13px;color:var(--text-muted)">{{len .PeopleResults}} people matching <strong style="color:var(--text-primary)">{{.SearchQuery}}</strong></div>
+    {{range .PeopleResults}}
+    {{$u := .}}
+    <a href="/u/{{$u.Handle}}" style="display:flex;align-items:center;gap:12px;padding:14px 16px;border-bottom:1px solid var(--border);text-decoration:none">
+      <div style="width:44px;height:44px;border-radius:50%;overflow:hidden;flex-shrink:0;{{if $u.AvatarURL}}{{else}}{{$colors := avatarColors $u.Handle}}background:linear-gradient(135deg,{{index $colors 0}},{{index $colors 1}});display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:700;color:#fff{{end}}">
+        {{if $u.AvatarURL}}<img src="{{$u.AvatarURL}}" style="width:100%;height:100%;object-fit:cover">
+        {{else}}{{firstChar $u.DisplayName}}{{end}}
+      </div>
+      <div style="flex:1;min-width:0">
+        <p style="font-size:14px;font-weight:500;color:var(--text-primary);margin:0">{{$u.DisplayName}}</p>
+        <p style="font-size:12px;color:var(--text-muted);margin:0">@{{$u.Handle}}</p>
+      </div>
+      <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="width:16px;height:16px;color:var(--text-muted);flex-shrink:0"><path d="M9 18l6-6-6-6"/></svg>
+    </a>
+    {{end}}
+    {{else}}
+    <div style="padding:64px 20px;text-align:center;color:var(--text-secondary)">
+      <svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" style="width:40px;height:40px;margin:0 auto 12px;color:var(--text-muted)"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+      <p style="font-size:15px;font-weight:500;margin-bottom:6px">No people found for "{{.SearchQuery}}"</p>
+    </div>
+    {{end}}
+    </div>
+
+    {{else}}
+    <!-- Empty state — prompt to search -->
+    <div style="padding:80px 20px;text-align:center;color:var(--text-secondary)">
+      <svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" style="width:48px;height:48px;margin:0 auto 16px;color:var(--text-muted)"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+      <p style="font-size:16px;font-weight:500;color:var(--text-primary);margin-bottom:8px">Search F33D3R</p>
+      <p style="font-size:13px">Find posts, people, and tags.</p>
+    </div>
+    {{end}}
+  </main>
+
+  <aside class="f33d3r-right">
+    <div class="panel-card mb-4">
+      <h3 class="panel-title">Browse categories</h3>
+      <div style="display:flex;flex-wrap:wrap;gap:8px">
+        <a href="/search?q=art" class="explore-category-chip">Art</a>
+        <a href="/search?q=music" class="explore-category-chip">Music</a>
+        <a href="/search?q=tech" class="explore-category-chip">Tech</a>
+        <a href="/search?q=gaming" class="explore-category-chip">Gaming</a>
+        <a href="/search?q=writing" class="explore-category-chip">Writing</a>
+        <a href="/search?q=finance" class="explore-category-chip">Finance</a>
+        <a href="/search?q=indieartist" class="explore-category-chip">Indie Artist</a>
+        <a href="/search?q=buildinpublic" class="explore-category-chip">Build in Public</a>
+      </div>
+    </div>
+    <div class="panel-card">
+      <h3 class="panel-title">Search tips</h3>
+      <div style="font-size:12px;color:var(--text-secondary);display:flex;flex-direction:column;gap:8px;line-height:1.6">
+        <div><span style="color:var(--accent);font-weight:500">#tag</span> — search by hashtag</div>
+        <div><span style="color:var(--accent);font-weight:500">@handle</span> — find a person</div>
+        <div><span style="color:var(--accent);font-weight:500">keyword</span> — full-text post search</div>
+      </div>
+    </div>
+  </aside>
+
+<script src="/static/js/pages/search.js?v=20260426"></script>
+{{end}}

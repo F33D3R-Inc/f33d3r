@@ -1,0 +1,75 @@
+{{define "title"}}DMCA Takedown · F33D3R{{end}}
+{{define "body"}}
+<main class="f33d3r-main">
+  <header class="top-bar">
+    <button onclick="history.back()" class="back-btn">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+      DMCA
+    </button>
+  </header>
+  <div style="padding:24px 16px;max-width:640px;margin:0 auto">
+
+    <h1 style="font-size:22px;font-weight:700;color:var(--text-primary);margin-bottom:4px">DMCA Copyright Policy</h1>
+    <p style="font-size:13px;color:var(--text-muted);margin-bottom:24px">F33D3R complies with the Digital Millennium Copyright Act (17 U.S.C. § 512). Use this form to report infringing content.</p>
+
+    {{if .Submitted}}
+    <div style="background:color-mix(in srgb,#22c55e 10%,var(--panel));border:1px solid color-mix(in srgb,#22c55e 30%,transparent);border-radius:16px;padding:24px;text-align:center">
+      <div style="font-size:36px;margin-bottom:8px">✅</div>
+      <h2 style="font-size:18px;font-weight:700;color:var(--text-primary);margin-bottom:6px">Takedown request submitted</h2>
+      <p style="font-size:13px;color:var(--text-secondary)">Reference: <code style="font-family:monospace;color:var(--accent)">{{.TicketID}}</code></p>
+      <p style="font-size:13px;color:var(--text-secondary);margin-top:8px">We will review and respond within 24–48 hours. Content may be removed immediately if clearly infringing.</p>
+    </div>
+    {{else}}
+
+    <!-- Takedown form -->
+    <div style="background:var(--panel);border:1px solid var(--border);border-radius:16px;padding:24px;margin-bottom:20px">
+      <h2 style="font-size:16px;font-weight:600;color:var(--text-primary);margin-bottom:16px">Submit a takedown request</h2>
+
+      <form action="/dmca/submit" method="POST" style="display:flex;flex-direction:column;gap:14px">
+        <div>
+          <label style="font-size:12px;font-weight:600;color:var(--text-secondary);display:block;margin-bottom:6px">Your full legal name *</label>
+          <input type="text" name="claimant_name" required class="settings-input" placeholder="Full name of copyright owner or authorised agent">
+        </div>
+        <div>
+          <label style="font-size:12px;font-weight:600;color:var(--text-secondary);display:block;margin-bottom:6px">Your email address *</label>
+          <input type="email" name="claimant_email" required class="settings-input" placeholder="email@example.com">
+        </div>
+        <div>
+          <label style="font-size:12px;font-weight:600;color:var(--text-secondary);display:block;margin-bottom:6px">URL of infringing content on F33D3R *</label>
+          <input type="url" name="infringing_url" required class="settings-input" placeholder="https://f33d3r.com/post/...">
+        </div>
+        <div>
+          <label style="font-size:12px;font-weight:600;color:var(--text-secondary);display:block;margin-bottom:6px">URL of original work (where it can be found) *</label>
+          <input type="url" name="original_url" required class="settings-input" placeholder="https://your-site.com/original-work">
+        </div>
+        <div>
+          <label style="font-size:12px;font-weight:600;color:var(--text-secondary);display:block;margin-bottom:6px">Description of the copyrighted work *</label>
+          <textarea name="description" required class="settings-input settings-textarea" rows="3" placeholder="Describe the original copyrighted work and how it is being infringed"></textarea>
+        </div>
+        <div style="background:color-mix(in srgb,var(--accent) 6%,transparent);border:1px solid color-mix(in srgb,var(--accent) 15%,transparent);border-radius:10px;padding:14px;font-size:12px;color:var(--text-secondary);line-height:1.7">
+          By submitting this form, I declare under penalty of perjury that: (1) I am the copyright owner or authorised to act on their behalf; (2) I have a good faith belief that the use is not authorised by the copyright owner, its agent, or the law; (3) the information in this notice is accurate.
+        </div>
+        <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;font-size:13px;color:var(--text-secondary)">
+          <input type="checkbox" name="sworn" required style="margin-top:2px;flex-shrink:0">
+          I understand that filing a false DMCA claim may result in civil liability.
+        </label>
+        <button type="submit" class="btn-primary" style="padding:12px">Submit takedown request</button>
+      </form>
+    </div>
+
+    <!-- Counter-notice info -->
+    <div style="background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:20px;margin-bottom:16px">
+      <h3 style="font-size:14px;font-weight:600;color:var(--text-primary);margin-bottom:8px">Counter-notice (if your content was removed)</h3>
+      <p style="font-size:13px;color:var(--text-secondary);line-height:1.7">If your content was removed and you believe the takedown was in error, you may file a counter-notice to <a href="mailto:dmca@f33d3r.app" style="color:var(--accent)">dmca@f33d3r.app</a> with your full name, address, phone number, and a statement that you consent to local federal court jurisdiction. We will restore the content within 10–14 business days unless the claimant files a court action.</p>
+    </div>
+
+    <!-- Designated agent -->
+    <div style="padding:14px;background:var(--surface);border-radius:10px;font-size:12px;color:var(--text-muted);line-height:1.7">
+      <strong style="color:var(--text-secondary)">DMCA Designated Agent</strong><br>
+      F33D3R Platform · <a href="mailto:dmca@f33d3r.app" style="color:var(--accent)">dmca@f33d3r.app</a><br>
+      Registered with the U.S. Copyright Office.
+    </div>
+    {{end}}
+  </div>
+</main>
+{{end}}

@@ -1,0 +1,19 @@
+# F33D3R CI — lightweight, non-blocking
+# One job: verify Go compiles. Everything else is manual/local.
+# Pipeline never blocks a merge.
+
+stages:
+  - check
+
+go:build:
+  stage: check
+  image: golang:1.26.2-alpine
+  script:
+    - cd feed-engine
+    - go build ./...
+    - echo "Go build OK"
+  rules:
+    - changes:
+        - feed-engine/**/*
+      if: '$CI_COMMIT_BRANCH || $CI_PIPELINE_SOURCE == "merge_request_event"'
+  allow_failure: true

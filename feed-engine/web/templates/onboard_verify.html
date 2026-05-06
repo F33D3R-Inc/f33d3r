@@ -1,0 +1,106 @@
+{{define "title"}}Identity verification · F33D3R{{end}}
+{{define "sidebar-hidden"}}sidebar-onboard-hidden{{end}}
+{{define "mobile-nav-hidden"}}mobile-nav-onboard-hidden{{end}}
+{{define "body"}}
+<main class="onboard-wrap">
+  <div class="onboard-left">
+    <a href="/" class="sidebar-logo" style="margin-bottom:40px;text-decoration:none">
+      <div class="logo-mark" style="width:52px;height:52px;font-size:24px;border-radius:16px">F</div>
+      <span style="font-family:'DM Serif Display',serif;font-size:28px;color:var(--text-primary)">f33d3r</span>
+    </a>
+    <p style="font-size:17px;color:var(--text-secondary);line-height:1.65;max-width:360px;margin-bottom:32px">Verification protects you, unlocks adult content, and builds community trust. Your ID is hashed client-side — we never see the document image.</p>
+    <div class="onboard-features">
+      <div class="onboard-feat"><span class="onboard-feat-icon">◈</span><div><p class="onboard-feat-title">PIAL-anchored identity</p><p class="onboard-feat-desc">Verification binds to your PIAL root — not your handle</p></div></div>
+      <div class="onboard-feat"><span class="onboard-feat-icon">◉</span><div><p class="onboard-feat-title">Required for adult content</p><p class="onboard-feat-desc">Must verify age to enable 18+ content</p></div></div>
+      <div class="onboard-feat"><span class="onboard-feat-icon">◎</span><div><p class="onboard-feat-title">Required for monetisation</p><p class="onboard-feat-desc">Verified creators can earn AET from their content</p></div></div>
+    </div>
+  </div>
+
+  <div class="onboard-right">
+    <div class="onboard-card">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <div style="width:8px;height:8px;border-radius:50%;background:var(--accent)"></div>
+        <div style="flex:1;height:2px;background:var(--accent)"></div>
+        <div style="width:8px;height:8px;border-radius:50%;background:var(--accent)"></div>
+        <div style="flex:1;height:2px;background:var(--accent)"></div>
+        <div style="width:8px;height:8px;border-radius:50%;background:var(--accent)"></div>
+        <div style="flex:1;height:2px;background:var(--accent)"></div>
+        <div style="width:8px;height:8px;border-radius:50%;background:var(--border)"></div>
+      </div>
+      <p style="font-size:11px;color:var(--text-muted);margin-bottom:24px">Step 5 of 5 — Verify</p>
+
+      <h2 class="onboard-card-title">Verify your identity</h2>
+      <p class="onboard-card-sub">Optional now — required to unlock adult content and monetisation.</p>
+
+      <!-- ID capture area -->
+      <div style="padding:20px;border:1px solid var(--border);border-radius:16px;margin-bottom:16px">
+        <div style="text-align:center;margin-bottom:16px">
+          <div style="width:56px;height:56px;border-radius:50%;background:color-mix(in srgb,var(--accent) 12%,transparent);display:flex;align-items:center;justify-content:center;margin:0 auto 10px;font-size:26px">🪪</div>
+          <p style="font-size:14px;font-weight:600;color:var(--text-primary);margin-bottom:4px">Government ID verification</p>
+          <p style="font-size:12px;color:var(--text-secondary);line-height:1.6">Take a photo of your ID. It is hashed in your browser — only a SHA-256 fingerprint reaches our servers.</p>
+        </div>
+
+        <div id="onboard-kyc-camera" style="background:var(--surface);border:1px dashed var(--border);border-radius:10px;padding:28px;margin-bottom:12px;cursor:pointer;text-align:center" onclick="document.getElementById('onboard-id-file').click()">
+          <svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" style="width:32px;height:32px;color:var(--text-muted);margin:0 auto 8px"><rect x="2" y="7" width="20" height="15" rx="2"/><path d="M16 3H8L6 7h12L16 3z"/><circle cx="12" cy="14" r="3"/></svg>
+          <p style="font-size:13px;color:var(--text-muted)">Tap to open camera or upload ID</p>
+        </div>
+        <input type="file" id="onboard-id-file" accept="image/*" capture="environment" style="display:none" onchange="onboardSubmitID(this)">
+
+        <div id="onboard-kyc-result" style="min-height:16px;text-align:center;margin-bottom:8px"></div>
+
+        <button onclick="document.getElementById('onboard-id-file').click()" class="btn-primary" style="width:100%;padding:11px;font-size:14px">
+          Use camera / upload ID
+        </button>
+      </div>
+
+      <!-- Skip -->
+      <form action="/onboard/verify" method="POST">
+        <input type="hidden" name="verify_choice" value="skip">
+        <button type="submit" class="btn-secondary" style="width:100%;padding:11px;font-size:14px">Skip for now — verify later in Settings</button>
+      </form>
+
+      <p style="font-size:11px;color:var(--text-muted);text-align:center;margin-top:12px;line-height:1.6">
+        You can always verify from Settings → Verification. Some features require it.
+      </p>
+    </div>
+  </div>
+</main>
+
+<script>
+window.onboardSubmitID = async function(input) {
+  var file = input.files[0];
+  if (!file) return;
+  var res = document.getElementById('onboard-kyc-result');
+  res.innerHTML = '<span style="font-size:13px;color:var(--text-secondary)">Hashing document…</span>';
+
+  var buf = await file.arrayBuffer();
+  var hashBuf = await crypto.subtle.digest('SHA-256', buf);
+  var hashArr = Array.from(new Uint8Array(hashBuf));
+  var hashHex = hashArr.map(function(b) { return b.toString(16).padStart(2,'0'); }).join('');
+
+  res.innerHTML = '<span style="font-size:13px;color:var(--text-secondary)">Submitting…</span>';
+
+  var fd = new FormData();
+  fd.append('submission_type', 'gov_id');
+  fd.append('age_band', '18+');
+  fd.append('document_hash', hashHex);
+
+  try {
+    var r = await fetch('/kyc/submit', { method:'POST', body: fd, headers:{'HX-Request':'true'} });
+    if (r.ok) {
+      res.innerHTML = '<span style="color:#22c55e;font-size:13px;font-weight:600">✓ Verified — continuing…</span>';
+      setTimeout(function() {
+        // Submit the skip form to proceed to the next onboarding step
+        var f = document.querySelector('form[action="/onboard/verify"]');
+        if (f) { f.querySelector('input[name="verify_choice"]').value = 'verify'; f.submit(); }
+      }, 1200);
+    } else {
+      var t = await r.text();
+      res.innerHTML = '<span style="color:#ef4444;font-size:13px">' + (t || 'Verification failed — try again or skip') + '</span>';
+    }
+  } catch(e) {
+    res.innerHTML = '<span style="color:#ef4444;font-size:13px">Network error — check connection and retry</span>';
+  }
+}
+</script>
+{{end}}

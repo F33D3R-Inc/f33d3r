@@ -1,0 +1,383 @@
+# F33D3R Production Docker Compose
+# Usage: docker compose -f docker-compose.prod.yml --env-file .env.prod up --build -d
+# Or use: bash bootstrap-prod.sh (first time) / bash deploy.sh (updates)
+
+services:
+
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: "${POSTGRES_USER:-f33d3r}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+      POSTGRES_DB: "${POSTGRES_DB:-f33d3r}"
+      PGDATA: "/var/lib/postgresql/data/18/docker"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-f33d3r}" ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  aethyr-schema-registry:
+    build:
+      context: ./aethyr-schema-registry
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD}@postgres:5432/f33d3r_registry?sslmode=disable"
+      PORT: "8079"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8079/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+
+  aethyrrank-engine:
+    build:
+      context: ./aethyrrank-engine
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+      APP__SERVER__PORT: "8080"
+      APP__SERVER__HOST: "0.0.0.0"
+      SCHEMA_REGISTRY_URL: "http://aethyr-schema-registry:8079"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD}@postgres:5432/f33d3r_feed?sslmode=disable"
+    depends_on:
+      aethyr-schema-registry:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8080/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+
+  zior-engine:
+    build:
+      context: ./zior-engine
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+      ZIOR__SERVER__PORT: "8082"
+      ZIOR__AETHYR__CONTENT_STORE_URL: "http://aethyrrank-engine:8080"
+      SCHEMA_REGISTRY_URL: "http://aethyr-schema-registry:8079"
+    depends_on:
+      aethyrrank-engine:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8082/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 25s
+
+  feed-engine:
+    build:
+      context: ./feed-engine
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      PORT: "8081"
+      HOST: "0.0.0.0"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD}@postgres:5432/f33d3r_feed?sslmode=disable"
+      AETHYRRANK_URL: "http://aethyrrank-engine:8080"
+      ZIOR_URL: "http://zior-engine:8082"
+      AIN_SOPH_URL: "http://ain-soph:8089"
+      VOVIN_URL: "http://aethyr-msg:8092"
+      ZODACARE_URL: "http://zodacare:8090"
+      ELOHIM_VENI_URL: "http://elohim-veni:8093"
+      VERITY_URL: "http://verity:8095"
+      EKYC_URL: "http://ekyc:8099"
+      LEDGER_URL: "http://aethyr-ledger:8096"
+      CAEOR_URL: "http://caeor:8086"
+      THESSALON_URL: "http://thessalon:8084"
+      REDIS_URL: "redis://redis:6379"
+      SESSION_SECRET: "${SESSION_SECRET}"
+      SHOW_SCORES: "${SHOW_SCORES:-false}"
+      DEV_MODE: "false"
+    volumes:
+      - ./feed-engine/web/static:/app/web/static    # live CSS/JS/brand — git pull = instant update
+      - ./feed-engine/web/templates:/app/web/templates:ro  # live templates — restart to pick up
+      - f33d3r_media:/app/web/static/media          # user media — named volume overlays bind mount
+    depends_on:
+      postgres:
+        condition: service_healthy
+      aethyrrank-engine:
+        condition: service_healthy
+      caeor:
+        condition: service_healthy
+      thessalon:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "wget", "-qO-", "http://localhost:8081/api/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
+
+  ain-soph:
+    build:
+      context: ./ain-soph
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+      PORT: "8089"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD}@postgres:5432/f33d3r_wallet?sslmode=disable"
+      AETHYRRANK_URL: "http://aethyrrank-engine:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8089/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+
+  aethyr-msg:
+    build:
+      context: ./aethyr-msg
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+      PORT: "8092"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD}@postgres:5432/f33d3r_msg?sslmode=disable"
+      REGISTRY_URL: "http://aethyr-schema-registry:8079"
+      AETHYRRANK_URL: "http://aethyrrank-engine:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      aethyr-schema-registry:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8092/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+
+  elohim-veni:
+    build:
+      context: ./elohim-veni
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+      PORT: "8093"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD}@postgres:5432/f33d3r_security?sslmode=disable"
+      VERITY_URL: "http://verity:8095"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      verity:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8093/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+
+  zodacare:
+    build:
+      context: ./zodacare
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+      PORT: "8090"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD}@postgres:5432/f33d3r_safety?sslmode=disable"
+      ELOHIM_VENI_URL: "http://elohim-veni:8093"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      elohim-veni:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8090/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+
+  registry-brain:
+    build:
+      context: ./registry-brain
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+      PORT: "8094"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD}@postgres:5432/f33d3r_handles?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8094/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+
+  verity:
+    build:
+      context: ./verity
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+      PORT: "8095"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD}@postgres:5432/f33d3r_verity?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8095/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+
+  aethyr-ledger:
+    build:
+      context: ./aethyr-ledger
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+      PORT: "8096"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD}@postgres:5432/f33d3r_ledger?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8096/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+
+  caeor:
+    build:
+      context: ./caeor
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+      PORT: "8086"
+      MEDIA_DIR: "/data/media"
+    volumes:
+      - f33d3r_media:/data/media
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8086/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 60s
+
+  thessalon:
+    build:
+      context: ./thessalon
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+      PORT: "8084"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD}@postgres:5432/f33d3r_commerce?sslmode=disable"
+      AIN_SOPH_URL: "http://ain-soph:8089"
+      VERITY_URL: "http://verity:8095"
+      EKYC_URL: "http://ekyc:8099"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ain-soph:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8084/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 60s
+
+  # ── eKYC brain — face match, OCR, anti-spoof (Python, port 8099) ─────────
+  ekyc:
+    build:
+      context: ./ekyc
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      PORT: "8099"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8099/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
+  # ── Transcoding brain — ffmpeg video processing ────────────────────────────
+  # Dedicated service for video transcoding (H.264/AAC mp4, HLS segments, thumbnails).
+  # Runs on a separate server in production — set TRANSCODING_URL env var to that host.
+  transcoding:
+    build:
+      context: ./transcoding
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      PORT: "8098"
+      MEDIA_DIR: "/data/media"
+      OUTPUT_DIR: "/data/transcoded"
+      MAX_CONCURRENT: "2"
+      RUST_LOG: "${RUST_LOG:-info}"
+    volumes:
+      - f33d3r_media:/data/media
+      - f33d3r_transcoded:/data/transcoded
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8098/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # HTTPS reverse proxy — Let's Encrypt certs for f33d3r.com
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./infra/Caddyfile.prod:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      feed-engine:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:
+  f33d3r_media:
+  f33d3r_transcoded:

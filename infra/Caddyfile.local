@@ -1,0 +1,35 @@
+{
+  local_certs
+  auto_https disable_redirects
+}
+
+# ── HTTPS on localhost (same machine) ─────────────────────────────────────────
+# Access from this machine: https://localhost:8443
+https://localhost:8443 {
+  tls internal
+
+  reverse_proxy feed-engine:8081 {
+    header_up Host {host}
+    header_up X-Real-IP {remote_host}
+    header_up X-Forwarded-Proto https
+  }
+}
+
+# ── HTTPS via mDNS hostname (other devices on same LAN) ───────────────────────
+# Other devices reach this machine as XXXG-00W0.local (avahi/Bonjour).
+# They must trust the Caddy root CA first — see infra/README-CERTS.md.
+# Access from other devices: https://XXXG-00W0.local:8443
+https://XXXG-00W0.local:8443 {
+  tls internal
+
+  reverse_proxy feed-engine:8081 {
+    header_up Host {host}
+    header_up X-Real-IP {remote_host}
+    header_up X-Forwarded-Proto https
+  }
+}
+
+# ── HTTP → HTTPS redirect ─────────────────────────────────────────────────────
+http://localhost:8444 {
+  redir https://localhost:8443{uri} 308
+}

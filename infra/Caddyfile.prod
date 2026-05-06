@@ -1,0 +1,15 @@
+# F33D3R Production Caddyfile
+# Caddy automatically provisions Let's Encrypt TLS for f33d3r.com.
+# Requires ports 80 and 443 open and DNS pointing to this server.
+
+www.f33d3r.com {
+  redir https://f33d3r.com{uri} 301
+}
+
+f33d3r.com {
+  reverse_proxy feed-engine:8081 {
+    header_up Host {host}
+    header_up X-Real-IP {remote_host}
+    header_up X-Forwarded-Proto https
+  }
+}

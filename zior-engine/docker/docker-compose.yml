@@ -1,0 +1,26 @@
+version: "3.9"
+services:
+  zior-engine:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8082:8082"
+    environment:
+      RUST_LOG: "info"
+      ZIOR__SERVER__PORT: "8082"
+      ZIOR__AETHYR__CONTENT_STORE_URL: "http://aethyrrank-engine:8080"
+    restart: unless-stopped
+    networks:
+      - f33d3r
+
+  aethyrrank-engine:
+    image: aethyrrank-engine:latest
+    ports:
+      - "8080:8080"
+    networks:
+      - f33d3r
+
+networks:
+  f33d3r:
+    external: true

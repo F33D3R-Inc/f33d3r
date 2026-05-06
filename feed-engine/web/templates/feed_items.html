@@ -1,0 +1,376 @@
+{{define "feed_items.html"}}
+{{if .IsMockFeed}}
+<div class="mock-feed-banner">
+  <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
+  Sample content — post something to see your real feed
+</div>
+{{end}}
+{{range $i, $p := .Posts}}
+<article class="post-card{{if $p.MediaURLs}} has-media{{else}} no-media{{end}}" data-content-id="{{$p.ContentID}}" data-rank="{{$i}}"
+         onclick="goToPost('{{$p.ID}}','{{$p.ContentID}}','{{$.SessionID}}','{{$.Surface}}',{{$i}})">
+
+  <!-- ══ DESKTOP CARD LAYOUT (.pcd) ══════════════════════════════════════════ -->
+  <div class="pcd">
+    <div style="display:flex;gap:12px">
+      <a href="/u/{{$p.AuthorHandle}}" onclick="event.stopPropagation()">
+        <div class="post-avatar flex-shrink-0"
+             style="{{if $p.AvatarURL}}padding:0;overflow:hidden{{else}}{{$colors := avatarColors $p.AuthorHandle}}background:linear-gradient(135deg,{{index $colors 0}},{{index $colors 1}}){{end}}">
+          {{if $p.AvatarURL}}<img src="{{$p.AvatarURL}}" alt="{{$p.AuthorName}}" loading="lazy" decoding="async" style="width:100%;height:100%;object-fit:cover">
+          {{else}}{{firstChar $p.AuthorName}}{{end}}
+        </div>
+      </a>
+      <div style="flex:1;min-width:0">
+        <div style="display:flex;align-items:baseline;gap:6px;margin-bottom:4px;flex-wrap:wrap">
+          <a href="/u/{{$p.AuthorHandle}}" onclick="event.stopPropagation()" style="font-size:14px;font-weight:500;color:var(--text-primary);text-decoration:none">{{$p.AuthorName}}</a>
+          {{if eq $p.AuthorRole "admin"}}<span class="role-badge role-admin">Admin</span>{{else if eq $p.AuthorRole "founder"}}<span class="role-badge role-founder">Founder</span>{{else if $p.IsVerified}}<span class="role-badge role-verified">Verified</span>{{end}}
+          <a href="/u/{{$p.AuthorHandle}}" class="post-handle" onclick="event.stopPropagation()">@{{$p.AuthorHandle}}</a>
+          <time class="post-time" data-ts="{{$p.CreatedAt.Unix}}" style="margin-left:auto;white-space:nowrap">{{$p.TimeAgo}}</time>
+          <div class="post-menu-wrap" onclick="event.stopPropagation()">
+            <button class="post-menu-trigger" onclick="togglePostMenu(this)" title="More" type="button">
+              <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
+            </button>
+            <div class="post-menu-dropdown">
+              <button class="post-menu-item" onclick="navigator.clipboard&&navigator.clipboard.writeText(window.location.origin+'/post/{{$p.ID}}').then(()=>{toast('Link copied');closeAllPostMenus()})">
+                <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.59 13.51 6.83 3.98M15.41 6.51l-6.82 3.98"/></svg>
+                Copy link
+              </button>
+              <button class="post-menu-item" onclick="translatePost('{{$p.ID}}',this.closest('.post-menu-wrap'));closeAllPostMenus()">
+                <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M3 5h12M9 3v2m1.048 9.5A18.022 18.022 0 016.412 9m6.088 9h7M11 21l5-10 5 10M12.751 5C11.783 10.77 8.07 15.61 3 18.129"/></svg>
+                Translate
+              </button>
+              {{if eq $p.AuthorHandle $.CurrentUserHandle}}
+              <div class="post-menu-sep"></div>
+              <button class="post-menu-item post-edit-btn" data-post-id="{{$p.ID}}" data-created="{{$p.CreatedAt.Unix}}"
+                      onclick="openEditPost('{{$p.ID}}',this);closeAllPostMenus()" style="display:none">
+                <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                Edit post
+              </button>
+              <button class="post-menu-item post-menu-item-danger"
+                      hx-post="/api/post/delete" hx-vals='{"post_id":"{{$p.ID}}"}'
+                      hx-target="closest article" hx-swap="outerHTML"
+                      hx-confirm="Delete this post? This cannot be undone."
+                      onclick="closeAllPostMenus()">
+                <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+                Delete post
+              </button>
+              {{end}}
+            </div>
+          </div>
+        </div>
+        {{if $p.ExplorationSlot}}<div class="explore-badge glow"><svg class="w-2.5 h-2.5" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>Discover</div>{{end}}
+        <div class="post-body">{{markdownHTML $p.Body}}</div>
+        {{if and $p.IsNSFW (eq $.User.ContentSetting "safe_mode")}}
+        <div style="position:relative;border-radius:12px;overflow:hidden;margin-top:8px">
+          <div style="filter:blur(20px);pointer-events:none;user-select:none;opacity:0.3;font-size:13px;color:var(--text-muted);padding:24px;text-align:center">Adult content</div>
+          <div style="position:absolute;inset:0;background:rgba(0,0,0,.5);display:flex;flex-direction:column;align-items:center;justify-content:center;border-radius:12px" onclick="event.stopPropagation()">
+            <span style="font-size:20px">🔞</span>
+            <p style="font-size:13px;color:#fff;font-weight:600;margin-top:6px">Adult content</p>
+            <a href="/kyc" onclick="event.stopPropagation()" style="font-size:12px;color:#fff;opacity:.8;margin-top:4px;text-decoration:underline">Verify age to view</a>
+          </div>
+        </div>
+        {{end}}
+        {{if $p.VideoMasterURL}}
+        <div class="post-media-grid" style="margin-top:10px" onclick="event.stopPropagation()">
+          <video class="post-media-video"
+                 data-f33d-hls="{{$p.VideoMasterURL}}"
+                 {{if $p.VideoPosterURL}}poster="{{$p.VideoPosterURL}}"{{end}}
+                 preload="metadata"
+                 playsinline
+                 muted
+                 style="width:100%;max-height:560px;border-radius:12px;background:#000;display:block">
+          </video>
+        </div>
+        {{else if $p.MediaURLs}}
+        <div class="post-media-grid" style="margin-top:10px" onclick="event.stopPropagation()">
+          {{if gt (len $p.MediaURLs) 1}}
+          <div class="media-carousel" data-idx="0">
+            {{range $i, $url := $p.MediaURLs}}
+            <img src="{{$url}}" alt="" class="post-media-img carousel-slide{{if eq $i 0}} active{{end}}"
+                 loading="{{if eq $i 0}}eager{{else}}lazy{{end}}" decoding="async"
+                 onerror="this.style.display='none'">
+            {{end}}
+            <button class="carousel-btn carousel-btn-prev" onclick="event.stopPropagation();mediaCarouselStep(this,-1)" type="button" aria-label="Previous">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>
+            </button>
+            <button class="carousel-btn carousel-btn-next" onclick="event.stopPropagation();mediaCarouselStep(this,1)" type="button" aria-label="Next">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 6 15 12 9 18"/></svg>
+            </button>
+            <div class="carousel-dots">
+              {{range $i, $url := $p.MediaURLs}}
+              <span class="carousel-dot{{if eq $i 0}} active{{end}}" onclick="event.stopPropagation();mediaCarouselGoTo(this.closest('.media-carousel'),{{$i}})"></span>
+              {{end}}
+            </div>
+            <span class="carousel-counter">1/{{len $p.MediaURLs}}</span>
+          </div>
+          {{else}}
+          <img src="{{index $p.MediaURLs 0}}" alt="" class="post-media-img" loading="lazy" decoding="async" onerror="this.style.display='none'">
+          {{end}}
+        </div>
+        {{end}}
+        {{if $p.Tags}}<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px">{{range $p.Tags}}<a href="/search?q=%23{{.}}" class="post-tag" onclick="event.stopPropagation()">#{{.}}</a>{{end}}</div>{{end}}
+        {{if $p.Poll}}
+        {{$poll := $p.Poll}}
+        <div class="poll-wrap" id="poll-{{$p.ID}}" onclick="event.stopPropagation()">
+          {{if or (ge $poll.UserVote 0) $poll.Ended}}
+          <div class="poll-results">
+            {{range $poll.Results}}
+            <div class="poll-bar{{if .Voted}} poll-voted{{end}}">
+              <div class="poll-bar-fill" style="width:{{.Pct}}%"></div>
+              <span class="poll-bar-label">{{.Label}}</span>
+              <span class="poll-bar-pct">{{.Pct}}%</span>
+            </div>
+            {{end}}
+            <p class="poll-total">{{$poll.TotalVotes}} vote{{if ne $poll.TotalVotes 1}}s{{end}}{{if $poll.Ended}} · Ended{{end}}</p>
+          </div>
+          {{else}}
+          <div class="poll-options">
+            {{range $i, $r := $poll.Results}}
+            <button class="poll-option-btn"
+                    hx-post="/api/poll/vote"
+                    hx-vals='{"post_id":"{{$p.ID}}","option_idx":"{{$i}}"}'
+                    hx-target="#poll-{{$p.ID}}"
+                    hx-swap="outerHTML">{{$r.Label}}</button>
+            {{end}}
+            <p class="poll-total">{{$poll.TotalVotes}} vote{{if ne $poll.TotalVotes 1}}s{{end}}</p>
+          </div>
+          {{end}}
+        </div>
+        {{end}}
+
+        <div class="post-translate-wrap" id="translate-wrap-{{$p.ID}}" style="display:none;margin-top:6px;padding:10px 12px;background:var(--panel);border-radius:10px;border:1px solid var(--border);font-size:13px;color:var(--text-secondary);line-height:1.6"></div>
+        <div class="post-actions">
+          <button class="action-btn" onclick="event.stopPropagation()" title="Views" style="cursor:default">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            <span>{{$p.Impressions}}</span>
+          </button>
+          <button class="action-btn {{if $p.LikedByUser}}liked{{end}}"
+                  hx-post="/feed/item/like" hx-target="this" hx-swap="outerHTML"
+                  hx-include="[name='session_id'],[name='surface']" onclick="event.stopPropagation()"
+                  name="content_id" value="{{$p.ContentID}}" title="Like">
+            <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="{{if $p.LikedByUser}}currentColor{{else}}none{{end}}" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+            <span>{{$p.Likes}}</span>
+          </button>
+          <button class="action-btn" hx-post="/feed/item/repost" hx-target="this" hx-swap="outerHTML"
+                  hx-include="[name='session_id'],[name='surface']" onclick="event.stopPropagation()"
+                  name="content_id" value="{{$p.ContentID}}" title="Repost">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M17 1l4 4-4 4"/><path d="M3 11V9a4 4 0 014-4h14M7 23l-4-4 4-4"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg>
+            <span>{{$p.Reposts}}</span>
+          </button>
+          <button class="action-btn" hx-post="/feed/item/dislike" hx-target="this" hx-swap="outerHTML"
+                  hx-include="[name='session_id'],[name='surface']" onclick="event.stopPropagation()"
+                  name="content_id" value="{{$p.ContentID}}" title="Not for me">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M10 15v4a3 3 0 003 3l4-9V2H5.72a2 2 0 00-2 1.7l-1.38 9a2 2 0 002 2.3zm10-13h2.67A2.31 2.31 0 0125 4v7a2.31 2.31 0 01-2.33 2H20"/></svg>
+          </button>
+          <a href="/post/{{$p.ID}}" onclick="event.stopPropagation()" class="action-btn" title="Comment">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+            <span>{{$p.Comments}}</span>
+          </a>
+          <button class="action-btn {{if $p.BookmarkedByUser}}saved{{end}}"
+                  hx-post="/feed/item/save" hx-target="this" hx-swap="outerHTML"
+                  hx-include="[name='session_id'],[name='surface']" onclick="event.stopPropagation()"
+                  name="content_id" value="{{$p.ContentID}}" title="Bookmark">
+            <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="{{if $p.BookmarkedByUser}}currentColor{{else}}none{{end}}" stroke="currentColor" stroke-width="2"><path d="M19 21l-7-5-7 5V5a2 2 0 012-2h10a2 2 0 012 2z"/></svg>
+          </button>
+          {{if and (eq $p.AuthorRole "creator") (ne $p.AuthorHandle $.CurrentUserHandle)}}
+          <a href="/shop/{{$p.AuthorHandle}}#tip" onclick="event.stopPropagation()" class="action-btn" title="Tip @{{$p.AuthorHandle}}">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg>
+          </a>
+          {{end}}
+        </div>
+        {{if $.ShowScores}}<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">
+          <div style="display:flex;flex-wrap:wrap;gap:6px">
+            <span class="score-chip">score {{pct $p.FinalScore}}%</span>
+            <span class="score-chip">align {{pct $p.AesqAlignment}}%</span>
+            {{if gt $p.VelocityBoost 0.0}}<span class="score-chip" style="color:var(--accent)">↑vel +{{pct $p.VelocityBoost}}%</span>{{end}}
+          </div>
+        </div>{{end}}
+        {{if gt $p.ThreadCount 0}}
+        <div class="thread-expand-wrap" id="thread-{{$p.ID}}" onclick="event.stopPropagation()">
+          <button class="thread-expand-btn"
+                  hx-get="/api/thread/{{$p.ID}}"
+                  hx-target="#thread-{{$p.ID}}"
+                  hx-swap="outerHTML"
+                  onclick="event.stopPropagation()">
+            <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+            Thread · {{$p.ThreadCount}} more
+          </button>
+        </div>
+        {{end}}
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ MOBILE FOCUS LAYOUT (.pcf) ══════════════════════════════════════════ -->
+  <div class="pcf">
+
+    <!-- Background: HLS video > image > ambient gradient -->
+    {{if $p.VideoMasterURL}}
+    <div class="focus-bg">
+      <video class="focus-bg-video"
+             data-f33d-hls="{{$p.VideoMasterURL}}"
+             {{if $p.VideoPosterURL}}poster="{{$p.VideoPosterURL}}"{{end}}
+             preload="metadata"
+             playsinline
+             muted
+             loop
+             style="width:100%;height:100%;object-fit:cover;display:block;background:#000"></video>
+    </div>
+    {{else if $p.MediaURLs}}
+    <div class="focus-bg">
+      {{with index $p.MediaURLs 0}}
+      <img src="{{.}}" alt="" onerror="this.parentElement.innerHTML='<div class=focus-bg-text></div>'">
+      {{end}}
+    </div>
+    {{else}}
+    <div class="focus-bg"><div class="focus-bg-text"></div></div>
+    {{end}}
+
+    <!-- Content layer -->
+    <div class="focus-content">
+
+      <!-- Left: author info + text + tags -->
+      <div class="focus-left">
+        <div class="focus-author-row">
+          <a href="/u/{{$p.AuthorHandle}}" onclick="event.stopPropagation()" class="focus-av">
+            {{if $p.AvatarURL}}
+            <img src="{{$p.AvatarURL}}" alt="">
+            {{else}}
+            {{$c := avatarColors $p.AuthorHandle}}
+            <div class="focus-av-init" style="background:linear-gradient(135deg,{{index $c 0}},{{index $c 1}})">{{firstChar $p.AuthorName}}</div>
+            {{end}}
+          </a>
+          <div>
+            <a href="/u/{{$p.AuthorHandle}}" onclick="event.stopPropagation()" class="focus-name">
+              {{$p.AuthorName}}
+              {{if $p.IsVerified}}&nbsp;<svg style="display:inline;width:11px;height:11px;vertical-align:middle;color:var(--accent)" viewBox="0 0 24 24" fill="currentColor"><path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>{{end}}
+            </a>
+            <span class="focus-handle">@{{$p.AuthorHandle}} · {{$p.TimeAgo}}</span>
+          </div>
+        </div>
+
+        <div class="focus-body" id="fbd-{{$p.ID}}">{{markdownHTML $p.Body}}</div>
+        <button class="focus-more" id="fbm-{{$p.ID}}" onclick="event.stopPropagation();expandFocusBody('{{$p.ID}}')">more</button>
+
+        {{if $p.Tags}}
+        <div class="focus-tags">
+          {{range $p.Tags}}<a href="/search?q=%23{{.}}" class="focus-tag" onclick="event.stopPropagation()">#{{.}}</a>{{end}}
+        </div>
+        {{end}}
+      </div>
+
+      <!-- Right: action stack -->
+      <div class="focus-right">
+        <!-- Avatar with follow (+) dot -->
+        <div class="focus-av-wrap">
+          <a href="/u/{{$p.AuthorHandle}}" onclick="event.stopPropagation()" class="focus-av-ring">
+            {{if $p.AvatarURL}}
+            <img src="{{$p.AvatarURL}}" alt="">
+            {{else}}
+            {{$c := avatarColors $p.AuthorHandle}}
+            <div class="focus-av-init" style="background:linear-gradient(135deg,{{index $c 0}},{{index $c 1}})">{{firstChar $p.AuthorName}}</div>
+            {{end}}
+          </a>
+          {{if ne $p.AuthorHandle $.CurrentUserHandle}}
+          <div class="focus-follow-dot"
+               hx-post="/api/follow" hx-target="this" hx-swap="outerHTML"
+               hx-vals='{"target_id":"{{$p.AuthorID}}","action":"follow"}'
+               onclick="event.stopPropagation()" title="Follow">+</div>
+          {{end}}
+        </div>
+
+        <!-- Like -->
+        <button class="f-act {{if $p.LikedByUser}}liked{{end}}"
+                hx-post="/feed/item/like" hx-target="this" hx-swap="outerHTML"
+                hx-include="[name='session_id'],[name='surface']"
+                onclick="event.stopPropagation()"
+                name="content_id" value="{{$p.ContentID}}" title="Like">
+          <svg viewBox="0 0 24 24" fill="{{if $p.LikedByUser}}currentColor{{else}}none{{end}}" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+          <span>{{$p.Likes}}</span>
+        </button>
+
+        <!-- Comment -->
+        <a href="/post/{{$p.ID}}" onclick="event.stopPropagation()" class="f-act" title="Comment">
+          <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+          <span>{{$p.Comments}}</span>
+        </a>
+
+        <!-- Repost -->
+        <button class="f-act"
+                hx-post="/feed/item/repost" hx-target="this" hx-swap="outerHTML"
+                hx-include="[name='session_id'],[name='surface']"
+                onclick="event.stopPropagation()"
+                name="content_id" value="{{$p.ContentID}}" title="Repost">
+          <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M17 1l4 4-4 4"/><path d="M3 11V9a4 4 0 014-4h14M7 23l-4-4 4-4"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg>
+          <span>{{$p.Reposts}}</span>
+        </button>
+
+        <!-- Save -->
+        <button class="f-act {{if $p.BookmarkedByUser}}saved{{end}}"
+                hx-post="/feed/item/save" hx-target="this" hx-swap="outerHTML"
+                hx-include="[name='session_id'],[name='surface']"
+                onclick="event.stopPropagation()"
+                name="content_id" value="{{$p.ContentID}}" title="Save">
+          <svg viewBox="0 0 24 24" fill="{{if $p.BookmarkedByUser}}currentColor{{else}}none{{end}}" stroke="currentColor" stroke-width="2"><path d="M19 21l-7-5-7 5V5a2 2 0 012-2h10a2 2 0 012 2z"/></svg>
+        </button>
+
+        <!-- Not for me (dislike) — feedback signal only, no count shown -->
+        <button class="f-act"
+                hx-post="/feed/item/dislike" hx-target="this" hx-swap="outerHTML"
+                hx-include="[name='session_id'],[name='surface']"
+                hx-vals='{"layout":"focus"}'
+                onclick="event.stopPropagation()"
+                name="content_id" value="{{$p.ContentID}}" title="Not for me"
+                style="opacity:.55">
+          <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="width:22px;height:22px"><path d="M10 15v4a3 3 0 003 3l4-9V2H5.72a2 2 0 00-2 1.7l-1.38 9a2 2 0 002 2.3zm10-13h2.67A2.31 2.31 0 0125 4v7a2.31 2.31 0 01-2.33 2H20"/></svg>
+        </button>
+
+        <!-- More (three-dot) -->
+        <div class="post-menu-wrap" onclick="event.stopPropagation()">
+          <button class="f-act" onclick="togglePostMenu(this)" type="button" title="More"
+                  style="padding:11px 10px">
+            <svg fill="currentColor" viewBox="0 0 24 24" style="width:22px;height:22px"><circle cx="12" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/></svg>
+          </button>
+          <div class="post-menu-dropdown focus-menu-drop">
+            <button class="post-menu-item" onclick="navigator.clipboard&&navigator.clipboard.writeText(window.location.origin+'/post/{{$p.ID}}').then(()=>{toast('Link copied');closeAllPostMenus()})">
+              <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.59 13.51 6.83 3.98M15.41 6.51l-6.82 3.98"/></svg>
+              Copy link
+            </button>
+            {{if eq $p.AuthorHandle $.CurrentUserHandle}}
+            <div class="post-menu-sep"></div>
+            <button class="post-menu-item post-menu-item-danger"
+                    hx-post="/api/post/delete" hx-vals='{"post_id":"{{$p.ID}}"}'
+                    hx-target="closest article" hx-swap="outerHTML"
+                    hx-confirm="Delete this post?"
+                    onclick="closeAllPostMenus()">
+              <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+              Delete post
+            </button>
+            {{end}}
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <input type="hidden" name="session_id" value="{{$.SessionID}}">
+  <input type="hidden" name="surface" value="{{$.Surface}}">
+</article>
+{{end}}
+
+{{if .Posts}}{{with index .Posts (add (len .Posts) -1)}}
+<div hx-get="/feed?surface={{$.Surface}}&session_id={{$.SessionID}}&after={{.ContentID}}"
+     hx-trigger="intersect once" hx-swap="outerHTML" hx-indicator="#load-more-spinner" class="h-4"></div>
+<div id="load-more-spinner" class="htmx-indicator py-8 flex justify-center"><div class="spinner"></div></div>
+{{end}}{{end}}
+
+{{if not .Posts}}
+{{template "stateEmpty" (dict
+  "Icon"        "✶"
+  "Title"       "Nothing here yet"
+  "Subtitle"    "Follow some creators or scroll Explore to start populating your feed."
+  "ActionURL"   "/explore"
+  "ActionLabel" "Open Explore")}}
+{{end}}
+
+<script src="/static/js/pages/feed_items.js?v=20260426"></script>
+{{end}}

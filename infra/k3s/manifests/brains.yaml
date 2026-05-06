@@ -1,0 +1,477 @@
+# F33D3R Rust Brain Deployments
+# AethyrRank · Zior · Vovin · Ain Soph · Elohim Veni · Zodacare · Schema Registry
+# All use identical deployment structure with brain-specific config.
+
+---
+# ── AethyrRank ────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aethyrrank
+  namespace: f33d3r
+  labels:
+    brain: aethyrrank
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      brain: aethyrrank
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        brain: aethyrrank
+    spec:
+      containers:
+        - name: aethyrrank
+          image: registry.gitlab.com/f33d3r-core/platform/aethyrrank:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: f33d3r-secrets
+                  key: feed-db-url
+            - name: RUST_LOG
+              value: "info"
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      imagePullSecrets:
+        - name: gitlab-registry-secret
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aethyrrank
+  namespace: f33d3r
+  labels:
+    brain: aethyrrank
+spec:
+  selector:
+    brain: aethyrrank
+  ports:
+    - port: 8080
+      targetPort: 8080
+
+---
+# ── Zior ──────────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zior
+  namespace: f33d3r
+  labels:
+    brain: zior
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      brain: zior
+  template:
+    metadata:
+      labels:
+        brain: zior
+    spec:
+      containers:
+        - name: zior
+          image: registry.gitlab.com/f33d3r-core/platform/zior:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8082
+          env:
+            - name: RUST_LOG
+              value: "info"
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "512Mi"
+            limits:
+              cpu: "2000m"
+              memory: "2Gi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8082
+            initialDelaySeconds: 20
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8082
+            initialDelaySeconds: 10
+            periodSeconds: 10
+      imagePullSecrets:
+        - name: gitlab-registry-secret
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: zior
+  namespace: f33d3r
+  labels:
+    brain: zior
+spec:
+  selector:
+    brain: zior
+  ports:
+    - port: 8082
+      targetPort: 8082
+
+---
+# ── Vovin ──────────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vovin
+  namespace: f33d3r
+  labels:
+    brain: vovin
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      brain: vovin
+  template:
+    metadata:
+      labels:
+        brain: vovin
+    spec:
+      containers:
+        - name: vovin
+          image: registry.gitlab.com/f33d3r-core/platform/vovin:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8092
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: f33d3r-secrets
+                  key: msg-db-url
+            - name: RUST_LOG
+              value: "info"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8092
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8092
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      imagePullSecrets:
+        - name: gitlab-registry-secret
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vovin
+  namespace: f33d3r
+  labels:
+    brain: vovin
+spec:
+  selector:
+    brain: vovin
+  ports:
+    - port: 8092
+      targetPort: 8092
+
+---
+# ── Ain Soph ──────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ain-soph
+  namespace: f33d3r
+  labels:
+    brain: ain-soph
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      brain: ain-soph
+  template:
+    metadata:
+      labels:
+        brain: ain-soph
+    spec:
+      containers:
+        - name: ain-soph
+          image: registry.gitlab.com/f33d3r-core/platform/ain-soph:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8089
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: f33d3r-secrets
+                  key: wallet-db-url
+            - name: RUST_LOG
+              value: "info"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8089
+            initialDelaySeconds: 10
+            periodSeconds: 10
+      imagePullSecrets:
+        - name: gitlab-registry-secret
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ain-soph
+  namespace: f33d3r
+  labels:
+    brain: ain-soph
+spec:
+  selector:
+    brain: ain-soph
+  ports:
+    - port: 8089
+      targetPort: 8089
+
+---
+# ── Elohim Veni ───────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: elohim-veni
+  namespace: f33d3r
+  labels:
+    brain: elohim-veni
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      brain: elohim-veni
+  template:
+    metadata:
+      labels:
+        brain: elohim-veni
+    spec:
+      containers:
+        - name: elohim-veni
+          image: registry.gitlab.com/f33d3r-core/platform/elohim-veni:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8093
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: f33d3r-secrets
+                  key: security-db-url
+            - name: RUST_LOG
+              value: "info"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8093
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8093
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      imagePullSecrets:
+        - name: gitlab-registry-secret
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: elohim-veni
+  namespace: f33d3r
+  labels:
+    brain: elohim-veni
+spec:
+  selector:
+    brain: elohim-veni
+  ports:
+    - port: 8093
+      targetPort: 8093
+
+---
+# ── Zodacare ──────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zodacare
+  namespace: f33d3r
+  labels:
+    brain: zodacare
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      brain: zodacare
+  template:
+    metadata:
+      labels:
+        brain: zodacare
+    spec:
+      containers:
+        - name: zodacare
+          image: registry.gitlab.com/f33d3r-core/platform/zodacare:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8090
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: f33d3r-secrets
+                  key: safety-db-url
+            - name: ELOHIM_VENI_URL
+              value: "http://elohim-veni:8093"
+            - name: RUST_LOG
+              value: "info"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8090
+            initialDelaySeconds: 10
+            periodSeconds: 10
+      imagePullSecrets:
+        - name: gitlab-registry-secret
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: zodacare
+  namespace: f33d3r
+  labels:
+    brain: zodacare
+spec:
+  selector:
+    brain: zodacare
+  ports:
+    - port: 8090
+      targetPort: 8090
+
+---
+# ── Schema Registry ───────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: schema-registry
+  namespace: f33d3r
+  labels:
+    brain: schema-registry
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      brain: schema-registry
+  template:
+    metadata:
+      labels:
+        brain: schema-registry
+    spec:
+      containers:
+        - name: schema-registry
+          image: registry.gitlab.com/f33d3r-core/platform/schema-registry:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8079
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: f33d3r-secrets
+                  key: registry-db-url
+            - name: RUST_LOG
+              value: "info"
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8079
+            initialDelaySeconds: 10
+            periodSeconds: 15
+      imagePullSecrets:
+        - name: gitlab-registry-secret
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: schema-registry
+  namespace: f33d3r
+  labels:
+    brain: schema-registry
+spec:
+  selector:
+    brain: schema-registry
+  ports:
+    - port: 8079
+      targetPort: 8079
