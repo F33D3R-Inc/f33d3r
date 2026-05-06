@@ -1,0 +1,115 @@
+{{define "title"}}Notifications · F33D3R{{end}}
+{{define "nav-active-notifications"}}active{{end}}
+{{define "mob-active-notifications"}}active{{end}}
+{{define "body"}}
+  <main class="f33d3r-main">
+    <header class="top-bar">
+      <h1>Notifications</h1>
+      <button onclick="markAllRead()" style="font-size:12px;color:var(--accent);background:none;border:none;cursor:pointer;padding:4px 8px;border-radius:6px;transition:background 120ms" onmouseover="this.style.background='color-mix(in srgb,var(--accent) 10%,transparent)'" onmouseout="this.style.background='none'">
+        Mark all read
+      </button>
+    </header>
+
+    <!-- Filter tabs -->
+    <div style="display:flex;border-bottom:1px solid var(--border)">
+      <button class="notif-tab active" id="tab-all"      onclick="filterNotifs(this,'all')">All</button>
+      <button class="notif-tab"        id="tab-likes"    onclick="filterNotifs(this,'like')">Likes</button>
+      <button class="notif-tab"        id="tab-follows"  onclick="filterNotifs(this,'follow')">Follows</button>
+      <button class="notif-tab"        id="tab-mentions" onclick="filterNotifs(this,'mention')">Mentions</button>
+    </div>
+
+    <!-- Real notifications -->
+    <div id="notif-list">
+      {{if .Notifications}}
+        {{range .Notifications}}
+        <div class="notif-item {{if not .IsRead}}notif-unread{{end}}" data-type="{{.Type}}"
+             onclick="{{if .TargetID}}window.location='/{{.TargetType}}/{{.TargetID}}'{{end}}">
+          <div class="notif-icon notif-{{.Type}}">
+            {{if eq .Type "like"}}
+              <svg viewBox="0 0 24 24" fill="currentColor"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+            {{else if eq .Type "follow"}}
+              <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/></svg>
+            {{else if eq .Type "reply"}}
+              <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+            {{else if eq .Type "mention"}}
+              <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-3.92 7.94"/></svg>
+            {{else if eq .Type "message"}}
+              <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+            {{else if eq .Type "tip"}}
+              <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+            {{else}}
+              <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
+            {{end}}
+          </div>
+          <div class="notif-body">
+            <div class="notif-avatars">
+              {{if .ActorAvatar}}
+              <img src="{{.ActorAvatar}}" class="notif-avatar" style="object-fit:cover" alt="">
+              {{else if .ActorHandle}}
+              <div class="notif-avatar" style="background:linear-gradient(135deg,var(--accent),color-mix(in srgb,var(--accent) 60%,#000))">{{firstChar .ActorName}}</div>
+              {{end}}
+            </div>
+            <p class="notif-text">
+              {{if .ActorHandle}}<a href="/u/{{.ActorHandle}}" onclick="event.stopPropagation()" style="color:var(--text-primary);font-weight:600;text-decoration:none">@{{.ActorHandle}}</a> {{end}}
+              {{if eq .Type "like"}}liked your post{{end}}
+              {{if eq .Type "follow"}}followed you{{end}}
+              {{if eq .Type "reply"}}replied to your post{{end}}
+              {{if eq .Type "mention"}}mentioned you{{end}}
+              {{if eq .Type "message"}}sent you a message{{end}}
+              {{if eq .Type "tip"}}sent you a tip{{end}}
+              {{if eq .Type "milestone"}}You reached a new milestone!{{end}}
+            </p>
+            <span class="notif-time">{{.TimeAgo}}</span>
+          </div>
+          {{if not .IsRead}}<div style="width:8px;height:8px;border-radius:50%;background:var(--accent);flex-shrink:0;align-self:center"></div>{{end}}
+        </div>
+        {{end}}
+      {{else}}
+      {{template "stateEmpty" (dict
+        "Icon"     "🔔"
+        "Title"    "No notifications yet"
+        "Subtitle" "When people like, follow, or reply — you'll see it here.")}}
+      {{end}}
+    </div>
+  </main>
+
+  <aside class="f33d3r-right">
+    <div class="panel-card">
+      <h3 class="panel-title">Notification settings</h3>
+      <div style="display:flex;flex-direction:column;gap:14px;font-size:13px">
+        <label class="notif-toggle-row">
+          <div><p style="font-weight:500;margin:0">Likes</p><p style="font-size:11px;color:var(--text-secondary);margin:2px 0 0">When someone likes your posts</p></div>
+          <button class="toggle active" type="button" onclick="this.classList.toggle('active')"></button>
+        </label>
+        <label class="notif-toggle-row">
+          <div><p style="font-weight:500;margin:0">New followers</p><p style="font-size:11px;color:var(--text-secondary);margin:2px 0 0">When someone follows you</p></div>
+          <button class="toggle active" type="button" onclick="this.classList.toggle('active')"></button>
+        </label>
+        <label class="notif-toggle-row">
+          <div><p style="font-weight:500;margin:0">Replies</p><p style="font-size:11px;color:var(--text-secondary);margin:2px 0 0">When someone replies to your posts</p></div>
+          <button class="toggle active" type="button" onclick="this.classList.toggle('active')"></button>
+        </label>
+        <label class="notif-toggle-row">
+          <div><p style="font-weight:500;margin:0">Mentions</p><p style="font-size:11px;color:var(--text-secondary);margin:2px 0 0">When someone @mentions you</p></div>
+          <button class="toggle active" type="button" onclick="this.classList.toggle('active')"></button>
+        </label>
+        <label class="notif-toggle-row">
+          <div><p style="font-weight:500;margin:0">Messages</p><p style="font-size:11px;color:var(--text-secondary);margin:2px 0 0">When you receive a DM</p></div>
+          <button class="toggle active" type="button" onclick="this.classList.toggle('active')"></button>
+        </label>
+      </div>
+    </div>
+  </aside>
+
+<style>
+.notif-unread { background:color-mix(in srgb,var(--accent) 3%,transparent); }
+.notif-unread:hover { background:color-mix(in srgb,var(--accent) 6%,transparent); }
+.notif-like    { background:color-mix(in srgb,#ef4444 14%,transparent); color:#ef4444; }
+.notif-follow  { background:color-mix(in srgb,var(--accent) 14%,transparent); color:var(--accent); }
+.notif-reply   { background:color-mix(in srgb,#3b82f6 14%,transparent); color:#3b82f6; }
+.notif-mention { background:color-mix(in srgb,#3b82f6 14%,transparent); color:#3b82f6; }
+.notif-message { background:color-mix(in srgb,#8b5cf6 14%,transparent); color:#8b5cf6; }
+.notif-tip     { background:color-mix(in srgb,#22c55e 14%,transparent); color:#22c55e; }
+</style>
+<script src="/static/js/pages/notifications.js?v=20260426"></script>
+{{end}}

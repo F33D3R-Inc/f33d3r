@@ -1,0 +1,43 @@
+# Caeor — Docker build context exclusions.
+#
+# Without this, `docker compose build` ships every file in the brain dir
+# (including target/, which can be 2–5 GB after a local build) as the build
+# context. That triggered the "Can't add file ... to tar: io: read/write on
+# closed pipe" errors in Sprint 0 / Session 008.
+#
+# Keep this file in sync with the equivalent .dockerignore for every other
+# Rust brain.
+
+# Cargo build output — multi-GB; rebuilt fresh inside the container anyway.
+target/
+**/*.rs.bk
+**/*.pdb
+
+# Local IDE / OS noise
+.idea/
+.vscode/
+.DS_Store
+*.swp
+*.swo
+
+# VCS
+.git/
+.gitignore
+
+# Logs
+*.log
+
+# Local environment files (build args come from compose, not from baked-in .env)
+.env
+.env.local
+.env.*.local
+
+# Docker artefacts that aren't part of the source build
+docker-compose*.yml
+Dockerfile.dev
+.dockerignore
+
+# Documentation that doesn't influence the binary
+README.md
+*.md
+docs/

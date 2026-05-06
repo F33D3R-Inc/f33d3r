@@ -1,0 +1,363 @@
+{{define "title"}}@{{.ShopUser.Handle}} · Shop · F33D3R{{end}}
+{{define "body"}}
+{{$su := .ShopUser}}
+{{$me := .User}}
+
+<main class="f33d3r-main">
+  <header class="top-bar">
+    <button onclick="history.back()" class="back-btn">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+      <span style="font-size:14px">@{{$su.Handle}} · Shop</span>
+    </button>
+  </header>
+
+  <!-- Creator card -->
+  <div style="padding:0 0 16px">
+    <div style="height:100px;background:{{if $su.HeaderURL}}none{{else}}linear-gradient(135deg,var(--panel),color-mix(in srgb,var(--accent) 20%,var(--panel))){{end}};overflow:hidden;border-radius:0 0 0 0">
+      {{if $su.HeaderURL}}<img src="{{$su.HeaderURL}}" alt="" style="width:100%;height:100%;object-fit:cover">{{end}}
+    </div>
+    <div style="padding:0 16px">
+      <div style="margin-top:-36px;display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:12px">
+        <a href="/u/{{$su.Handle}}" style="text-decoration:none">
+          <div style="width:72px;height:72px;border-radius:50%;border:3px solid var(--surface);overflow:hidden;background:var(--panel)">
+            {{if $su.AvatarURL}}<img src="{{$su.AvatarURL}}" alt="{{$su.DisplayName}}" style="width:100%;height:100%;object-fit:cover">
+            {{else}}
+            {{$c := avatarColors $su.Handle}}
+            <div style="width:100%;height:100%;background:linear-gradient(135deg,{{index $c 0}},{{index $c 1}});display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:700;color:#fff">{{firstChar $su.DisplayName}}</div>
+            {{end}}
+          </div>
+        </a>
+        {{if not .IsOwner}}
+        <a href="/u/{{$su.Handle}}" class="btn-secondary" style="font-size:13px;padding:7px 16px;text-decoration:none">View profile</a>
+        {{else}}
+        <a href="/settings" class="btn-secondary" style="font-size:13px;padding:7px 16px;text-decoration:none">Edit profile</a>
+        {{end}}
+      </div>
+      <h2 style="font-size:17px;font-weight:700;color:var(--text-primary);margin-bottom:2px">{{$su.DisplayName}}</h2>
+      <p style="font-size:13px;color:var(--text-secondary);margin-bottom:6px">@{{$su.Handle}}</p>
+      {{if $su.Bio}}<p style="font-size:13px;color:var(--text-secondary);line-height:1.5;margin-bottom:8px;max-width:480px">{{$su.Bio}}</p>{{end}}
+      <div style="display:flex;gap:16px;font-size:13px;color:var(--text-muted)">
+        <span><b style="color:var(--text-primary)">{{$su.PostCount}}</b> posts</span>
+        <span><b style="color:var(--text-primary)">{{$su.FollowerCount}}</b> followers</span>
+      </div>
+    </div>
+  </div>
+
+  {{if .IsOwner}}
+  <!-- ── OWNER: Earnings dashboard ────────────────────────────────────────── -->
+  <section style="padding:0 16px 20px">
+    <h3 style="font-size:15px;font-weight:600;color:var(--text-primary);margin-bottom:12px">Creator Dashboard</h3>
+
+    {{if not .IsEnabled}}
+    <div style="background:color-mix(in srgb,var(--accent) 10%,var(--panel));border:1px solid color-mix(in srgb,var(--accent) 30%,transparent);border-radius:14px;padding:20px;text-align:center;margin-bottom:16px">
+      <p style="font-size:14px;font-weight:600;color:var(--text-primary);margin-bottom:8px">Enable creator monetization</p>
+      <p style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">Accept subscriptions, PPV, and tips. 97.5% goes to you.</p>
+      <button onclick="enableCreatorMode()" style="background:var(--accent);color:#fff;border:none;border-radius:var(--radius-full);padding:10px 24px;font-size:14px;font-weight:600;cursor:pointer">Enable monetization</button>
+    </div>
+    {{else}}
+    {{if .Earnings}}
+    {{$e := .Earnings}}
+    <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:16px">
+      <div style="background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:14px">
+        <p style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px">Total Earned</p>
+        <p style="font-size:20px;font-weight:700;color:var(--accent)">{{$e.TotalDisplay}} AET</p>
+      </div>
+      <div style="background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:14px">
+        <p style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px">Transactions</p>
+        <p style="font-size:20px;font-weight:700;color:var(--text-primary)">{{$e.TxCount}}</p>
+      </div>
+      <div style="background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:14px">
+        <p style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px">Subscriptions</p>
+        <p style="font-size:16px;font-weight:600;color:var(--text-primary)">{{$e.SubsDisplay}}</p>
+      </div>
+      <div style="background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:14px">
+        <p style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px">PPV + Tips</p>
+        <p style="font-size:16px;font-weight:600;color:var(--text-primary)">{{$e.TipsDisplay}}</p>
+      </div>
+    </div>
+    {{end}}
+
+    <!-- Manage subscription plans -->
+    <div style="background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:16px;margin-bottom:12px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+        <p style="font-size:14px;font-weight:600;color:var(--text-primary)">Subscription plans</p>
+        <button onclick="openCreatePlan()" style="background:var(--accent);color:#fff;border:none;border-radius:8px;padding:6px 14px;font-size:12px;font-weight:600;cursor:pointer">+ New plan</button>
+      </div>
+      {{if .Plans}}
+      <div id="owner-plans" style="display:flex;flex-direction:column;gap:8px">
+        {{range .Plans}}
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;background:var(--surface);border-radius:10px;border:1px solid var(--border)">
+          <div>
+            <p style="font-size:13px;font-weight:600;color:var(--text-primary)">{{.Name}}</p>
+            <p style="font-size:12px;color:var(--text-muted)">{{.PriceDisplay}}/month{{if .Description}} · {{.Description}}{{end}}</p>
+          </div>
+          <div style="display:flex;gap:6px">
+            <button onclick="deletePlan('{{.ID}}')" style="background:none;border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:11px;color:var(--text-muted);cursor:pointer">Remove</button>
+          </div>
+        </div>
+        {{end}}
+      </div>
+      {{else}}
+      <p style="font-size:13px;color:var(--text-muted);text-align:center;padding:16px 0">No plans yet. Create one to accept subscribers.</p>
+      {{end}}
+    </div>
+
+    {{end}}{{/* end IsEnabled */}}
+  </section>
+
+  {{else}}
+  <!-- ── VIEWER: Subscribe + PPV ───────────────────────────────────────────── -->
+
+  {{if .IsEnabled}}
+
+  <!-- Subscription section -->
+  <section style="padding:0 16px 20px">
+    <h3 style="font-size:15px;font-weight:600;color:var(--text-primary);margin-bottom:12px">
+      {{if .IsSubscribed}}Your subscription{{else}}Subscribe to @{{$su.Handle}}{{end}}
+    </h3>
+
+    {{if .IsSubscribed}}
+    <div style="background:color-mix(in srgb,var(--accent) 10%,var(--panel));border:1px solid color-mix(in srgb,var(--accent) 30%,transparent);border-radius:14px;padding:16px;display:flex;align-items:center;gap:12px">
+      <div style="width:36px;height:36px;border-radius:50%;background:var(--accent);display:flex;align-items:center;justify-content:center;flex-shrink:0">
+        <svg style="width:18px;height:18px;color:#fff" fill="currentColor" viewBox="0 0 24 24"><path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+      </div>
+      <div>
+        <p style="font-size:13px;font-weight:600;color:var(--text-primary)">Active subscription</p>
+        <p style="font-size:12px;color:var(--text-secondary)">You have full access to subscriber content</p>
+      </div>
+      <button onclick="unsubscribeFrom('{{$su.ID}}')" style="margin-left:auto;background:none;border:1px solid var(--border);border-radius:8px;padding:6px 12px;font-size:12px;color:var(--text-muted);cursor:pointer">Cancel</button>
+    </div>
+    {{else if .Plans}}
+    <div style="display:flex;flex-direction:column;gap:10px">
+      {{range .Plans}}
+      {{if .IsActive}}
+      <div style="background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:16px;display:flex;align-items:center;gap:12px">
+        <div style="flex:1">
+          <p style="font-size:14px;font-weight:600;color:var(--text-primary)">{{.Name}}</p>
+          <p style="font-size:13px;color:var(--accent);font-weight:600">{{.PriceDisplay}}<span style="font-size:12px;color:var(--text-muted);font-weight:400">/month</span></p>
+          {{if .Description}}<p style="font-size:12px;color:var(--text-secondary);margin-top:4px">{{.Description}}</p>{{end}}
+        </div>
+        <button onclick="subscribePlan('{{$su.ID}}','{{$su.PIALID}}','{{.ID}}','{{.PriceAET}}')"
+                style="background:var(--accent);color:#fff;border:none;border-radius:var(--radius-full);padding:8px 18px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap">
+          Subscribe
+        </button>
+      </div>
+      {{end}}
+      {{end}}
+    </div>
+    {{else}}
+    <p style="font-size:13px;color:var(--text-muted);padding:12px 0">No subscription plans available yet.</p>
+    {{end}}
+  </section>
+
+  <!-- PPV catalog -->
+  {{if .PPVItems}}
+  <section style="padding:0 16px 20px">
+    <h3 style="font-size:15px;font-weight:600;color:var(--text-primary);margin-bottom:12px">Exclusive content</h3>
+    <div style="display:flex;flex-direction:column;gap:8px">
+      {{range .PPVItems}}
+      {{if .IsActive}}
+      <div style="background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:14px;display:flex;align-items:center;justify-content:space-between;gap:12px">
+        <div>
+          <p style="font-size:13px;font-weight:600;color:var(--text-primary)">{{.Title}}</p>
+          <p style="font-size:12px;color:var(--accent);font-weight:600">{{.PriceDisplay}}</p>
+        </div>
+        <button onclick="purchasePPV('{{$su.PIALID}}','{{.ID}}','{{.PriceAET}}')"
+                style="background:var(--surface);border:1px solid var(--accent);color:var(--accent);border-radius:8px;padding:7px 14px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">
+          Unlock
+        </button>
+      </div>
+      {{end}}
+      {{end}}
+    </div>
+  </section>
+  {{end}}
+
+  {{end}}{{/* end IsEnabled */}}
+
+  <!-- Tip section — always available for creators -->
+  <section style="padding:0 16px 20px">
+    <h3 style="font-size:15px;font-weight:600;color:var(--text-primary);margin-bottom:12px">Send a tip</h3>
+    <div style="background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:16px">
+      <p style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">Show appreciation with AET. 99% goes directly to @{{$su.Handle}}.</p>
+      <div style="display:flex;gap:8px;margin-bottom:10px">
+        {{range $amt := mkRange 1 6}}
+        <button onclick="setTipAmt({{$amt}})"
+                style="flex:1;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px 4px;font-size:13px;font-weight:600;color:var(--text-secondary);cursor:pointer"
+                class="tip-preset-btn" data-amt="{{$amt}}">
+          {{$amt}} AET
+        </button>
+        {{end}}
+      </div>
+      <div style="display:flex;gap:8px">
+        <input id="shop-tip-amount" type="number" min="0.01" step="0.01" placeholder="Custom AET" value="1"
+               style="flex:1;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:9px 12px;font-size:13px;color:var(--text-primary);outline:none">
+        <button onclick="sendShopTip('{{$su.PIALID}}','{{$su.Handle}}')"
+                style="background:var(--accent);color:#fff;border:none;border-radius:8px;padding:9px 20px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap">
+          Tip
+        </button>
+      </div>
+      <p id="shop-tip-msg" style="font-size:12px;color:var(--accent);margin-top:8px;min-height:16px;text-align:center"></p>
+    </div>
+  </section>
+
+  {{end}}{{/* end viewer section */}}
+</main>
+
+<aside class="f33d3r-right">
+  <div class="panel-card">
+    <h3 class="panel-title">Creator</h3>
+    <div class="engine-status-row"><span class="engine-status-label">Posts</span><span class="engine-status-val">{{$su.PostCount}}</span></div>
+    <div class="engine-status-row"><span class="engine-status-label">Followers</span><span class="engine-status-val">{{$su.FollowerCount}}</span></div>
+    {{if .IsEnabled}}
+    <div class="engine-status-row"><span class="engine-status-label">Plans</span><span class="engine-status-val">{{len .Plans}}</span></div>
+    {{end}}
+    <div style="margin-top:10px">
+      <a href="/u/{{$su.Handle}}" style="display:block;text-align:center;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px;font-size:12px;color:var(--text-secondary);text-decoration:none">View profile</a>
+    </div>
+  </div>
+</aside>
+
+<!-- Create plan modal -->
+<div id="create-plan-modal" onclick="if(event.target===this)document.getElementById('create-plan-modal').style.display='none'"
+     style="display:none;position:fixed;inset:0;z-index:200;background:rgba(0,0,0,.55);backdrop-filter:blur(8px);align-items:center;justify-content:center">
+  <div style="background:var(--panel);border:1px solid var(--border);border-radius:20px;padding:24px;width:380px;max-width:calc(100vw - 32px)">
+    <h3 style="font-size:16px;font-weight:700;margin-bottom:16px;color:var(--text-primary)">Create subscription plan</h3>
+    <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:16px">
+      <input id="plan-name" type="text" placeholder="Plan name (e.g. Fan Club)" class="settings-input">
+      <input id="plan-price" type="number" min="0.01" step="0.01" placeholder="Price in AET/month" class="settings-input">
+      <input id="plan-desc" type="text" placeholder="Description (optional)" class="settings-input">
+    </div>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button onclick="document.getElementById('create-plan-modal').style.display='none'" class="btn-secondary" style="font-size:13px">Cancel</button>
+      <button onclick="submitCreatePlan()" style="background:var(--accent);color:#fff;border:none;border-radius:8px;padding:8px 20px;font-size:13px;font-weight:600;cursor:pointer">Create</button>
+    </div>
+    <p id="plan-msg" style="font-size:12px;color:var(--accent);margin-top:8px;min-height:14px"></p>
+  </div>
+</div>
+
+<script>
+// Tip presets
+document.querySelectorAll('.tip-preset-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.getElementById('shop-tip-amount').value = btn.dataset.amt;
+    document.querySelectorAll('.tip-preset-btn').forEach(b => {
+      b.style.borderColor = 'var(--border)';
+      b.style.color = 'var(--text-secondary)';
+      b.style.background = 'var(--surface)';
+    });
+    btn.style.borderColor = 'var(--accent)';
+    btn.style.color = 'var(--accent)';
+    btn.style.background = 'color-mix(in srgb,var(--accent) 10%,transparent)';
+  });
+});
+
+function setTipAmt(v) { document.getElementById('shop-tip-amount').value = v; }
+
+window.sendShopTip = async function(recipientPial, handle) {
+  const amt = parseFloat(document.getElementById('shop-tip-amount').value);
+  if (!amt || amt <= 0) { toast('Enter a valid amount'); return; }
+  const msg = document.getElementById('shop-tip-msg');
+  msg.textContent = 'Sending…';
+  try {
+    const r = await fetch('/thessalon/v1/tips', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        sender_pial_id: document.querySelector('meta[name="f33d3r:pial"]')?.content || '',
+        recipient_pial_id: recipientPial,
+        amount_aet: amt,
+        message: ''
+      })
+    });
+    if (!r.ok) { const e = await r.json(); msg.textContent = e.error || 'Tip failed'; msg.style.color='var(--error,#ef4444)'; return; }
+    msg.textContent = 'Tip sent! Thank you.';
+    msg.style.color = 'var(--accent)';
+    toast('Tip sent to @' + handle);
+  } catch(e) { msg.textContent = 'Network error'; msg.style.color='var(--error,#ef4444)'; }
+}
+
+window.subscribePlan = async function(creatorId, creatorPial, planId, priceAet) {
+  try {
+    const r = await fetch('/api/subscribe', {
+      method: 'POST',
+      headers: {'Content-Type':'application/x-www-form-urlencoded'},
+      body: new URLSearchParams({ creator_id: creatorId, plan_id: planId, price_aet: priceAet })
+    });
+    if (!r.ok) { const e = await r.json(); toast(e.message || 'Subscription failed'); return; }
+    toast('Subscribed!');
+    setTimeout(() => location.reload(), 800);
+  } catch(e) { toast('Network error'); }
+}
+
+window.purchasePPV = async function(creatorPial, itemId, priceAet) {
+  const myPial = document.querySelector('meta[name="f33d3r:pial"]')?.content || '';
+  if (!myPial) { toast('PIAL not found'); return; }
+  try {
+    const r = await fetch('/thessalon/v1/ppv/' + itemId + '/purchase', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ buyer_pial_id: myPial })
+    });
+    if (!r.ok) { const e = await r.json(); toast(e.error || 'Purchase failed'); return; }
+    toast('Unlocked!');
+    setTimeout(() => location.reload(), 600);
+  } catch(e) { toast('Network error'); }
+}
+
+window.enableCreatorMode = async function() {
+  try {
+    const r = await fetch('/api/creator/enable', {
+      method: 'POST',
+      headers: {'HX-Request': 'true'}
+    });
+    if (!r.ok) { const e = await r.text(); toast(e || 'Failed to enable'); return; }
+    toast('Creator mode enabled!');
+    setTimeout(() => location.reload(), 600);
+  } catch(e) { toast('Network error'); }
+}
+
+window.openCreatePlan = function() {
+  document.getElementById('create-plan-modal').style.display = 'flex';
+}
+
+window.submitCreatePlan = async function() {
+  const myPial = document.querySelector('meta[name="f33d3r:pial"]')?.content || '';
+  const name  = document.getElementById('plan-name').value.trim();
+  const price = parseFloat(document.getElementById('plan-price').value);
+  const desc  = document.getElementById('plan-desc').value.trim();
+  const msg   = document.getElementById('plan-msg');
+  if (!name || !price || price <= 0) { msg.textContent = 'Name and price required'; return; }
+  try {
+    const r = await fetch('/thessalon/v1/plans', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ creator_pial_id: myPial, name, price_aet: price, description: desc })
+    });
+    if (!r.ok) { const e = await r.json(); msg.textContent = e.error || 'Failed'; return; }
+    toast('Plan created!');
+    document.getElementById('create-plan-modal').style.display = 'none';
+    setTimeout(() => location.reload(), 600);
+  } catch(e) { msg.textContent = 'Network error'; }
+}
+
+window.deletePlan = async function(planId) {
+  if (!confirm('Remove this plan? Existing subscribers keep access until expiry.')) return;
+  try {
+    const r = await fetch('/thessalon/v1/plans/' + planId, { method: 'DELETE' });
+    if (!r.ok) { toast('Failed to remove plan'); return; }
+    toast('Plan removed');
+    setTimeout(() => location.reload(), 500);
+  } catch(e) { toast('Network error'); }
+}
+
+function unsubscribeFrom(creatorId) {
+  if (!confirm('Cancel subscription?')) return;
+  fetch('/api/unsubscribe', {
+    method: 'POST',
+    headers: {'Content-Type':'application/x-www-form-urlencoded'},
+    body: new URLSearchParams({ creator_id: creatorId })
+  }).then(r => { if (r.ok) { toast('Subscription cancelled'); setTimeout(() => location.reload(), 600); } });
+}
+</script>
+{{end}}

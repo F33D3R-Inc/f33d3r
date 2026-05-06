@@ -1,0 +1,340 @@
+{{define "title"}}{{if .Post}}{{.Post.AuthorName}} on F33D3R{{else}}Post · F33D3R{{end}}{{end}}
+{{define "body"}}
+  <main class="f33d3r-main">
+    <header class="top-bar">
+      <button onclick="history.back()" class="back-btn">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+        <span>Post</span>
+      </button>
+    </header>
+
+    {{if .Post}}
+    {{$p := .Post}}
+    {{$me := .User}}
+
+    <!-- Main post -->
+    <article class="post-detail-wrap">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+        <a href="/u/{{$p.AuthorHandle}}" class="post-detail-avatar">
+          {{if $p.AvatarURL}}
+          <img src="{{$p.AvatarURL}}" alt="{{$p.AuthorName}}" style="width:100%;height:100%;object-fit:cover;border-radius:50%">
+          {{else}}
+          {{$colors := avatarColors $p.AuthorHandle}}
+          <span style="width:100%;height:100%;border-radius:50%;background:linear-gradient(135deg,{{index $colors 0}},{{index $colors 1}});display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:700;color:#fff">{{firstChar $p.AuthorName}}</span>
+          {{end}}
+        </a>
+        <div style="flex:1">
+          <div style="display:flex;align-items:center;gap:6px">
+            <a href="/u/{{$p.AuthorHandle}}" style="font-size:15px;font-weight:600;color:var(--text-primary);text-decoration:none">{{$p.AuthorName}}</a>
+            {{if $p.IsVerified}}<span class="verified-badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M20 6L9 17l-5-5"/></svg></span>{{end}}
+          </div>
+          <a href="/u/{{$p.AuthorHandle}}" style="font-size:13px;color:var(--text-secondary);text-decoration:none">@{{$p.AuthorHandle}}</a>
+        </div>
+        {{if ne $p.AuthorID $me.ID}}
+        <button hx-post="/api/follow" hx-target="this" hx-swap="outerHTML"
+                hx-vals='{"target_id":"{{$p.AuthorID}}","action":"follow"}' class="btn-secondary follow-btn" style="font-size:12px;padding:6px 14px">
+          Follow
+        </button>
+        {{else}}
+        <div class="post-menu-wrap">
+          <button class="post-menu-trigger" onclick="togglePostMenu(this)" title="More" type="button">
+            <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
+          </button>
+          <div class="post-menu-dropdown">
+            <button class="post-menu-item post-edit-btn" data-post-id="{{$p.ID}}" data-created="{{$p.CreatedAt.Unix}}"
+                    onclick="openEditPost('{{$p.ID}}',this);closeAllPostMenus()" style="display:none">
+              <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+              Edit post
+            </button>
+            <div class="post-menu-sep"></div>
+            <button class="post-menu-item post-menu-item-danger"
+                    hx-post="/api/post/delete" hx-vals='{"post_id":"{{$p.ID}}"}'
+                    hx-target="closest article" hx-swap="outerHTML"
+                    hx-confirm="Delete this post? This cannot be undone."
+                    hx-on::after-request="if(event.detail.successful) window.location='/u/{{$me.Handle}}'"
+                    onclick="closeAllPostMenus()">
+              <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+              Delete post
+            </button>
+          </div>
+        </div>
+        {{end}}
+      </div>
+
+      <div class="post-detail-body post-body">{{markdownHTML $p.Body}}</div>
+
+      {{if $p.MediaURLs}}
+      <div class="post-media-grid" style="margin-top:12px">
+        {{range $p.MediaURLs}}
+        <img src="{{.}}" alt="" class="post-media-img" onerror="this.style.display='none'">
+        {{end}}
+      </div>
+      {{end}}
+
+      {{if $p.Tags}}
+      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:12px">
+        {{range $p.Tags}}<a href="/search?q=%23{{.}}" class="post-tag">#{{.}}</a>{{end}}
+      </div>
+      {{end}}
+
+      {{if .ThreadChain}}
+      <div class="thread-chain" style="margin-top:12px;border-left:2px solid var(--border);padding-left:0">
+        {{range $i, $tp := .ThreadChain}}
+        <div class="thread-segment">
+          <div class="thread-card">
+            <div style="display:flex;gap:10px;padding:10px 0">
+              <div class="thread-avatar-col">
+                <a href="/u/{{$tp.AuthorHandle}}">
+                  <div class="post-avatar-sm flex-shrink-0"
+                       style="{{if $tp.AvatarURL}}padding:0;overflow:hidden{{else}}{{$colors := avatarColors $tp.AuthorHandle}}background:linear-gradient(135deg,{{index $colors 0}},{{index $colors 1}}){{end}}">
+                    {{if $tp.AvatarURL}}<img src="{{$tp.AvatarURL}}" alt="" style="width:100%;height:100%;object-fit:cover">
+                    {{else}}{{firstChar $tp.AuthorName}}{{end}}
+                  </div>
+                </a>
+                {{if lt $i (add (len $.ThreadChain) -1)}}<div class="thread-line"></div>{{end}}
+              </div>
+              <div style="flex:1;min-width:0;padding-bottom:4px">
+                <span class="post-time" style="font-size:11px;display:block;margin-bottom:3px">{{$tp.TimeAgo}}</span>
+                <div class="post-body post-detail-body" style="font-size:15px">{{markdownHTML $tp.Body}}</div>
+                {{if $tp.MediaURLs}}
+                <div style="margin-top:8px">
+                  <img src="{{index $tp.MediaURLs 0}}" alt="" class="post-media-img" loading="lazy" style="max-height:280px;object-fit:cover" onerror="this.style.display='none'">
+                </div>
+                {{end}}
+                <div class="post-actions" style="margin-top:6px">
+                  <button class="action-btn {{if $tp.LikedByUser}}liked{{end}}"
+                          hx-post="/feed/item/like" hx-target="this" hx-swap="outerHTML"
+                          name="content_id" value="{{$tp.ContentID}}" title="Like">
+                    <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="{{if $tp.LikedByUser}}currentColor{{else}}none{{end}}" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+                    <span>{{$tp.Likes}}</span>
+                  </button>
+                  <a href="/post/{{$tp.ID}}" class="action-btn" title="View">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                    <span>{{$tp.Comments}}</span>
+                  </a>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        {{end}}
+      </div>
+      {{end}}
+
+      <div style="display:flex;align-items:center;gap:6px;margin-top:16px;padding:16px 0;border-top:1px solid var(--border);border-bottom:1px solid var(--border)">
+        <span style="font-size:13px;color:var(--text-secondary)">{{$p.TimeAgo}}</span>
+        {{if not $p.IsReply}}
+        <span style="color:var(--text-muted)">·</span>
+        <span style="font-size:13px;color:var(--text-secondary)">{{$p.Impressions}} impressions</span>
+        {{end}}
+      </div>
+
+      <!-- Engagement counts -->
+      <div style="display:flex;gap:20px;padding:12px 0;border-bottom:1px solid var(--border)">
+        <span style="font-size:14px;color:var(--text-primary)"><strong>{{$p.Reposts}}</strong> <span style="color:var(--text-secondary)">Reposts</span></span>
+        <span style="font-size:14px;color:var(--text-primary)"><strong>{{$p.Comments}}</strong> <span style="color:var(--text-secondary)">Replies</span></span>
+        <span style="font-size:14px;color:var(--text-primary)"><strong>{{$p.Likes}}</strong> <span style="color:var(--text-secondary)">Likes</span></span>
+        <span style="font-size:14px;color:var(--text-primary)"><strong>{{$p.Saves}}</strong> <span style="color:var(--text-secondary)">Saves</span></span>
+      </div>
+
+      <!-- Action row -->
+      <div class="post-actions post-actions-lg">
+        <!-- Views -->
+        <button class="action-btn action-lg" style="cursor:default" title="Views">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+          <span>{{$p.Impressions}}</span>
+        </button>
+        <!-- Like -->
+        <button class="action-btn action-lg {{if $p.LikedByUser}}liked{{end}}" title="Like"
+                hx-post="/feed/item/like" hx-target="this" hx-swap="outerHTML"
+                name="content_id" value="{{$p.ContentID}}">
+          <svg class="w-5 h-5" viewBox="0 0 24 24" fill="{{if $p.LikedByUser}}currentColor{{else}}none{{end}}" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+          <span>{{$p.Likes}}</span>
+        </button>
+        <!-- Repost -->
+        <button class="action-btn action-lg" title="Repost"
+                hx-post="/feed/item/repost" hx-target="this" hx-swap="outerHTML"
+                name="content_id" value="{{$p.ContentID}}">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M17 1l4 4-4 4"/><path d="M3 11V9a4 4 0 014-4h14M7 23l-4-4 4-4"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg>
+          <span>{{$p.Reposts}}</span>
+        </button>
+        <!-- Reply (focuses composer) -->
+        <button class="action-btn action-lg" title="Reply" onclick="document.getElementById('reply-box').scrollIntoView({behavior:'smooth'});setTimeout(()=>document.getElementById('reply-box').focus(),300)">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+          <span>{{$p.Comments}}</span>
+        </button>
+        <!-- Dislike -->
+        <button class="action-btn action-lg" title="Not for me"
+                hx-post="/feed/item/dislike" hx-target="this" hx-swap="outerHTML"
+                name="content_id" value="{{$p.ContentID}}">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M10 15v4a3 3 0 003 3l4-9V2H5.72a2 2 0 00-2 1.7l-1.38 9a2 2 0 002 2.3zm10-13h2.67A2.31 2.31 0 0125 4v7a2.31 2.31 0 01-2.33 2H20"/></svg>
+        </button>
+        <!-- Bookmark -->
+        <button class="action-btn action-lg {{if $p.BookmarkedByUser}}saved{{end}}"
+                hx-post="/feed/item/save" hx-target="this" hx-swap="outerHTML"
+                name="content_id" value="{{$p.ContentID}}" title="Bookmark">
+          <svg class="w-5 h-5" viewBox="0 0 24 24" fill="{{if $p.BookmarkedByUser}}currentColor{{else}}none{{end}}" stroke="currentColor" stroke-width="2"><path d="M19 21l-7-5-7 5V5a2 2 0 012-2h10a2 2 0 012 2z"/></svg>
+        </button>
+        <!-- Share -->
+        <button class="action-btn action-lg" title="Copy link" onclick="navigator.clipboard&&navigator.clipboard.writeText(window.location.href).then(()=>toast('Link copied'))">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.59 13.51 6.83 3.98M15.41 6.51l-6.82 3.98"/></svg>
+        </button>
+      </div>
+    </article>
+
+    <!-- Comment gating indicator -->
+    {{if and $p.CommentGating (ne $p.CommentGating "open")}}
+    <div style="padding:10px 16px;display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-secondary);border-bottom:1px solid var(--border);background:color-mix(in srgb,var(--accent) 4%,transparent)">
+      <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="width:13px;height:13px;color:var(--accent);flex-shrink:0"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+      {{if eq $p.CommentGating "followers"}}Replies limited to followers{{end}}
+      {{if eq $p.CommentGating "verified"}}Replies limited to verified accounts{{end}}
+      {{if eq $p.CommentGating "none"}}Replies are disabled for this post{{end}}
+    </div>
+    {{end}}
+
+    <!-- Reply composer -->
+    {{if $me}}
+    {{if ne $p.CommentGating "none"}}
+    <div style="display:flex;gap:12px;padding:16px;border-bottom:1px solid var(--border)" id="reply-composer">
+      <div class="post-avatar flex-shrink-0" style="{{if $me.AvatarURL}}padding:0;overflow:hidden{{else}}{{$colors := avatarColors $me.Handle}}background:linear-gradient(135deg,{{index $colors 0}},{{index $colors 1}}){{end}}">
+        {{if $me.AvatarURL}}<img src="{{$me.AvatarURL}}" style="width:100%;height:100%;object-fit:cover">
+        {{else}}{{firstChar $me.DisplayName}}{{end}}
+      </div>
+      <div style="flex:1">
+        <textarea id="reply-box" rows="2" maxlength="25000"
+                  placeholder="Post your reply"
+                  spellcheck="true" autocomplete="on"
+                  style="width:100%;background:transparent;border:none;outline:none;resize:none;color:var(--text-primary);font-size:15px;font-family:'DM Sans',sans-serif;line-height:1.6"
+                  oninput="this.style.height='auto';this.style.height=Math.min(this.scrollHeight,180)+'px'"></textarea>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-top:8px">
+          <span style="font-size:12px;color:var(--text-muted)" id="reply-char-count">25000</span>
+          <button class="btn-primary" style="padding:7px 18px;font-size:13px" onclick="submitReply('{{$p.ID}}')">Reply</button>
+        </div>
+        <div id="reply-error" style="display:none;margin-top:6px;font-size:12px;color:#ef4444"></div>
+      </div>
+    </div>
+    {{end}}
+    {{end}}
+
+    <!-- Replies -->
+    {{if .Replies}}
+    <div class="replies-thread">
+      {{range .Replies}}
+      {{$r := .}}
+      <article class="post-card reply-card" onclick="window.location='/post/{{$r.ID}}'">
+        <div style="display:flex;gap:12px">
+          <a href="/u/{{$r.AuthorHandle}}" onclick="event.stopPropagation()">
+            <div class="post-avatar flex-shrink-0" style="{{if $r.AvatarURL}}padding:0;overflow:hidden{{else}}{{$colors := avatarColors $r.AuthorHandle}}background:linear-gradient(135deg,{{index $colors 0}},{{index $colors 1}}){{end}}">
+              {{if $r.AvatarURL}}<img src="{{$r.AvatarURL}}" style="width:100%;height:100%;object-fit:cover">
+              {{else}}{{firstChar $r.AuthorName}}{{end}}
+            </div>
+          </a>
+          <div style="flex:1;min-width:0">
+            <div style="display:flex;align-items:baseline;gap:6px;margin-bottom:4px">
+              <a href="/u/{{$r.AuthorHandle}}" onclick="event.stopPropagation()" style="font-size:14px;font-weight:500;color:var(--text-primary);text-decoration:none">{{$r.AuthorName}}</a>
+              {{if $r.IsVerified}}<span class="verified-badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M20 6L9 17l-5-5"/></svg></span>{{end}}
+              <a href="/u/{{$r.AuthorHandle}}" class="post-handle" onclick="event.stopPropagation()">@{{$r.AuthorHandle}}</a>
+              <span class="post-time" style="margin-left:auto">{{$r.TimeAgo}}</span>
+              {{if eq $r.AuthorHandle $.CurrentUserHandle}}
+              <div class="post-menu-wrap" onclick="event.stopPropagation()">
+                <button class="post-menu-trigger" onclick="togglePostMenu(this)" type="button">
+                  <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
+                </button>
+                <div class="post-menu-dropdown">
+                  <button class="post-menu-item post-menu-item-danger"
+                          hx-post="/api/post/delete" hx-vals='{"post_id":"{{$r.ID}}"}'
+                          hx-target="closest article" hx-swap="outerHTML"
+                          hx-confirm="Delete this reply?"
+                          onclick="closeAllPostMenus()">
+                    <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+                    Delete reply
+                  </button>
+                </div>
+              </div>
+              {{end}}
+            </div>
+            <div class="post-body">{{markdownHTML $r.Body}}</div>
+            <div class="post-actions" style="margin-top:10px">
+              <!-- Like -->
+              <button class="action-btn {{if $r.LikedByUser}}liked{{end}}" onclick="event.stopPropagation()"
+                      hx-post="/feed/item/like" hx-target="this" hx-swap="outerHTML"
+                      name="content_id" value="{{$r.ID}}">
+                <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="{{if $r.LikedByUser}}currentColor{{else}}none{{end}}" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+                <span>{{$r.Likes}}</span>
+              </button>
+              <!-- Repost -->
+              <button class="action-btn" onclick="event.stopPropagation()"
+                      hx-post="/feed/item/repost" hx-target="this" hx-swap="outerHTML"
+                      name="content_id" value="{{$r.ID}}">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M17 1l4 4-4 4"/><path d="M3 11V9a4 4 0 014-4h14M7 23l-4-4 4-4"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg>
+                <span>{{$r.Reposts}}</span>
+              </button>
+              <!-- Dislike -->
+              <button class="action-btn" onclick="event.stopPropagation()"
+                      hx-post="/feed/item/dislike" hx-target="this" hx-swap="outerHTML"
+                      name="content_id" value="{{$r.ID}}">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M10 15v4a3 3 0 003 3l4-9V2H5.72a2 2 0 00-2 1.7l-1.38 9a2 2 0 002 2.3zm10-13h2.67A2.31 2.31 0 0125 4v7a2.31 2.31 0 01-2.33 2H20"/></svg>
+              </button>
+              <!-- Comment link -->
+              <a href="/post/{{$r.ID}}" onclick="event.stopPropagation()" class="action-btn">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                <span>{{$r.Comments}}</span>
+              </a>
+              <!-- Bookmark -->
+              <button class="action-btn {{if $r.BookmarkedByUser}}saved{{end}}" onclick="event.stopPropagation()"
+                      hx-post="/feed/item/save" hx-target="this" hx-swap="outerHTML"
+                      name="content_id" value="{{$r.ID}}" title="Bookmark">
+                <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="{{if $r.BookmarkedByUser}}currentColor{{else}}none{{end}}" stroke="currentColor" stroke-width="2"><path d="M19 21l-7-5-7 5V5a2 2 0 012-2h10a2 2 0 012 2z"/></svg>
+              </button>
+            </div>
+          </div>
+        </div>
+      </article>
+      {{end}}
+    </div>
+    {{else}}
+    <div style="padding:40px 20px;text-align:center;color:var(--text-secondary);font-size:14px">
+      No replies yet. Be the first.
+    </div>
+    {{end}}
+
+    {{end}}{{/* end if .Post */}}
+  </main>
+
+<script src="/static/js/pages/feed_items.js?v=20260426"></script>
+<script src="/static/js/pages/post.js?v=20260426"></script>
+
+  <aside class="f33d3r-right">
+    {{if .Post}}
+    {{$p := .Post}}
+    <div class="panel-card mb-4">
+      <h3 class="panel-title">About @{{$p.AuthorHandle}}</h3>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+        <div style="width:40px;height:40px;border-radius:50%;overflow:hidden;flex-shrink:0;{{if not $p.AvatarURL}}{{$colors := avatarColors $p.AuthorHandle}}background:linear-gradient(135deg,{{index $colors 0}},{{index $colors 1}});display:flex;align-items:center;justify-content:center;font-weight:700;color:#fff{{end}}">
+          {{if $p.AvatarURL}}<img src="{{$p.AvatarURL}}" style="width:100%;height:100%;object-fit:cover">
+          {{else}}{{firstChar $p.AuthorName}}{{end}}
+        </div>
+        <div>
+          <p style="font-size:14px;font-weight:500">{{$p.AuthorName}}</p>
+          <p style="font-size:12px;color:var(--text-secondary)">@{{$p.AuthorHandle}}</p>
+        </div>
+      </div>
+      {{if ne $p.AuthorID .User.ID}}
+      <button hx-post="/api/follow" hx-target="this" hx-swap="outerHTML"
+              hx-vals='{"target_id":"{{$p.AuthorID}}","action":"follow"}' class="btn-primary follow-btn" style="width:100%;padding:8px">
+        Follow
+      </button>
+      {{end}}
+    </div>
+    {{end}}
+    <div class="panel-card">
+      <h3 class="panel-title">Score breakdown</h3>
+      {{if and .ShowScores .Post}}
+      <div class="engine-status-row"><span class="engine-status-label">AethyrScore</span><span class="engine-status-val status-online">{{pct .Post.FinalScore}}%</span></div>
+      <div class="engine-status-row"><span class="engine-status-label">Alignment</span><span class="engine-status-val">{{pct .Post.AesqAlignment}}%</span></div>
+      {{else}}
+      <p style="font-size:12px;color:var(--text-secondary)">Enable score display in settings.</p>
+      {{end}}
+    </div>
+  </aside>
+{{end}}

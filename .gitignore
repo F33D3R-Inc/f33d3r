@@ -1,0 +1,94 @@
+# ── Rust ──────────────────────────────────────────────────────────────────────
+# target/ is always excluded — Rust build artifacts are large and reproducible
+**/target/
+# Cargo.lock: commit for binaries, ignore for libraries.
+# All F33D3R brains are binaries — Cargo.lock is tracked (not listed here).
+
+# ── Go ────────────────────────────────────────────────────────────────────────
+# Compiled binaries (output of `go build`)
+feed-engine/feed-engine
+*/feed-engine
+*.exe
+*.test
+*.out
+
+# ── Environment / Secrets ─────────────────────────────────────────────────────
+.env
+.env.*
+# Allow committed example/template files
+!.env.*.example
+# *.local removed — it was swallowing infra/Caddyfile.local and other committed configs.
+# .env.* above already covers .env.local, .env.development.local, etc.
+config.env
+secrets/
+
+# ── Logs & databases ──────────────────────────────────────────────────────────
+*.log
+*.db
+*.sqlite
+*.sqlite3
+
+# ── Build / dist output ───────────────────────────────────────────────────────
+dist/
+build/
+out/
+tmp/
+
+# ── Node ──────────────────────────────────────────────────────────────────────
+node_modules/
+
+# ── Docker artifacts ──────────────────────────────────────────────────────────
+*.tar
+*.gz
+.docker/
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+Thumbs.db
+Desktop.ini
+
+# ── JetBrains (RustRover / GoLand / IntelliJ) ────────────────────────────────
+# Commit: .idea/modules.xml, .idea/*.iml, .idea/vcs.xml
+# Ignore: everything else under .idea/
+.idea/
+!.idea/modules.xml
+!.idea/*.iml
+!.idea/vcs.xml
+
+# Per-user IDE files
+*.iws
+
+# ── VS Code ───────────────────────────────────────────────────────────────────
+.vscode/
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+
+# ── TLS / certificates ────────────────────────────────────────────────────────
+# Ignore generated cert/key files. Specific infra certs are explicitly allowed below.
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+# Caddy local root CA — committed so team members can install and trust it.
+!infra/caddy-root.crt
+
+# ── Test coverage ─────────────────────────────────────────────────────────────
+coverage/
+*.coverage
+*.prof
+coverage.out
+coverage.html
+
+# ── Uploaded user content (never commit) ─────────────────────────────────────
+feed-engine/uploads/
+uploads/
+
+# ── GitLab CI cache / artifacts ───────────────────────────────────────────────
+.gitlab-ci-local/

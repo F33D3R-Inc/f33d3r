@@ -1,0 +1,104 @@
+{{define "title"}}Who are you? · F33D3R{{end}}
+{{define "sidebar-hidden"}}sidebar-onboard-hidden{{end}}
+{{define "mobile-nav-hidden"}}mobile-nav-onboard-hidden{{end}}
+{{define "body"}}
+<main class="onboard-wrap">
+  <div class="onboard-left">
+    <a href="/" class="sidebar-logo" style="margin-bottom:40px;text-decoration:none">
+      <div class="logo-mark" style="width:52px;height:52px;font-size:24px;border-radius:16px">F</div>
+      <span style="font-family:'DM Serif Display',serif;font-size:28px;color:var(--text-primary)">f33d3r</span>
+    </a>
+    <p style="font-size:17px;color:var(--text-secondary);line-height:1.65;max-width:360px;margin-bottom:32px">Your role shapes your experience. Choose the one that fits best — you can update it later.</p>
+    <div class="onboard-features">
+      <div class="onboard-feat"><span class="onboard-feat-icon">◈</span><div><p class="onboard-feat-title">Creators get a Studio</p><p class="onboard-feat-desc">Upload music, manage tracks, see analytics</p></div></div>
+      <div class="onboard-feat"><span class="onboard-feat-icon">◉</span><div><p class="onboard-feat-title">Officials get verified badges</p><p class="onboard-feat-desc">Government, press, and public figures get special status</p></div></div>
+      <div class="onboard-feat"><span class="onboard-feat-icon">◎</span><div><p class="onboard-feat-title">Everyone gets the feed</p><p class="onboard-feat-desc">Full social experience regardless of role</p></div></div>
+    </div>
+  </div>
+
+  <div class="onboard-right">
+    <div class="onboard-card">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <div style="width:8px;height:8px;border-radius:50%;background:var(--accent)"></div>
+        <div style="flex:1;height:2px;background:var(--border)"></div>
+        <div style="width:8px;height:8px;border-radius:50%;background:var(--border)"></div>
+        <div style="flex:1;height:2px;background:var(--border)"></div>
+        <div style="width:8px;height:8px;border-radius:50%;background:var(--border)"></div>
+        <div style="flex:1;height:2px;background:var(--border)"></div>
+        <div style="width:8px;height:8px;border-radius:50%;background:var(--border)"></div>
+      </div>
+      <p style="font-size:11px;color:var(--text-muted);margin-bottom:24px">Step 2 of 5 — Your role</p>
+
+      <h2 class="onboard-card-title">Who are you on F33D3R?</h2>
+      <p class="onboard-card-sub">Select the role that best describes you. This personalises your onboarding.</p>
+
+      <form action="/onboard/role" method="POST" style="display:flex;flex-direction:column;gap:12px">
+
+        <label class="role-card" id="role-user">
+          <input type="radio" name="role_type" value="user" checked style="display:none" onchange="selectRole('user')">
+          <div style="width:44px;height:44px;border-radius:12px;background:color-mix(in srgb,var(--accent) 12%,transparent);display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:20px">👤</div>
+          <div>
+            <p style="font-size:14px;font-weight:600;color:var(--text-primary);margin:0">Regular user</p>
+            <p style="font-size:12px;color:var(--text-secondary);margin:2px 0 0">I'm here to discover content and connect</p>
+          </div>
+          <div class="role-check" id="check-user" style="margin-left:auto;width:20px;height:20px;border-radius:50%;background:var(--accent);display:flex;align-items:center;justify-content:center;flex-shrink:0">
+            <svg fill="none" stroke="white" stroke-width="3" viewBox="0 0 24 24" style="width:12px;height:12px"><path d="M20 6L9 17l-5-5"/></svg>
+          </div>
+        </label>
+
+        <label class="role-card" id="role-creator">
+          <input type="radio" name="role_type" value="creator" style="display:none" onchange="selectRole('creator')">
+          <div style="width:44px;height:44px;border-radius:12px;background:color-mix(in srgb,var(--accent) 12%,transparent);display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:20px">🎨</div>
+          <div>
+            <p style="font-size:14px;font-weight:600;color:var(--text-primary);margin:0">Creator</p>
+            <p style="font-size:12px;color:var(--text-secondary);margin:2px 0 0">I create music, art, video, or content</p>
+          </div>
+          <div class="role-check hidden" id="check-creator" style="margin-left:auto;width:20px;height:20px;border-radius:50%;background:var(--accent);display:flex;align-items:center;justify-content:center;flex-shrink:0">
+            <svg fill="none" stroke="white" stroke-width="3" viewBox="0 0 24 24" style="width:12px;height:12px"><path d="M20 6L9 17l-5-5"/></svg>
+          </div>
+        </label>
+
+        <!-- Creator type — shown when creator selected -->
+        <div id="creator-type-wrap" style="display:none;padding:12px 14px;border-radius:12px;background:var(--panel);border:1px solid var(--border)">
+          <label style="font-size:11px;font-weight:600;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.06em;display:block;margin-bottom:8px">What type of creator?</label>
+          <select name="creator_type" class="settings-input" style="font-size:13px">
+            <option value="">Select type</option>
+            <option value="musician">Musician / Producer</option>
+            <option value="streamer">Streamer / Broadcaster</option>
+            <option value="artist">Visual Artist / Designer</option>
+            <option value="podcaster">Podcaster</option>
+            <option value="athlete">Athlete / Sports creator</option>
+            <option value="journalist">Journalist / Writer</option>
+            <option value="comedian">Comedian / Entertainer</option>
+            <option value="educator">Educator / Thought leader</option>
+            <option value="other">Other creator</option>
+          </select>
+        </div>
+
+        <label class="role-card" id="role-official">
+          <input type="radio" name="role_type" value="official" style="display:none" onchange="selectRole('official')">
+          <div style="width:44px;height:44px;border-radius:12px;background:color-mix(in srgb,var(--accent) 12%,transparent);display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:20px">🏛️</div>
+          <div>
+            <p style="font-size:14px;font-weight:600;color:var(--text-primary);margin:0">Government / Official</p>
+            <p style="font-size:12px;color:var(--text-secondary);margin:2px 0 0">Public figure, government official, verified press</p>
+          </div>
+          <div class="role-check hidden" id="check-official" style="margin-left:auto;width:20px;height:20px;border-radius:50%;background:var(--accent);display:flex;align-items:center;justify-content:center;flex-shrink:0">
+            <svg fill="none" stroke="white" stroke-width="3" viewBox="0 0 24 24" style="width:12px;height:12px"><path d="M20 6L9 17l-5-5"/></svg>
+          </div>
+        </label>
+
+        <div style="margin-top:8px">
+          <button type="submit" class="btn-primary" style="width:100%;padding:13px;font-size:15px;border-radius:14px">Continue →</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</main>
+
+<style>
+.role-card { display:flex;align-items:center;gap:14px;padding:16px;border:2px solid var(--border);border-radius:14px;cursor:pointer;transition:border-color 120ms,background 120ms; }
+.role-card:hover { border-color:color-mix(in srgb,var(--accent) 40%,transparent); }
+.role-card.selected { border-color:var(--accent);background:color-mix(in srgb,var(--accent) 5%,transparent); }
+</style>
+<script src="/static/js/pages/onboard_role.js?v=20260426"></script>
+{{end}}

@@ -1,0 +1,81 @@
+{{define "title"}}Content preferences · F33D3R{{end}}
+{{define "sidebar-hidden"}}sidebar-onboard-hidden{{end}}
+{{define "mobile-nav-hidden"}}mobile-nav-onboard-hidden{{end}}
+{{define "body"}}
+<main class="onboard-wrap">
+  <div class="onboard-left">
+    <a href="/" class="sidebar-logo" style="margin-bottom:40px;text-decoration:none">
+      <div class="logo-mark" style="width:52px;height:52px;font-size:24px;border-radius:16px">F</div>
+      <span style="font-family:'DM Serif Display',serif;font-size:28px;color:var(--text-primary)">f33d3r</span>
+    </a>
+    <p style="font-size:17px;color:var(--text-secondary);line-height:1.65;max-width:360px;margin-bottom:32px">You control what appears in your feed. These settings can be changed anytime in Settings.</p>
+  </div>
+
+  <div class="onboard-right">
+    <div class="onboard-card">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <div style="width:8px;height:8px;border-radius:50%;background:var(--accent)"></div>
+        <div style="flex:1;height:2px;background:var(--accent)"></div>
+        <div style="width:8px;height:8px;border-radius:50%;background:var(--accent)"></div>
+        <div style="flex:1;height:2px;background:var(--accent)"></div>
+        <div style="width:8px;height:8px;border-radius:50%;background:var(--accent)"></div>
+        <div style="flex:1;height:2px;background:var(--border)"></div>
+        <div style="width:8px;height:8px;border-radius:50%;background:var(--border)"></div>
+      </div>
+      <p style="font-size:11px;color:var(--text-muted);margin-bottom:24px">Step 4 of 5 — Content</p>
+
+      <h2 class="onboard-card-title">Content preferences</h2>
+      <p class="onboard-card-sub">Choose what kind of content you want to see in your feed.</p>
+
+      <form action="/onboard/content" method="POST" style="display:flex;flex-direction:column;gap:16px">
+
+        <div style="display:flex;flex-direction:column;gap:10px">
+          <label class="role-card selected" id="pref-default" onclick="selectContent('default')">
+            <input type="radio" name="content_setting" value="default" checked style="display:none">
+            <div style="width:44px;height:44px;border-radius:12px;background:color-mix(in srgb,var(--accent) 12%,transparent);display:flex;align-items:center;justify-content:center;font-size:20px">✦</div>
+            <div>
+              <p style="font-size:14px;font-weight:600;color:var(--text-primary);margin:0">Standard</p>
+              <p style="font-size:12px;color:var(--text-secondary);margin:2px 0 0">General content, some mature themes allowed</p>
+            </div>
+            <div class="role-check" id="check-default" style="margin-left:auto;width:20px;height:20px;border-radius:50%;background:var(--accent);display:flex;align-items:center;justify-content:center">
+              <svg fill="none" stroke="white" stroke-width="3" viewBox="0 0 24 24" style="width:12px;height:12px"><path d="M20 6L9 17l-5-5"/></svg>
+            </div>
+          </label>
+
+          <label class="role-card" id="pref-safe" onclick="selectContent('safe_mode')">
+            <input type="radio" name="content_setting" value="safe_mode" style="display:none">
+            <div style="width:44px;height:44px;border-radius:12px;background:color-mix(in srgb,#22c55e 12%,transparent);display:flex;align-items:center;justify-content:center;font-size:20px">🌿</div>
+            <div>
+              <p style="font-size:14px;font-weight:600;color:var(--text-primary);margin:0">Safe mode</p>
+              <p style="font-size:12px;color:var(--text-secondary);margin:2px 0 0">Family-friendly, no mature content whatsoever</p>
+            </div>
+            <div class="role-check hidden" id="check-safe" style="margin-left:auto;width:20px;height:20px;border-radius:50%;background:var(--accent);display:flex;align-items:center;justify-content:center">
+              <svg fill="none" stroke="white" stroke-width="3" viewBox="0 0 24 24" style="width:12px;height:12px"><path d="M20 6L9 17l-5-5"/></svg>
+            </div>
+          </label>
+
+          <label class="role-card" id="pref-adult" onclick="selectContent('adult_enabled')">
+            <input type="radio" name="content_setting" value="adult_enabled" style="display:none">
+            <div style="width:44px;height:44px;border-radius:12px;background:color-mix(in srgb,#f97316 12%,transparent);display:flex;align-items:center;justify-content:center;font-size:20px">🔥</div>
+            <div>
+              <p style="font-size:14px;font-weight:600;color:var(--text-primary);margin:0">Adult content enabled</p>
+              <p style="font-size:12px;color:var(--text-secondary);margin:2px 0 0">All content including 18+ (requires age verification)</p>
+            </div>
+            <div class="role-check hidden" id="check-adult-pref" style="margin-left:auto;width:20px;height:20px;border-radius:50%;background:var(--accent);display:flex;align-items:center;justify-content:center">
+              <svg fill="none" stroke="white" stroke-width="3" viewBox="0 0 24 24" style="width:12px;height:12px"><path d="M20 6L9 17l-5-5"/></svg>
+            </div>
+          </label>
+        </div>
+
+        <button type="submit" class="btn-primary" style="width:100%;padding:13px;font-size:15px;border-radius:14px">Continue →</button>
+      </form>
+    </div>
+  </div>
+</main>
+
+<style>
+.role-card { display:flex;align-items:center;gap:14px;padding:16px;border:2px solid var(--border);border-radius:14px;cursor:pointer;transition:border-color 120ms,background 120ms; }
+.role-card.selected { border-color:var(--accent);background:color-mix(in srgb,var(--accent) 5%,transparent); }
+</style>
+<script src="/static/js/pages/onboard_content.js?v=20260426"></script>
+{{end}}

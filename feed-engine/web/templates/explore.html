@@ -1,0 +1,118 @@
+{{define "title"}}Explore · F33D3R{{end}}
+{{define "nav-active-explore"}}active{{end}}
+{{define "mob-active-explore"}}active{{end}}
+{{define "body"}}
+  <main class="f33d3r-main">
+    <header class="top-bar">
+      <h1>Explore</h1>
+      <div style="display:flex;align-items:center;gap:8px;margin-left:auto">
+        <button id="explore-list-btn" onclick="setExploreView('list')" title="List"
+          style="width:30px;height:30px;border:1px solid var(--accent);background:color-mix(in srgb,var(--accent) 12%,transparent);border-radius:8px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:var(--accent)">
+          <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="width:13px;height:13px"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+        </button>
+        <button id="explore-grid-btn" onclick="setExploreView('grid')" title="Grid"
+          style="width:30px;height:30px;border:1px solid var(--border);background:transparent;border-radius:8px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:var(--text-muted)">
+          <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="width:13px;height:13px"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+        </button>
+        <div class="engine-dot" title="AethyrRank live"></div>
+      </div>
+    </header>
+
+    <!-- Search bar (leads to /search) -->
+    <div class="explore-search-wrap">
+      <form action="/search" method="GET">
+        <div class="search-bar" style="margin-bottom:0">
+          <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+          <input type="text" name="q" placeholder="Search posts, @people, #tags…"
+                 class="search-input" autocomplete="off">
+        </div>
+      </form>
+    </div>
+
+    <!-- Surface tabs -->
+    <div style="display:flex;border-bottom:1px solid var(--border)">
+      <button class="explore-surf-tab active" id="surf-discovery" onclick="setExploreSurf('discovery',this)">For You</button>
+      <button class="explore-surf-tab" id="surf-trending" onclick="setExploreSurf('trending',this)">Trending</button>
+      <button class="explore-surf-tab" id="surf-latest" onclick="setExploreSurf('latest',this)">Latest</button>
+    </div>
+
+    <!-- Trending tags strip — visible in trending tab -->
+    <div id="trending-strip" style="display:none;border-bottom:1px solid var(--border);padding:12px 16px;overflow-x:auto;scrollbar-width:none">
+      {{if .TrendingTags}}
+      <div style="display:flex;gap:8px;min-width:max-content">
+        {{range .TrendingTags}}
+        <a href="/search?q=%23{{.Tag}}" style="display:inline-flex;flex-direction:column;padding:10px 14px;background:var(--panel);border:1px solid var(--border);border-radius:12px;text-decoration:none;flex-shrink:0;min-width:120px;transition:border-color 120ms" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
+          <span style="font-size:14px;font-weight:600;color:var(--text-primary)">#{{.Tag}}</span>
+          <span style="font-size:11px;color:var(--text-secondary);margin-top:3px">{{.Count}} posts</span>
+        </a>
+        {{end}}
+      </div>
+      {{else}}
+      <p style="font-size:12px;color:var(--text-muted)">Trending tags appear here as the community grows.</p>
+      {{end}}
+    </div>
+
+    <!-- Topic chips strip -->
+    <div style="display:flex;gap:8px;padding:12px 16px;overflow-x:auto;scrollbar-width:none;-ms-overflow-style:none;border-bottom:1px solid var(--border)" id="topic-strip">
+      <a href="/search?q=music" class="explore-category-chip">Music</a>
+      <a href="/search?q=art" class="explore-category-chip">Art</a>
+      <a href="/search?q=tech" class="explore-category-chip">Tech</a>
+      <a href="/search?q=gaming" class="explore-category-chip">Gaming</a>
+      <a href="/search?q=writing" class="explore-category-chip">Writing</a>
+      <a href="/search?q=finance" class="explore-category-chip">Finance</a>
+      <a href="/search?q=indieartist" class="explore-category-chip">Indie Artist</a>
+      <a href="/search?q=buildinpublic" class="explore-category-chip">Build in Public</a>
+      <a href="/search?q=photography" class="explore-category-chip">Photography</a>
+      <a href="/search?q=sports" class="explore-category-chip">Sports</a>
+    </div>
+
+    <!-- Feed results -->
+    <div id="explore-results"
+         hx-get="/feed?surface=explore&session_id={{.SessionID}}"
+         hx-trigger="load" hx-swap="innerHTML" hx-indicator="#explore-spinner">
+    </div>
+    <div id="explore-spinner" class="htmx-indicator py-12 flex justify-center">
+      <div class="spinner"></div>
+    </div>
+  </main>
+
+  <aside class="f33d3r-right">
+    <div class="panel-card mb-4">
+      <h3 class="panel-title">Trending now</h3>
+      {{if .TrendingTags}}
+      {{range $i, $t := .TrendingTags}}
+      <div class="trending-item">
+        <a href="/search?q=%23{{$t.Tag}}" style="text-decoration:none;display:block">
+          <p class="trending-cat">{{add $i 1}} · Trending</p>
+          <p class="trending-tag">#{{$t.Tag}}</p>
+          <p class="trending-count">{{$t.Count}} posts</p>
+        </a>
+      </div>
+      {{end}}
+      {{else}}
+      <p style="font-size:12px;color:var(--text-muted)">Trending tags appear here as the community grows.</p>
+      {{end}}
+    </div>
+    <div class="panel-card">
+      <h3 class="panel-title">Browse topics</h3>
+      <div style="display:flex;flex-wrap:wrap;gap:8px">
+        <a href="/search?q=music" class="explore-category-chip">Music</a>
+        <a href="/search?q=art" class="explore-category-chip">Art</a>
+        <a href="/search?q=tech" class="explore-category-chip">Tech</a>
+        <a href="/search?q=gaming" class="explore-category-chip">Gaming</a>
+        <a href="/search?q=writing" class="explore-category-chip">Writing</a>
+        <a href="/search?q=finance" class="explore-category-chip">Finance</a>
+        <a href="/search?q=sports" class="explore-category-chip">Sports</a>
+        <a href="/search?q=photography" class="explore-category-chip">Photography</a>
+      </div>
+    </div>
+  </aside>
+
+<style>
+.explore-surf-tab { flex:1; padding:13px 8px; font-size:13px; font-weight:500; border:none; background:none; color:var(--text-secondary); cursor:pointer; border-bottom:2px solid transparent; transition:color 120ms,border-color 120ms; font-family:'DM Sans',sans-serif; }
+.explore-surf-tab:hover { color:var(--text-primary); }
+.explore-surf-tab.active { color:var(--accent); border-bottom-color:var(--accent); }
+#topic-strip::-webkit-scrollbar { display:none; }
+</style>
+<script src="/static/js/pages/explore.js?v=20260426"></script>
+{{end}}
