@@ -1,0 +1,115 @@
+{{/*
+FACET content_warning_sheet
+  version: 1.0 | status: stable | layer: 3
+
+  inputs:
+    none — operates on the active compose form in the DOM
+
+  states:
+    default | applied (close + populate hidden input, sheet removes itself)
+
+  children: none
+
+  signals:
+    emits:    none — writes value into #compose-content-warning hidden input then closes
+    receives: none
+
+  context:
+    overlay-slot; opened by openContentWarningSheet() in f33d3r.js
+    Applies label to compose form without any server round-trip
+*/}}
+{{define "content_warning_sheet"}}
+<div id="content-warning-sheet"
+     class="content-warning-sheet"
+     role="dialog"
+     aria-modal="true"
+     aria-label="Add content warning"
+     onclick="if(event.target===this)this.remove()">
+  <div class="content-warning-card">
+
+    {{/* ── Facet(content_warning_header) ── */}}
+    <div class="content-warning-header">
+      <span class="content-warning-title">Add content warning</span>
+      <button type="button"
+              class="content-warning-close"
+              aria-label="Close"
+              onclick="document.getElementById('content-warning-sheet').remove()">
+        <svg fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24" style="width:18px;height:18px"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+
+    {{/* ── Facet(content_warning_body) ── */}}
+    <div class="content-warning-body">
+      <p class="content-warning-hint">
+        Viewers will see this label and must tap to reveal your post.
+      </p>
+
+      {{/* ── Facet(content_warning_suggestions) — quick-pick chips ── */}}
+      <div class="content-warning-chips">
+        <button type="button" class="content-warning-chip" onclick="setCWLabel('Sensitive content')">Sensitive content</button>
+        <button type="button" class="content-warning-chip" onclick="setCWLabel('Spoiler')">Spoiler</button>
+        <button type="button" class="content-warning-chip" onclick="setCWLabel('Mental health')">Mental health</button>
+        <button type="button" class="content-warning-chip" onclick="setCWLabel('Violence')">Violence</button>
+        <button type="button" class="content-warning-chip" onclick="setCWLabel('Sexual content')">Sexual content</button>
+      </div>
+
+      <input id="cw-label-input"
+             type="text"
+             class="content-warning-input"
+             maxlength="100"
+             placeholder="Custom warning label…"
+             aria-label="Content warning label">
+    </div>
+
+    {{/* ── Facet(content_warning_footer) ── */}}
+    <div class="content-warning-footer">
+      <button type="button"
+              class="btn-secondary"
+              onclick="clearCWLabel()">
+        Remove warning
+      </button>
+      <button type="button"
+              class="btn-primary"
+              onclick="applyCWLabel()">
+        Apply
+      </button>
+    </div>
+
+  </div>
+</div>
+
+<script>
+(function(){
+  function setCWLabel(val) {
+    const input = document.getElementById('cw-label-input');
+    if (input) input.value = val;
+  }
+  function applyCWLabel() {
+    const input = document.getElementById('cw-label-input');
+    const label = input ? input.value.trim() : '';
+    const target = document.getElementById('compose-content-warning');
+    if (target) target.value = label;
+    const chip = document.getElementById('compose-cw-chip');
+    if (chip) {
+      if (label) {
+        chip.textContent = label;
+        chip.style.display = 'inline-flex';
+      } else {
+        chip.style.display = 'none';
+      }
+    }
+    document.getElementById('content-warning-sheet').remove();
+  }
+  function clearCWLabel() {
+    const target = document.getElementById('compose-content-warning');
+    if (target) target.value = '';
+    const chip = document.getElementById('compose-cw-chip');
+    if (chip) chip.style.display = 'none';
+    document.getElementById('content-warning-sheet').remove();
+  }
+  window.setCWLabel = setCWLabel;
+  window.applyCWLabel = applyCWLabel;
+  window.clearCWLabel = clearCWLabel;
+})();
+</script>
+{{end}}

@@ -1,0 +1,48 @@
+{{/*
+FACET translate_result
+  version: 1.0 | status: stable | layer: 1
+
+  inputs:
+    .PostID         string — post UUID (used in hide button onclick)
+    .TranslatedText string — server-translated body text (plain text, template-escaped)
+    .DetectedLang   string — ISO 639-1 source language code detected by the API
+
+  states:
+    default | error (translate_error variant below)
+
+  children:
+    none
+
+  signals:
+    emits:    none
+    receives: none
+
+  context:
+    post_card → #translate-wrap-{PostID} via HTMX innerHTML swap
+*/}}
+{{define "translate_result"}}
+<div class="translate-result">
+  <div class="translate-result__label">
+    <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M3 5h12M9 3v2m1.048 9.5A18.022 18.022 0 016.412 9m6.088 9h7M11 21l5-10 5 10M12.751 5C11.783 10.77 8.07 15.61 3 18.129"/>
+    </svg>
+    {{if .DetectedLang}}Translated from {{.DetectedLang}}{{else}}Translated{{end}}
+  </div>
+  <p class="translate-result__body">{{.TranslatedText}}</p>
+  <button class="translate-result__hide"
+          onclick="document.getElementById('translate-wrap-{{.PostID}}').style.display='none'"
+          type="button" aria-label="Hide translation">Hide</button>
+</div>
+{{end}}
+
+{{define "translate_error"}}
+<div class="translate-result translate-result--error">
+  <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
+    <circle cx="12" cy="12" r="10"/><path d="M12 8v4m0 4h.01"/>
+  </svg>
+  {{.Reason}}
+  <button class="translate-result__hide"
+          onclick="document.getElementById('translate-wrap-{{.PostID}}').style.display='none'"
+          type="button">Dismiss</button>
+</div>
+{{end}}

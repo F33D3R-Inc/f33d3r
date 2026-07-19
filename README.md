@@ -2,7 +2,7 @@
 
 **Distributed social operating system for creators, communities, and the creator economy.**
 
-F33D3R is a multi-brain platform built on isolated service architecture, a cryptographic persistent identity layer (PIAL), Signal-grade end-to-end encrypted messaging, a closed-loop economic fabric (ETHRA/AET), and a native commerce engine. It is engineered from first principles for creator monetization at scale — with a platform fee of 2.5% versus the industry standard 20%.
+F33D3R is a multi-brain platform built on isolated service architecture, a cryptographic persistent identity layer (PIAL), Signal-grade end-to-end encrypted real-time messaging (Vovin), a closed-loop economic fabric (AET), a native commerce engine, and an HLS video pipeline. Platform fee: 2.5% versus the industry standard 20%.
 
 ---
 
@@ -10,17 +10,20 @@ F33D3R is a multi-brain platform built on isolated service architecture, a crypt
 
 | Capability | Implementation |
 |---|---|
-| Social feed + ranking | Nantar (Go) + AethyrRank (Rust) — Jungian behavioral ranking, LinUCB exploration |
-| End-to-end messaging | Vovin (Rust) — ECDH-P256, Double Ratchet, AES-256-GCM, keys never leave client |
+| Social feed + ranking | Nantar (Go) + AethyrRank (Rust) — AESQ scoring, LinUCB exploration, author dilution, media/long-form/velocity signals |
+| Real-time E2E messaging | Vovin (Rust) — ECDH-P256, Double Ratchet per device, AES-256-GCM, IDB-first persistence, multi-device |
 | Creator commerce | Thessalon (Rust) — subscriptions, pay-per-view, tips; 2.5% fee |
-| Media processing | Caeor (Rust) — WebP conversion, multi-size derivatives, shared volume serving |
+| Media processing + HLS | Caeor (Rust) — WebP derivatives, HLS transcoding, MinIO storage |
 | Wallet + settlement | Ain Soph (Rust) + Aethyr Ledger (Rust) — double-entry AET ledger |
-| Identity + capabilities | PIAL UUID spine + Elohim Veni enforcement |
+| Identity + capabilities | PIAL is the system of record + sole authority; brains write to it |
 | KYC + compliance | Verity (Rust) — 4-tier attestation, privacy-preserving decision hashes |
-| Content safety | Zodacare (Rust) — risk scoring, moderation queue, Elohim Veni triggers |
+| Content safety | Zodacare (Rust) + content-scan (Python) — risk scoring, moderation queue, auto-sweep for stuck posts |
 | Music intelligence | Zior (Rust) — audio analysis, 8-axis vectorization, cluster ranking |
 | Handle registry | Registrar (Rust) — handle ownership, transfers |
+| Push notifications | Herald (Rust) — device push delivery, per-user subscriptions |
 | Schema contracts | Schema Registry (Rust) — versioned event schemas, CI contract enforcement |
+| Transcoding worker | Transcoding (Rust) — ffmpeg HLS ladder, poster frames |
+| Observability | Prometheus + Grafana + Loki + Alertmanager + node-exporter + Promtail |
 
 ---
 
@@ -28,66 +31,87 @@ F33D3R is a multi-brain platform built on isolated service architecture, a crypt
 
 | Brain | Service Dir | Port | Database | Language | Status |
 |---|---|---|---|---|---|
-| Nantar | `feed-engine` | 8081 | f33d3r_feed | Go 1.26.2 | Production |
-| AethyrRank | `aethyrrank-engine` | 8080 | f33d3r_feed | Rust 1.95.0 | Production |
-| Zior | `zior-engine` | 8082 | — | Rust 1.95.0 | Production |
-| Vovin | `aethyr-msg` | 8092 | f33d3r_msg | Rust 1.95.0 | Production |
-| Ain Soph | `ain-soph` | 8089 | f33d3r_wallet | Rust 1.95.0 | Production |
-| Elohim Veni | `elohim-veni` | 8093 | f33d3r_security | Rust 1.95.0 | Production |
-| Zodacare | `zodacare` | 8090 | f33d3r_safety | Rust 1.95.0 | Production |
-| Schema Registry | `aethyr-schema-registry` | 8079 | f33d3r_registry | Rust 1.95.0 | Production |
-| Registrar | `registry-brain` | 8094 | f33d3r_handles | Rust 1.95.0 | Production |
-| Verity | `verity` | 8095 | f33d3r_verity | Rust 1.95.0 | Production |
-| Aethyr Ledger | `aethyr-ledger` | 8096 | f33d3r_ledger | Rust 1.95.0 | Production |
-| Thessalon | `thessalon` | 8084 | f33d3r_commerce | Rust 1.95.0 | Production |
-| Caeor | `caeor` | 8086 | — | Rust 1.95.0 | Production |
-| Loxion | — | 8087 | — | TBD | Planned |
-| Astraon | — | — | f33d3r_analytics | TBD | Planned |
+| Nantar | `feed-engine` | 8081 | f33d3r_feed | Go (latest) | ✅ Production |
+| AethyrRank | `aethyrrank-engine` | 8080 | f33d3r_feed | Rust (latest) | ✅ Production |
+| Zior | `zior-engine` | 8082 | — | Rust (latest) | ✅ Production |
+| Vovin | `aethyr-msg` | 8092 | f33d3r_msg | Rust (latest) | ✅ Production |
+| Ain Soph | `ain-soph` | 8089 | f33d3r_wallet | Rust (latest) | ✅ Production |
+| Elohim Veni | `elohim-veni` | 8093 | f33d3r_security | Rust (latest) | ✅ Production |
+| Zodacare | `zodacare` | 8090 | f33d3r_safety | Rust (latest) | ✅ Production |
+| Schema Registry | `aethyr-schema-registry` | 8079 | f33d3r_registry | Rust (latest) | ✅ Production |
+| Registrar | `registry-brain` | 8094 | f33d3r_handles | Rust (latest) | ✅ Production |
+| Verity | `verity` | 8095 | f33d3r_verity | Rust (latest) | ✅ Production |
+| Aethyr Ledger | `aethyr-ledger` | 8096 | f33d3r_ledger | Rust (latest) | ✅ Production |
+| Thessalon | `thessalon` | 8084 | f33d3r_commerce | Rust (latest) | ✅ Production |
+| Caeor | `caeor` | 8086 | — | Rust (latest) | ✅ Production |
+| Transcoding | `transcoding` | 8085 | — | Rust (latest) | ✅ Production |
+| Content Scan | `content-scan` | 8097 | SQLite (content_scan.db) | Python (latest) | ✅ Production |
+| Herald | `herald` | 8105 | f33d3r_herald | Rust (latest) | ✅ Production |
+| Astraon | `astraon` | 8088 | f33d3r_feed | Rust (latest) | ✅ Production |
+| eKYC | `ekyc` | 8099 | — | Python (latest) | ✅ Production |
+| Loxion | — | 8087 | — | TBD | 🔲 Planned (geolocation brain — no code yet) |
 
-Supporting infrastructure: PostgreSQL 16 (port 5432) · Redis 7 (port 6379)
+**Infrastructure:** PostgreSQL · Redis · MinIO · PgBouncer · Caddy  
+**Observability:** Prometheus (9090) · Grafana (3000) · Loki (3100) · Alertmanager (9093) · node-exporter (9100) · Promtail
 
 ---
 
 ## Architecture
 
-### Topology
+### Frontend — Facet Architecture (FA) · v1.1
+
+FA is F33D3R's server-rendered hypermedia UI system. Every visible element is a named **Facet** — a self-contained HTML template with a formal FDL contract declaring its inputs, states, children, and signals.
+
+| Concept | Rule |
+|---|---|
+| Pages | Assemble Facets. No raw HTML structure. |
+| Facets | One file, one `{{define}}`, one CSS block, one FDL contract. |
+| Handlers | Fetch data, hydrate structs fully, call `h.render()`. Never write HTML strings. |
+| Mutations | `POST /events {event_type}` only. |
+| Reads | `GET /facets/{name}` only. |
+| Push | SSE on `/api/events`. Pre-rendered HTML fragments — never JSON-then-template-on-client. |
+
+Facets live in `feed-engine/web/templates/partials/_name.html`. Four layers: atomic → composite → overlay → page.
+
+**v1.1 (May 2026) — Mobile-first adaptive UI:**
+
+- **Adaptive icon rail** — sidebar collapses to 52px icon-only rail on mobile (X.com pattern), never disappears. Full pill on desktop, circle on narrow rail for account.
+- **WYSIWYG compose** — link preview cards and quoted-post cards render inside the compose modal before posting, served from `/facets/link_preview` and `/facets/quoted_post`.
+- **URL shortening** — long URLs in post bodies are display-shortened (`domain.com/path…`) everywhere via `renderMarkdown`. Full URL preserved in `href`.
+- **Post detail Facets** — `post_detail_focus`, `reply_compose_row`, `profile_header` extracted from inline page templates. Three pages now fully FA-compliant.
+- **Mobile CSS** — `100dvh` everywhere, safe-area-insets on compose FAB and toasts, `@media(hover:hover)` guards on all interactive elements, `aspect-ratio` on media grids, settings horizontal chip nav on mobile.
+
+### Network Topology
 
 ```
-Browser (HTMX 2.0.10)
+Browser (HTMX)
          │
          ▼
-  ┌─────────────────────────────────────────────────────┐
-  │            Nantar  :8081  (Go 1.26.2)               │
-  │   The only brain that serves HTML to browsers.       │
-  │   All other brains are internal.                     │
-  └─────┬──────────┬──────┬───────┬───────┬─────────────┘
-        │          │      │       │       │
-     /vovin/  /ainsoph/ /verity/ /ledger/ /thessalon/
-        │          │      │       │       │
-     Vovin    Ain Soph  Verity  Ledger  Thessalon
-     :8092    :8089     :8095   :8096   :8084
-                                        │
-                             POST /rank │  POST /v1/media/upload
-                                  ▼               ▼
-                            AethyrRank        Caeor
-                              :8080            :8086
+  ┌──────────────────────────────────────────────┐
+  │         Caddy  :443/:80  (TLS, reverse proxy) │
+  └──────────────────────────┬───────────────────┘
+                             │
+  ┌──────────────────────────▼───────────────────┐
+  │            Nantar  :8081  (Go)               │
+  │  The only brain that serves HTML to browsers  │
+  └──┬──────┬──────┬──────┬──────┬───────────────┘
+     │      │      │      │      │
+  /vovin/ /verity/ /ledger/ /ainsoph/ POST /rank  POST /v1/media/upload
+     │      │      │      │      │                │
+   Vovin  Verity Ledger AinSoph AethyrRank      Caeor → MinIO
+   :8092  :8095  :8096  :8089   :8080           :8086   :9000
 
-Elohim Veni :8093  ← Nantar bootstraps PIAL on signup (sync, once)
-                   ← Zodacare sends moderation actions
-Zodacare    :8090  ← Nantar reports content (async, fire-and-forget)
+Elohim Veni :8093 ← Nantar bootstraps PIAL on signup (sync)
+Zodacare    :8090 ← Nantar reports content (async, fire-and-forget)
+Transcoding :8085 ← Caeor spawns HLS transcode jobs
 ```
 
 ### Brain Isolation Rules
-
-These rules are enforced by the CI gate at `enforcement/`. Violations block merge to `main`.
 
 - Each brain owns exactly one database. No brain reads another brain's database.
 - The PIAL UUID is the only cross-brain identity. Never use account UUIDs or handles cross-brain.
 - Nantar is the sole edge brain. No other brain may call Nantar.
 - Zodacare is advisory. Elohim Veni enforces. Never reverse this.
-- AethyrRank, Vovin, Ain Soph, and Caeor cannot call each other.
-- Thessalon may call Ain Soph (AET transfers) and Verity (KYC tier checks) only.
-- All async data flow uses the Kafka event bus. Direct HTTP calls are permitted only where documented in `enforcement/dependency-graph/rules.yaml`.
 
 Full dependency matrix: `BRAIN_MAP.md`
 
@@ -102,98 +126,86 @@ Device keypair (ECDH-P256 + ECDSA-P256 Glyph)
     └── PIAL UUID  (permanent, immutable, never reused)
             ├── Handle(s)            ← transferable pointer (Registrar)
             ├── Ain Soph wallet      ← AET economic layer
-            ├── Vovin vault          ← message encryption keys
+            ├── Vovin vault          ← message encryption keys, per-device
             ├── Capabilities         ← posting, monetization, adult content, live
             └── Verity attestations  ← KYC tier 0–3
 ```
 
-A PIAL UUID is generated by Nantar on first signup and bootstrapped into Elohim Veni synchronously. It cannot be transferred, renamed, or deleted. Every brain that needs to identify a user receives the PIAL UUID via the `X-Pial-Identity` header injected by Nantar's proxy layer.
-
-The PIAL UUID survives account bans, handle changes, platform policy shifts, and payment processor pressure. Creators own their identity permanently.
+A PIAL UUID is generated by Nantar on first signup and bootstrapped into Elohim Veni synchronously. It cannot be transferred, renamed, or deleted. PIAL UUIDs are never exposed to users or rendered in HTML.
 
 ---
 
-## Economic Fabric — ETHRA / AET
+## Messaging — Vovin
 
-AET (Aethyr Exchange Token) is the platform's internal settlement currency. It does not exist outside F33D3R.
-
-```
-Fiat deposit (payment rails)
-    └── Aethyr Credit (1:1 with cents)
-            └── AET (stored in µAET, 1 AET = 1,000,000 µAET)
-                    ├── Tips             (1% platform fee)
-                    ├── Subscriptions    (3% platform fee via Ain Soph transfer)
-                    ├── Pay-per-view     (3% platform fee via Ain Soph transfer)
-                    ├── Wallet transfers (3% fee)
-                    ├── Boosts           (full burn to platform reserve)
-                    └── Relay rewards    (minted from platform reserve)
-```
-
-**Platform fee: 2.5% blended** (1% on tips, 3% on transfers — versus OnlyFans at 20%)
-
-All AET movements are recorded in Ain Soph (double-entry wallet) and settled through Aethyr Ledger (hash-chained immutable blocks every 2 seconds). Ain Soph enforces idempotency — duplicate requests return the original result.
-
-### Commerce (Thessalon)
-
-Thessalon handles all creator monetization:
-
-| Endpoint | Description |
-|---|---|
-| `POST /thessalon/v1/creator/enable` | Enable monetization for a creator (checks Verity KYC tier) |
-| `POST /thessalon/v1/plans` | Create subscription tier (price in AET) |
-| `POST /thessalon/v1/subscribe` | Subscribe — deducts AET, creates 30-day period |
-| `GET /thessalon/v1/access/subscription` | Gate check — `{ has_access: bool }` |
-| `POST /thessalon/v1/ppv` | Register a PPV content item |
-| `POST /thessalon/v1/ppv/:id/purchase` | Purchase PPV — deducts AET |
-| `GET /thessalon/v1/access/ppv` | PPV access check by content_id |
-| `POST /thessalon/v1/tips` | Send tip — calls Ain Soph `/v1/tip` |
-| `GET /thessalon/v1/creator/:pial_id/earnings` | Earnings summary by stream |
-
----
-
-## Identity Compliance — Verity
-
-Verity stores decision hashes only. No ID images, no biometrics, no date of birth — only an `age_band` and a signed decision hash anchored to a PIAL UUID.
-
-| Tier | Requirements | Unlocks |
-|---|---|---|
-| 0 | Account created | Basic browsing, posting |
-| 1 | Email + phone verified | Full social features, DMs |
-| 2 | Government ID + liveness check | Adult content access, creator signup |
-| 3 | Tier 2 + fraud clearance | Payouts, full monetization |
-
-Creator monetization requires Tier 1 minimum (Thessalon checks at enable time and stores the tier). Payment rails require Tier 3.
-
----
-
-## Messaging Security — Vovin / AMP
-
-Signal-grade end-to-end encryption. Keys are generated client-side in the browser's WebCrypto API, stored in IndexedDB, and never transmitted to any server.
+Signal-grade end-to-end encryption with full multi-device support.
 
 | Layer | Algorithm |
 |---|---|
-| Long-term identity | ECDH-P256 |
-| Signing | ECDSA-P256 (Glyph) |
-| Session key agreement | X3DH (V1) / Double Ratchet (V2) |
+| Long-term identity | ECDH-P256 per device |
+| Signing | ECDSA-P256 (Glyph key) |
+| Session key agreement | ECDH + Double Ratchet (V2) |
 | Per-message encryption | AES-256-GCM |
 | Key derivation | HKDF-SHA256 |
 
-Vovin stores ciphertext and IVs only. It cannot read message content under any circumstances. The browser requires HTTPS to access WebCrypto — see `infra/README-CERTS.md` for local TLS setup.
+**Client architecture:**
+- Vault stored in IndexedDB, namespaced per PIAL. Survives logout. Not tied to session cookie.
+- Ratchet sessions scoped per `(recipientPIAL, recipientDeviceID)` — concurrent sends to multi-device recipients don't corrupt each other's ratchet state.
+- WebSocket connects on page load independent of vault lock state.
+- Multi-device: messages delivered to all registered devices. New device receives new messages from registration point.
+- Typing indicators, read receipts, presence pings, voice notes, file transfers (AFF).
+- DM badge in sidebar nav updates via SSE when new messages arrive.
 
 ---
 
-## Media Pipeline — Caeor
+## Content Safety
 
-All uploads route through Caeor before being stored. Raw originals are never served in the feed.
+Posts are inserted with `scan_state = 'pending_scan'` and become visible after the content-scan callback transitions them to `clean`, `age_gated`, `human_review`, or `blocked`.
 
-| Media Type | Derivatives Generated | Format |
+A cron sweep runs every 10 minutes and rescues posts stuck in `pending_scan` for over 15 minutes by re-triggering the scan. Falls back to `clean` if content-scan is unreachable. The sweep also fires once on startup. Manual trigger available in **Admin → Dev Tools → Pending scan sweep**.
+
+---
+
+## Media Pipeline — Caeor + Transcoding
+
+All uploads route through Caeor. Videos are transcoded to HLS multi-bitrate by the Transcoding brain.
+
+| Media Type | Output | Storage |
 |---|---|---|
-| Avatar | 64px · 128px · 256px · 512px (square center-crop) | WebP |
-| Header/banner | 600×200 · 1200×400 · 2400×800 (3:1 center-crop) | WebP |
-| Post image | 300×300 thumb · 800w feed · 1200w full | WebP |
-| Video | Stored as-is | mp4/mov/webm |
+| Avatar | 64/128/256/512px WebP | MinIO → served via Caddy |
+| Post image | 300/800/1200px WebP | MinIO → served via Caddy |
+| Video (.mov/.mp4/etc) | HLS ladder (240/360/720/1080/2160p) + poster | MinIO `media-derived/` |
+| Original (any) | Stored raw | MinIO `media-raw/` |
 
-Files are written to a shared Docker volume (`f33d3r_media`) and served by Nantar at `/static/media/*` with `Cache-Control: public, max-age=31536000, immutable`. Maximum upload size: 10 MB. Nantar falls back to direct storage if Caeor is unavailable.
+---
+
+## Economic Fabric — AET
+
+AET (Aethyr Exchange Token) is F33D3R's internal settlement currency.
+
+```
+Fiat deposit → Aethyr Credit (1:1 cents) → AET (1 AET = 1,000,000 µAET)
+    ├── Tips             (1% platform fee)
+    ├── Subscriptions    (3% platform fee)
+    ├── Pay-per-view     (3% platform fee)
+    ├── Wallet transfers (3% fee)
+    └── Boosts           (full burn to platform reserve)
+```
+
+**Platform fee: 2.5% blended** (vs OnlyFans at 20%)
+
+---
+
+## Observability
+
+| Service | URL | Purpose |
+|---|---|---|
+| Grafana | http://localhost:3000 | Dashboards — F33D3R Overview provisioned |
+| Prometheus | http://localhost:9090 | Metrics, 14-day retention, all brains scraped |
+| Loki | http://localhost:3100 | Logs, 30-day retention, all containers via Promtail |
+| Alertmanager | http://localhost:9093 | Alert routing (BrainDown, HighErrorRate, DiskHigh) |
+| MinIO Console | http://localhost:9001 | Object storage (media-raw, media-derived, backups) |
+
+Grafana: `admin` / `f33d3rdev_change_in_prod`
 
 ---
 
@@ -203,82 +215,80 @@ Files are written to a shared Docker volume (`f33d3r_media`) and served by Nanta
 
 Docker and Docker Compose. No local Go or Rust toolchain required.
 
-### Start
-
 ```bash
 git clone <repo>
 cd f33d3r-local
 bash bootstrap-local.sh
 ```
 
-First run compiles all Rust brains — approximately 10 minutes. Subsequent starts: approximately 15 seconds.
+First run compiles all Rust brains — approximately 10–15 minutes. Subsequent starts: ~15 seconds.
 
-The app runs at `http://localhost:8081`. For WebCrypto (E2E messaging) to work in Safari and on mobile devices, HTTPS via Caddy is required — see `infra/README-CERTS.md`.
+App: `http://localhost:8081`  
+For WebCrypto (E2E messaging) on Safari/mobile, HTTPS via Caddy is required — see `infra/README-CERTS.md`.
 
 ### Dev accounts (password: `f33d3rdev`)
 
 | Handle | Role |
 |---|---|
-| @edd | Founder / Admin |
+| @tehanibentley | Founder / Admin |
 | @admin | Admin |
-| @creator | Creator |
+| @miiyazuko | Creator |
 | @dev | Engineer |
 | @guest | User |
 
-Grant admin to any account: `UPDATE users SET role = 'admin' WHERE handle = 'x';`
+Grant admin: `UPDATE users SET role = 'admin' WHERE handle = 'x';`
 
 ### Common commands
 
 ```bash
-# Rebuild and restart a single brain
+# Rebuild a single brain
 docker compose -f docker-compose.local.yml build feed-engine
 docker compose -f docker-compose.local.yml up -d feed-engine
 
 # Tail logs
 docker logs -f f33d3r-local-feed-engine-1
-docker logs -f f33d3r-local-thessalon-1
 
-# Health check all brains
+# Health check
 bash health-check-local.sh
 
 # Postgres shell
 docker exec -it f33d3r-local-postgres-1 psql -U f33d3r -d f33d3r_feed
 
-# Commerce database
-docker exec -it f33d3r-local-postgres-1 psql -U f33d3r -d f33d3r_commerce
-
-# feed-engine: run outside Docker for fast iteration
+# Run feed-engine outside Docker (fast iteration)
 cd feed-engine && make run
 cd feed-engine && make run-dev   # DEV_MODE=true SHOW_SCORES=true
+
+# Run nightly backup manually
+docker compose -f docker-compose.local.yml --profile backup run --rm backup
 ```
 
-### Pinned versions — do not change without explicit approval
+### Version policy
 
-| Component | Version |
-|---|---|
-| feed-engine (Go) | 1.26.2 |
-| All Rust brains | 1.95.0 |
-| HTMX | 2.0.10 |
-| PostgreSQL | 16 |
+**Never pin versions.** All images use `:latest`. All Cargo crates use caret-major (`"0.1"`). All Go modules resolve via `go mod tidy`. Lock files (`Cargo.lock`, `go.sum`) provide reproducibility — not hand-typed version strings.
+
+---
+
+## Admin Panel
+
+Available at `/admin` (admin/founder role required). Tabs: Overview · Users · Moderation · DMCA · Treasury · Analytics · Dev Tools.
+
+**Dev Tools** provides one-click operations without DB access:
+- Inject AET balance to any user
+- Reset account password
+- Set email address
+- Set PIAL capability (grant/revoke/restrict)
+- **Resync follower/following counts** — recomputes all cached counts from live `follows` data
+- **Pending scan sweep** — rescues posts stuck in "Under review" immediately
 
 ---
 
 ## CI / Branch Strategy
 
-| Branch | Pipeline behavior |
+| Branch | Pipeline |
 |---|---|
-| `feature/*` | Validate + test only |
-| `develop` | Validate + test + build + enforce + auto-deploy staging |
-| `main` | All stages + manual production deploy gate |
-
-CI enforcement runs four validators on every branch:
-
-- `enforcement/ci-gates/graph_validation.py` — brain dependency rules + version pins
-- `enforcement/ci-gates/version_policy.py` — Dockerfile FROM pin compliance
-- `enforcement/contract-checker/event_schema_validator.py` — PIAL field presence in all schemas
-- `enforcement/contract-checker/api_schema_validator.py` — Kafka topic ↔ schema file coverage
-
-All four must pass. Violations block merge.
+| `feature/*` | Validate + test |
+| `fa` | Active development branch — Facet Architecture |
+| `main` | Production |
 
 ---
 
@@ -286,26 +296,32 @@ All four must pass. Violations block merge.
 
 ```
 f33d3r-local/
-├── feed-engine/           ← Nantar (Go) — UI, social layer, proxy hub
-├── aethyrrank-engine/     ← AethyrRank (Rust) — ranking
-├── zior-engine/           ← Zior (Rust) — music intelligence
-├── aethyr-msg/            ← Vovin (Rust) — messaging relay
-├── ain-soph/              ← Ain Soph (Rust) — AET wallet
-├── elohim-veni/           ← Elohim Veni (Rust) — PIAL enforcement
-├── zodacare/              ← Zodacare (Rust) — content safety
-├── aethyr-schema-registry/← Schema Registry (Rust) — contract versioning
-├── registry-brain/        ← Registrar (Rust) — handle ownership
-├── verity/                ← Verity (Rust) — KYC/compliance
-├── aethyr-ledger/         ← Aethyr Ledger (Rust) — AET settlement
-├── thessalon/             ← Thessalon (Rust) — commerce engine
-├── caeor/                 ← Caeor (Rust) — media processing
-├── infra/                 ← Caddyfile, certs, k3s manifests
-├── enforcement/           ← CI validators, dependency rules, forbidden edges
-├── events/schemas/        ← Canonical JSON schemas for all Kafka events
-├── postgres-init/         ← Database creation scripts
-├── scripts/               ← Ops tooling, daily audit
-├── BRAIN_MAP.md           ← Canonical brain responsibility reference
-├── ARCHITECTURE.md        ← System design detail
+├── feed-engine/               ← Nantar (Go) — UI, social, proxy hub
+├── aethyrrank-engine/         ← AethyrRank (Rust) — ranking engine
+├── zior-engine/               ← Zior (Rust) — music intelligence
+├── aethyr-msg/                ← Vovin (Rust) — messaging relay
+├── ain-soph/                  ← Ain Soph (Rust) — AET wallet
+├── elohim-veni/               ← Elohim Veni (Rust) — moderation decisions → writes PIAL
+├── zodacare/                  ← Zodacare (Rust) — content safety
+├── aethyr-schema-registry/    ← Schema Registry (Rust) — contract versioning
+├── registry-brain/            ← Registrar (Rust) — handle ownership
+├── verity/                    ← Verity (Rust) — KYC/compliance
+├── aethyr-ledger/             ← Aethyr Ledger (Rust) — AET settlement
+├── thessalon/                 ← Thessalon (Rust) — commerce engine
+├── caeor/                     ← Caeor (Rust) — media processing + HLS
+├── transcoding/               ← Transcoding (Rust) — ffmpeg HLS worker
+├── infra/
+│   ├── observability/         ← Prometheus, Loki, Grafana, Alertmanager configs
+│   ├── backup/                ← pg_dump → MinIO backup scripts
+│   ├── postgres/              ← postgresql.conf tuning
+│   └── caddy/                 ← Caddyfile (local + prod)
+├── postgres-init/             ← DB creation + extension init scripts
+├── enforcement/               ← CI validators, dependency rules
+├── events/schemas/            ← Canonical Kafka event schemas
+├── BRAIN_MAP.md               ← Brain responsibility reference
+├── ARCHITECTURE.md            ← System design
+├── SPRINT_LOG.md              ← Session-by-session engineering log
+├── PROJECT_STATE.md           ← Live brain status + decisions
 └── docker-compose.local.yml
 ```
 
@@ -313,30 +329,19 @@ f33d3r-local/
 
 ## Security Notes
 
-**The ranking algorithm uses Jungian psychology-based behavioral modeling. This is confidential IP.**
+**The ranking algorithm uses behavioral psychology modeling. This is confidential IP.**
 
-- `JungArchetype`, `aesq_alignment`, Jung axis labels, `shadowscoring` must never appear in any user-facing surface, API response, JS variable, or log message.
-- Public-facing signal names are: Deep Space, Flow State, Soft Power, Sharp Edge, Root System, Golden Hour.
-- AethyrRank uses these fields internally. They do not leave the ranking engine.
+Internal scoring terms must never appear in user-facing surfaces, API responses, JS variables, or log messages. See `CLAUDE.md` for the full forbidden-term list.
 
-PIAL UUIDs must never be exposed to users. Verify before shipping any template or API response that contains identity fields.
+PIAL UUIDs must never be exposed to users or rendered in any template, data attribute, or JS variable.
 
 ---
 
 ## Further Reading
 
-- `BRAIN_MAP.md` — brain responsibilities, dependency matrix, forbidden actions per brain
-- `ARCHITECTURE.md` — system design, data flows, scaling model
-- `CLAUDE.md` — engineering guidance for AI-assisted development in this repo
-- `infra/README-CERTS.md` — local HTTPS setup for Safari / mobile device testing
-- `enforcement/dependency-graph/rules.yaml` — machine-readable brain call rules
-- `events/schemas/` — all canonical event schemas
-# f33d3r
-# f33d3r
-# f33d3r
-# f33d3r
-# f33d3r
-# f33d3r
-# f33d3r
-# f33d3r
-# f33d3r
+- `BRAIN_MAP.md` — brain responsibilities and dependency matrix
+- `ARCHITECTURE.md` — system design and data flows
+- `SPRINT_LOG.md` — session-by-session engineering history
+- `PROJECT_STATE.md` — live status and decisions
+- `CLAUDE.md` — engineering rules for AI-assisted development
+- `infra/README-CERTS.md` — local HTTPS setup

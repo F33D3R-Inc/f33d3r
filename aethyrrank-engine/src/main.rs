@@ -4,6 +4,7 @@ mod config;
 mod contracts;
 mod middleware;
 mod model_store;
+mod observ;
 mod persist;
 mod pipeline;
 mod safety;
@@ -12,7 +13,6 @@ mod session;
 
 use std::sync::Arc;
 use tracing::{info, warn};
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 use crate::api::handlers::AppState;
 use crate::config::AppConfig;
@@ -22,10 +22,7 @@ use crate::session::cache::SessionFeatureCache;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::registry()
-        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
-        .with(tracing_subscriber::fmt::layer())
-        .init();
+    observ::init("aethyrrank")?;
 
     let cfg = AppConfig::load()?;
     let surfaces: Vec<&str> = cfg

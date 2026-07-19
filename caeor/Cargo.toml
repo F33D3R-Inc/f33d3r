@@ -1,52 +1,27 @@
 [package]
 name = "caeor"
-version = "1.1.0"
+version = "2.0.0"
 edition = "2021"
-description = "Caeor — Media Brain for F33D3R: image derivatives, video HLS ladder, S3-compatible storage"
+description = "Caeor — Image brain: avatar/header/post derivatives, WebP conversion, filesystem output"
 
 [[bin]]
 name = "caeor"
 path = "src/main.rs"
 
 [dependencies]
-# Web framework
 axum = { version = "0.7", features = ["multipart"] }
 tokio = { version = "1", features = ["full"] }
-tower-http = { version = "0.5", features = ["cors", "trace"] }
-
-# Serialization
+tower-http = { version = "0.6", features = ["cors", "trace"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-
-# Image processing — pure Rust, no system lib deps
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
-
-# Identifiers + time
 uuid = { version = "1", features = ["v4"] }
-chrono = { version = "0.4", features = ["serde"] }
-
-# Observability
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
-
-# Error handling
 anyhow = "1"
-thiserror = "1"
-
-# S3-compatible storage (MinIO at T0–T2; Cloudflare R2 at T3)
-aws-sdk-s3 = { version = "1.55", default-features = false, features = ["rt-tokio", "rustls"] }
-aws-config = { version = "1.5", default-features = false, features = ["rt-tokio", "rustls"] }
-aws-credential-types = "1.2"
-aws-smithy-runtime-api = "1"
-
-# Async file I/O
-tempfile = "3"
-bytes = "1"
-futures = "0.3"
-
-# State sharing
+metrics = "0.23"
+metrics-exporter-prometheus = "0.15"
 once_cell = "1"
-dashmap = "6"
 
 [profile.release]
 opt-level = 3

@@ -1,0 +1,155 @@
+{{/*
+FACET profile_header
+  version: 1.1 | status: stable | layer: 2
+
+  inputs:
+    ProfileUser   User    — .Handle .DisplayName .AvatarURL .HeaderURL .Bio .Pronouns
+                            .Location .Website .SocialLinksRaw .Role .OfficialType .IsVerified
+                            .IsCreator .FollowingCount .FollowerCount .Realm .XP .PIALID .ID
+    IsOwner       bool    — true when viewer is viewing their own profile
+    IsFollowing   bool    — true when viewer follows ProfileUser
+    IsSubscribed  bool    — true when viewer subscribes to ProfileUser
+    SubscriberCount int   — creator subscriber count
+    ProfileIsOnline bool  — live presence indicator for avatar
+
+  states:
+    default | own-profile | following | subscribed | creator | verified
+
+  children:
+    user_avatar, badge_pill
+
+  signals:
+    emits:    follow, unfollow (POST /events), openSubscribeModal (JS), openTipModal (JS)
+    receives: none
+
+  context:
+    profile.html → top of main column, always the first section
+*/}}
+{{define "profile_header"}}
+<div class="profile-header">
+
+  {{/* ── Banner ── */}}
+  <div class="profile-banner"
+       style="{{if .ProfileUser.HeaderURL}}background:url('{{.ProfileUser.HeaderURL}}') center/cover no-repeat{{end}}"></div>
+
+  {{/* ── Avatar row: avatar overlaps banner, action buttons sit below it ── */}}
+  <div class="profile-head">
+    <div class="profile-avatar-row">
+      {{/* user_avatar renders as .user-av-wrap — targeted by CSS for banner overlap */}}
+      {{template "user_avatar" (dict
+        "Handle"      .ProfileUser.Handle
+        "AvatarURL"   .ProfileUser.AvatarURL
+        "DisplayName" .ProfileUser.DisplayName
+        "Realm"       .ProfileUser.Realm
+        "Size"        "xl"
+        "IsOnline"    .ProfileIsOnline)}}
+
+      <div class="profile-actions">
+        {{if .IsOwner}}
+        <button class="btn-outline"
+                hx-get="/facets/edit_profile_modal"
+                hx-target="#overlay-slot"
+                hx-swap="innerHTML">Edit profile</button>
+        {{else}}
+        {{/* Follow / Unfollow */}}
+        {{template "btn_follow" (dict "TargetPIAL" .ProfileUser.PIALID "TargetHandle" .ProfileUser.Handle "IsFollowing" .IsFollowing)}}
+        {{/* Subscribe — creators only */}}
+        {{if .ProfileUser.IsCreator}}
+        {{template "btn_subscribe" (dict "CreatorID" .ProfileUser.ID "CreatorHandle" .ProfileUser.Handle "IsSubscribed" .IsSubscribed)}}
+        {{end}}
+        {{/* Tip — verified users only, and only for a logged-in viewer (anon can't tip). */}}
+        {{if not .IsAnon}}{{template "btn_tip" (dict "TargetHandle" .ProfileUser.Handle "IsOwnContent" .IsOwner "TargetIsVerified" .ProfileUser.IsVerified)}}{{end}}
+        {{end}}
+      </div>
+    </div>
+
+    {{/* ── Identity: name, handle, bio, meta, stats, XP ── */}}
+    <div class="profile-name-row">
+      <h1 class="profile-display-name">{{.ProfileUser.DisplayName}}</h1>
+      {{template "badge_pill" (dict "Role" .ProfileUser.Role "OfficialType" .ProfileUser.OfficialType "IsVerified" .ProfileUser.IsVerified "IsCreator" .ProfileUser.IsCreator)}}
+      {{if .ProfileUser.IsFoundingCreator}}{{template "badge_founding_creator" .}}{{end}}
+      {{range .ProfileUser.OrgMemberships}}{{if eq .Status "approved"}}
+      {{template "org_badge" (dict "Handle" .Org.Handle "AvatarURL" .Org.AvatarURL "DisplayName" .Org.DisplayName "OrgType" .Org.OrgType)}}
+      {{end}}{{end}}
+    </div>
+
+    <p class="profile-handle">@{{.ProfileUser.Handle}}</p>
+
+    {{if .ProfileUser.Bio}}<p class="profile-bio">{{bioHTML .ProfileUser.Bio}}</p>{{end}}
+
+    <div class="profile-meta-row">
+      {{if .ProfileUser.Pronouns}}<span class="profile-meta-item">{{.ProfileUser.Pronouns}}</span>{{end}}
+      {{if .ProfileUser.Location}}
+      <span class="profile-meta-item">
+        <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="width:12px;height:12px">
+          <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/>
+        </svg>
+        {{.ProfileUser.Location}}
+      </span>
+      {{end}}
+      {{if .ProfileUser.Website}}
+      <a href="{{.ProfileUser.Website}}" target="_blank" rel="noopener noreferrer nofollow"
+         class="profile-meta-item profile-website">
+        <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="width:12px;height:12px">
+          <circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/>
+          <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+        </svg>
+        {{.ProfileUser.Website}}
+      </a>
+      {{end}}
+    </div>
+
+    {{$links := socialLinks .ProfileUser.SocialLinksRaw}}
+    {{if $links}}
+    <div class="profile-social-row">
+      {{range $k, $v := $links}}{{if $v}}
+      <a href="{{$v}}" target="_blank" rel="noopener noreferrer nofollow" class="profile-social-chip">
+        {{if eq $k "youtube"}}▶ {{else if eq $k "twitter"}}𝕏 {{else if eq $k "bluesky"}}☁ {{else if eq $k "instagram"}}📷 {{else if eq $k "soundcloud"}}☁ {{else if eq $k "spotify"}}♫ {{else if eq $k "twitch"}}▷ {{else if eq $k "kick"}}▷ {{else if eq $k "onlyfans"}}★ {{else}}🔗 {{end}}{{$k}}
+      </a>
+      {{end}}{{end}}
+    </div>
+    {{end}}
+
+    <div class="profile-stats">
+      <button class="profile-stat" onclick="openUserList('/api/user/{{.ProfileUser.Handle}}/following')">
+        <strong>{{.ProfileUser.FollowingCount}}</strong> Following
+      </button>
+      <button class="profile-stat" onclick="openUserList('/api/user/{{.ProfileUser.Handle}}/followers')">
+        <strong>{{.ProfileUser.FollowerCount}}</strong> Followers
+      </button>
+      {{if .ProfileUser.IsCreator}}
+      <button class="profile-stat" onclick="openUserList('/api/user/{{.ProfileUser.Handle}}/subscribers')">
+        <strong>{{.SubscriberCount}}</strong> Subscriptions
+      </button>
+      {{end}}
+    </div>
+
+    <div class="profile-xp-bar">
+      <div class="profile-xp-label">
+        <span class="realm-pill" style="font-size:10px;padding:2px 8px">R{{.ProfileUser.Realm}} {{realmName .ProfileUser.Realm}}</span>
+        <span class="profile-xp-count">{{.ProfileUser.XP}} XP</span>
+      </div>
+      <div class="xp-bar"><div class="xp-fill" style="width:{{realmPct .ProfileUser.XP .ProfileUser.Realm}}%"></div></div>
+    </div>
+  </div>
+
+  {{/* ── Surface tabs ── */}}
+  <div class="profile-tabs" id="profile-tabs">
+    <button class="profile-tab active" data-surface="profile_posts"
+            onclick="switchProfileTab(this,'profile_posts','{{.ProfileUser.Handle}}')">Posts</button>
+    <button class="profile-tab" data-surface="profile_replies"
+            onclick="switchProfileTab(this,'profile_replies','{{.ProfileUser.Handle}}')">Replies</button>
+    <button class="profile-tab" data-surface="profile_reposts"
+            onclick="switchProfileTab(this,'profile_reposts','{{.ProfileUser.Handle}}')">Reposts</button>
+    <button class="profile-tab" data-surface="profile_media"
+            onclick="switchProfileTab(this,'profile_media','{{.ProfileUser.Handle}}')">Media</button>
+    <button class="profile-tab" data-surface="profile_articles"
+            onclick="switchProfileTab(this,'profile_articles','{{.ProfileUser.Handle}}')">Articles</button>
+    {{if .IsOwner}}
+    <button class="profile-tab" data-surface="profile_saves"
+            onclick="switchProfileTab(this,'profile_saves','{{.ProfileUser.Handle}}')">Likes</button>
+    {{end}}
+  </div>
+
+</div>
+{{end}}

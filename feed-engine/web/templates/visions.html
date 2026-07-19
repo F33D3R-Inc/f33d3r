@@ -1,0 +1,27 @@
+{{define "title"}}Visions · F33D3R{{end}}
+{{define "nav-active-visions"}}active{{end}}
+{{define "body"}}
+<main class="visions-main" id="main-col">
+  <div class="visions-header">
+    <div class="visions-tabs" role="tablist">
+      <button class="visions-tab is-active" role="tab" aria-selected="true"
+              hx-get="/facets/visions/feed?surface=following"
+              hx-target="#visions-feed" hx-swap="innerHTML"
+              onclick="document.querySelectorAll('.visions-tab').forEach(function(t){t.classList.remove('is-active');t.setAttribute('aria-selected','false')});this.classList.add('is-active');this.setAttribute('aria-selected','true')">Following</button>
+      <button class="visions-tab" role="tab" aria-selected="false"
+              hx-get="/facets/visions/feed?surface=for_you"
+              hx-target="#visions-feed" hx-swap="innerHTML"
+              onclick="document.querySelectorAll('.visions-tab').forEach(function(t){t.classList.remove('is-active');t.setAttribute('aria-selected','false')});this.classList.add('is-active');this.setAttribute('aria-selected','true')">For You</button>
+    </div>
+    <a href="/visions/camera" class="visions-camera-link" aria-label="Open camera">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M20 7h-3.2L15 5H9L7.2 7H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2z"/></svg>
+    </a>
+  </div>
+  <div class="visions-feed" id="visions-feed"
+       hx-get="/facets/visions/feed?surface=following"
+       hx-trigger="load"
+       hx-swap="innerHTML"
+       aria-live="polite">
+  </div>
+</main>
+{{end}}

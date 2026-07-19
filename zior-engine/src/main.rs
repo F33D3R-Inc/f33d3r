@@ -4,13 +4,13 @@ mod behavioral;
 mod brain;
 mod config;
 mod jung;
+mod observ;
 mod signals;
 mod store;
 mod vector;
 
 use std::sync::Arc;
 use tracing::info;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 use crate::api::handlers::ZiorState;
 use crate::behavioral::events::BehavioralStore;
@@ -23,10 +23,7 @@ use crate::vector::VectorStore;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::registry()
-        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
-        .with(tracing_subscriber::fmt::layer())
-        .init();
+    observ::init("zior")?;
 
     let cfg = AppConfig::load()?;
     let track_store = Arc::new(TrackStore::new());

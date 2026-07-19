@@ -1,0 +1,9 @@
+{{define "title"}}{{.Article.Title}} · F33D3R{{end}}
+{{define "body"}}
+<main class="f33d3r-main article-reader-main" id="main-col">
+  <article class="article-reader">
+    {{template "article_reader_header" (dict "Article" .Article "User" .User)}}
+    {{template "article_body" (dict "Article" .Article)}}
+  </article>
+</main>
+{{end}}

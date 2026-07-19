@@ -1,0 +1,48 @@
+{{/*
+FACET poll_card
+  version: 1.0 | status: stable | layer: 2
+
+  inputs:
+    PostID  string      — parent post ID (used for DOM IDs and event payload)
+    Poll    *model.Poll — .Results []PollResult .UserVote int .Ended bool .ExpiresAt time
+
+  states:
+    voting (UserVote < 0, not Ended) | results (UserVote ≥ 0 OR Ended) | ended
+
+  children: none
+
+  signals:
+    emits:    poll_vote (POST /events with {post_id, option_index})
+    receives: none (handler swaps this Facet after vote)
+
+  context:
+    post_card → below body text
+*/}}
+{{define "poll_card"}}
+{{$postID := .PostID}}
+{{$poll   := .Poll}}
+<div class="poll-wrap" id="poll-{{$postID}}" onclick="event.stopPropagation()">
+  {{if or (ge $poll.UserVote 0) $poll.Ended}}
+  <div class="poll-results">
+    {{range $poll.Results}}
+    <div class="poll-bar{{if .Voted}} poll-voted{{end}}">
+      <div class="poll-bar-fill" style="width:{{.Pct}}%"></div>
+      <span class="poll-bar-label">{{.Label}}</span>
+      <span class="poll-bar-pct">{{.Pct}}%</span>
+    </div>
+    {{end}}
+    <p class="poll-total">{{$poll.TotalVotes}} vote{{if ne $poll.TotalVotes 1}}s{{end}}{{if $poll.Ended}} · Ended{{end}}</p>
+  </div>
+  {{else}}
+  <div class="poll-options">
+    {{range $oi, $r := $poll.Results}}
+    <button class="poll-option-btn"
+            hx-post="/api/poll/vote"
+            hx-vals='{"post_id":"{{$postID}}","option_idx":"{{$oi}}"}'
+            hx-target="#poll-{{$postID}}" hx-swap="outerHTML">{{$r.Label}}</button>
+    {{end}}
+    <p class="poll-total">{{$poll.TotalVotes}} vote{{if ne $poll.TotalVotes 1}}s{{end}}</p>
+  </div>
+  {{end}}
+</div>
+{{end}}

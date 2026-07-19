@@ -1,0 +1,134 @@
+{{/*
+FACET creator_overview
+  version: 1.0 | status: stable | layer: 2
+
+  inputs:
+    ArtistStats      ArtistStats — .TotalTracks .TotalPlays .TotalLikes
+    SubCount         int         — subscriber count
+    EarningsDisplay  string      — formatted AET earnings (e.g. "12.50 AET")
+
+  states:
+    default
+
+  children:
+    analytics_stat_card, creator_track_row
+
+  signals:
+    emits:    none (read-only overview)
+    receives: none
+
+  context:
+    creator_dashboard → #creator-panel (default section)
+*/}}
+{{define "creator_overview"}}
+
+<div class="crt-overview">
+
+  {{/* ── Stat cards ── */}}
+  <div class="crt-stat-row">
+    <div class="crt-stat-card">
+      <div class="crt-stat-icon crt-stat-icon--tracks">
+        <svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+      </div>
+      <div class="crt-stat-body">
+        <div class="crt-stat-val">{{.ArtistStats.TotalTracks}}</div>
+        <div class="crt-stat-label">Tracks</div>
+      </div>
+    </div>
+    <div class="crt-stat-card">
+      <div class="crt-stat-icon crt-stat-icon--plays">
+        <svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+      </div>
+      <div class="crt-stat-body">
+        <div class="crt-stat-val">{{.ArtistStats.TotalPlays}}</div>
+        <div class="crt-stat-label">Plays</div>
+      </div>
+    </div>
+    <div class="crt-stat-card">
+      <div class="crt-stat-icon crt-stat-icon--likes">
+        <svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+      </div>
+      <div class="crt-stat-body">
+        <div class="crt-stat-val">{{.ArtistStats.TotalLikes}}</div>
+        <div class="crt-stat-label">Likes</div>
+      </div>
+    </div>
+    <div class="crt-stat-card">
+      <div class="crt-stat-icon crt-stat-icon--subs">
+        <svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87m-4-12a4 4 0 0 1 0 7.75"/></svg>
+      </div>
+      <div class="crt-stat-body">
+        <div class="crt-stat-val">{{.SubCount}}</div>
+        <div class="crt-stat-label">Subscribers</div>
+      </div>
+    </div>
+    <div class="crt-stat-card crt-stat-card--accent">
+      <div class="crt-stat-icon crt-stat-icon--earnings">
+        <svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+      </div>
+      <div class="crt-stat-body">
+        <div class="crt-stat-val">{{.EarningsDisplay}}</div>
+        <div class="crt-stat-label">Estimated earnings</div>
+      </div>
+    </div>
+  </div>
+
+  {{/* ── Quick actions ── */}}
+  <div class="crt-quick-actions">
+    <button class="crt-action-pill"
+            onclick="document.querySelector('.stu-nav-tab[data-tab=music]').click()">
+      <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      Upload Music
+    </button>
+    <button class="crt-action-pill"
+            onclick="document.querySelector('.stu-nav-tab[data-tab=memberships]').click()">
+      <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>
+      Add Plan
+    </button>
+    <a class="crt-action-pill stu-action-pill--link" href="/shop/{{.User.Handle}}">
+      <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+      View Storefront
+    </a>
+  </div>
+
+  {{/* ── Recent tracks ── */}}
+  <div class="crt-section">
+    <div class="crt-section-head">
+      <h2 class="crt-section-title">Recent tracks</h2>
+    </div>
+
+    {{if .RecentTracks}}
+    <div class="crt-recent-tracks">
+      {{range .RecentTracks}}
+      <div class="crt-recent-track">
+        <div class="crt-recent-thumb">
+          {{if .CoverURL}}
+          <img src="{{.CoverURL}}" alt="{{.Title}}" width="40" height="40" loading="lazy">
+          {{else}}
+          <div class="crt-recent-thumb-placeholder">
+            <svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+          </div>
+          {{end}}
+        </div>
+        <div class="crt-recent-info">
+          <div class="crt-recent-title">{{.Title}}</div>
+          {{if .Genre}}<span class="crt-recent-genre">{{.Genre}}</span>{{end}}
+        </div>
+        <div class="crt-recent-meta">
+          <span class="crt-recent-plays">{{.PlayCount}} plays</span>
+          <span class="crt-recent-age">{{.TimeAgo}}</span>
+        </div>
+      </div>
+      {{end}}
+    </div>
+    {{else}}
+    <div class="crt-empty">
+      <p class="crt-empty-text">No tracks yet. Upload your first track to get started.</p>
+      <button class="crt-empty-cta"
+              onclick="document.querySelector('.stu-nav-tab[data-tab=music]').click()">Upload Music</button>
+    </div>
+    {{end}}
+  </div>
+
+</div>
+{{end}}

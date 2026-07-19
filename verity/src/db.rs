@@ -134,9 +134,130 @@ CREATE        INDEX IF NOT EXISTS idx_csam_flagged  ON csam_scans(result) WHERE 
 CREATE        INDEX IF NOT EXISTS idx_csam_uploader ON csam_scans(uploader_pial, scanned_at DESC);
 "#;
 
+const NEXUS_SCHEMA: &str = r#"
+-- nexus_id references will be added after nexus_identities table exists
+ALTER TABLE attestations ADD COLUMN IF NOT EXISTS nexus_id UUID;
+
+CREATE TABLE IF NOT EXISTS nexus_identities (
+    nexus_id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    biometric_hash    VARCHAR(128) NOT NULL,
+    document_hash     VARCHAR(128) NOT NULL,
+    verity_tier       SMALLINT    NOT NULL DEFAULT 1,
+    jurisdiction      VARCHAR(10),
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_verified_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    is_suspended      BOOL        NOT NULL DEFAULT false,
+    suspension_reason TEXT,
+    linking_refused   BOOL        NOT NULL DEFAULT false,
+    CONSTRAINT uq_biometric UNIQUE (biometric_hash),
+    CONSTRAINT uq_document  UNIQUE (document_hash),
+    CONSTRAINT chk_tier CHECK (verity_tier BETWEEN 0 AND 3)
+);
+
+-- Add FK after table exists
+DO $$ BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.table_constraints
+        WHERE constraint_name = 'attestations_nexus_id_fkey'
+    ) THEN
+        ALTER TABLE attestations ADD CONSTRAINT attestations_nexus_id_fkey
+            FOREIGN KEY (nexus_id) REFERENCES nexus_identities(nexus_id);
+    END IF;
+END $$;
+
+CREATE TABLE IF NOT EXISTS nexus_persona_links (
+    nexus_id          UUID        NOT NULL REFERENCES nexus_identities(nexus_id),
+    pial_shard_id     TEXT        NOT NULL,
+    persona_type      VARCHAR(20) NOT NULL CHECK (persona_type IN ('personal','creator','business')),
+    display_label     VARCHAR(50),
+    linked_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    linked_by         VARCHAR(20) NOT NULL CHECK (linked_by IN ('user_initiated','biometric_match','admin_review')),
+    is_primary        BOOL        NOT NULL DEFAULT false,
+    PRIMARY KEY (nexus_id, pial_shard_id),
+    CONSTRAINT uq_pial_one_nexus UNIQUE (pial_shard_id)
+);
+
+CREATE TABLE IF NOT EXISTS nexus_session_context (
+    session_id            VARCHAR(128) PRIMARY KEY,
+    nexus_id              UUID        NOT NULL REFERENCES nexus_identities(nexus_id),
+    active_pial_shard_id  TEXT        NOT NULL,
+    unified_view_mode     BOOL        NOT NULL DEFAULT false,
+    unified_mode_type     VARCHAR(20) CHECK (unified_mode_type IN ('notifications','messages','earnings')),
+    last_switched_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at            TIMESTAMPTZ NOT NULL DEFAULT NOW() + INTERVAL '7 days'
+);
+
+CREATE TABLE IF NOT EXISTS nexus_link_requests (
+    request_id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    nexus_id                UUID        NOT NULL REFERENCES nexus_identities(nexus_id),
+    target_pial_shard_id    TEXT        NOT NULL,
+    status                  VARCHAR(20) NOT NULL DEFAULT 'pending'
+                            CHECK (status IN ('pending','confirmed','declined','expired')),
+    initiated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at              TIMESTAMPTZ NOT NULL DEFAULT NOW() + INTERVAL '30 minutes',
+    confirmed_at            TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS nexus_audit_log (
+    log_id        UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    nexus_id      UUID        NOT NULL,
+    action        VARCHAR(50) NOT NULL,
+    pial_shard_id TEXT,
+    performed_by  VARCHAR(20) NOT NULL CHECK (performed_by IN ('user','system','admin','law_enforcement')),
+    timestamp     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    metadata_hash VARCHAR(128)
+);
+
+CREATE TABLE IF NOT EXISTS nexus_aml_aggregates (
+    nexus_id            UUID        NOT NULL REFERENCES nexus_identities(nexus_id),
+    period_start        TIMESTAMPTZ NOT NULL,
+    period_end          TIMESTAMPTZ NOT NULL,
+    total_withdrawn_uaet BIGINT     NOT NULL DEFAULT 0,
+    flag_for_edd        BOOL        NOT NULL DEFAULT false,
+    flagged_at          TIMESTAMPTZ,
+    PRIMARY KEY (nexus_id, period_start)
+);
+
+CREATE INDEX IF NOT EXISTS idx_nexus_biometric     ON nexus_identities(biometric_hash);
+CREATE INDEX IF NOT EXISTS idx_nexus_persona_links ON nexus_persona_links(pial_shard_id);
+CREATE INDEX IF NOT EXISTS idx_nexus_session_nid   ON nexus_session_context(nexus_id);
+CREATE INDEX IF NOT EXISTS idx_nexus_session_exp   ON nexus_session_context(expires_at);
+CREATE INDEX IF NOT EXISTS idx_nexus_link_status   ON nexus_link_requests(nexus_id, status, expires_at);
+CREATE INDEX IF NOT EXISTS idx_nexus_aml_period    ON nexus_aml_aggregates(nexus_id, period_start DESC);
+CREATE INDEX IF NOT EXISTS idx_att_nexus_id        ON attestations(nexus_id) WHERE nexus_id IS NOT NULL;
+
+-- ── NEXUS v2 migrations: user-initiated linking without biometrics ─────────────
+-- Allow NULL biometric/document hashes for user-initiated NEXUS (no KYC required
+-- to link your own accounts; KYC upgrades tier later).
+ALTER TABLE nexus_identities ALTER COLUMN biometric_hash DROP NOT NULL;
+ALTER TABLE nexus_identities ALTER COLUMN document_hash  DROP NOT NULL;
+
+-- Track how this NEXUS was created.
+ALTER TABLE nexus_identities ADD COLUMN IF NOT EXISTS source VARCHAR(20)
+    NOT NULL DEFAULT 'biometric'
+    CHECK (source IN ('biometric','user_initiated'));
+
+-- Replace global unique constraints with partial indexes (enforce only when set).
+ALTER TABLE nexus_identities DROP CONSTRAINT IF EXISTS uq_biometric;
+ALTER TABLE nexus_identities DROP CONSTRAINT IF EXISTS uq_document;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_nexus_biometric_nn
+    ON nexus_identities(biometric_hash) WHERE biometric_hash IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_nexus_document_nn
+    ON nexus_identities(document_hash)  WHERE document_hash  IS NOT NULL;
+
+-- Track which shard sent the link request (so the target knows who is asking).
+ALTER TABLE nexus_link_requests ADD COLUMN IF NOT EXISTS source_pial_shard_id TEXT;
+
+-- Fast lookup: all pending requests targeting a given shard.
+CREATE INDEX IF NOT EXISTS idx_nexus_link_target
+    ON nexus_link_requests(target_pial_shard_id, status, expires_at);
+"#;
+
 pub async fn migrate(pool: &PgPool) -> Result<()> {
     sqlx::raw_sql(SCHEMA).execute(pool).await?;
     sqlx::raw_sql(COMPLIANCE_SCHEMA).execute(pool).await?;
+    sqlx::raw_sql(NEXUS_SCHEMA).execute(pool).await?;
     Ok(())
 }
 

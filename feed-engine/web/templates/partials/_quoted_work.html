@@ -1,0 +1,42 @@
+{{/*
+FACET quoted_work
+  version: 2.0 | status: stable | layer: 2
+
+  Compact EMBED wireframe for a work referenced by another (quote, repost
+  preview, react-video original). Renders the work's real, playable content via
+  the shared work_core facet — the same media_container the feed uses — scaled
+  down by .quoted-post-card. The work is recalled whole, never re-drawn as a stub.
+
+  inputs:
+    (dot) Work — full quoted work struct (.ID .AuthorHandle .AuthorName
+                 .AvatarURL .AuthorRealm .Body + media fields consumed by work_core)
+
+  states:
+    default | has-media | nsfw/gore (chip, gated)
+
+  children:
+    user_avatar (sm), work_core (Variant=embed)
+
+  signals:
+    emits:    none (head/body link to /work/{ID}; media plays in place)
+    receives: none
+
+  context:
+    work_card / work_detail_focus → nested quote
+    react_video_player .rv-post   → reacted-to original
+    compose preview slot          → /facets/quoted_post fragment
+
+  note: the card is a <div> (not <a>) so an embedded <video> plays without the
+        click navigating away; the header and body are the navigation links.
+*/}}
+{{define "quoted_work"}}
+<div class="quoted-post-card" data-work-id="{{.ID}}">
+  <a class="quoted-post-head" href="/work/{{.ID}}" onclick="event.stopPropagation()">
+    {{template "user_avatar" (dict "Handle" .AuthorHandle "AvatarURL" .AvatarURL "DisplayName" .AuthorName "Realm" .AuthorRealm "Size" "sm")}}
+    <span class="quoted-post-name">{{.AuthorName}}</span>
+    <span class="quoted-post-handle">@{{.AuthorHandle}}</span>
+  </a>
+  {{if .Body}}<a class="quoted-post-body-link" href="/work/{{.ID}}" onclick="event.stopPropagation()"><p class="quoted-post-body">{{.Body}}</p></a>{{end}}
+  {{template "work_core" (dict "W" . "Variant" "embed")}}
+</div>
+{{end}}

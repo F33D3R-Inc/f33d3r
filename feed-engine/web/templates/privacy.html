@@ -1,30 +1,10 @@
 {{define "title"}}Privacy Policy · F33D3R{{end}}
 {{define "body"}}
-<main class="f33d3r-main">
-  <header class="top-bar">
-    <button onclick="history.back()" class="back-btn">
-      <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
-      Privacy Policy
-    </button>
-  </header>
-  <div style="padding:24px 16px;max-width:680px;margin:0 auto">
-
-    <h1 style="font-size:22px;font-weight:700;color:var(--text-primary);margin-bottom:4px">Privacy Policy</h1>
-    <p style="font-size:13px;color:var(--text-muted);margin-bottom:32px">Last updated: May 2026 · Effective immediately</p>
-
-    {{range .Sections}}
-    <section style="margin-bottom:28px">
-      <h2 style="font-size:16px;font-weight:600;color:var(--text-primary);margin-bottom:10px">{{.Title}}</h2>
-      <div style="font-size:14px;color:var(--text-secondary);line-height:1.8">{{.Body}}</div>
-    </section>
-    {{end}}
-
-    <div style="padding:16px;background:var(--panel);border:1px solid var(--border);border-radius:12px;font-size:12px;color:var(--text-muted);line-height:1.7;margin-top:32px">
-      Questions about this policy? Contact us at <a href="mailto:privacy@f33d3r.app" style="color:var(--accent)">privacy@f33d3r.app</a>
-      · <a href="/legal/2257" style="color:var(--accent)">18 U.S.C. § 2257 Records</a>
-      · <a href="/terms" style="color:var(--accent)">Terms of Service</a>
-      · <a href="/dmca" style="color:var(--accent)">DMCA</a>
-    </div>
+<main class="f33d3r-main legal-main" id="main-col">
+  <div class="main-head">
+    <button class="back-btn" onclick="history.back()"><svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="width:18px;height:18px"><path d="m15 18-6-6 6-6"/></svg></button>
+    <div class="main-head-title">Privacy Policy</div>
   </div>
+  <div class="legal-body">{{block "legal-content" .}}{{end}}</div>
 </main>
 {{end}}

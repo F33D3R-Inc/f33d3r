@@ -1,0 +1,93 @@
+{{/*
+FACET vision_camera_overlay
+  version: 2.0 | status: stable | layer: 3
+  inputs:
+    User    model.User  — authenticated user (for avatar in header)
+  states:
+    viewfinder  — camera feed visible, controls active
+    preview     — captured image shown, retake/caption/share available
+    sending     — upload in flight, overlay shown
+  children: none
+  signals:
+    emits: vision (POST /events {event_type:"vision", media_ids:[], body:""})
+    receives: none
+  context: vision_camera.html → main
+*/}}
+{{define "vision_camera_overlay"}}
+{{$u := .User}}
+<div class="vc-shell" id="vc-shell">
+
+  {{/* Header bar: avatar (back) | title | grid icon */}}
+  <div class="vc-header">
+    <button class="vc-header-avatar-btn" id="vc-close" type="button" aria-label="Back">
+      {{if $u.AvatarURL}}
+        <img class="vc-header-avatar" src="{{$u.AvatarURL}}" alt="{{$u.Handle}}">
+      {{else}}
+        <div class="vc-header-avatar--placeholder" style="background:{{avatarColors $u.Handle}}">{{firstChar $u.Handle}}</div>
+      {{end}}
+    </button>
+    <span class="vc-header-title">Visions</span>
+    <button class="vc-header-grid" type="button" aria-label="Grid view">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+        <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/>
+        <rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/>
+      </svg>
+    </button>
+  </div>
+
+  {{/* Camera state: viewfinder + controls + audience — hidden as a unit on capture */}}
+  <div class="vc-camera-state" id="vc-camera-state">
+
+    {{/* Viewfinder: video fills this box */}}
+    <div class="vc-viewfinder" id="vc-viewfinder">
+      <video id="vc-video" class="vc-video" autoplay playsinline muted></video>
+      <div class="vc-vignette" aria-hidden="true"></div>
+      <button class="vc-lut-toggle" id="vc-lut" type="button" aria-label="Cycle filter">Raw</button>
+    </div>
+
+    {{/* Controls row: flash | shutter | flip — below viewfinder, not inside */}}
+    <div class="vc-controls" id="vc-controls">
+      <button class="vc-ctrl-btn" id="vc-flash" type="button" aria-label="Flash" style="visibility:hidden">
+        <svg class="vc-flash-icon--off" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/>
+          <line x1="2" y1="2" x2="22" y2="22"/>
+        </svg>
+        <svg class="vc-flash-icon--on" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none" aria-hidden="true">
+          <path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/>
+        </svg>
+      </button>
+
+      <button class="vc-shutter" id="vc-shutter" type="button" aria-label="Capture"></button>
+
+      <button class="vc-ctrl-btn" id="vc-flip" type="button" aria-label="Flip camera">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <path d="M1 4v6h6"/>
+          <path d="M23 20v-6h-6"/>
+          <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10M23 14l-4.64 4.36A9 9 0 0 1 3.51 15"/>
+        </svg>
+      </button>
+    </div>
+
+    {{/* Audience pill */}}
+    <div class="vc-audience-row">
+      <button class="vc-audience-btn" type="button" aria-label="Select audience">Friends ▾</button>
+    </div>
+
+  </div>{{/* end .vc-camera-state */}}
+
+  {{/* Preview state — shown after capture, hidden by default */}}
+  <div class="vc-preview" id="vc-preview" style="display:none">
+    <img id="vc-preview-img" class="vc-preview-img" alt="Vision preview">
+    <div class="vc-preview-bar">
+      <button class="vc-preview-btn vc-preview-btn--retake" id="vc-retake" type="button">Retake</button>
+      <input class="vc-caption-input" id="vc-caption" type="text"
+             placeholder="Say something…" maxlength="280" autocomplete="off">
+      <button class="vc-preview-btn vc-preview-btn--send" id="vc-send" type="button">Share</button>
+    </div>
+    <div class="vc-sending-overlay" id="vc-sending" style="display:none">
+      <span class="vc-sending-label">Sharing…</span>
+    </div>
+  </div>
+
+</div>
+{{end}}

@@ -283,8 +283,24 @@
     function wireClicks(root) {
         root = root || document;
 
-        // Single image
-        root.querySelectorAll('.post-media-img:not(.carousel-slide)').forEach(function (img) {
+        // Image groups (single or multi) — all images in a .media-img-group open lightbox
+        root.querySelectorAll('.media-img-group').forEach(function (group) {
+            if (group.dataset.fvWired) return;
+            group.dataset.fvWired = '1';
+            var imgs = Array.from(group.querySelectorAll('.post-media-img'));
+            imgs.forEach(function (img, i) {
+                img.style.cursor = 'zoom-in';
+                img.addEventListener('click', function (e) {
+                    e.stopPropagation();
+                    var urls = imgs.map(function (im) { return im.src; });
+                    var card = group.closest('[data-content-id]') || group.closest('.post-card');
+                    openImages(urls, i, card);
+                });
+            });
+        });
+
+        // Standalone images outside a group (e.g. post detail page)
+        root.querySelectorAll('.post-media-img:not(.media-img-group .post-media-img)').forEach(function (img) {
             if (img.dataset.fvWired) return;
             img.dataset.fvWired = '1';
             img.style.cursor = 'zoom-in';
@@ -295,29 +311,11 @@
             });
         });
 
-        // Carousel images
-        root.querySelectorAll('.media-carousel').forEach(function (carousel) {
-            if (carousel.dataset.fvWired) return;
-            carousel.dataset.fvWired = '1';
-            carousel.querySelectorAll('.carousel-slide').forEach(function (slide, i) {
-                slide.style.cursor = 'zoom-in';
-                slide.addEventListener('click', function (e) {
-                    e.stopPropagation();
-                    var slides = Array.from(carousel.querySelectorAll('.carousel-slide'));
-                    var urls = slides.map(function (s) { return s.src; });
-                    var card = carousel.closest('[data-content-id]') || carousel.closest('.post-card');
-                    openImages(urls, i, card);
-                });
-            });
-        });
-
         // Video — clicking the poster/video opens the full-screen player
         root.querySelectorAll('video[data-f33d-hls]').forEach(function (vid) {
             if (vid.dataset.fvWired) return;
             vid.dataset.fvWired = '1';
-            // Only open viewer on poster-area click (before play starts)
             vid.addEventListener('click', function (e) {
-                // If already playing in-feed, don't hijack
                 if (!vid.paused) return;
                 e.stopPropagation();
                 var card = vid.closest('[data-content-id]') || vid.closest('.post-card');

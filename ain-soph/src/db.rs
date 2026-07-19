@@ -72,6 +72,20 @@ CREATE TABLE IF NOT EXISTS votes (
 );
 CREATE INDEX IF NOT EXISTS idx_votes_proposal ON votes(proposal_id);
 CREATE INDEX IF NOT EXISTS idx_votes_voter    ON votes(voter_id);
+
+-- Ledger checkpoints — Merkle roots received from Aethyr Ledger after each block seal.
+-- Stored here so Ain Soph can cross-verify settlement without querying the ledger brain.
+-- block_id is the ledger block_number (not a UUID) — incrementing integer from that chain.
+CREATE TABLE IF NOT EXISTS ledger_checkpoints (
+    id          BIGSERIAL   PRIMARY KEY,
+    block_id    BIGINT      NOT NULL UNIQUE,   -- ledger block_number
+    events_root TEXT        NOT NULL,          -- SHA-256 Merkle root (hex)
+    tx_count    BIGINT      NOT NULL DEFAULT 0,
+    sealed_at   TIMESTAMPTZ NOT NULL,          -- when ledger sealed the block
+    received_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_lc_block_id  ON ledger_checkpoints(block_id DESC);
+CREATE INDEX IF NOT EXISTS idx_lc_sealed_at ON ledger_checkpoints(sealed_at DESC);
 "#;
 
 /// Apply schema (idempotent — safe to call on every startup).

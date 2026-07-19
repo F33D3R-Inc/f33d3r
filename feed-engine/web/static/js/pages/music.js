@@ -6,14 +6,23 @@ const CURRENT_SURFACE = document.querySelector('meta[name="f33d3r:surface"]')?.c
 
 // ── Mode toggle ───────────────────────────────────────────────────────────────
 function setMusicMode(mode) {
-  document.getElementById('music-listen').classList.toggle('hidden', mode !== 'listen');
-  document.getElementById('music-artist').classList.toggle('hidden', mode !== 'artist');
-  document.getElementById('mode-listen-btn').classList.toggle('active', mode === 'listen');
-  document.getElementById('mode-artist-btn').classList.toggle('active', mode === 'artist');
+  const listenPanel  = document.getElementById('music-listen');
+  const artistPanel  = document.getElementById('music-artist');
+  const listenBtn    = document.getElementById('mode-listen-btn');
+  const artistBtn    = document.getElementById('mode-artist-btn');
+  if (!listenPanel || !artistPanel) return;
+
+  listenPanel.classList.toggle('hidden', mode !== 'listen');
+  artistPanel.classList.toggle('hidden', mode !== 'artist');
+  listenBtn.classList.toggle('active', mode === 'listen');
+  artistBtn.classList.toggle('active', mode === 'artist');
+  listenBtn.setAttribute('aria-selected', mode === 'listen');
+  artistBtn.setAttribute('aria-selected', mode === 'artist');
   localStorage.setItem('f33d3r-music-mode', mode);
 }
-// Restore mode on load
-(function() {
+
+// Restore mode from localStorage on page load
+(function () {
   const saved = localStorage.getItem('f33d3r-music-mode');
   if (saved === 'artist') setMusicMode('artist');
 })();
@@ -22,90 +31,9 @@ function setMusicMode(mode) {
 function filterGenre(btn, genre) {
   document.querySelectorAll('.genre-chip').forEach(c => c.classList.remove('active'));
   btn.classList.add('active');
-  htmx.ajax('GET', '/music/tracks?genre=' + genre, {target: '#track-feed', swap: 'innerHTML'});
-}
-
-// ── Upload flow ───────────────────────────────────────────────────────────────
-let selectedAudioFile = null;
-function handleAudioSelect(input) {
-  if (input.files && input.files[0]) showUploadForm(input.files[0]);
-}
-function handleAudioDrop(event) {
-  event.preventDefault();
-  document.getElementById('upload-drop-zone').classList.remove('drag-over');
-  const file = event.dataTransfer.files[0];
-  if (file) showUploadForm(file);
-}
-function showUploadForm(file) {
-  selectedAudioFile = file;
-  document.getElementById('upload-filename').textContent = file.name;
-  document.getElementById('upload-filesize').textContent = (file.size / (1024*1024)).toFixed(1) + ' MB';
-  document.getElementById('upload-form-wrap').classList.remove('hidden');
-  document.getElementById('upload-drop-zone').classList.add('hidden');
-}
-function cancelUpload() {
-  selectedAudioFile = null;
-  document.getElementById('upload-form-wrap').classList.add('hidden');
-  document.getElementById('upload-drop-zone').classList.remove('hidden');
-  document.getElementById('track-upload-form').reset();
-  document.getElementById('cover-preview').style.display = 'none';
-  document.getElementById('cover-placeholder').style.display = 'flex';
-}
-function previewCover(input) {
-  if (input.files && input.files[0]) {
-    const reader = new FileReader();
-    reader.onload = e => {
-      const img = document.getElementById('cover-preview');
-      img.src = e.target.result;
-      img.style.display = 'block';
-      document.getElementById('cover-placeholder').style.display = 'none';
-    };
-    reader.readAsDataURL(input.files[0]);
-  }
-}
-function setPricing(type) {
-  document.getElementById('price-free').classList.toggle('active', type === 'free');
-  document.getElementById('price-paid').classList.toggle('active', type === 'paid');
-}
-async function submitTrackUpload() {
-  if (!selectedAudioFile) return;
-  const form = document.getElementById('track-upload-form');
-  const formData = new FormData(form);
-  formData.append('audio', selectedAudioFile);
-
-  const btn = document.getElementById('upload-submit-btn');
-  btn.disabled = true;
-  btn.textContent = 'Uploading…';
-  document.getElementById('upload-progress-wrap').classList.remove('hidden');
-
-  try {
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', '/upload/track');
-    xhr.upload.onprogress = e => {
-      if (e.lengthComputable) {
-        const pct = Math.round((e.loaded / e.total) * 100);
-        document.getElementById('upload-progress-bar').style.width = pct + '%';
-        document.getElementById('upload-status-text').textContent = 'Uploading… ' + pct + '%';
-      }
-    };
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        toast('Track uploaded successfully');
-        cancelUpload();
-        window.location.reload();
-      } else {
-        toast(xhr.responseText || 'Upload failed', 'error');
-        btn.disabled = false;
-        btn.textContent = 'Upload track';
-      }
-    };
-    xhr.onerror = () => { toast('Upload failed', 'error'); btn.disabled = false; btn.textContent = 'Upload track'; };
-    xhr.send(formData);
-  } catch(e) {
-    toast('Upload failed: ' + e.message, 'error');
-    btn.disabled = false;
-    btn.textContent = 'Upload track';
-  }
+  const url = genre ? '/music/tracks?genre=' + encodeURIComponent(genre) : '/music/tracks';
+  htmx.ajax('GET', url, { target: '#track-feed', swap: 'innerHTML' });
+  history.pushState({genre: genre}, '', genre ? '/music?genre=' + encodeURIComponent(genre) : '/music');
 }
 
 // ── Track deletion ────────────────────────────────────────────────────────────
@@ -116,13 +44,14 @@ async function deleteTrack(trackId) {
     fd.append('track_id', trackId);
     const res = await fetch('/api/track/delete', { method: 'POST', body: fd });
     if (res.ok) {
-      const row = document.getElementById('studio-track-' + trackId);
-      if (row) row.remove();
+      document.getElementById('crt-track-' + trackId)?.remove();
       toast('Track deleted');
     } else {
       toast('Failed to delete track', 'error');
     }
-  } catch(e) { toast('Failed to delete track', 'error'); }
+  } catch (e) {
+    toast('Failed to delete track', 'error');
+  }
 }
 
 // ── Audio player ──────────────────────────────────────────────────────────────
@@ -130,64 +59,57 @@ const audio = document.getElementById('player-audio');
 let currentTrackID = null;
 
 function playTrack(id, url, title, artist, cover) {
-  // Track previous card state
-  if (currentTrackID) {
+  if (currentTrackID && currentTrackID !== id) {
     const prev = document.querySelector(`[data-track-id="${currentTrackID}"]`);
     if (prev) {
       prev.querySelector('.play-icon')?.classList.remove('hidden');
       prev.querySelector('.pause-icon')?.classList.add('hidden');
     }
   }
-
   currentTrackID = id;
   audio.src = url;
   audio.load();
-
-  document.getElementById('player-title').textContent = title;
-  document.getElementById('player-artist').textContent = artist;
+  document.getElementById('player-title').textContent  = title || '--';
+  document.getElementById('player-artist').textContent = artist || '--';
 
   const coverEl = document.getElementById('player-cover-img');
-  if (cover) {
-    coverEl.style.backgroundImage = `url(${cover})`;
-    coverEl.style.backgroundSize = 'cover';
+  if (coverEl) {
+    coverEl.style.backgroundImage   = cover ? `url(${CSS.escape ? cover : cover})` : '';
+    coverEl.style.backgroundSize    = 'cover';
     coverEl.style.backgroundPosition = 'center';
-  } else {
-    coverEl.style.backgroundImage = '';
   }
-
-  document.getElementById('player-bar').classList.remove('hidden');
+  document.getElementById('player-bar')?.classList.remove('hidden');
   audio.play().then(() => {
     updatePlayPauseUI(true);
-    // Send play count
     if (id && /^[0-9a-f-]{36}$/.test(id)) {
-      fetch('/api/track/play', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:'track_id='+id});
+      fetch('/api/track/play', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'track_id=' + encodeURIComponent(id)
+      });
     }
-    // Update card
     const card = document.querySelector(`[data-track-id="${id}"]`);
     if (card) {
       card.querySelector('.play-icon')?.classList.add('hidden');
       card.querySelector('.pause-icon')?.classList.remove('hidden');
     }
-  }).catch(()=>{});
+  }).catch(() => {});
 }
 
 function togglePlayerPlay() {
-  if (audio.paused) {
-    audio.play();
-    updatePlayPauseUI(true);
-  } else {
-    audio.pause();
-    updatePlayPauseUI(false);
-  }
+  if (!audio) return;
+  if (audio.paused) { audio.play(); updatePlayPauseUI(true); }
+  else              { audio.pause(); updatePlayPauseUI(false); }
 }
 function updatePlayPauseUI(playing) {
-  document.getElementById('player-play-icon').classList.toggle('hidden', playing);
-  document.getElementById('player-pause-icon').classList.toggle('hidden', !playing);
+  document.getElementById('player-play-icon')?.classList.toggle('hidden', playing);
+  document.getElementById('player-pause-icon')?.classList.toggle('hidden', !playing);
 }
 function closePlayer() {
+  if (!audio) return;
   audio.pause();
   audio.src = '';
-  document.getElementById('player-bar').classList.add('hidden');
+  document.getElementById('player-bar')?.classList.add('hidden');
   if (currentTrackID) {
     const card = document.querySelector(`[data-track-id="${currentTrackID}"]`);
     if (card) {
@@ -198,15 +120,16 @@ function closePlayer() {
   currentTrackID = null;
 }
 function seekRelative(secs) {
+  if (!audio) return;
   audio.currentTime = Math.max(0, Math.min(audio.duration || 0, audio.currentTime + secs));
 }
 function seekToClick(event) {
+  if (!audio || !audio.duration) return;
   const rect = event.currentTarget.getBoundingClientRect();
-  const pct = (event.clientX - rect.left) / rect.width;
-  if (audio.duration) audio.currentTime = pct * audio.duration;
+  audio.currentTime = ((event.clientX - rect.left) / rect.width) * audio.duration;
 }
 function setVolume(val) {
-  audio.volume = val / 100;
+  if (audio) audio.volume = val / 100;
 }
 function fmtTime(s) {
   if (!isFinite(s)) return '0:00';
@@ -214,20 +137,26 @@ function fmtTime(s) {
   const sec = Math.floor(s % 60);
   return m + ':' + String(sec).padStart(2, '0');
 }
-audio.addEventListener('timeupdate', () => {
-  const pct = audio.duration ? (audio.currentTime / audio.duration) * 100 : 0;
-  document.getElementById('player-progress-fill').style.width = pct + '%';
-  document.getElementById('player-current').textContent = fmtTime(audio.currentTime);
-  document.getElementById('player-total').textContent = fmtTime(audio.duration);
-});
-audio.addEventListener('ended', () => {
-  updatePlayPauseUI(false);
-  if (currentTrackID) {
-    const card = document.querySelector(`[data-track-id="${currentTrackID}"]`);
-    if (card) {
-      card.querySelector('.play-icon')?.classList.remove('hidden');
-      card.querySelector('.pause-icon')?.classList.add('hidden');
+
+if (audio) {
+  audio.volume = 0.8;
+  audio.addEventListener('timeupdate', () => {
+    const pct = audio.duration ? (audio.currentTime / audio.duration) * 100 : 0;
+    const fill = document.getElementById('player-progress-fill');
+    if (fill) fill.style.width = pct + '%';
+    const cur = document.getElementById('player-current');
+    const tot = document.getElementById('player-total');
+    if (cur) cur.textContent = fmtTime(audio.currentTime);
+    if (tot) tot.textContent = fmtTime(audio.duration);
+  });
+  audio.addEventListener('ended', () => {
+    updatePlayPauseUI(false);
+    if (currentTrackID) {
+      const card = document.querySelector(`[data-track-id="${currentTrackID}"]`);
+      if (card) {
+        card.querySelector('.play-icon')?.classList.remove('hidden');
+        card.querySelector('.pause-icon')?.classList.add('hidden');
+      }
     }
-  }
-});
-audio.volume = 0.8;
+  });
+}

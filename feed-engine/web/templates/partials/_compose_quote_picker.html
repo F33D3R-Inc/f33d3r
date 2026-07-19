@@ -1,0 +1,48 @@
+{{/*
+FACET compose_quote_row
+  version: 1.0 | status: stable | layer: 1
+
+  inputs:
+    .ID            string — post UUID
+    .AuthorHandle  string — author's handle (without @)
+    .AvatarURL     string — author's avatar URL (may be empty)
+    .Body          string — post body text
+    .TimeAgo       string — pre-formatted relative time string
+
+  states:
+    default | hover
+
+  children:
+    none
+
+  signals:
+    emits:    none — onclick calls selectQuote(this) in JS which calls openQuoteCompose
+    receives: none
+
+  context:
+    compose_quote_picker panel → tab results area
+*/}}
+{{define "compose_quote_row"}}
+<button type="button" class="compose-quote-row"
+        data-post-id="{{.ID}}"
+        onclick="selectQuote(this)">
+  <div class="compose-quote-row-avatar">
+    {{if .AvatarURL}}
+    <img src="{{.AvatarURL}}" alt="@{{.AuthorHandle}}" width="32" height="32" loading="lazy">
+    {{else}}
+    <div class="compose-quote-row-avatar-initials">{{firstChar .AuthorHandle}}</div>
+    {{end}}
+  </div>
+  <div class="compose-quote-row-content">
+    <div class="compose-quote-row-meta">
+      <span class="compose-quote-row-handle">@{{.AuthorHandle}}</span>
+      <span class="compose-quote-row-time">{{.TimeAgo}}</span>
+    </div>
+    <p class="compose-quote-row-body">{{.Body}}</p>
+  </div>
+</button>
+{{end}}
+
+{{define "compose_quote_empty"}}
+<p class="compose-quote-empty">{{.}}</p>
+{{end}}

@@ -1,47 +1,87 @@
 {{/*
-  F33D3R shared state components — Sprint 0 / S0.10.
+FACET stateEmpty
+  version: 1.0 | status: stable | layer: 1
 
-  Three reusable building blocks for the recurring "no content / loading /
-  failed" UI patterns. Replaces the ad-hoc per-page versions the audit flagged.
+  inputs:
+    Icon   string — emoji or SVG character for the icon (optional, default 🌌)
+    Title  string — heading text (optional, default "Nothing here yet")
+    Sub    string — sub-text below heading (optional)
 
-  Usage from any page:
+  states:
+    default
 
-    {{template "stateEmpty" (dict "Icon" "📭" "Title" "Nothing here yet" "Subtitle" "Be the first to post" "ActionURL" "/explore" "ActionLabel" "Discover creators")}}
+  children:
+    none
 
-    {{template "stateLoading" (dict "Caption" "Loading feed…")}}
+  signals:
+    emits:    none
+    receives: none
 
-    {{template "stateError" (dict "Title" "Couldn't load this" "Detail" "Try again in a moment." "RetryURL" "/feed")}}
-
-  All fields are optional. Sensible defaults are baked in.
+  context:
+    any surface → empty state placeholder
 */}}
-
 {{define "stateEmpty"}}
-<div class="f33-state f33-state-empty" role="status" aria-live="polite">
-  <div class="f33-state-icon" aria-hidden="true">{{if .Icon}}{{.Icon}}{{else}}∅{{end}}</div>
-  <h3 class="f33-state-title">{{if .Title}}{{.Title}}{{else}}Nothing here yet{{end}}</h3>
-  {{if .Subtitle}}<p class="f33-state-sub">{{.Subtitle}}</p>{{end}}
-  {{if and .ActionURL .ActionLabel}}
-  <a href="{{.ActionURL}}" class="f33-state-action">{{.ActionLabel}}</a>
-  {{end}}
+<div class="f33-state">
+  <div class="f33-state-icon">{{if .Icon}}{{.Icon}}{{else}}🌌{{end}}</div>
+  <p class="f33-state-title">{{if .Title}}{{.Title}}{{else}}Nothing here yet{{end}}</p>
+  {{if .Sub}}<p class="f33-state-sub">{{.Sub}}</p>{{end}}
 </div>
 {{end}}
 
+{{/*
+FACET stateLoading
+  version: 1.0 | status: stable | layer: 1
+
+  inputs:
+    none
+
+  states:
+    default
+
+  children:
+    none
+
+  signals:
+    emits:    none
+    receives: none
+
+  context:
+    any surface → loading placeholder shown while HTMX request is in flight
+*/}}
 {{define "stateLoading"}}
-<div class="f33-state f33-state-loading" role="status" aria-live="polite" aria-busy="true">
-  <div class="f33-spinner" aria-hidden="true"></div>
-  {{if .Caption}}<p class="f33-state-sub">{{.Caption}}</p>{{end}}
+<div class="f33-state">
+  <div class="f33-spinner"></div>
 </div>
 {{end}}
 
+{{/*
+FACET stateError
+  version: 1.0 | status: stable | layer: 1
+
+  inputs:
+    Message   string — error message (optional, default "Something went wrong")
+    RetryURL  string — hx-get URL to retry (optional, no button shown if absent)
+    Target    string — hx-target selector (optional, default "closest div")
+
+  states:
+    default
+
+  children:
+    none
+
+  signals:
+    emits:    none
+    receives: none
+
+  context:
+    any surface → error state with optional retry button
+*/}}
 {{define "stateError"}}
-<div class="f33-state f33-state-error" role="alert">
-  <div class="f33-state-icon" aria-hidden="true">!</div>
-  <h3 class="f33-state-title">{{if .Title}}{{.Title}}{{else}}Something went wrong{{end}}</h3>
-  {{if .Detail}}<p class="f33-state-sub">{{.Detail}}</p>{{end}}
+<div class="f33-state f33-state-error">
+  <div class="f33-state-icon">⚠</div>
+  <p class="f33-state-title">{{if .Message}}{{.Message}}{{else}}Something went wrong{{end}}</p>
   {{if .RetryURL}}
-  <a href="{{.RetryURL}}" class="f33-state-action" hx-get="{{.RetryURL}}" hx-target="closest .f33-state">
-    {{if .RetryLabel}}{{.RetryLabel}}{{else}}Retry{{end}}
-  </a>
+  <button class="f33-state-action" hx-get="{{.RetryURL}}" hx-target="{{if .Target}}{{.Target}}{{else}}closest div{{end}}" hx-swap="outerHTML">Retry</button>
   {{end}}
 </div>
 {{end}}

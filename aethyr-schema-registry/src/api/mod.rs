@@ -21,6 +21,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .allow_headers(Any);
 
     Router::new()
+        .route("/metrics", get(crate::observ::metrics_handler))
         // Brain registration and liveness
         .route("/brain/register", post(register_brain))
         .route("/brain/heartbeat", post(brain_heartbeat))
@@ -40,4 +41,5 @@ pub fn router(state: Arc<AppState>) -> Router {
         .layer(TraceLayer::new_for_http())
         .layer(cors)
         .with_state(state)
+        .layer(axum::middleware::from_fn(crate::observ::http_middleware))
 }

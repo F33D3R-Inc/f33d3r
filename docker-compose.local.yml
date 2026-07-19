@@ -5,8 +5,42 @@
 
 services:
 
+  # ── Sitra Achra — Redpanda (Kafka-compatible) event backbone ─────────────
+  # Single-node, no Zookeeper. Topics auto-created on first publish.
+  # Kafka API: sitra-achra:9092 (internal) / localhost:9092 (host)
+  # Pandaproxy (HTTP): sitra-achra:8082 (internal) / localhost:8082 (host)
+  sitra-achra:
+    image: redpandadata/redpanda:latest
+    command:
+      - redpanda
+      - start
+      - --overprovisioned
+      - --smp 1
+      - --memory 512M
+      - --reserve-memory 0M
+      - --node-id 0
+      - --kafka-addr PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr PLAINTEXT://sitra-achra:9092
+      - --pandaproxy-addr 0.0.0.0:8082
+      - --advertise-pandaproxy-addr sitra-achra:8082
+      - --set redpanda.auto_create_topics_enabled=true
+    ports:
+      - "9092:9092"
+      - "9644:9644"
+    volumes:
+      - sitra_achra_data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -E 'Healthy:.+true' || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
   postgres:
     image: postgres:18-alpine
+    command: >
+      postgres
+      -c config_file=/etc/postgresql/postgresql.conf
     environment:
       POSTGRES_USER: "${POSTGRES_USER:-f33d3r}"
       POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-f33d3rdev}"
@@ -15,6 +49,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./postgres-init:/docker-entrypoint-initdb.d:ro
+      - ./infra/postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
     ports:
       - "5432:5432"
     healthcheck:
@@ -99,8 +134,13 @@ services:
 
   feed-engine:
     build:
-      context: ./feed-engine
-      dockerfile: Dockerfile
+      # Repo-root context so the build reaches the gnosis-malkuth WASM core
+      # (sibling of feed-engine). Matches docker-compose.prod.yml. A root
+      # .dockerignore keeps the context tight.
+      context: .
+      dockerfile: feed-engine/Dockerfile
+    env_file:
+      - .env.local
     ports:
       - "8081:8081"
     environment:
@@ -110,17 +150,24 @@ services:
       AETHYRRANK_URL: "http://aethyrrank-engine:8080"
       ZIOR_URL: "http://zior-engine:8082"
       AIN_SOPH_URL: "http://ain-soph:8089"
-      VOVIN_URL: "http://aethyr-msg:8092"
       ZODACARE_URL: "http://zodacare:8090"
       ELOHIM_VENI_URL: "http://elohim-veni:8093"
       VERITY_URL: "http://verity:8095"
       EKYC_URL: "http://ekyc:8099"
       LEDGER_URL: "http://aethyr-ledger:8096"
       CAEOR_URL: "http://caeor:8086"
-      MINIO_ENDPOINT: "http://minio:9000"
-      THESSALON_URL: "http://thessalon:8084"
+      TRANSCODING_URL: "http://transcoding:8085"
+      HERALD_URL: "http://herald:8105"
+      THEMIS_URL: "http://themis:8100"
       REDIS_URL: "redis://redis:6379"
+      KAFKA_BROKERS: "sitra-achra:9092"
+      TIINGO_API_KEY: "${TIINGO_API_KEY:-}"
+      TRANSLATION_API_URL: "http://libretranslate:5000"
+      ASTRAON_URL: "http://astraon:8088"
+      ALEXANDRIA_URL: "http://alexandria:8098"
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY:-dev_internal_key_change_in_production}"
       SESSION_SECRET: "${SESSION_SECRET:-dev_secret_change_in_production_32chars}"
+      MEDIA_TOKEN_SECRET: "${MEDIA_TOKEN_SECRET:-dev_media_token_secret_change_in_prod}"
       SHOW_SCORES: "${SHOW_SCORES:-false}"
       DEV_MODE: "${DEV_MODE:-false}"
     volumes:
@@ -134,7 +181,13 @@ services:
         condition: service_healthy
       caeor:
         condition: service_healthy
-      thessalon:
+      transcoding:
+        condition: service_healthy
+      themis:
+        condition: service_healthy
+      astraon:
+        condition: service_healthy
+      sitra-achra:
         condition: service_healthy
     healthcheck:
       test: [ "CMD", "wget", "-qO-", "http://localhost:8081/api/health" ]
@@ -142,6 +195,26 @@ services:
       timeout: 3s
       retries: 3
       start_period: 15s
+
+  astraon:
+    build:
+      context: ./astraon
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8088:8088"
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+      PORT: "8088"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:-f33d3rdev}@postgres:5432/f33d3r_feed?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8088/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 60s
 
   ain-soph:
     build:
@@ -154,6 +227,8 @@ services:
       PORT: "8089"
       DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:-f33d3rdev}@postgres:5432/f33d3r_wallet?sslmode=disable"
       AETHYRRANK_URL: "http://aethyrrank-engine:8080"
+      FEED_ENGINE_URL: "http://feed-engine:8081"
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY:-dev_internal_key_change_in_production}"
     depends_on:
       postgres:
         condition: service_healthy
@@ -164,29 +239,9 @@ services:
       retries: 5
       start_period: 20s
 
-  aethyr-msg:
-    build:
-      context: ./aethyr-msg
-      dockerfile: docker/Dockerfile
-    ports:
-      - "8092:8092"
-    environment:
-      RUST_LOG: "${RUST_LOG:-info}"
-      PORT: "8092"
-      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:-f33d3rdev}@postgres:5432/f33d3r_msg?sslmode=disable"
-      REGISTRY_URL: "http://aethyr-schema-registry:8079"
-      AETHYRRANK_URL: "http://aethyrrank-engine:8080"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      aethyr-schema-registry:
-        condition: service_healthy
-    healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:8092/health" ]
-      interval: 10s
-      timeout: 3s
-      retries: 5
-      start_period: 20s
+  # aethyr-msg (Vovin messaging brain) RETIRED — replaced by the Gnosis E2EE
+  # pillar, which is compiled into feed-engine (Go handlers + gnosis-malkuth
+  # WASM crypto core). No separate messaging brain exists anymore.
 
   elohim-veni:
     build:
@@ -199,6 +254,7 @@ services:
       PORT: "8093"
       DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:-f33d3rdev}@postgres:5432/f33d3r_security?sslmode=disable"
       VERITY_URL: "http://verity:8095"
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY:-dev_internal_key_change_in_production}"
     depends_on:
       postgres:
         condition: service_healthy
@@ -229,6 +285,54 @@ services:
         condition: service_healthy
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:8090/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+
+  herald:
+    build:
+      context: ./herald
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8105:8105"
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+      PORT: "8105"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:-f33d3rdev}@postgres:5432/f33d3r_herald?sslmode=disable"
+      VAPID_PUBLIC_KEY: "${VAPID_PUBLIC_KEY:-not-configured}"
+      VAPID_PRIVATE_KEY: "${VAPID_PRIVATE_KEY:-}"
+      VAPID_SUBJECT: "${VAPID_SUBJECT:-mailto:admin@f33d3r.com}"
+    mem_limit: 512m
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8105/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+
+  lore:
+    build:
+      context: ./lore
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8106:8106"
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+      PORT: "8106"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:-f33d3rdev}@postgres:5432/f33d3r_lore?sslmode=disable"
+      HERALD_URL: "http://herald:8105"
+    mem_limit: 512m
+    depends_on:
+      postgres:
+        condition: service_healthy
+      herald:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8106/health" ]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -274,6 +378,21 @@ services:
       retries: 5
       start_period: 30s
 
+  nexus-sweep:
+    build:
+      context: ./nexus-sweep
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:-f33d3rdev}@postgres:5432/f33d3r_verity?sslmode=disable"
+      SWEEP_INTERVAL_SECS: "900"
+    depends_on:
+      verity:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
   aethyr-ledger:
     build:
       context: ./aethyr-ledger
@@ -289,6 +408,26 @@ services:
         condition: service_healthy
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:8096/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+
+  alexandria:
+    build:
+      context: ./alexandria
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8098:8098"
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+      PORT: "8098"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:-f33d3rdev}@postgres:5432/f33d3r_library?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8098/health" ]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -320,19 +459,8 @@ services:
       PORT: "8086"
       MEDIA_DIR: "/data/media"
       DEV_MODE: "${DEV_MODE:-false}"
-      # MinIO / S3-compatible storage (Sprint 0 / S0.5)
-      MINIO_ENDPOINT: "http://minio:9000"
-      MINIO_PUBLIC_BASE: "/media"
-      MINIO_ACCESS_KEY: "${MINIO_ROOT_USER:-f33d3r_minio}"
-      MINIO_SECRET_KEY: "${MINIO_ROOT_PASSWORD:-f33d3rdev_change_in_prod_32c}"
-      MINIO_REGION: "us-east-1"
-      MINIO_BUCKET_RAW: "media-raw"
-      MINIO_BUCKET_DERIVED: "media-derived"
     volumes:
       - f33d3r_media:/data/media
-    depends_on:
-      minio:
-        condition: service_healthy
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:8086/health" ]
       interval: 10s
@@ -340,29 +468,41 @@ services:
       retries: 5
       start_period: 60s
 
-  thessalon:
+  # ── Themis — unified commerce + Bitcoin marketplace brain (Rust, port 8100) ──
+  themis:
     build:
-      context: ./thessalon
-      dockerfile: docker/Dockerfile
-    ports:
-      - "8084:8084"
-    environment:
-      RUST_LOG: "${RUST_LOG:-info}"
-      PORT: "8084"
-      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:-f33d3rdev}@postgres:5432/f33d3r_commerce?sslmode=disable"
-      AIN_SOPH_URL: "http://ain-soph:8089"
-      VERITY_URL: "http://verity:8095"
+      context: ./themis
     depends_on:
       postgres:
         condition: service_healthy
-      ain-soph:
+      elohim-veni:
         condition: service_healthy
+    ports:
+      - "8100:8100"
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:-f33d3rdev}@postgres:5432/f33d3r_market?sslmode=disable"
+      PORT: "8100"
+      NANTAR_URL: "http://feed-engine:8081"
+      ELOHIM_VENI_URL: "http://elohim-veni:8093"
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY:-dev_internal_key_change_in_production}"
+      MEMPOOL_WS_URL: "wss://mempool.space/api/v1/ws"
+      XRP_WS_URL: "${XRP_WS_URL:-wss://xrpl.ws}"
+      THEMIS_ECDH_PRIVKEY_B64: "${THEMIS_ECDH_PRIVKEY_B64:-}"
+      CONF_THRESHOLD_LOW: "1"
+      CONF_THRESHOLD_HIGH: "3"
+      AIN_SOPH_URL: "http://ain-soph:8089"
+      VERITY_URL: "http://verity:8095"
+      STRIPE_SECRET_KEY: "${STRIPE_SECRET_KEY:-}"
+      STRIPE_WEBHOOK_SECRET: "${STRIPE_WEBHOOK_SECRET:-}"
+      STRIPE_PUBLISHABLE_KEY: "${STRIPE_PUBLISHABLE_KEY:-}"
     healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:8084/health" ]
+      test: [ "CMD", "curl", "-f", "http://localhost:8100/health" ]
       interval: 10s
-      timeout: 3s
+      timeout: 5s
       retries: 5
-      start_period: 60s
+      start_period: 120s
+    restart: unless-stopped
 
   # ── eKYC brain — face match, OCR, anti-spoof (Python, port 8099) ──────────
   ekyc:
@@ -429,6 +569,7 @@ services:
       MINIO_ROOT_USER: "${MINIO_ROOT_USER:-f33d3r_minio}"
       MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:-f33d3rdev_change_in_prod_32c}"
       MINIO_BROWSER_REDIRECT_URL: "http://localhost:9001"
+      MINIO_PROMETHEUS_AUTH_TYPE: "public"
     ports:
       - "9000:9000"   # S3 API
       - "9001:9001"   # web console
@@ -463,35 +604,33 @@ services:
       MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:-f33d3rdev_change_in_prod_32c}"
     restart: "no"
 
-  # ── Transcoder brain (NEW) — Rust + ffmpeg, port 8085 ────────────────────
-  # Scaffolded in S0.1, implementation lands in S0.5. Until S0.5 ships, this
-  # service is commented out — uncomment after `transcoder/` directory exists.
-  #
-  # transcoder:
-  #   build:
-  #     context: ./transcoder
-  #     dockerfile: docker/Dockerfile
-  #   ports:
-  #     - "8085:8085"
-  #   environment:
-  #     RUST_LOG: "${RUST_LOG:-info}"
-  #     PORT: "8085"
-  #     KAFKA_BROKERS: "kafka:9092"
-  #     MINIO_ENDPOINT: "http://minio:9000"
-  #     MINIO_ACCESS_KEY: "${MINIO_ROOT_USER:-f33d3r_minio}"
-  #     MINIO_SECRET_KEY: "${MINIO_ROOT_PASSWORD:-f33d3rdev_change_in_prod_32c}"
-  #     MINIO_BUCKET_RAW: "media-raw"
-  #     MINIO_BUCKET_DERIVED: "media-derived"
-  #     FFMPEG_THREADS: "2"
-  #   depends_on:
-  #     minio:
-  #       condition: service_healthy
-  #   healthcheck:
-  #     test: [ "CMD", "curl", "-f", "http://localhost:8085/health" ]
-  #     interval: 10s
-  #     timeout: 3s
-  #     retries: 5
-  #     start_period: 30s
+  transcoding:
+    build:
+      context: ./transcoding
+      dockerfile: Dockerfile
+    ports:
+      - "8085:8085"
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+      PORT: "8085"
+      MEDIA_DIR: "/data/media"
+      DEV_MODE: "${DEV_MODE:-false}"
+      NVENC_ENABLED: "true"
+    volumes:
+      - f33d3r_media:/data/media
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu, video]
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8085/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 60s
 
   # ── Prometheus — metrics scraping ────────────────────────────────────────
   prometheus:
@@ -550,6 +689,64 @@ services:
       retries: 3
       start_period: 15s
 
+  # ── Backup — nightly pg_dump to MinIO (S0.4) ─────────────────────────────
+  # Runs once on container start then exits (restart: "no").
+  # To trigger manually: docker compose run --rm backup
+  # To run restore-test: docker compose run --rm backup restore-test.sh
+  backup:
+    build:
+      context: ./infra/backup
+      dockerfile: Dockerfile
+    environment:
+      POSTGRES_HOST: "postgres"
+      POSTGRES_USER: "${POSTGRES_USER:-f33d3r}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-f33d3rdev}"
+      MINIO_ENDPOINT: "minio:9000"
+      MINIO_ACCESS_KEY: "${MINIO_ROOT_USER:-f33d3r_minio}"
+      MINIO_SECRET_KEY: "${MINIO_ROOT_PASSWORD:-f33d3rdev_change_in_prod_32c}"
+      MINIO_BUCKET: "backups"
+      BACKUP_RETENTION_DAYS: "7"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    restart: "no"
+    profiles: ["backup"]   # only starts with: docker compose --profile backup up
+
+  # ── node-exporter — host-level CPU/RAM/disk/network metrics ─────────────
+  node-exporter:
+    image: prom/node-exporter:latest
+    pid: host
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--path.rootfs=/rootfs'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    ports:
+      - "9100:9100"
+    healthcheck:
+      test: [ "CMD", "wget", "-qO-", "http://localhost:9100/metrics" ]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # ── Promtail — ship container stdout/stderr logs to Loki ─────────────────
+  promtail:
+    image: grafana/promtail:latest
+    command: -config.file=/etc/promtail/config.yml
+    volumes:
+      - ./infra/observability/promtail-config.yml:/etc/promtail/config.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      loki:
+        condition: service_healthy
+
   # ── Grafana — dashboards ─────────────────────────────────────────────────
   grafana:
     image: grafana/grafana:latest
@@ -560,6 +757,7 @@ services:
       GF_INSTALL_PLUGINS: ""
       GF_FEATURE_TOGGLES_ENABLE: "publicDashboards"
     volumes:
+      - ./infra/observability/grafana/grafana.ini:/etc/grafana/grafana.ini:ro
       - ./infra/observability/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./infra/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana_data:/var/lib/grafana
@@ -577,6 +775,71 @@ services:
       retries: 3
       start_period: 30s
 
+  # ── Abraxas Core — Kafka consumer / ranking signal pipeline (Rust, no HTTP server) ──
+  abraxas-core:
+    build:
+      context: ./abraxas-core
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+      KAFKA_BROKERS: "sitra-achra:9092"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:-f33d3rdev}@postgres:5432/f33d3r_feed?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      sitra-achra:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Abraxas Shield — Kafka-native content safety (Rust, no HTTP server) ──────
+  abraxas-shield:
+    build:
+      context: ./abraxas-shield
+      dockerfile: Dockerfile
+      args:
+        FEATURES: ""   # text-only on local (avoids AVX2 SIGILL on older CPUs)
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+      KAFKA_BROKERS: "sitra-achra:9092"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:-f33d3rdev}@postgres:5432/f33d3r_feed?sslmode=disable"
+      SCAN_VERSION: "3.0"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      sitra-achra:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Help Center — docs site served at help.f33d3r.com ──────────────────────
+  help-center:
+    build:
+      context: ./help-center
+      dockerfile: Dockerfile
+    image: f33d3r-help-center:latest
+    restart: unless-stopped
+    volumes:
+      - ./help-center/docs:/app/docs   # drop .docx files here; no rebuild needed
+    healthcheck:
+      test: [ "CMD", "wget", "-qO-", "http://localhost:8080/" ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  libretranslate:
+    image: libretranslate/libretranslate:latest
+    restart: unless-stopped
+    environment:
+      LT_LOAD_ONLY: "en,es,fr,de,pt,it,ja,ko,zh,ar,ru,hi,tr,nl,pl,sv,uk,he,id,vi"
+      LT_DISABLE_WEB_UI: "true"
+    volumes:
+      - libretranslate_data:/home/libretranslate/.local
+    healthcheck:
+      test: [ "CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:5000/languages')\"" ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
 volumes:
   postgres_data:
   caddy_data:
@@ -587,3 +850,5 @@ volumes:
   loki_data:
   alertmanager_data:
   grafana_data:
+  libretranslate_data:
+  sitra_achra_data:

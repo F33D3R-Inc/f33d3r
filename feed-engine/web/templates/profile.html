@@ -1,315 +1,90 @@
-{{define "title"}}{{if .ProfileUser}}@{{.ProfileUser.Handle}}{{else}}Profile{{end}} · F33D3R{{end}}
-{{define "nav-active-profile"}}active{{end}}
-{{define "mob-active-profile"}}active{{end}}
-{{define "body"}}
-  <main class="f33d3r-main">
-    <header class="top-bar">
-      <button onclick="history.back()" class="back-btn">
-        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
-        <span style="font-size:14px">{{if .ProfileUser}}{{.ProfileUser.DisplayName}}{{end}}</span>
-      </button>
-    </header>
-
-    {{if .ProfileUser}}
-    {{$pu := .ProfileUser}}
-    {{$me := .User}}
-
-    <div class="profile-header">
-      <!-- Banner + Avatar -->
-      <div class="profile-banner-wrap">
-        <div class="profile-banner" id="profile-banner-area" {{if .IsOwner}}style="cursor:pointer" title="Click to upload banner" onclick="document.getElementById('header-upload-btn').click()"{{end}}>
-          {{if $pu.HeaderURL}}<img src="{{$pu.HeaderURL}}" alt="banner" style="width:100%;height:100%;object-fit:cover">
-          {{else}}<div style="width:100%;height:100%;background:linear-gradient(135deg,var(--panel),color-mix(in srgb,var(--accent) 15%,var(--panel)))"></div>{{end}}
-          {{if .IsOwner}}<div class="banner-upload-hint"><svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" class="w-5 h-5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>Upload banner</div>{{end}}
-        </div>
-        <div class="profile-avatar-wrap" style="position:relative">
-          <div class="profile-avatar realm-ring-{{$pu.Realm}}" id="profile-avatar-area" {{if .IsOwner}}style="cursor:pointer" title="Click to upload photo" onclick="document.getElementById('avatar-upload-btn').click()"{{end}}>
-            {{if $pu.AvatarURL}}<img src="{{$pu.AvatarURL}}" alt="{{$pu.DisplayName}}" style="width:100%;height:100%;object-fit:cover;border-radius:50%">
-            {{else}}
-            {{$colors := avatarColors $pu.Handle}}
-            <span style="width:100%;height:100%;border-radius:50%;background:linear-gradient(135deg,{{index $colors 0}},{{index $colors 1}});display:flex;align-items:center;justify-content:center;font-size:28px;font-weight:700;color:#fff">{{firstChar $pu.DisplayName}}</span>
-            {{end}}
-            {{if .IsOwner}}<div class="avatar-upload-hint"><svg fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24" class="w-4 h-4"><path d="M12 5v14M5 12h14"/></svg></div>{{end}}
-          </div>
-          <!-- Online presence dot — JS fills in via /api/online/:handle -->
-          {{if not .IsOwner}}<span id="profile-online-dot" data-handle="{{$pu.Handle}}"
-            style="position:absolute;bottom:4px;right:4px;width:14px;height:14px;border-radius:50%;border:2px solid var(--surface);background:#6b7280;display:none"></span>{{end}}
-        </div>
-      </div>
-
-      <!-- Hidden upload inputs — use fetch so JSON never navigates away -->
-      {{if .IsOwner}}
-      <input type="file" id="avatar-upload-btn" name="avatar" accept="image/*" style="display:none">
-      <input type="file" id="header-upload-btn" name="header" accept="image/*" style="display:none">
-      <script>
-      (function(){
-        function doUpload(inputEl, endpoint, fieldName, onSuccess) {
-          inputEl.addEventListener('change', async function() {
-            var file = this.files && this.files[0];
-            if (!file) return;
-            var fd = new FormData();
-            fd.append(fieldName, file);
-            inputEl.disabled = true;
-            try {
-              var res = await fetch(endpoint, { method: 'POST', body: fd });
-              if (!res.ok) { throw new Error(await res.text()); }
-              var data = await res.json();
-              if (data.url) onSuccess(data.url);
-            } catch(e) {
-              if (typeof toast !== 'undefined') toast('Upload failed: ' + e.message, 'error');
-              else alert('Upload failed: ' + e.message);
-            } finally {
-              inputEl.disabled = false;
-              inputEl.value = '';
-            }
-          });
-        }
-
-        doUpload(document.getElementById('avatar-upload-btn'), '/upload/avatar', 'avatar', function(url) {
-          var area = document.getElementById('profile-avatar-area');
-          var img = area.querySelector('img');
-          if (!img) {
-            area.innerHTML = '';
-            img = document.createElement('img');
-            img.style.cssText = 'width:100%;height:100%;object-fit:cover;border-radius:50%';
-            area.appendChild(img);
-            var hint = document.createElement('div');
-            hint.className = 'avatar-upload-hint';
-            hint.innerHTML = '<svg fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24" style="width:16px;height:16px"><path d="M12 5v14M5 12h14"/></svg>';
-            area.appendChild(hint);
-          }
-          img.src = url;
-          // Also update sidebar avatar
-          var sidebarImg = document.querySelector('.avatar-sm img');
-          if (sidebarImg) sidebarImg.src = url;
-          if (typeof toast !== 'undefined') toast('Profile photo updated', 'success');
-        });
-
-        doUpload(document.getElementById('header-upload-btn'), '/upload/header', 'header', function(url) {
-          var area = document.getElementById('profile-banner-area');
-          var img = area.querySelector('img');
-          if (!img) {
-            img = document.createElement('img');
-            img.alt = 'banner';
-            img.style.cssText = 'width:100%;height:100%;object-fit:cover';
-            area.insertBefore(img, area.firstChild);
-          }
-          img.src = url;
-          if (typeof toast !== 'undefined') toast('Banner updated', 'success');
-        });
-      })();
-      </script>
-      {{end}}
-
-      <!-- Profile info -->
-      <div class="profile-info">
-        <div style="display:flex;align-items:flex-start;justify-content:flex-end;margin-bottom:12px;min-height:36px">
-          {{if .IsOwner}}
-          <a href="/settings" class="btn-secondary" style="text-decoration:none;font-size:13px;padding:7px 16px">Edit profile</a>
-          {{else}}
-          <div style="display:flex;gap:8px;align-items:center">
-            <!-- Message button -->
-            <a href="/messages?dm={{$pu.Handle}}" title="Send message"
-               style="width:34px;height:34px;border:1px solid var(--border);border-radius:50%;display:flex;align-items:center;justify-content:center;color:var(--text-secondary);text-decoration:none;transition:border-color 120ms,color 120ms"
-               onmouseover="this.style.borderColor='var(--accent)';this.style.color='var(--accent)'"
-               onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--text-secondary)'">
-              <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="width:15px;height:15px"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-            </a>
-            {{if .IsFollowing}}
-            <button hx-post="/api/follow" hx-target="this" hx-swap="outerHTML"
-                    hx-vals='{"target_id":"{{$pu.ID}}","action":"unfollow"}' class="btn-secondary follow-btn">Following</button>
-            {{else}}
-            <button hx-post="/api/follow" hx-target="this" hx-swap="outerHTML"
-                    hx-vals='{"target_id":"{{$pu.ID}}","action":"follow"}' class="btn-primary follow-btn">Follow</button>
-            {{end}}
-            {{if $pu.IsCreator}}
-            {{if .IsSubscribed}}
-            <button onclick="unsubscribeFrom('{{$pu.ID}}')"
-                    style="font-size:13px;padding:6px 16px;background:color-mix(in srgb,var(--accent) 12%,transparent);border:1px solid var(--accent);border-radius:var(--radius-full);color:var(--accent);cursor:pointer;font-family:'DM Sans',sans-serif">
-              ✓ Subscribed
-            </button>
-            {{else}}
-            <button onclick="openSubscribeModal('{{$pu.ID}}','{{$pu.Handle}}')"
-                    style="font-size:13px;padding:6px 16px;background:var(--accent);border:none;border-radius:var(--radius-full);color:#fff;cursor:pointer;font-family:'DM Sans',sans-serif;font-weight:600">
-              Subscribe
-            </button>
-            {{end}}
-            {{end}}
-          </div>
-          {{end}}
-        </div>
-
-        <!-- Achievement badge strip -->
-        <div class="profile-badges">
-          <span class="achievement-badge achievement-badge-realm">{{realmName $pu.Realm}}</span>
-          {{if $pu.IsVerified}}<span class="achievement-badge achievement-badge-verified">✓ Verified</span>{{end}}
-          {{if $pu.IsCreator}}<span class="achievement-badge achievement-badge-creator">✦ Creator</span>{{end}}
-          {{if eq $pu.Role "admin"}}<span class="achievement-badge achievement-badge-founder">★ Founder</span>{{end}}
-        </div>
-
-        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-          <h2 class="profile-name">{{$pu.DisplayName}}</h2>
-        </div>
-        <p class="profile-handle">@{{$pu.Handle}}{{if $pu.Pronouns}} · <span style="font-style:italic">{{$pu.Pronouns}}</span>{{end}}</p>
-
-        <div class="realm-block">
-          <div class="realm-header">
-            <span class="realm-badge realm-{{$pu.Realm}}">R{{$pu.Realm}} {{realmName $pu.Realm}}</span>
-            <span class="realm-xp">{{$pu.XP}} XP{{if lt $pu.Realm 5}} · {{realmNextXP $pu.Realm}} to next{{end}}</span>
-          </div>
-          <div class="realm-bar-track">
-            <div class="realm-bar-fill" style="width:{{realmPct $pu.XP $pu.Realm}}%"></div>
-          </div>
-        </div>
-
-        {{if $pu.Bio}}<p class="profile-bio">{{bioHTML $pu.Bio}}</p>{{end}}
-
-        <div class="profile-meta">
-          {{if $pu.Location}}<span>📍 {{$pu.Location}}</span>{{end}}
-          {{if $pu.Website}}<a href="{{$pu.Website}}" target="_blank" rel="noopener noreferrer">🔗 {{$pu.Website}}</a>{{end}}
-        </div>
-        {{if $pu.SocialLinksRaw}}
-        {{$sl := socialLinks $pu.SocialLinksRaw}}
-        {{if $sl}}
-        <div class="profile-social-links">
-          {{if index $sl "soundcloud"}}<a href="{{index $sl "soundcloud"}}" target="_blank" rel="noopener noreferrer" class="social-link-btn" title="SoundCloud"><svg viewBox="0 0 24 24" fill="currentColor" class="w-4 h-4"><path d="M1.175 12.225c-.017-.063-.017-.129 0-.191C1.512 10.01 3.2 8.55 5.12 8.55c.215 0 .427.02.638.06C6.307 6.57 8.14 5.1 10.3 5.1c2.4 0 4.35 1.82 4.58 4.16.24-.05.487-.076.74-.076 2.21 0 4 1.79 4 4s-1.79 4-4 4H2.5c-1.38 0-2.5-1.12-2.5-2.5 0-.856.433-1.612 1.093-2.059l.082-.5z"/></svg>SoundCloud</a>{{end}}
-          {{if index $sl "spotify"}}<a href="{{index $sl "spotify"}}" target="_blank" rel="noopener noreferrer" class="social-link-btn" title="Spotify"><svg viewBox="0 0 24 24" fill="currentColor" class="w-4 h-4"><circle cx="12" cy="12" r="10"/><path fill="#fff" d="M16.7 13.4c-2.7-1.6-6-2-8.9-1.1-.4.1-.6.5-.5.9.1.4.5.6.9.5 2.5-.8 5.4-.4 7.7 1 .3.2.8.1 1-.3.2-.3.1-.7-.2-1zm.9-2.5c-3.1-1.8-7.4-2.2-10.7-1.2-.4.1-.7.6-.6 1 .1.4.6.7 1 .6 3-.9 6.9-.4 9.7 1.3.4.2.9.1 1.1-.3.2-.3.1-.9-.5-1.4zm.1-2.5C14 6.7 9.4 6.4 6.1 7.4c-.5.2-.8.7-.6 1.2.2.5.7.8 1.2.6 2.9-.9 7-.6 9.8 1.1.4.3 1 .1 1.3-.3.3-.5.1-1.1-.2-1.5z"/></svg>Spotify</a>{{end}}
-          {{if index $sl "kick"}}<a href="{{index $sl "kick"}}" target="_blank" rel="noopener noreferrer" class="social-link-btn" title="Kick"><svg viewBox="0 0 24 24" fill="currentColor" class="w-4 h-4"><path d="M4 4h16v16H4z"/><path fill="var(--surface)" d="M8 8h2v3l3-3h3l-4 4 4 4h-3l-3-3v3H8z"/></svg>Kick</a>{{end}}
-          {{if index $sl "twitch"}}<a href="{{index $sl "twitch"}}" target="_blank" rel="noopener noreferrer" class="social-link-btn" title="Twitch"><svg viewBox="0 0 24 24" fill="currentColor" class="w-4 h-4"><path d="M11.571 4.714h1.715v5.143H11.57zm4.715 0H18v5.143h-1.714zM6 0L1.714 4.286v15.428h5.143V24l4.286-4.286h3.428L22.286 12V0zm14.571 11.143l-3.428 3.428h-3.429l-3 3v-3H6.857V1.714h13.714z"/></svg>Twitch</a>{{end}}
-          {{if index $sl "onlyfans"}}<a href="{{index $sl "onlyfans"}}" target="_blank" rel="noopener noreferrer" class="social-link-btn" title="OnlyFans"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-4 h-4"><circle cx="12" cy="12" r="10"/><path d="M8 12a4 4 0 1 1 8 0 4 4 0 0 1-8 0z"/></svg>OnlyFans</a>{{end}}
-          {{if index $sl "youtube"}}<a href="{{index $sl "youtube"}}" target="_blank" rel="noopener noreferrer" class="social-link-btn" title="YouTube"><svg viewBox="0 0 24 24" fill="currentColor" class="w-4 h-4"><path d="M23.5 6.2a3 3 0 0 0-2.1-2.1C19.5 3.6 12 3.6 12 3.6s-7.5 0-9.4.5A3 3 0 0 0 .5 6.2 31.3 31.3 0 0 0 0 12a31.3 31.3 0 0 0 .5 5.8 3 3 0 0 0 2.1 2.1c1.9.5 9.4.5 9.4.5s7.5 0 9.4-.5a3 3 0 0 0 2.1-2.1 31.3 31.3 0 0 0 .5-5.8 31.3 31.3 0 0 0-.5-5.8zM9.6 15.6V8.4l6.2 3.6-6.2 3.6z"/></svg>YouTube</a>{{end}}
-          {{if index $sl "other"}}<a href="{{index $sl "other"}}" target="_blank" rel="noopener noreferrer" class="social-link-btn" title="Link"><svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" class="w-4 h-4"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>Link</a>{{end}}
-        </div>
-        {{end}}
-        {{end}}
-
-        <div class="profile-stats">
-          <span><span class="stat-val">{{$pu.PostCount}}</span><span class="stat-label">posts</span></span>
-          <button onclick="openUserList('/api/user/{{$pu.Handle}}/followers')" style="background:none;border:none;cursor:pointer;padding:0;text-decoration:none"><span class="stat-val">{{$pu.FollowerCount}}</span><span class="stat-label">followers</span></button>
-          <button onclick="openUserList('/api/user/{{$pu.Handle}}/following')" style="background:none;border:none;cursor:pointer;padding:0;text-decoration:none"><span class="stat-val">{{$pu.FollowingCount}}</span><span class="stat-label">following</span></button>
-        </div>
-
-        {{if $.Achievements}}
-        <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:12px;margin-bottom:4px">
-          {{range $.Achievements}}
-          <span title="{{.Name}} — {{.Description}}"
-                style="font-size:16px;cursor:default">{{.Icon}}</span>
-          {{end}}
-        </div>
-        {{end}}
-
-        {{if $pu.PinnedTrackID}}
-        <div style="margin-top:14px;padding:12px;background:var(--panel);border:1px solid var(--border);border-radius:14px;display:flex;align-items:center;gap:10px">
-          <div style="width:36px;height:36px;border-radius:10px;background:color-mix(in srgb,var(--accent) 20%,var(--panel));display:flex;align-items:center;justify-content:center;flex-shrink:0">
-            <svg style="width:16px;height:16px;color:var(--accent)" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="5.5" cy="17.5" r="2.5"/><circle cx="17.5" cy="15.5" r="2.5"/><polyline points="8 17 8 5 20 3 20 15"/></svg>
-          </div>
-          <div><p style="font-size:12px;color:var(--accent);font-weight:500">Pinned track</p><p style="font-size:11px;color:var(--text-secondary)">{{$pu.PinnedTrackID}}</p></div>
-        </div>
-        {{end}}
-      </div>
-    </div>
-
-    <!-- Profile tabs + view toggle -->
-    <div style="display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border)">
-      <div class="profile-tabs" id="profile-tabs" style="border-bottom:none">
-        <button class="profile-tab active" data-surface="profile_posts" onclick="switchProfileTab(this,'profile_posts','{{$pu.ID}}','{{.SessionID}}')">Posts</button>
-        <button class="profile-tab" data-surface="profile_replies" onclick="switchProfileTab(this,'profile_replies','{{$pu.ID}}','{{.SessionID}}')">Replies</button>
-        <button class="profile-tab" data-surface="profile_media" onclick="switchProfileTab(this,'profile_media','{{$pu.ID}}','{{.SessionID}}')">Media</button>
-        {{if .IsOwner}}<button class="profile-tab" data-surface="profile_saves" onclick="switchProfileTab(this,'profile_saves','{{$pu.ID}}','{{.SessionID}}')">Saves</button>{{end}}
-        {{if $pu.IsCreator}}<a href="/shop/{{$pu.Handle}}" class="profile-tab" style="text-decoration:none;color:var(--accent);font-weight:600" onclick="event.stopPropagation()">Shop ✦</a>{{end}}
-      </div>
-      <div style="display:flex;gap:2px;padding:0 16px">
-        <button id="view-list-btn" onclick="setProfileView('list')" title="List view"
-          style="width:32px;height:32px;border:1px solid var(--accent);background:color-mix(in srgb,var(--accent) 15%,transparent);border-radius:8px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:var(--accent)">
-          <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="width:14px;height:14px"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
-        </button>
-        <button id="view-grid-btn" onclick="setProfileView('grid')" title="Grid view"
-          style="width:32px;height:32px;border:1px solid var(--border);background:transparent;border-radius:8px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:var(--text-muted)">
-          <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="width:14px;height:14px"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
-        </button>
-      </div>
-    </div>
-
-    <div id="profile-feed"
-         hx-get="/feed?surface=profile_posts&user_id={{$pu.ID}}&session_id={{.SessionID}}"
-         hx-trigger="load, postCreated from:body"
-         hx-swap="innerHTML"
-         hx-indicator="#profile-spinner"></div>
-    <div id="profile-spinner" class="htmx-indicator" style="padding:48px 20px;display:none;justify-content:center"><div class="spinner"></div></div>
-    <style>
-    #profile-feed.grid-view { display:grid; grid-template-columns:repeat(3,1fr); gap:2px; padding:2px; }
-    #profile-feed.grid-view .post-card {
-      border-radius:0; border:none; padding:0; margin:0;
-      aspect-ratio:1/1; overflow:hidden; cursor:pointer; position:relative;
-      background:var(--panel); animation:none;
-    }
-    #profile-feed.grid-view .post-card:hover::after {
-      content:''; position:absolute; inset:0; background:rgba(0,0,0,.35); pointer-events:none; z-index:2;
-    }
-    /* Grid thumbnail: .pcd fills the card, .pcf is hidden */
-    #profile-feed.grid-view .pcd { position:absolute; inset:0; overflow:hidden; }
-    #profile-feed.grid-view .pcf { display:none !important; }
-    /* Collapse the flex wrapper (avatar + content row) into a block that fills .pcd */
-    #profile-feed.grid-view .pcd > div:first-child {
-      display:block; position:absolute; inset:0;
-    }
-    /* Hide avatar, author row, actions, translate wrap, tags */
-    #profile-feed.grid-view .pcd > div:first-child > a:first-child { display:none; }
-    #profile-feed.grid-view .pcd .post-actions,
-    #profile-feed.grid-view .pcd .post-menu-wrap,
-    #profile-feed.grid-view .pcd .post-translate-wrap,
-    #profile-feed.grid-view .pcd .post-tag { display:none !important; }
-    /* Content column fills the space */
-    #profile-feed.grid-view .pcd > div:first-child > div { width:100%; height:100%; position:relative; min-width:0; }
-    /* Hide the author/handle/time row (first child of content column) */
-    #profile-feed.grid-view .pcd > div:first-child > div > div:first-child { display:none; }
-    /* Text body fills card */
-    #profile-feed.grid-view .pcd .post-body {
-      position:absolute; inset:0; padding:10px;
-      display:-webkit-box; -webkit-line-clamp:6; -webkit-box-orient:vertical;
-      font-size:12px; font-weight:500; color:var(--text-primary); background:var(--panel);
-      line-height:1.45; overflow:hidden;
-    }
-    /* Media grid fills card */
-    #profile-feed.grid-view .pcd .post-media-grid { position:absolute; inset:0; margin:0; border-radius:0; }
-    #profile-feed.grid-view .pcd img.post-media-img { width:100%; height:100%; object-fit:cover; display:block; border-radius:0; }
-    </style>
-
-    {{end}}{{/* end if .ProfileUser */}}
-  </main>
-
-  <aside class="f33d3r-right">
-    {{if and .User .IsOwner}}
-    <div class="panel-card mb-4">
-      <h3 class="panel-title">Theme</h3>
-      <div class="theme-grid">
-        {{range .Themes}}
-        <label class="theme-option {{if .Active}}selected{{end}}" style="cursor:pointer">
-          <div class="theme-swatch" style="background:{{.Surface}};color:{{.Accent}}"><span>{{.Name}}</span></div>
-          <div class="theme-name" style="background:{{.Surface}};color:{{.Accent}}">{{.Vibe}}</div>
-        </label>
-        {{end}}
-      </div>
-    </div>
-    {{end}}
-    {{if .ProfileUser}}
-    <div class="panel-card">
-      <h3 class="panel-title">Analytics</h3>
-      <div class="engine-status-row"><span class="engine-status-label">Posts</span><span class="engine-status-val">{{.ProfileUser.PostCount}}</span></div>
-      <div class="engine-status-row"><span class="engine-status-label">Followers</span><span class="engine-status-val">{{.ProfileUser.FollowerCount}}</span></div>
-      <div class="engine-status-row"><span class="engine-status-label">Following</span><span class="engine-status-val">{{.ProfileUser.FollowingCount}}</span></div>
-    </div>
-    {{end}}
-  </aside>
-
-<!-- Followers/Following modal -->
-<div id="user-list-modal" onclick="if(event.target===this)closeUserList()"
-     style="display:none;position:fixed;inset:0;z-index:200;background:rgba(0,0,0,.55);backdrop-filter:blur(8px);align-items:center;justify-content:center">
-  <div style="background:var(--panel);border:1px solid var(--border);border-radius:20px;padding:24px;width:380px;max-width:calc(100vw - 32px);max-height:70vh;overflow-y:auto;position:relative">
-    <button onclick="closeUserList()" style="position:absolute;top:12px;right:12px;width:28px;height:28px;border:none;background:var(--border);border-radius:6px;cursor:pointer;color:var(--text-secondary)">✕</button>
-    <div id="user-list-content" style="padding-top:4px"></div>
-  </div>
-</div>
-
-<script src="/static/js/pages/profile.js?v=20260426"></script>
+{{define "title"}}{{if .ProfileUser}}{{.ProfileUser.DisplayName}} (@{{.ProfileUser.Handle}}) · F33D3R{{else}}Profile · F33D3R{{end}}{{end}}
+{{define "nav-active-profile"}}{{if .IsOwnProfile}}active{{end}}{{end}}
+{{/* Open Graph / Twitter card — lets shared profile links (Instagram, Snapchat,
+     iMessage, X, etc.) render a rich preview. Avatar only — never post media — so
+     no NSFW work ever leaks into a link preview. */}}
+{{define "head-extra"}}
+{{if .ProfileUser}}
+{{$u := .ProfileUser}}
+{{$img := $u.AvatarURL}}{{if not $img}}{{$img = "/static/brand/og-image.png"}}{{end}}{{if hasPrefix $img "/"}}{{$img = printf "https://f33d3r.com%s" $img}}{{end}}
+{{$desc := $u.Bio}}{{if not $desc}}{{$desc = printf "@%s on f33d3r" $u.Handle}}{{end}}
+<meta property="og:type" content="profile">
+<meta property="og:title" content="{{$u.DisplayName}} (@{{$u.Handle}}) · f33d3r">
+<meta property="og:description" content="{{$desc}}">
+<meta property="og:image" content="{{$img}}">
+<meta property="og:url" content="https://f33d3r.com/{{$u.Handle}}">
+<meta property="og:site_name" content="f33d3r">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:site" content="@f33d3r">
+<meta name="twitter:title" content="{{$u.DisplayName}} (@{{$u.Handle}})">
+<meta name="twitter:description" content="{{$desc}}">
+<meta name="twitter:image" content="{{$img}}">
 {{end}}
+{{end}}
+{{define "body"}}
+<main class="f33d3r-main" id="main-col"{{if and .ProfileUser (not .IsOwner)}} data-compose-mention="@{{.ProfileUser.Handle}}"{{end}}>
+  {{if .ProfileUser}}
+  {{template "profile_header" .}}
+  {{if .PrivateWall}}
+  {{/* Private account — the header (avatar, banner, bio, counts) still renders, exactly
+       like X.com / OnlyFans; only the works are hidden behind this wall. */}}
+  <div class="nsfw-gate pcd-gate" style="margin:24px 16px" onclick="event.stopPropagation()">
+    <div class="nsfw-gate-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+      </svg>
+    </div>
+    <p class="nsfw-gate-title">This account is private</p>
+    <p class="nsfw-gate-sub">Only approved followers can see @{{.ProfileUser.Handle}}'s works.</p>
+    {{if .IsAnon}}
+    <a href="/login" class="nsfw-gate-unlock">Log in</a>
+    <a href="/signup" class="btn-ghost" style="margin-top:8px">Sign up</a>
+    {{end}}
+  </div>
+  {{else if .AdultGate}}
+  {{/* Adult-creator works gate — header renders above; the works feed is replaced by
+       this card. "auth" = logged-out sign-up/sign-in wall (no NSFW to the public). */}}
+  <div class="nsfw-gate pcd-gate" style="margin:24px 16px" onclick="event.stopPropagation()">
+    <div class="nsfw-gate-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24"/>
+        <line x1="1" y1="1" x2="23" y2="23"/>
+      </svg>
+    </div>
+    <p class="nsfw-gate-title">Adult creator</p>
+    {{if eq .AdultGate "auth"}}
+    <p class="nsfw-gate-sub">@{{.ProfileUser.Handle}} posts 18+ content. Sign up or log in to view their works.</p>
+    <a href="/signup" class="nsfw-gate-unlock">Sign up</a>
+    <a href="/login" class="btn-ghost" style="margin-top:8px">Log in</a>
+    {{else if eq .AdultGate "verify"}}
+    <p class="nsfw-gate-sub">@{{.ProfileUser.Handle}} posts 18+ content. Please verify your identity to see their works.</p>
+    <a href="/kyc" class="nsfw-gate-unlock">Verify identity</a>
+    {{else if eq .AdultGate "restricted"}}
+    <p class="nsfw-gate-sub">@{{.ProfileUser.Handle}} posts 18+ content, which your account can't view.</p>
+    {{else}}
+    <p class="nsfw-gate-sub">@{{.ProfileUser.Handle}} posts 18+ content. Enable adult content in settings to see their works.</p>
+    <a href="/settings" class="nsfw-gate-unlock">Content settings</a>
+    {{end}}
+  </div>
+  {{else}}
+  {{if .PinnedPostID}}
+  <div id="pinned-post-section"
+       hx-get="/facets/works/feed?surface=profile_posts&handle={{.ProfileUser.Handle}}&pinned_id={{.PinnedPostID}}&limit=1"
+       hx-trigger="load"
+       hx-swap="innerHTML">
+  </div>
+  {{end}}
+  <div id="profile-feed"
+       hx-get="/facets/works/feed?surface=profile_posts&handle={{.ProfileUser.Handle}}{{if .PinnedPostID}}&exclude_id={{.PinnedPostID}}{{end}}"
+       hx-trigger="load, refreshFeed"
+       hx-swap="innerHTML">
+  </div>
+  {{end}}
+  <script>window._sessionID = '{{.SessionID}}';</script>
+  {{end}}
+
+  {{template "user_list_modal" .}}
+</main>
+{{end}}
+{{define "right-panel"}}{{template "sidebar_right" .}}{{end}}
+{{define "page-scripts"}}<script src="/static/js/pages/profile.js?v=20260622b" defer></script>{{end}}

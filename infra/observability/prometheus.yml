@@ -72,12 +72,6 @@ scrape_configs:
       - targets: [ 'aethyr-ledger:8096' ]
         labels: { brain: aethyr_ledger, lang: rust }
 
-  - job_name: thessalon
-    metrics_path: /metrics
-    static_configs:
-      - targets: [ 'thessalon:8084' ]
-        labels: { brain: thessalon, lang: rust }
-
   - job_name: verity
     metrics_path: /metrics
     static_configs:
@@ -122,14 +116,18 @@ scrape_configs:
   #       labels: { brain: transcoder, lang: rust }
 
   # ── Infrastructure ─────────────────────────────────────────────────────────
+  - job_name: node-exporter
+    static_configs:
+      - targets: [ 'node-exporter:9100' ]
+        labels: { component: node }
+
   - job_name: minio
     metrics_path: /minio/v2/metrics/cluster
     static_configs:
       - targets: [ 'minio:9000' ]
         labels: { component: minio }
 
-  - job_name: pgbouncer
-    metrics_path: /metrics
-    static_configs:
-      - targets: [ 'pgbouncer:6432' ]
-        labels: { component: pgbouncer }
+  # pgbouncer metrics require prometheus-pgbouncer-exporter — deferred to S0.3
+  # - job_name: pgbouncer
+  #   static_configs:
+  #     - targets: [ 'pgbouncer-exporter:9127' ]

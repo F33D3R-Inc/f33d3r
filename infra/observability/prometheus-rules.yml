@@ -9,7 +9,7 @@ groups:
     rules:
 
       - alert: BrainDown
-        expr: up{job=~"nantar|aethyrrank|zior|caeor|vovin|ain-soph|aethyr-ledger|thessalon|verity|elohim-veni|zodacare|schema-registry|registrar|ekyc"} == 0
+        expr: up{job=~"nantar|aethyrrank|zior|caeor|vovin|ain-soph|aethyr-ledger|verity|elohim-veni|zodacare|schema-registry|registrar|ekyc"} == 0
         for: 2m
         labels: { severity: critical }
         annotations:

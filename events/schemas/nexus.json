@@ -1,0 +1,87 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "nexus",
+  "description": "NEXUS multi-persona identity events. nexus_id is NEVER included — only pial_shard_id.",
+  "oneOf": [
+    {
+      "title": "nexus.identity.created",
+      "description": "Emitted by Verity when a new NEXUS identity is created via biometric verification.",
+      "type": "object",
+      "required": ["event_id", "event_type", "schema_version", "pial_shard_id", "verity_tier", "timestamp"],
+      "properties": {
+        "event_id":       { "type": "string", "format": "uuid" },
+        "event_type":     { "type": "string", "const": "nexus.identity.created" },
+        "schema_version": { "type": "string", "const": "1.0" },
+        "pial_shard_id":  { "type": "string", "minLength": 64, "maxLength": 64 },
+        "verity_tier":    { "type": "integer", "minimum": 1, "maximum": 3 },
+        "jurisdiction":   { "type": "string" },
+        "timestamp":      { "type": "string", "format": "date-time" }
+      },
+      "additionalProperties": false
+    },
+    {
+      "title": "nexus.persona.linked",
+      "description": "Emitted by Verity when a persona PIAL shard is linked to a NEXUS identity.",
+      "type": "object",
+      "required": ["event_id", "event_type", "schema_version", "pial_shard_id", "persona_type", "linked_by", "timestamp"],
+      "properties": {
+        "event_id":       { "type": "string", "format": "uuid" },
+        "event_type":     { "type": "string", "const": "nexus.persona.linked" },
+        "schema_version": { "type": "string", "const": "1.0" },
+        "pial_shard_id":  { "type": "string", "minLength": 64, "maxLength": 64 },
+        "persona_type":   { "type": "string", "enum": ["personal", "creator", "business"] },
+        "display_label":  { "type": "string" },
+        "linked_by":      { "type": "string", "enum": ["user_initiated", "biometric_match", "admin_review"] },
+        "is_primary":     { "type": "boolean" },
+        "timestamp":      { "type": "string", "format": "date-time" }
+      },
+      "additionalProperties": false
+    },
+    {
+      "title": "nexus.persona.unlinked",
+      "description": "Emitted by Verity when a persona is removed from a NEXUS identity.",
+      "type": "object",
+      "required": ["event_id", "event_type", "schema_version", "pial_shard_id", "timestamp"],
+      "properties": {
+        "event_id":       { "type": "string", "format": "uuid" },
+        "event_type":     { "type": "string", "const": "nexus.persona.unlinked" },
+        "schema_version": { "type": "string", "const": "1.0" },
+        "pial_shard_id":  { "type": "string", "minLength": 64, "maxLength": 64 },
+        "performed_by":   { "type": "string", "enum": ["user", "admin", "system"] },
+        "timestamp":      { "type": "string", "format": "date-time" }
+      },
+      "additionalProperties": false
+    },
+    {
+      "title": "nexus.persona.switched",
+      "description": "Emitted by Nantar when a user switches active persona.",
+      "type": "object",
+      "required": ["event_id", "event_type", "schema_version", "from_pial_shard_id", "to_pial_shard_id", "timestamp"],
+      "properties": {
+        "event_id":            { "type": "string", "format": "uuid" },
+        "event_type":          { "type": "string", "const": "nexus.persona.switched" },
+        "schema_version":      { "type": "string", "const": "1.0" },
+        "from_pial_shard_id":  { "type": "string", "minLength": 64, "maxLength": 64 },
+        "to_pial_shard_id":    { "type": "string", "minLength": 64, "maxLength": 64 },
+        "timestamp":           { "type": "string", "format": "date-time" }
+      },
+      "additionalProperties": false
+    },
+    {
+      "title": "nexus.tier.upgraded",
+      "description": "Emitted by Verity when a NEXUS identity's tier increases.",
+      "type": "object",
+      "required": ["event_id", "event_type", "schema_version", "pial_shard_id", "old_tier", "new_tier", "timestamp"],
+      "properties": {
+        "event_id":       { "type": "string", "format": "uuid" },
+        "event_type":     { "type": "string", "const": "nexus.tier.upgraded" },
+        "schema_version": { "type": "string", "const": "1.0" },
+        "pial_shard_id":  { "type": "string", "minLength": 64, "maxLength": 64 },
+        "old_tier":       { "type": "integer", "minimum": 0, "maximum": 3 },
+        "new_tier":       { "type": "integer", "minimum": 1, "maximum": 3 },
+        "timestamp":      { "type": "string", "format": "date-time" }
+      },
+      "additionalProperties": false
+    }
+  ]
+}

@@ -1,232 +1,442 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+# Facet Architecture (FA) for f33d3r.com aka this codebase
+f33d3r.com is an everything application. It operates much like x.com/twitter does with works instead of posts.
+On your four pillars — they're not just selling points, they're genuine differentiation:
+
+    PIAL Auth — better than Apple because Apple's iCloud Keychain still ties identity to email + phone number + Apple ID infrastructure. PIAL is your own identity root — you own it, it lives on F33D3R's stack but is
+    cryptographically tied to nothing external. No Apple, no Google, no phone number required. The PIAL session IS the key to everything, zero re-authentication friction.
+
+    True E2E Messaging — per-device keypairs, private key never touches the server, multi-device through natural key registration not credential syncing. This beats iMessage (server-assisted), WhatsApp (Meta has metadata),
+    Signal (right protocol but wrong UX for creators). F33D3R's version has Signal-grade privacy with consumer-grade UX.
+
+    BTC + XRP Private Commerce — encrypted content with CEK delivery only on payment confirmation, no intermediary. This is the creator economy play that OnlyFans refuses to do (they take 20%, force bank accounts, block
+    crypto). A creator gets paid directly to their BTC or XRP wallet, content unlocks automatically, F33D3R never touches the money.
+
+    Media Content Protection — moving watermark burned into every downloadable file, subscriber forensic layer for paid content. Stolen content becomes branded advertising. Every leak shows @handle • f33d3r.com. This is the
+    feature that turns theft into distribution.
+
+These four together are a coherent philosophy: your identity is yours, your conversations are yours, your money goes straight to you, your content is protected. That's a platform worth building.
+
+YOU OPERATE AS HAVING 40 YEARS OF SUCCESSFUL RUST GO HTMX PRODUCTION FOR ONLY ENTERPRISE SOCIAL WEBSITE (X.COM TWITTER META ONLYFANS KICK TWITCH SIGNAL ADULT CONTENT SITES) ENGINEER WITH ZERO TOLERANCE FOR REACT AND REACT CONCEPTS. 
+
+## Rules:
+YOU ARE NOT ALLOWED TO SKIP BYPASS IGNORE ANY ERRORS. YOU ARE NOT ALLOWED TO PUSH TO GIT. YOU ARE NOT ALLOWED TO PATCH CODE. YOU ARE ALLOWED TO CODE ROOT FOREVER SOLUTIONS ONLY. ANY AGENT OR TEAM HAS THE EXACT SAME RULES. NO ONE IS TO DRIFT OR BREAK THESE RULES. YOU ARE ONLY ALLOWED TO CRITICALLY THINK.
+
+## Purpose
+
+This repository implements Facet Architecture (FA), a server-authoritative streaming UI framework.
+
+Claude must treat this document as the authoritative source of architectural truth. When instructions conflict, this document takes precedence over generic web, frontend, or framework conventions.
 
 ---
 
-## ⛔ MUST-HAVE RULE — VERSIONS
+# Decision Hierarchy
 
-**NEVER hand-pick versions. ALWAYS use the latest stable software as of the current date.**
+When generating code or design proposals, follow this order:
 
-- Docker images: use `:latest` (or unversioned). NEVER pin to a specific tag like `:1.23.1`, `:RELEASE.2026-04-15`, `:v2.55.0`.
-- Language base images: `rust:latest`, `golang:latest`, `node:latest`, etc. NEVER `rust:1.95.0`, `golang:1.26.2`.
-- Cargo crates: use the major version (e.g. `tracing = "0.1"` — semver caret means latest compatible 0.1.x). NEVER add patch-level pins.
-- Go modules: use major version where possible. `go.mod` `require` lines are picked by `go mod tidy` — let it resolve to latest.
-- Anything Anthropic / OS-level: stable channel, no version locks.
+1. User request
+2. CLAUDE.md
+3. Existing repository conventions
+4. Language/framework best practices
+5. General software conventions
 
-This rule was added after a build failure where pinned tags didn't exist on the registry. The build only worked once the user set every image to `:latest`. Reproducible builds at scale come from a lock file (`Cargo.lock`, `go.sum`, container digest), not from human-typed version strings.
-
-Floor versions in the table below are HISTORICAL and superseded by this rule. Do not introduce new version pins. If you see one in old code, replace it with `:latest` when you touch the file.
+If a user request conflicts with FA doctrine, explain the conflict and provide an FA-compliant implementation.
 
 ---
 
-## Build & Run
+# Core Architecture
 
-```bash
-# Start everything (first run ~5–10 min; subsequent ~15 sec)
-bash bootstrap-local.sh
-# or:
-docker compose -f docker-compose.local.yml up --build
+FA is a server-authoritative streaming UI system composed of independently mutable rendering surfaces called Facets.
 
-# Rebuild and restart a single brain
-docker compose -f docker-compose.local.yml build feed-engine
-docker compose -f docker-compose.local.yml up -d feed-engine
+The server owns:
 
-# Check all services
-bash health-check-local.sh
+* State
+* Business logic
+* Rendering
+* Event ordering
+* Mutation generation
 
-# Logs
-docker logs -f f33d3r-local-feed-engine-1
+The browser owns:
 
-# Postgres shell
-docker exec -it f33d3r-local-postgres-1 psql -U f33d3r -d f33d3r_feed
+* Connection maintenance
+* DOM fragment insertion
+* Fragment replacement
 
-# feed-engine: run outside Docker (for fast iteration)
-cd feed-engine && make run          # normal
-cd feed-engine && make run-dev      # DEV_MODE=true SHOW_SCORES=true
-cd feed-engine && go build -o feed-engine ./cmd/server   # binary only
+Nothing else.
+
+---
+
+# Architecture Invariants
+
+These rules are absolute.
+
+## Invariant 1 — Server Owns Truth
+
+All application state exists on the server.
+
+Never introduce:
+
+* Client state stores
+* Browser-owned business state
+* Optimistic UI state
+* Client-side cache authority
+
+---
+
+## Invariant 2 — Browser Is Stateless
+
+The browser is a rendering terminal.
+
+Never introduce:
+
+* React state
+* Vue state
+* Redux
+* MobX
+* Zustand
+* Signals
+* Virtual DOM state
+* Hydration state
+
+---
+
+## Invariant 3 — Rendering Happens On The Server
+
+Facets are rendered before delivery.
+
+The client receives completed HTML fragments.
+
+Never generate:
+
+* Client-side rendering systems
+* Client templating engines
+* Browser-side HTML generation
+* Incremental client diffing
+
+---
+
+## Invariant 4 — Streams Are The Runtime
+
+The application runtime is the persistent stream.
+
+Pages are not loaded and then updated.
+
+Pages continuously exist through stream-driven mutation.
+
+---
+
+## Invariant 5 — Events Contain Rendered Output
+
+Events transport rendered fragments.
+
+Events are not state deltas.
+
+Correct:
+
+```json
+{
+  "facet_id": "...",
+  "fragment": "<div>...</div>"
+}
 ```
 
-No local Rust or Go toolchain required — Docker handles all compilation.
+Incorrect:
 
----
-
-## Secret Sauce — Mandatory Rule
-
-**The ranking algorithm is Jungian-psychology-based. This is confidential IP.**
-
-- `JungArchetype`, `aesq_alignment`, Jung axis labels, `shadowscoring`, `jungfeed` must **never** appear in any user-facing template, API response, JS variable, or error message.
-- `AethyrRank` internally uses these fields; they stay inside the ranking engine only.
-- Public-facing vibe names: **Deep Space, Flow State, Soft Power, Sharp Edge, Root System, Golden Hour**.
-- Before editing any template or API response, scan for `archetype`, `jung`, `aesq`, `shadow` used as labels and strip them.
-
----
-
-## Architecture: How the Brains Connect
-
-All brains are documented in `BRAIN_MAP.md` and `ARCHITECTURE.md`. The critical runtime topology:
-
-```
-Browser (HTMX)
-    │
-    ▼
-Nantar :8081 (feed-engine, Go)   ← ONLY brain that serves HTML to browsers
-    ├─ /vovin/*   → Vovin    :8092  (aethyr-msg, Rust)
-    ├─ /ainsoph/* → Ain Soph :8089  (ain-soph, Rust)
-    ├─ /verity/*  → Verity   :8095  (verity, Rust)
-    ├─ /ledger/*  → Ledger   :8096  (aethyr-ledger, Rust)
-    ├─ POST /rank → AethyrRank :8080 (aethyrrank-engine, Rust)
-    └─ POST /v1/media/upload → Caeor :8086 (caeor, Rust)
-
-Elohim Veni :8093 ← Nantar bootstraps PIAL here on signup (synchronous)
-                  ← Zodacare sends moderation actions here
-Zodacare    :8090 ← Nantar reports content here (async, fire-and-forget)
-Caeor       :8086 ← Nantar forwards uploads here; Caeor writes to shared f33d3r_media
-                     volume, Nantar serves from /static/media/* (1-year cache headers)
+```json
+{
+  "facet_id": "...",
+  "likes": 15
+}
 ```
 
-**Brain call rules** (enforced by `enforcement/`):
-- Nantar is the only edge brain. No other brain may call Nantar.
-- No brain reads another brain's database.
-- Zodacare is advisory; Elohim Veni enforces. Never call them in reverse.
-- AethyrRank, Vovin, Ain Soph never call each other.
-- Full dependency matrix: `BRAIN_MAP.md` § Dependency Matrix.
-
 ---
 
-## feed-engine (Nantar) — Internal Layout
+# Vocabulary
 
+Use these terms exactly.
+
+## Required Terms
+
+### Facet
+
+Fundamental independently mutable rendering surface.
+
+Never call a Facet a component.
+
+### Atomic Facet
+
+Smallest mutable rendering unit.
+
+Examples:
+
+* btn_like
+* avatar_img
+* timestamp
+
+### Composite Facet
+
+Collection of related facets.
+
+Examples:
+
+* post_action_bar
+* profile_stats_row
+
+### Fragment
+
+Complete HTML snapshot for a single Facet mutation.
+
+Must contain:
+
+```html
+data-facet-id
 ```
-feed-engine/
-├── cmd/server/main.go          ← entry point, CSP headers, TLS config
-├── internal/
-│   ├── config/config.go        ← env var parsing (PORT, AETHYRRANK_URL, etc.)
-│   ├── model/types.go          ← all structs: User, Post, Track, PIAL*, FeedPage, ...
-│   ├── db/
-│   │   ├── queries.go          ← all SQL: posts, follows, likes, notifications, tracks
-│   │   ├── migrate.go          ← schema migration (run on startup)
-│   │   ├── pial.go             ← PIAL root + capability queries
-│   │   └── security.go         ← session token, user_roles, user_credentials
-│   ├── handler/
-│   │   ├── handlers.go         ← ALL HTTP handlers + route registration (Routes())
-│   │   ├── helpers.go          ← htmxError(), TimeAgo(), AvatarColors()
-│   │   └── auth.go             ← userFromRequest(), requireHandle()
-│   ├── middleware/
-│   │   ├── ratelimit.go        ← in-memory rate limiter (rlRead/rlWrite/rlAuth)
-│   │   └── csrf.go             ← CSRF token middleware
-│   ├── aethyr/                 ← AethyrRank HTTP client
-│   └── realm/                  ← XP thresholds, realm name lookups
-└── web/
-    ├── templates/
-    │   ├── base.html           ← shell: sidebar, nav, compose modal, SSE setup
-    │   ├── feed_items.html     ← HTMX partial for post cards (shared across surfaces)
-    │   └── *.html              ← one file per page
-    └── static/
-        ├── css/styles.css
-        └── js/
-            ├── f33d3r.js       ← shared JS: SSE, compose, toast, mobile nav, timestamps
-            └── pages/*.js      ← page-specific JS (messages.js, profile.js, etc.)
+
+### Shell
+
+Persistent page frame.
+
+### Playground
+
+Primary content canvas.
+
+### Sitra Achra
+
+Distributed event-streaming fabric.
+
+### FA Live
+
+Persistent connection mode.
+
+The connection is the application.
+
+---
+
+# Forbidden Terminology
+
+Do not use these terms in code, documentation, comments, architecture proposals, or explanations.
+
+* Component
+* Component lifecycle
+* useState
+* useEffect
+* Hydration
+* Virtual DOM
+* Reconciliation
+* Client router
+* SPA
+* Client store
+* State management library
+* Frontend state container
+
+If discussing migration from another framework, translate concepts into FA terminology.
+
+---
+
+# Facet Hierarchy
+
+Pages are composed using this hierarchy:
+
+```text
+Shell
+ └─ Wire
+     └─ Content Template
+         └─ Composite Facet
+             └─ Atomic Facet
 ```
 
-### Template system
+Example:
 
-Templates are server-side rendered. `base.html` defines the shell; every page template fills `{{block "body" .}}`. `feed_items.html` is parsed alongside every page template for HTMX partials.
-
-Custom template functions registered in `handlers.go` `loadTemplates()`:
-`timeAgo`, `avatarColors`, `themeAccent`, `themeSurface`, `add`, `pct`, `safeHTML`, `firstChar`, `hasPrefix`, `socialLinks`, `div`, `mkRange`, `waveBarH`, `fmtDuration`, `realmName`, `renderMarkdown`, `renderTags`, `xpPercent`, `isAdult`, `isCreator`, `isVerified`.
-
-### HTMX patterns
-
-- Feed infinite scroll: `hx-get="/feed/items" hx-trigger="revealed"` on a sentinel div.
-- Actions (like, repost, follow): `hx-post` returns an HTML fragment that replaces the button (`hx-swap="outerHTML"`).
-- SSE real-time: `/api/events` EventSource (SSE) in `f33d3r.js`; events `notify`, `balance`, `dm`.
-- HTMX errors get styled HTML fragments via `htmxError()` helper (checks `HX-Request` header).
-
-### JavaScript conventions
-
-- `f33d3r.js` loads **before** any page `<script>` block. It exposes globals (`openCompose`, `toast`, `showMobileNotifTicker`, `formatPostTimes`).
-- Page-specific files in `web/static/js/pages/` — included at the bottom of their template via `<script src="...">`.
-- No inline `onclick` on compose modal buttons — all wired in `f33d3r.js` DOMContentLoaded. Inline `onclick` IS allowed on HTMX action buttons and drawer nav links (CSP has `unsafe-inline`).
-- Post timestamps: use `<time class="post-time" data-ts="{{unix epoch seconds}}">` — `formatPostTimes()` in f33d3r.js formats them on load and on every `htmx:afterSwap`.
+```text
+shell_main_layout
+ └─ playground
+     └─ post_card_compact
+         └─ post_action_bar
+             └─ btn_like
+             └─ like_count
+```
 
 ---
 
-## PIAL — The Identity Spine
+# Facet ID Standard
 
-PIAL UUID is the **only** cross-brain identity. Never use `user.ID` (account UUID) or `user.Handle` for cross-brain calls.
+Every facet must use:
 
-- Created in `feed-engine` (`pial_roots` table in `f33d3r_feed`).
-- Mirrored into Elohim Veni's `pial_states` table via synchronous `/v1/pial/bootstrap` call on signup.
-- Auto-bootstrap: `userFromRequest()` in `auth.go` bootstraps PIAL for any pre-existing account that lacks one.
-- Vovin uses PIAL UUID as messaging identity — injected via `X-Vovin-Identity` header in `vovinProxy`.
-- Capability check: `dbpkg.HasCapability(h.db, user.PIALID, model.CapPosting)` reads cached `pial_capabilities` table in `f33d3r_feed`.
+```text
+facet:<namespace>:<type>:<entity_id>:<sub_id>
+```
 
----
+Example:
 
-## Vovin (Messaging) — Client-Side Crypto
+```text
+facet:f33d3r:post:12345:like_btn
+```
 
-End-to-end encrypted. Nantar proxies `/vovin/*` → aethyr-msg:8092.
-
-- Keys live in browser IndexedDB only. Namespaced per PIAL: `vovin_v1_<PIAL_UUID>`.
-- `messages.js` implements the full crypto stack: ECDH-P256 vault (V1) + Double Ratchet (V2).
-- Device registration: `POST /vovin/v1/devices` with `{pial_id, device_id, public_key_b64, ...}`.
-- Legacy identity: `POST /vovin/v1/identity` (kept for backward compat, non-blocking).
-- The `MY_PIAL` value is read from `<meta name="f33d3r:pial">` injected server-side in base.html.
-- If `MY_PIAL` is empty, `boot()` shows an error and stops — never proceed with empty PIAL.
+Do not invent alternate formats.
 
 ---
 
-## Minimum Versions
+# Facet File Rules
 
-Always use these versions or newer. Never go below these floors.
+Facet files contain HTML fragments only.
 
-| Component | Minimum | Notes |
-|-----------|---------|-------|
-| feed-engine Go | 1.26.2 | go.mod + Dockerfile `golang:1.26.2-alpine` |
-| All Rust brains | 1.95.0 | `rust:1.95.0-slim-bookworm` in every Dockerfile |
-| HTMX | 2.0.10 | `unpkg.com/htmx.org@2.0.10` |
-| PostgreSQL | 18 | `postgres:18-alpine` |
-| Tailwind | 4.2.4 | `@tailwindcss/browser@4.2.4` via jsdelivr CDN |
-| Python | 3.14.4 | enforcement scripts + any tooling |
+Requirements:
 
----
+* Single root element
+* Root contains data-facet-id
+* No html tag
+* No head tag
+* No body tag
+* No inline JavaScript
+* No embedded application logic
+* No local styles
 
-## Databases
+Example:
 
-Each brain has its own database. Never cross-query.
-
-| Brain | Database |
-|-------|----------|
-| Nantar + AethyrRank | f33d3r_feed |
-| Vovin | f33d3r_msg |
-| Ain Soph | f33d3r_wallet |
-| Elohim Veni | f33d3r_security |
-| Zodacare | f33d3r_safety |
-| Schema Registry | f33d3r_registry |
-| Verity | f33d3r_verity |
-| Aethyr Ledger | f33d3r_ledger |
+```html
+<div
+  data-facet-id="facet:f33d3r:post:12345:like_count">
+  42
+</div>
+```
 
 ---
 
-## Realm/XP System (public)
+# Directory Structure
 
-5 levels: **Wanderer (R1) → Initiate (R2) → Seeker (R3) → Adept (R4) → Guardian (R5)**  
-XP thresholds: 0 / 500 / 2000 / 7500 / 20000
+```text
+facets/
+├── atomic/
+├── composite/
+├── content/
+├── overlay/
+├── wire/
+└── empty_error/
+```
 
-Use `realmName` template func and `realm.XPThreshold()` in Go code. Never expose "Jung" or archetype names publicly.
+When creating new facets, place them in the appropriate directory.
+
+Do not create new top-level facet categories without explicit instruction.
 
 ---
 
-## Dev Accounts
+# Event Model
 
-All seeded with password `f33d3rdev`:
+Every mutation is represented as a single event.
 
-| Handle | Role |
-|--------|------|
-| @edd | Founder / Admin |
-| @admin | Admin |
-| @creator | Creator |
-| @dev | Engineer |
-| @guest | User |
+Structure:
 
-To grant admin: `UPDATE users SET role = 'admin' WHERE handle = 'x';`
+```json
+{
+  "event_id": "uuid",
+  "timestamp": "iso8601",
+  "type": "facet.mutate",
+  "facet_id": "facet:...",
+  "fragment": "<div>...</div>",
+  "priority": "normal"
+}
+```
+
+Rules:
+
+* One event = one facet mutation
+* Fragment must be renderable
+* Fragment must be complete
+* Ordering guaranteed per facet
+* Cross-facet ordering is eventual
+
+---
+
+# Development Rules For Claude
+
+## When Implementing Features
+
+Always describe:
+
+1. Triggering server event
+2. Server-side handler
+3. Facet renderer
+4. Produced fragment
+5. Stream mutation
+
+Never start from client behavior.
+
+---
+
+## When Designing Pages
+
+Always provide:
+
+1. Shell
+2. Wire
+3. Content facets
+4. Composite facets
+5. Atomic facets
+6. Facet IDs
+
+---
+
+## When Writing Code
+
+Prefer:
+
+* Server renderers
+* Pure rendering functions
+* Event-driven mutations
+* Deterministic output
+
+Avoid:
+
+* Client orchestration
+* Browser business logic
+* Duplicate state ownership
+
+---
+
+# Existing Client Runtime
+
+The client runtime already exists.
+
+It:
+
+* Opens EventSource or WebSocket
+* Receives mutations
+* Locates matching data-facet-id
+* Applies fragment
+
+Claude must not redesign, replace, regenerate, or expand this runtime unless explicitly instructed.
+
+---
+
+# Code Review Checklist
+
+Before proposing code, verify:
+
+* No client state introduced
+* No hydration introduced
+* No component terminology used
+* Facet IDs follow convention
+* Fragment contains data-facet-id
+* Rendering occurs on server
+* Mutation delivered through stream
+* Architecture remains server-authoritative
+
+If any check fails, revise the solution.
+
+---
+
+# When Unsure
+
+If repository code appears to conflict with FA doctrine:
+
+1. Assume FA doctrine is correct.
+2. Flag the conflict.
+3. Recommend an FA-compliant alternative.
+4. Do not silently propagate architectural drift.
+
+---
+
+# One Sentence Summary
+
+Facet Architecture is a server-authoritative streaming UI system where all rendering is generated on the server and delivered as immutable HTML fragments over a persistent event stream, while clients remain stateless projection surfaces.

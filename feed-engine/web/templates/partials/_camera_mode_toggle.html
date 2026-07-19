@@ -1,0 +1,15 @@
+{{/*
+FACET camera_mode_toggle (atomic)
+  version: 1.0 | status: stable | layer: atomic
+  Photo / Video mode selector. The active button gains .is-active (driven by
+  the substrate from canonical state).
+  signals: emits capture.mode with data-mode="photo"|"video"
+*/}}
+{{define "camera_mode_toggle"}}
+<div class="capture-modes" data-facet-id="facet:f33d3r:capture:modes">
+  <button type="button" class="capture-mode-btn is-active"
+          data-capture-action="mode" data-mode="photo">Photo</button>
+  <button type="button" class="capture-mode-btn"
+          data-capture-action="mode" data-mode="video">Video</button>
+</div>
+{{end}}

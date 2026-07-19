@@ -128,7 +128,11 @@ pub async fn rank_handler(
 
             // Stage 5: Revenue adjustment
             let rev_adj      = revenue::revenue_adjustment(item, &req.user_state, &cfg.revenue);
-            let final_score  = (after_vel + rev_adj).clamp(0.0, 1.0);
+
+            // Stage 5b: In-network boost — social graph content scores higher
+            let network_adj  = if item.is_in_network { cfg.network.network_boost } else { 0.0 };
+
+            let final_score  = (after_vel + rev_adj + network_adj).clamp(0.0, 1.0);
 
             // Build and cache feature vector for feedback loop
             let fatigue = {
@@ -176,8 +180,8 @@ pub async fn rank_handler(
                     final_score,
                 },
                 explanation: format!(
-                    "neural={:.3} × aesq_mult={:.3}={:.3} | vel={:+.3} | rev={:+.3} | {:?} | final={:.3}",
-                    neural_score, aesq_mult, after_aesq, v_boost, rev_adj, phase, final_score,
+                    "neural={:.3} × aesq_mult={:.3}={:.3} | vel={:+.3} | rev={:+.3} | net={:+.3} | {:?} | final={:.3}",
+                    neural_score, aesq_mult, after_aesq, v_boost, rev_adj, network_adj, phase, final_score,
                 ),
                 exploration_slot: false,
                 safety_blocked:   false,
@@ -271,7 +275,13 @@ pub async fn feedback_handler(
             nalgebra::DVector::from_element(state.config.bandit.feature_dim, 0.1_f64)
         };
 
-        state.model_store.update(&req.surface, &fv, adjusted);
+        // When a NEXUS shard is present, key the model on the shard so all
+        // linked personas share one behavioral model across accounts.
+        let model_key = match req.nexus_shard_id.as_deref() {
+            Some(shard) => format!("{}:{}", shard, req.surface),
+            None        => format!("{}:{}", req.user_id, req.surface),
+        };
+        state.model_store.update(&model_key, &fv, adjusted);
     }
 
     StatusCode::ACCEPTED

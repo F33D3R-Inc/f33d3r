@@ -1,0 +1,34 @@
+{{/*
+FACET btn_tip
+  version: 1.0 | status: stable | layer: 5
+
+  inputs:
+    TargetHandle      string — handle of the recipient
+    IsOwnContent      bool   — hide button when viewer is the author
+    TargetIsVerified  bool   — tip is only available for verified users
+
+  states:
+    default | hidden (IsOwnContent or !TargetIsVerified)
+
+  children: none
+
+  signals:
+    emits:    openTipModal (JS — opens tip modal, no server mutation)
+    receives: none
+
+  context:
+    action_bar → action row, non-owner verified posts only
+    profile_header → action row, verified non-owner profiles
+*/}}
+{{define "btn_tip"}}
+{{if and .TargetIsVerified (not .IsOwnContent)}}
+<button class="btn-tip"
+        onclick="event.stopPropagation();openTipModal('{{.TargetHandle}}')"
+        aria-label="Tip @{{.TargetHandle}}">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+    <path d="M12 2v20M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/>
+  </svg>
+  <span class="btn-tip-label">Tip</span>
+</button>
+{{end}}
+{{end}}

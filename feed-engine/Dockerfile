@@ -1,4 +1,7 @@
-# ── Stage 1: build ─────────────────────────────────────────────────────────────
+# Build context is the REPO ROOT (see docker-compose.local.yml / docker-compose.prod.yml). The COPY
+# paths below are written relative to that root. A tight root .dockerignore keeps the context small.
+
+# ── Stage 1: build the Go binary ─────────────────────────────────────────────────
 # D-026: never pin Go version. golang:alpine == latest stable on alpine base.
 FROM golang:alpine AS builder
 
@@ -7,19 +10,16 @@ RUN apk add --no-cache git ca-certificates
 
 WORKDIR /app
 
-# Copy everything FIRST. We can't pre-fetch deps from a stale go.sum because
-# new requires in go.mod won't have entries yet (the Sprint 0 / S0.2 zap +
-# prometheus deps were the trigger). Ship a self-healing build that always
-# regenerates go.sum from the source.
-COPY . .
+# Pre-fetch deps using go.sum as the cache key — only re-downloads on go.mod change.
+COPY feed-engine/go.mod feed-engine/go.sum ./
+RUN go mod download
 
-# `go mod tidy` reconciles go.mod ↔ go.sum from the actual import set; this is
-# idempotent when go.sum is already correct (cheap on repeat builds) and
-# self-heals when go.mod gained a new require.  Then build.
-RUN go mod tidy && \
-    CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o feed-engine ./cmd/server
+# Copy source and build. No tidy needed — go.sum is authoritative.
+COPY feed-engine/ .
 
-# ── Stage 2: minimal runtime ───────────────────────────────────────────────────
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o feed-engine ./cmd/server
+
+# ── Stage 3: minimal runtime ───────────────────────────────────────────────────
 # D-026: alpine:latest, not pinned.
 FROM alpine:latest
 

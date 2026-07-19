@@ -1,0 +1,30 @@
+{{/*
+FACET hashtag_autocomplete_row
+  version: 1.0 | status: stable | layer: 1
+
+  inputs:
+    Tag    string — "hot" (no leading #)
+    Count  int    — number of recent posts using the tag
+
+  states:
+    default | focused (CSS :hover / keyboard highlight)
+
+  children: none
+
+  signals:
+    emits:    onHashtagSelect (JS onclick — inserts #tag into compose)
+    receives: none
+
+  context:
+    compose_modal → #hashtag-dropdown (HTMX-populated autocomplete list).
+    Reuses the .cashtag-ac-* presentation so both autocompletes look identical.
+*/}}
+{{define "hashtag_autocomplete_row"}}
+<button type="button"
+        class="cashtag-ac-row"
+        onclick="onHashtagSelect('{{.Tag}}')"
+        data-tag="{{.Tag}}">
+  <span class="cashtag-ac-ticker">#{{.Tag}}</span>
+  <span class="cashtag-ac-name">{{if eq .Count 0}}New tag{{else}}{{.Count}} post{{if ne .Count 1}}s{{end}}{{end}}</span>
+</button>
+{{end}}

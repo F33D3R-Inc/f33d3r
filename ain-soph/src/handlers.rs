@@ -254,6 +254,9 @@ pub async fn transfer(
     info!(from = %req.from_user_id, to = %req.to_user_id, amount = req.amount_cents, "AET transfer completed");
 
     emit_payment_signal_if_needed(&req.from_user_id, &req.to_user_id, &req.tx_meta);
+    // FA Live: push updated balance to both parties immediately.
+    notify_feed_engine_balance_spawn(pool.clone(), req.from_user_id.clone());
+    notify_feed_engine_balance_spawn(pool.clone(), req.to_user_id.clone());
 
     Ok(Json(TxResponse {
         transaction_id: tx_id,
@@ -334,6 +337,9 @@ pub async fn tip(
     info!(from = %req.from_pial_id, to = %req.to_pial_id, aet = req.amount_aet, "AET tip sent");
 
     emit_payment_signal_if_needed(&req.from_pial_id, &req.to_pial_id, "tip");
+    // FA Live: push updated balance to both parties immediately.
+    notify_feed_engine_balance_spawn(pool.clone(), req.from_pial_id.clone());
+    notify_feed_engine_balance_spawn(pool.clone(), req.to_pial_id.clone());
 
     Ok(Json(TxResponse {
         transaction_id: tx_id,
@@ -610,6 +616,52 @@ pub async fn cast_vote(
     }))
 }
 
+// ── POST /v1/ledger/checkpoint ────────────────────────────────────────────────
+// Called by Aethyr Ledger after each block is sealed. Stores the Merkle root of
+// that block so Ain Soph can cross-verify settlement without querying the ledger brain.
+
+#[instrument(skip(pool))]
+pub async fn ledger_checkpoint(
+    State(pool): State<PgPool>,
+    Json(req): Json<LedgerCheckpointRequest>,
+) -> Result<Json<serde_json::Value>, WalletError> {
+    if req.events_root.is_empty() {
+        return Err(WalletError::BadRequest("events_root is required".into()));
+    }
+    if req.tx_count < 0 {
+        return Err(WalletError::BadRequest("tx_count must be non-negative".into()));
+    }
+
+    sqlx::query(
+        r#"INSERT INTO ledger_checkpoints (block_id, events_root, tx_count, sealed_at)
+           VALUES ($1, $2, $3, $4)
+           ON CONFLICT (block_id) DO UPDATE
+             SET events_root = EXCLUDED.events_root,
+                 tx_count    = EXCLUDED.tx_count,
+                 sealed_at   = EXCLUDED.sealed_at,
+                 received_at = NOW()"#,
+    )
+    .bind(req.block_id)
+    .bind(&req.events_root)
+    .bind(req.tx_count)
+    .bind(req.sealed_at)
+    .execute(&pool)
+    .await?;
+
+    info!(
+        block_id = req.block_id,
+        tx_count = req.tx_count,
+        root = %&req.events_root[..16.min(req.events_root.len())],
+        "ledger checkpoint stored"
+    );
+
+    Ok(Json(serde_json::json!({
+        "ok": true,
+        "block_id": req.block_id,
+        "events_root": req.events_root,
+    })))
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 async fn existing_tx(pool: &PgPool, key: &str, hit: bool) -> Result<Json<TxResponse>, WalletError> {
@@ -671,4 +723,37 @@ async fn emit_payment_signal(url: &str, from: &str, creator: &str, event_type: &
             warn!("AethyrRank payment signal failed: {e}");
         }
     }
+}
+
+// ── FA Live: push balance update to feed-engine after any transaction ─────────
+
+/// Fetches the current balance for pial_id and pushes it to feed-engine's
+/// balance-update webhook so the user's SSE session receives a live update.
+/// Fire-and-forget — spawned as a tokio task, never blocks the response.
+pub fn notify_feed_engine_balance_spawn(pool: PgPool, pial_id: String) {
+    tokio::spawn(async move {
+        notify_feed_engine_balance(&pool, &pial_id).await;
+    });
+}
+
+async fn notify_feed_engine_balance(pool: &PgPool, pial_id: &str) {
+    let balance_units = db::get_balance(pool, pial_id).await
+        .ok().flatten().unwrap_or(0);
+    let balance_aet = format_aet(balance_units);
+
+    let feed_engine_url = std::env::var("FEED_ENGINE_URL")
+        .unwrap_or_else(|_| "http://feed-engine:8081".to_string());
+    let api_key = std::env::var("INTERNAL_API_KEY").unwrap_or_default();
+
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+    else { return };
+
+    let _ = client
+        .post(format!("{}/api/internal/balance-update", feed_engine_url))
+        .header("X-Internal-Key", api_key)
+        .json(&serde_json::json!({ "pial_id": pial_id, "balance_aet": balance_aet }))
+        .send()
+        .await;
 }

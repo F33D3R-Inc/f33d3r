@@ -5,9 +5,9 @@ import (
 	"log"
 	"net/http"
 	"net/smtp"
-	"strings"
 
 	dbpkg "github.com/f33d3r/feed-engine/internal/db"
+	"github.com/f33d3r/feed-engine/internal/model"
 )
 
 // sendEmail sends a plain HTML email via configured SMTP.
@@ -28,131 +28,34 @@ func (h *Handler) sendEmail(to, subject, bodyHTML string) {
 	}
 }
 
-// ── Forgot password ───────────────────────────────────────────────────────────
+// sendNewDeviceAlert emails the user when a login from an unrecognised device or IP is detected.
+// It also appends an event to the PIAL audit trail. Called from a goroutine — never blocks the request.
+func (h *Handler) sendNewDeviceAlert(user *model.User, r *http.Request) {
+	ua := r.UserAgent()
+	ip := r.RemoteAddr
 
-func (h *Handler) forgotPasswordPage(w http.ResponseWriter, r *http.Request) {
-	h.render(w, "forgot_password.html", map[string]interface{}{
-		"Title": "Reset password · F33D3R",
-	})
-}
-
-func (h *Handler) forgotPasswordSubmit(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Redirect(w, r, "/forgot-password", http.StatusSeeOther)
-		return
-	}
-	_ = r.ParseForm()
-	email := strings.TrimSpace(strings.ToLower(r.FormValue("email")))
-
-	// Always show the same message — don't leak whether email exists
-	done := map[string]interface{}{
-		"Title": "Reset password · F33D3R",
-		"Sent":  true,
+	// PIAL audit trail — written regardless of whether email is configured.
+	if h.db != nil && user.PIALID != "" {
+		dbpkg.LogPIALEvent(h.db, user.PIALID, user.ID, "new_device_login", map[string]interface{}{
+			"ip": ip, "user_agent": ua,
+		}, "security")
 	}
 
-	if h.db == nil || email == "" {
-		h.render(w, "forgot_password.html", done)
+	// Resolve email — not stored on model.User; fetch from DB.
+	email := dbpkg.GetUserEmail(h.db, user.ID)
+	if email == "" || h.cfg.SMTPHost == "" {
 		return
 	}
 
-	user, _ := dbpkg.GetUserByEmail(h.db, email)
-	if user == nil {
-		h.render(w, "forgot_password.html", done)
-		return
-	}
-
-	token, err := dbpkg.CreatePasswordResetToken(h.db, user.ID)
-	if err != nil {
-		log.Printf("[reset] create token: %v", err)
-		h.render(w, "forgot_password.html", done)
-		return
-	}
-
-	link := h.cfg.BaseURL + "/reset-password?token=" + token
-	body := fmt.Sprintf(`
-<div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px 24px">
-  <h2 style="font-size:22px;margin-bottom:8px">Reset your F33D3R password</h2>
-  <p style="color:#666;margin-bottom:24px">Someone requested a password reset for <b>@%s</b>. If this was you, click the button below. This link expires in 1 hour.</p>
-  <a href="%s" style="display:inline-block;padding:12px 24px;background:#7c3aed;color:#fff;border-radius:8px;text-decoration:none;font-weight:600">Reset password</a>
-  <p style="color:#999;font-size:12px;margin-top:24px">If you didn't request this, ignore this email. Your password won't change.</p>
-</div>`, user.Handle, link)
-
-	go h.sendEmail(email, "Reset your F33D3R password", body)
-	h.render(w, "forgot_password.html", done)
-}
-
-// ── Reset password ────────────────────────────────────────────────────────────
-
-func (h *Handler) resetPasswordPage(w http.ResponseWriter, r *http.Request) {
-	token := r.URL.Query().Get("token")
-	if token == "" {
-		http.Redirect(w, r, "/forgot-password", http.StatusSeeOther)
-		return
-	}
-	if h.db != nil {
-		if user, _ := dbpkg.GetUserByResetToken(h.db, token); user == nil {
-			h.render(w, "reset_password.html", map[string]interface{}{
-				"Title":   "Reset password · F33D3R",
-				"Invalid": true,
-			})
-			return
-		}
-	}
-	h.render(w, "reset_password.html", map[string]interface{}{
-		"Title": "Reset password · F33D3R",
-		"Token": token,
-	})
-}
-
-func (h *Handler) resetPasswordSubmit(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Redirect(w, r, "/login", http.StatusSeeOther)
-		return
-	}
-	_ = r.ParseForm()
-	token    := strings.TrimSpace(r.FormValue("token"))
-	password := r.FormValue("password")
-	confirm  := r.FormValue("confirm")
-
-	fail := func(msg string) {
-		h.render(w, "reset_password.html", map[string]interface{}{
-			"Title": "Reset password · F33D3R",
-			"Token": token,
-			"Error": msg,
-		})
-	}
-
-	if len(password) < 8 {
-		fail("Password must be at least 8 characters.")
-		return
-	}
-	if password != confirm {
-		fail("Passwords don't match.")
-		return
-	}
-	if h.db == nil {
-		fail("Service unavailable — try again.")
-		return
-	}
-
-	user, _ := dbpkg.GetUserByResetToken(h.db, token)
-	if user == nil {
-		h.render(w, "reset_password.html", map[string]interface{}{
-			"Title":   "Reset password · F33D3R",
-			"Invalid": true,
-		})
-		return
-	}
-
-	if err := dbpkg.SetPassword(h.db, user.ID, password); err != nil {
-		log.Printf("[reset] set password: %v", err)
-		fail("Failed to set password — try again.")
-		return
-	}
-	_ = dbpkg.MarkResetTokenUsed(h.db, token)
-
-	h.render(w, "reset_password.html", map[string]interface{}{
-		"Title": "Reset password · F33D3R",
-		"Done":  true,
-	})
+	subject := "New sign-in to your F33D3R account"
+	body := fmt.Sprintf(
+		`<p>We detected a new sign-in to <strong>@%s</strong>.</p>`+
+			`<p><strong>IP address:</strong> %s<br>`+
+			`<strong>Device / browser:</strong> %s</p>`+
+			`<p>If this was you, no action is needed.</p>`+
+			`<p>If this wasn't you, go to <strong>Settings &rarr; Security &rarr; Active Sessions</strong> and revoke it immediately.</p>`,
+		user.Handle, ip, ua,
+	)
+	h.sendEmail(email, subject, body)
+	log.Printf("[security] new-device alert sent to user %s from %s", user.ID, ip)
 }

@@ -1,0 +1,28 @@
+{{/*
+FACET creator_kyc_gate
+  version: 1.0 | status: stable | layer: 3
+
+  inputs:
+    User  *model.User — current authenticated user
+
+  states:
+    pending | complete
+
+  signals:
+    emits: none (link navigates to /kyc?mode=creator)
+
+  context:
+    shop → shown when adult_creator_pending=true but is_adult_creator=false
+*/}}
+{{define "creator_kyc_gate"}}
+<div class="creator-kyc-gate">
+  <div class="creator-kyc-gate-title">Complete Verification to Start Earning</div>
+  <div class="creator-kyc-gate-sub">Adult creator accounts require identity verification and a 2257 compliance agreement.</div>
+  <div class="creator-kyc-gate-steps">
+    <span class="kyc-gate-step">🪪 ID Document</span>
+    <span class="kyc-gate-step">🤳 Face Scan</span>
+    <span class="kyc-gate-step">📋 2257 Agreement</span>
+  </div>
+  <a href="/kyc?mode=creator" class="kyc-capture-btn kyc-capture-btn--full" style="display:block;text-align:center;text-decoration:none;margin-top:16px">Start Verification</a>
+</div>
+{{end}}

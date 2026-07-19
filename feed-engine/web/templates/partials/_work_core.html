@@ -1,0 +1,79 @@
+{{/*
+FACET work_core
+  version: 1.0 | status: stable | layer: 2
+
+  The single, canonical render of a work's content attachments — media (the
+  playable HLS/image render via media_container), reaction-video, the nested
+  quote, YouTube/link previews, and voice. Every wireframe (feed card, detail
+  focus, quote embed, react-video) drops THIS facet in for the work body so the
+  media renders identically and plays everywhere. The work is never re-drawn at
+  a lower fidelity — wireframes only set scale/chrome around it.
+
+  inputs:
+    W       Work    — full work struct (model.Work)
+    Ctx     PageCtx — viewer context (.User …) — REQUIRED for feed/detail
+                      (content_gate dereferences .User). May be omitted for embed.
+    Variant string  — feed | detail | embed | react
+                      feed/detail → gated, full-size media (content_gate)
+                      embed/react → compact; media plays for non-flagged works,
+                                    gated content shows a chip (no Ctx to gate).
+
+  children:
+    react_video_player, content_gate → media_container, media_container,
+    quoted_work, youtube_embed, link_preview, post_voice_player
+
+  signals:
+    emits:    none
+    receives: none
+
+  context:
+    work_card (feed), work_detail_focus (detail), quoted_work (embed),
+    react_video_player .rv-post (react)
+
+  note: depth is bounded — embed/react variants do NOT recurse into a nested
+        quoted child, matching how a quote references exactly one CID.
+*/}}
+{{define "work_core"}}
+{{$w := .W}}{{$ctx := .Ctx}}{{$variant := .Variant}}
+{{if eq $variant "embed"}}
+  {{/* Compact embed — media plays for non-flagged works; gated content is not
+       leaked raw (no Ctx available here to run the content_gate). */}}
+  {{if or $w.VideoMasterURL $w.MediaURLs}}
+    {{if or $w.IsNSFW $w.IsGore}}
+    <div class="quoted-media-flag" onclick="event.stopPropagation()">{{if $w.IsNSFW}}18+ content{{else}}Sensitive content{{end}} — open to view</div>
+    {{else}}
+    {{template "media_container" (dict "P" $w "PIALID" "")}}
+    {{end}}
+  {{end}}
+{{else}}
+  {{/* feed / detail — full gated media through content_gate */}}
+  {{if eq $w.Kind "react_video"}}
+  {{template "react_video_player" (dict "W" $w "Ctx" $ctx)}}
+  {{else if or $w.VideoMasterURL $w.MediaURLs}}
+  {{template "content_gate" (dict "P" $w "Ctx" $ctx)}}
+  {{end}}
+  {{if $w.IsNSFW}}<div class="work-label work-label--nsfw" onclick="event.stopPropagation()">18+</div>{{end}}
+  {{if $w.IsGore}}<div class="work-label work-label--gore" onclick="event.stopPropagation()">Sensitive</div>{{end}}
+  {{if and $w.QuotedWork (ne $w.Kind "react_video")}}
+  {{template "quoted_work" $w.QuotedWork}}
+  {{end}}
+{{end}}
+{{/* shared tail — identical for every variant */}}
+{{if $w.YouTubeID}}
+{{template "youtube_embed" (dict "VideoID" $w.YouTubeID "PlaylistID" $w.YouTubePlaylistID)}}
+{{end}}
+{{if and $w.LinkPreview (not $w.YouTubeID)}}
+{{template "link_preview" $w.LinkPreview}}
+{{end}}
+{{/* Cashtag card — lazy-loads the SAME facet the composer shows (live price + sparkline)
+     via /facets/cashtag/card, so a posted $TICKER renders identically to compose. */}}
+{{if $w.Cashtag}}
+<div class="work-cashtag-embed" onclick="event.stopPropagation()"
+     hx-get="/facets/cashtag/card?ticker={{$w.Cashtag.Ticker}}"
+     hx-trigger="revealed once" hx-swap="innerHTML"></div>
+{{end}}
+{{if $w.VoiceURL}}
+{{$fid := "feed"}}{{if eq $variant "detail"}}{{$fid = "detail"}}{{end}}
+{{template "post_voice_player" (dict "PostID" $w.ID "VoiceURL" $w.VoiceURL "VoiceDuration" $w.VoiceDurationSecs "Fidelity" $fid)}}
+{{end}}
+{{end}}

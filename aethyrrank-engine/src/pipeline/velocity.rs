@@ -42,11 +42,15 @@ pub fn velocity_boost(item: &ContentItem, config: &VelocityConfig) -> f64 {
     }
 }
 
-/// Composite velocity from three signals.
-/// `velocity_score` carries most of the signal; retention and completion
-/// are strong independent predictors of sustained growth.
+/// Composite velocity from four signals.
+/// `velocity_score` carries the primary signal; retention and completion are strong
+/// independent predictors of sustained growth; `self_reply_cadence` captures
+/// early creator engagement (replying to own post within 30 min).
 fn composite_velocity(item: &ContentItem) -> f64 {
-    (0.50 * item.velocity_score + 0.25 * item.early_retention + 0.25 * item.completion_rate)
+    (0.45 * item.velocity_score
+        + 0.25 * item.early_retention
+        + 0.20 * item.completion_rate
+        + 0.10 * item.self_reply_cadence)
         .clamp(0.0, 1.0)
 }
 
@@ -106,6 +110,9 @@ mod tests {
             creator_revenue_rate: 0.1,
             ltv_estimate: 0.1,
             adult_probability: 0.0,
+            posts_last_24h: 1,
+            self_reply_cadence: 0.0,
+            char_count: 0,
         }
     }
 

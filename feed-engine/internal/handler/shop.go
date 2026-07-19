@@ -32,6 +32,33 @@ func (h *Handler) shopPage(w http.ResponseWriter, r *http.Request) {
 
 	isOwner := user != nil && user.Handle == shopUser.Handle
 
+	// Fetch Themis listings for this creator's shop
+	var themisListings []PublicListing
+	if h.themisURL != "" && shopUser.PIALID != "" {
+		// Build the Themis request — include viewer PIAL for subscription visibility
+		tReq, terr := http.NewRequestWithContext(r.Context(), "GET",
+			h.themisURL+"/v1/shop/"+shopUser.PIALID, nil)
+		if terr == nil {
+			if user != nil && user.PIALID != "" {
+				tReq.Header.Set("X-Pial-Identity", user.PIALID)
+			}
+			tResp, terr2 := h.httpClient.Do(tReq)
+			if terr2 == nil && tResp.StatusCode == http.StatusOK {
+				var tResult struct {
+					Listings []PublicListing `json:"listings"`
+				}
+				if json.NewDecoder(tResp.Body).Decode(&tResult) == nil {
+					for _, l := range tResult.Listings {
+						if l.IsActive || isOwner {
+							themisListings = append(themisListings, l)
+						}
+					}
+				}
+				tResp.Body.Close()
+			}
+		}
+	}
+
 	rawPlans, _ := dbpkg.GetCreatorPlans(h.db, shopUser.ID)
 	plans := make([]model.ShopPlan, 0, len(rawPlans))
 	for _, p := range rawPlans {
@@ -61,19 +88,26 @@ func (h *Handler) shopPage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	rail := h.railData(user, "default")
 	h.render(w, "shop.html", map[string]interface{}{
-		"User":         user,
-		"ShopUser":     shopUser,
-		"IsOwner":      isOwner,
-		"IsEnabled":    isEnabled,
-		"Plans":        plans,
-		"Earnings":     earnings,
-		"IsSubscribed": isSubscribed,
-		"PPVItems":     []model.PPVItem{},
-		"Title":        "@" + shopUser.Handle + " · Shop · F33D3R",
-		"SessionID":    uuid.New().String(),
-		"ShowScores":   h.cfg.ShowScores,
-		"Themes":       ThemesWithActive(user.ThemeID),
+		"User":           user,
+		"ShopUser":       shopUser,
+		"IsOwner":        isOwner,
+		"IsEnabled":      isEnabled,
+		"Plans":          plans,
+		"Earnings":       earnings,
+		"IsSubscribed":   isSubscribed,
+		"PPVItems":       []model.PPVItem{},
+		"ThemisListings": themisListings,
+		"Title":          "@" + shopUser.Handle + " · Shop · F33D3R",
+		"SessionID":      uuid.New().String(),
+		"ShowScores":     h.cfg.ShowScores,
+		"Themes":         ThemesWithActive(user.ThemeID),
+		"TrendingTags":   rail["TrendingTags"],
+		"SuggestedUsers": rail["SuggestedUsers"],
+		"RailContext":    rail["RailContext"],
+		"RailNewsItems":  rail["RailNewsItems"],
+		"RailNewsLabel":  rail["RailNewsLabel"],
 	})
 }
 
@@ -84,6 +118,11 @@ func (h *Handler) enableCreatorAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	user := h.userFromRequest(w, r)
 	w.Header().Set("Content-Type", "application/json")
+	if !user.IsVerified {
+		w.WriteHeader(http.StatusForbidden)
+		w.Write([]byte(`{"error":"verified badge required to become a creator"}`))
+		return
+	}
 	if h.db != nil {
 		if err := dbpkg.SetCreatorMode(h.db, user.ID, true); err != nil {
 			log.Printf("[creator/enable] db: %v", err)
@@ -92,11 +131,11 @@ func (h *Handler) enableCreatorAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// Fire-and-forget: also notify Thessalon so commerce DB stays in sync
-	if h.cfg.ThessalonURL != "" && user.PIALID != "" {
+	// Fire-and-forget: notify Themis commerce so creator_eligibility stays in sync
+	if h.cfg.ThemisURL != "" && user.PIALID != "" {
 		go func() {
 			body, _ := json.Marshal(map[string]string{"pial_id": user.PIALID})
-			req, _ := http.NewRequest(http.MethodPost, h.cfg.ThessalonURL+"/v1/creator/enable", bytes.NewReader(body))
+			req, _ := http.NewRequest(http.MethodPost, h.cfg.ThemisURL+"/v1/creator/enable", bytes.NewReader(body))
 			if req != nil {
 				req.Header.Set("Content-Type", "application/json")
 				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -121,7 +160,7 @@ func (h *Handler) getCreatorPlans(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) subscribeToCreator(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost { http.Error(w, "405", 405); return }
-	_ = r.ParseForm()
+	_ = r.ParseMultipartForm(32 << 20)
 	user        := h.userFromRequest(w, r)
 	creatorID   := r.FormValue("creator_id")
 	planID      := r.FormValue("plan_id")
@@ -174,7 +213,7 @@ func (h *Handler) subscribeToCreator(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) unsubscribeFromCreator(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost { http.Error(w, "405", 405); return }
-	_ = r.ParseForm()
+	_ = r.ParseMultipartForm(32 << 20)
 	user      := h.userFromRequest(w, r)
 	creatorID := r.FormValue("creator_id")
 	if creatorID == "" { http.Error(w, "creator_id required", 400); return }

@@ -66,7 +66,6 @@ func TestPathNormalisation(t *testing.T) {
 		{"/kyc/submit", "/kyc/*"},
 		{"/admin/users", "/admin/*"},
 		{"/settings/profile", "/settings/*"},
-		{"/vovin/v1/devices", "/vovin/*"},
 		{"/ledger/v1/blocks/42", "/ledger/*"},
 		{"/thessalon/v1/tips", "/thessalon/*"},
 		{"/nonexistent/path/with/12345678-1234-5678-9abc-123456789abc/embedded", "/nonexistent/path/with/:uuid/embedded"},

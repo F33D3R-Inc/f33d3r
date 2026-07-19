@@ -1,0 +1,64 @@
+{{/*
+FACET confirm_dialog
+  version: 1.0 | status: stable | layer: 3
+
+  inputs:
+    Title            string          — dialog heading
+    Message          string          — body copy explaining the action
+    ConfirmLabel     string          — label for the confirm button (e.g. "Delete", "Block")
+    CancelLabel      string          — label for the cancel button (defaults to "Cancel")
+    ConfirmEventType string          — event_type value sent to POST /events on confirm
+    ConfirmVals      map[string]string — additional key/value pairs merged into the /events payload
+
+  states:
+    default | confirming (htmx request in-flight, button disabled via hx-indicator)
+
+  children: none
+
+  signals:
+    emits:    ConfirmEventType (POST /events) — on confirm button click
+    receives: none
+
+  context:
+    overlay-slot or injected via hx-swap="afterbegin" into #overlay-slot
+    Removed from DOM on cancel or after htmx settles (hx-on::after-request)
+*/}}
+{{define "confirm_dialog"}}
+{{$cancelLabel := .CancelLabel}}{{if not $cancelLabel}}{{$cancelLabel = "Cancel"}}{{end}}
+<div id="confirm-dialog"
+     class="confirm-dialog"
+     role="dialog"
+     aria-modal="true"
+     aria-labelledby="confirm-dialog-title"
+     onclick="if(event.target===this)this.remove()">
+  <div class="confirm-dialog-card">
+
+    {{/* ── Facet(confirm_dialog_header) ── */}}
+    <div class="confirm-dialog-header">
+      <span id="confirm-dialog-title" class="confirm-dialog-title">{{.Title}}</span>
+    </div>
+
+    {{/* ── Facet(confirm_dialog_body) ── */}}
+    <p class="confirm-dialog-message">{{.Message}}</p>
+
+    {{/* ── Facet(confirm_dialog_actions) ── */}}
+    <div class="confirm-dialog-actions">
+      <button type="button"
+              class="btn-secondary confirm-dialog-cancel"
+              onclick="document.getElementById('confirm-dialog').remove()">
+        {{$cancelLabel}}
+      </button>
+      <button type="button"
+              class="btn-danger confirm-dialog-confirm"
+              hx-post="/events"
+              hx-vals='{"event_type":"{{.ConfirmEventType}}"{{range $k,$v := .ConfirmVals}},"{{$k}}":"{{$v}}"{{end}}}'
+              hx-target="#confirm-dialog"
+              hx-swap="outerHTML"
+              hx-on::after-request="document.getElementById('confirm-dialog')&&document.getElementById('confirm-dialog').remove()">
+        {{.ConfirmLabel}}
+      </button>
+    </div>
+
+  </div>
+</div>
+{{end}}

@@ -1,0 +1,26 @@
+{{/*
+FACET badge_live
+  version: 1.0 | status: stable | layer: 5
+
+  inputs: none
+
+  states:
+    default (pulsing red dot)
+
+  children: none
+
+  signals:
+    emits:    none
+    receives: none
+
+  context:
+    post_header      → author row (live stream posts)
+    spaces_card      → card header
+    live_stream_card → title row
+*/}}
+{{define "badge_live"}}
+<span class="badge-live chip live" aria-label="Live">
+  <span class="dot" aria-hidden="true"></span>
+  LIVE
+</span>
+{{end}}

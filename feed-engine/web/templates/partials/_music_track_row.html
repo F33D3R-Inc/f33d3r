@@ -1,0 +1,68 @@
+{{/*
+FACET music_track_row
+  version: 1.0 | status: stable | layer: 2
+
+  inputs:
+    Track               *model.Track — .ID .Title .Genre .CoverURL .PlayCount .LikeCount
+                                       .DurationSecs .AuthorHandle .AuthorName .AudioURL
+    CurrentUserHandle   string       — used to show edit/delete for own tracks
+
+  states:
+    default | playing | liked | own-track
+
+  children: none
+
+  signals:
+    emits:    like_track, unlike_track (POST /events)
+              playTrack() (JS only)
+    receives: none
+
+  context:
+    music_tracks → public music feed list
+*/}}
+{{define "music_track_row"}}
+{{$t := .Track}}
+<div class="track-card" id="music-track-{{$t.ID}}" data-track-id="{{$t.ID}}">
+
+  {{/* Cover art with play overlay */}}
+  <div class="track-cover-wrap">
+    {{if $t.CoverURL}}
+    <img class="track-cover-img" src="{{$t.CoverURL}}" alt="{{$t.Title}}" width="76" height="76" loading="lazy">
+    {{else}}
+    <div class="track-cover-placeholder"></div>
+    {{end}}
+    <button class="track-play-overlay"
+            aria-label="Play {{$t.Title}}"
+            onclick="playTrack('{{$t.ID}}','{{$t.AudioURL}}','{{$t.Title}}','{{$t.AuthorHandle}}','{{$t.CoverURL}}')">
+      <svg class="play-icon" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+      <svg class="pause-icon hidden" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+    </button>
+  </div>
+
+  {{/* Track info */}}
+  <div class="track-info">
+    <div class="track-title">{{$t.Title}}</div>
+    <a class="track-artist-link" href="/{{$t.AuthorHandle}}">
+      <span class="track-artist-name">@{{$t.AuthorHandle}}</span>
+    </a>
+    {{if $t.Genre}}<div class="track-genre">{{$t.Genre}}</div>{{end}}
+    <div class="track-meta-row">
+      {{if gt $t.DurationSecs 0}}<span class="track-duration">{{fmtDuration $t.DurationSecs}}</span>{{end}}
+      <span class="track-plays">{{$t.PlayCount}} plays</span>
+      <button class="track-like-btn {{if $t.LikedByUser}}liked{{end}}"
+              hx-post="/api/track/like"
+              hx-target="this"
+              hx-swap="outerHTML"
+              hx-vals='{"track_id":"{{$t.ID}}"}'
+              aria-label="Like"
+              aria-pressed="{{if $t.LikedByUser}}true{{else}}false{{end}}">
+        <svg viewBox="0 0 24 24" fill="{{if $t.LikedByUser}}currentColor{{else}}none{{end}}" stroke="currentColor" stroke-width="2">
+          <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
+        </svg>
+        {{$t.LikeCount}}
+      </button>
+    </div>
+  </div>
+
+</div>
+{{end}}

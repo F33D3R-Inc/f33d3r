@@ -1,0 +1,13 @@
+{{define "title"}}Save your backup codes · F33D3R{{end}}
+{{define "shell-class"}}shell-auth{{end}}
+{{define "sidebar-hidden"}}sidebar-onboard-hidden{{end}}
+{{define "mobile-nav-hidden"}}mobile-nav-onboard-hidden{{end}}
+{{define "body"}}
+<main class="auth-main">
+  <div class="auth-card auth-card--wide">
+    <h1 class="auth-title">Save your backup codes</h1>
+    <p class="auth-subtitle">These codes are the only way to recover your account. F33D3R does not store email addresses and cannot reset your password for you.</p>
+    {{template "backup_codes_reveal" .}}
+  </div>
+</main>
+{{end}}

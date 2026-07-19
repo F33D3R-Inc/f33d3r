@@ -1,0 +1,71 @@
+{{/*
+FACET sidebar_right
+  version: 1.0 | status: stable | layer: 2
+
+  inputs:
+    RailContext        string              — "feed"|"explore"|"post"|"profile"|"music"|"search"|"default"
+    TrendingTags       []TrendingTag       — tag + count + rank
+    SuggestedUsers     []SuggestedUser     — who-to-follow rows
+    RailCreators       []RailCreator       — trending creators panel
+    PostAuthorHandle   string              — used in post context for "More from @author" prompt
+
+  states:
+    context-feed | context-explore | context-post | context-profile |
+    context-music | context-search | context-default
+
+  children:
+    trending_item, suggested_user_row, rail_trending_creators, rail_news_section
+
+  signals:
+    emits:    none
+    receives: none
+
+  context:
+    base.html → right-panel slot (HTMX-swapped on navigation between surfaces)
+*/}}
+{{define "sidebar_right"}}
+<div class="sidebar-right-inner">
+
+  {{/* ── POST context: "More from @author" prompt ── */}}
+  {{if and (eq .RailContext "post") .PostAuthorHandle}}
+  <div class="sidebar-panel rail-more-from-panel">
+    <h3 class="sidebar-panel-title">More from @{{.PostAuthorHandle}}</h3>
+    <a href="/{{.PostAuthorHandle}}" class="rail-more-from-link">View profile →</a>
+  </div>
+  {{end}}
+
+  {{/* ── Trending tags ── */}}
+  {{if .TrendingTags}}
+  <div class="sidebar-panel">
+    <h3 class="sidebar-panel-title">Trending</h3>
+    {{range $i, $t := .TrendingTags}}
+    {{template "trending_item" (dict "Tag" $t.Tag "Count" $t.Count "Rank" (add $i 1))}}
+    {{end}}
+  </div>
+  {{end}}
+
+  {{/* ── Creator intelligence: feed, explore, profile, music ── */}}
+  {{if .RailCreators}}
+  {{template "rail_trending_creators" .}}
+  {{end}}
+
+  {{/* ── Who to follow ── */}}
+  {{if .SuggestedUsers}}
+  <div class="sidebar-panel">
+    <h3 class="sidebar-panel-title">Who to follow</h3>
+    {{range .SuggestedUsers}}
+    {{template "suggested_user_row" .}}
+    {{end}}
+  </div>
+  {{end}}
+
+  {{/* ── Contextual news (RSS) ── */}}
+  {{if .RailNewsItems}}
+  {{template "rail_news_section" .}}
+  {{end}}
+
+  {{/* ── Legal footer — right rail only ── */}}
+  {{template "rail_footer" .}}
+
+</div>
+{{end}}

@@ -1,0 +1,30 @@
+{{/*
+FACET btn_copy_link
+  version: 1.0 | status: stable | layer: 5
+
+  inputs:
+    PostID  string — post UUID used to build the shareable URL
+
+  states:
+    default | copied (transient, JS-managed)
+
+  children: none
+
+  signals:
+    emits:    none (clipboard write only — no server mutation)
+    receives: none
+
+  context:
+    post_menu → universal actions section
+*/}}
+{{define "btn_copy_link"}}
+<button class="btn-copy-link"
+        onclick="event.stopPropagation();navigator.clipboard&&navigator.clipboard.writeText(window.location.origin+'/post/{{.PostID}}').then(function(){toast('Link copied')})"
+        aria-label="Copy link to post">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+    <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
+    <path d="m8.59 13.51 6.83 3.98M15.41 6.51l-6.82 3.98"/>
+  </svg>
+  Copy link
+</button>
+{{end}}

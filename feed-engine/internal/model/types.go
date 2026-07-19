@@ -12,6 +12,7 @@ type User struct {
 	Bio            string
 	Pronouns       string
 	Location       string
+	CountryCode    string // ISO 3166-1 alpha-2, used for leaderboard grouping only
 	Website        string
 	AvatarURL      string
 	AvatarAnimated bool
@@ -20,9 +21,11 @@ type User struct {
 	AccentHex      string
 	JungArchetype  string
 	PinnedTrackID  string
-	SocialLinksRaw string // raw JSON from DB
+	SocialLinksRaw      string // raw JSON from DB
+	ExternalTipLinksRaw string // raw JSON: {"cashapp":"user","venmo":"user",...}
 	IsCreator      bool
 	IsVerified     bool
+	OfficialType   string // '' | 'government' | 'business'
 	FollowerCount  int
 	FollowingCount int
 	PostCount      int
@@ -39,11 +42,30 @@ type User struct {
 	Realm          int    // 1–5 progression level
 	XP             int64  // cumulative experience points
 	UnreadCount    int
-	Role           string // user|admin
+	Role           string // user|admin|founder
 	PIALID         string // PIAL root anchor UUID
+	IsMinor        bool   // true when user_roles.is_minor=true — enforced server-side
+	IsAgeVerified  bool   // true when KYC age check passed (user_roles.is_age_verified)
+	IsAdult        bool   // true when birthday confirms 18+ (user_roles.is_adult)
+	Birthday               *time.Time // nil if not set
+	ShowBirthday           bool       // legacy: whether to display birthday on profile
+	BirthdayMdVisibility   string     // "everyone"|"followers"|"mutual_followers"|"only_me"
+	BirthdayYearVisibility string     // "everyone"|"followers"|"mutual_followers"|"only_me"
+	OrgMemberships         []OrgMembership // populated for profile pages
+	MobileFeedView      string // "standard" | "reels" — user opt-in mobile feed style
+	ShowSensitive       bool   // 18+ only: gore/sensitive (IsGore) shown without warning when true
+	CelebrationsEnabled bool   // opt-in: show the active month's celebration theme (June=Pride, etc.)
+	IsPrivate           bool   // account privacy: TRUE = profile/posts hidden from public lookup (followers only)
+	TwoFAEnabled        bool       // true when TOTP 2FA is active for this account
+	IsAdultCreator      bool       // Verity-verified adult creator — all content gated
+	AdultCreatorPending bool       // selected Adult Creator but Verity not yet passed
+	IsFoundingCreator   bool       // first-wave creator — permanent gold badge
+	FoundingCreatorAt   *time.Time // when the founding creator badge was granted
+	ReferralCode        string     // user's personal referral code
 }
 
-func (u *User) IsAdmin() bool { return u != nil && u.Role == "admin" }
+func (u *User) IsAdmin() bool   { return u != nil && (u.Role == "admin" || u.Role == "founder") }
+func (u *User) IsFounder() bool { return u != nil && u.Role == "founder" }
 
 // ── PIAL: Persistent Identity + Access Layer ──────────────────────────────────
 
@@ -60,7 +82,7 @@ const (
 
 // DefaultCapabilities are granted to every new PIAL at onboarding.
 var DefaultCapabilities = []string{
-	CapPosting, CapRealmProgression, CapNewAccountTrust, CapMessaging, CapMusicUpload,
+	CapPosting, CapRealmProgression, CapNewAccountTrust, CapMessaging, CapMusicUpload, CapMonetization,
 }
 
 // CapState values.
@@ -71,13 +93,18 @@ const (
 	CapStateCooldown   = "cooldown"
 )
 
-// PIALRoot is the immutable identity anchor. Minimal — no psychology, no ranking.
+// PIALRoot is the identity anchor. Carries human-level attributes — one per human, not per account.
 type PIALRoot struct {
-	PIALID       string
-	PublicKey    string
-	StateHash    string
-	CreatedAt    time.Time
-	IsTombstoned bool
+	PIALID         string
+	PublicKey      string
+	StateHash      string
+	CreatedAt      time.Time
+	IsTombstoned   bool      // deprecated: use Status
+	Status         string    // active | suspended | tombstoned
+	DateOfBirth    *time.Time
+	KYCTier        string    // none | basic | soft | full
+	KYCVerifiedAt  *time.Time
+	AgeVerified    bool
 }
 
 // PIALCapability is one node in the capability tree.
@@ -112,6 +139,16 @@ func (m PIALCapabilityMap) Can(cap string) bool {
 	return ok && c.IsGranted()
 }
 
+// LinkedAccount is one account bound to a PIAL root — used in the account switcher.
+type LinkedAccount struct {
+	ID          string
+	Handle      string
+	DisplayName string
+	AvatarURL   string
+	IsPrimary   bool
+	IsActive    bool // true when this is the current session's active_account_id
+}
+
 // ProfileSave is the write model for saving a profile.
 type ProfileSave struct {
 	UserID          string
@@ -119,6 +156,7 @@ type ProfileSave struct {
 	Bio             string
 	Pronouns        string
 	Location        string
+	CountryCode     string // ISO 3166-1 alpha-2
 	Website         string
 	AvatarURL       string
 	AvatarAnimated  bool
@@ -126,8 +164,10 @@ type ProfileSave struct {
 	ThemeID         string
 	AccentHex       string
 	JungArchetype   string
-	PinnedTrackID   string
-	SocialLinksJSON string // validated JSON
+	PinnedTrackID        string
+	SocialLinksJSON      string // validated JSON
+	ExternalTipLinksJSON string // validated JSON: {provider: username}
+	IsAdultCreator       bool   // user-declared adult content creator
 }
 
 // ── Post ─────────────────────────────────────────────────────────────────────
@@ -141,8 +181,11 @@ type Post struct {
 	AvatarURL      string
 	AvatarSeed     string  // handle used to derive gradient avatar colour
 	AvatarAnimated bool
-	IsVerified     bool
-	AuthorRole     string // admin | founder | creator | user
+	AuthorRealm    int    // 1–5 realm tier for ring display
+	IsVerified        bool
+	AuthorRole        string // admin | founder | creator | user
+	AuthorOfficialType  string // '' | 'government' | 'business'
+	AuthorIsAdultCreator bool  // true when author has active adult creator role
 	Body           string
 	ContentType    string
 	Tags           []string
@@ -154,12 +197,19 @@ type Post struct {
 	VideoDurationSecs float32
 	VideoWidth        int
 	VideoHeight       int
+	// Content lineage — canonical media entity this post references.
+	// MediaCreatorHandle is the original uploader (survives reposts).
+	CanonicalMediaID   string
+	MediaCreatorHandle string
 	IsEdited          bool
-	IsReply        bool
-	ParentID       string
+	IsReply           bool
+	ParentID          string
+	QuotedPostID      string
+	QuotedPost        *Post // populated when QuotedPostID is set
 	CreatedAt      time.Time
 	TimeAgo        string // e.g. "2m", "4h", "Jan 5"
 	Likes          int
+	DislikeCount   int
 	Reposts        int
 	Comments       int
 	Saves          int
@@ -177,17 +227,86 @@ type Post struct {
 	// Comment audience control — set by post author
 	// Values: "open" | "followers" | "verified" | "none"
 	CommentGating string
-	IsNSFW        bool
-	// Interaction state for current user
-	LikedByUser      bool
-	SavedByUser      bool
-	RepostedByUser   bool
-	BookmarkedByUser bool
+	IsNSFW               bool
+	ContentIsSensitive   bool
+	ContentIsSubscriberOnly bool
+	// ScanState: pending_scan | clean | age_gated | flagged | human_review | blocked
+	ScanState            string
+	ViewerIsSubscribed   bool
+	LatestReplierHandles []string
+	LatestReplierAvatars []string
+	AuthorPIAL          string
+	IsAuthorOnline      bool
+	// Interaction state for current viewer
+	LikedByUser         bool
+	DislikedByUser      bool
+	SavedByUser         bool
+	RepostedByUser      bool
+	BookmarkedByUser    bool
+	ViewerFollowsAuthor bool // viewer follows this post's author — used in focus follow dot
+	// Repost context — set when this post appears in a profile's Reposts tab.
+	// RepostedByHandle is the handle of the user who reposted (not the author).
+	RepostedByHandle string
+	RepostedAt       time.Time
+	// Voice post: audio-only post with a waveform player. Empty when not a voice post.
+	VoiceURL      string
+	VoiceDuration float32
 	// Poll data (nil if post has no poll)
 	Poll *Poll
 	// Thread: number of continuation posts by the same author chained below this one.
 	// 0 means not a thread root (or thread with only one segment).
 	ThreadCount int
+	// IsPinned is set to true when this post is pinned on the author's profile page.
+	IsPinned bool
+	// ScheduledAt is the time the post should be published. Nil means immediate.
+	ScheduledAt *time.Time
+	// LinkPreview is populated when the post body contains a URL whose OG metadata
+	// was successfully fetched. Nil when no preview is available.
+	LinkPreview *LinkPreview
+	// Cashtag is populated when the post was composed with a $TICKER attachment.
+	Cashtag *CashtagEmbed
+	// YouTubeID is extracted at render time from the post body when a YouTube URL is present.
+	// It is never stored — populated during scanPosts / GetPostByID.
+	YouTubeID string
+	// Vision: ephemeral post from the Visions camera. Expires 24h after creation.
+	IsVision  bool
+	ExpiresAt *time.Time
+	// Repost: IsRepost=true when this post is a reshare of another post.
+	// RepostSourceID points to the original. Body is empty for reposts.
+	IsRepost        bool
+	RepostSourceID  string
+	// Content lineage from content-scan dedup engine.
+	// LineageHandle is the handle of the ORIGINAL uploader when this video is a duplicate.
+	// Empty means this video is an original (or scan not yet completed).
+	LineagePIAL        string
+	LineageHandle      string
+	LineageDisplayName string // display name of the original creator (resolved at query time)
+	// Primary org badge — the employee's primary org account, shown on posts and profile
+	PrimaryOrgAvatarURL   string
+	PrimaryOrgHandle      string
+	PrimaryOrgDisplayName string
+	PrimaryOrgType        string // 'business' | 'government'
+}
+
+// CashtagEmbed is the stock ticker card stored with a post at time of posting.
+type CashtagEmbed struct {
+	Ticker      string
+	CompanyName string
+	PriceAtPost float64
+	ChangePct   float64
+	// PriceStr and ChangeStr are pre-formatted for the template.
+	PriceStr  string
+	ChangeStr string
+	IsPositive bool
+}
+
+// LinkPreview holds Open Graph metadata fetched server-side for the first URL in a post.
+type LinkPreview struct {
+	URL         string
+	Title       string
+	Description string
+	ImageURL    string
+	SiteName    string
 }
 
 // Poll is embedded in Post when the post has poll_options set.
@@ -209,7 +328,44 @@ type PollResult struct {
 	Voted  bool // true if this is what the current user voted
 }
 
+// ThreadPost wraps a Post with precomputed thread-line state for the post detail page.
+// HasLineAbove/HasLineBelow drive .thread-line-above / .thread-line-below rendering.
+// The template reads these flags directly — it never computes line state itself.
+type ThreadPost struct {
+	Post                    *Post
+	HasLineAbove            bool
+	HasLineBelow            bool
+	IsFocused               bool
+	IsAncestor              bool
+	IsReply                 bool
+	IsSameAuthorContinuation bool
+	Depth                   int
+}
+
 // ── Feed page data ────────────────────────────────────────────────────────────
+
+// NexusPersona represents one account linked under a NEXUS identity.
+// nexus_id is NEVER stored here — only the blinded pial_shard_id.
+type NexusPersona struct {
+	PIALShardID  string
+	Handle       string
+	DisplayName  string
+	AvatarURL    string
+	PersonaType  string // "personal" | "creator" | "business"
+	DisplayLabel string
+	IsActive     bool
+	IsPrimary    bool
+	UnreadCount  int
+}
+
+// NexusContext carries multi-persona state for the sidebar persona switcher.
+// Nil when the user has no NEXUS (single-account path).
+type NexusContext struct {
+	Personas            []NexusPersona
+	ActivePersona       *NexusPersona
+	TotalUnreadCount    int
+	TotalUnreadMessages int
+}
 
 type FeedPage struct {
 	User       *User
@@ -223,6 +379,8 @@ type FeedPage struct {
 	EngineOnline bool
 	// 6 available themes for the switcher
 	Themes []Theme
+	// NEXUS multi-persona context — nil for single-account users
+	Nexus *NexusContext
 }
 
 // Theme represents one of the 6 F33D3R visual themes.
@@ -246,6 +404,57 @@ func AllThemes() []Theme {
 		{ID: "moss",     Name: "Moss",     Vibe: "Root System",  Surface: "#080F08", Accent: "#7DC98A", AccentMuted: "#427D4D"},
 		{ID: "dusk",     Name: "Dusk",     Vibe: "Golden Hour",  Surface: "#120E07", Accent: "#D4A96A", AccentMuted: "#8A6535"},
 	}
+}
+
+// ── Org membership ────────────────────────────────────────────────────────────
+
+// OrgInfo is a lightweight view of a business/government account.
+type OrgInfo struct {
+	ID          string
+	Handle      string
+	DisplayName string
+	AvatarURL   string
+	OrgType     string // 'business' | 'government'
+}
+
+// OrgMembership is one user↔org association record.
+type OrgMembership struct {
+	ID          string
+	Org         OrgInfo
+	Status      string // pending_employee | pending_org | approved | rejected | revoked | suspended
+	IsPrimary   bool
+	InitiatedBy string // 'employee' | 'org'
+	CreatedAt   time.Time
+}
+
+// OrgVerificationApplication is a request from a user to obtain an official_type badge.
+type OrgVerificationApplication struct {
+	ID          string
+	UserID      string
+	UserHandle  string
+	DisplayName string
+	AvatarURL   string
+	OrgType     string // 'business' | 'government'
+	OrgName     string
+	OrgWebsite  string
+	Description string
+	EvidenceURL string
+	Status      string // pending | approved | rejected
+	AdminNotes  string
+	CreatedAt   time.Time
+}
+
+// OrgApplicationRow is a row in the org owner panel (pending/approved members).
+type OrgApplicationRow struct {
+	MembershipID string
+	UserID       string
+	Handle       string
+	DisplayName  string
+	AvatarURL    string
+	IsVerified   bool
+	Status       string
+	InitiatedBy  string
+	CreatedAt    time.Time
 }
 
 // ── Track ─────────────────────────────────────────────────────────────────────
@@ -272,6 +481,21 @@ type Track struct {
 	CreatedAt    time.Time
 	TimeAgo      string
 	LikedByUser  bool
+}
+
+// ── Feed surfaces ─────────────────────────────────────────────────────────────
+
+// FeedSurface is a named interest surface users can pin to their tab bar.
+// Phase 1: tag/content_type bridge routing. Phase 2: Zior semantic scores.
+type FeedSurface struct {
+	ID          string
+	Label       string
+	Emoji       string
+	SurfaceType string   // "interest" | "behavioral"
+	Tags        []string // Phase 1 bridge: posts WHERE tags && these tags
+	ContentType string   // Phase 1 bridge: posts WHERE content_type = this
+	SortOrder   int
+	IsPinned    bool     // populated by GetAllSurfaces for the current user
 }
 
 // ── Music page data ───────────────────────────────────────────────────────────
@@ -349,6 +573,11 @@ type AethyrContent struct {
 	CreatorRevenueRate    float64          `json:"creator_revenue_rate"`
 	LtvEstimate           float64          `json:"ltv_estimate"`
 	AdultProbability      float64          `json:"adult_probability"`
+	// Content quality signals
+	PostsLast24h     uint64  `json:"posts_last_24h"`
+	SelfReplyCadence float64 `json:"self_reply_cadence"`
+	CharCount        uint64  `json:"char_count"`
+	IsInNetwork      bool    `json:"is_in_network"`
 }
 
 type AethyrEngagement struct {
@@ -423,13 +652,27 @@ type BrainEntry struct {
 	Description string `json:"description"`
 }
 
+// LeaderboardEntry is one row in the daily XP leaderboard.
+type LeaderboardEntry struct {
+	Rank        int
+	UserID      string
+	Handle      string
+	DisplayName string
+	AvatarURL   string
+	Realm       int
+	XPToday     int64
+}
+
 // Achievement represents a single platform achievement definition.
 type Achievement struct {
 	ID          string
 	Name        string
 	Description string
 	Icon        string
-	Tier        string     // bronze | silver | gold | platinum
+	Tier        string     // bronze | silver | gold | platinum (legacy)
+	Rarity      string     // common | uncommon | rare | epic | legendary | mythic
+	Category    string     // onboarding | social | creator | music | wellness | culture | real_life | community | economy | secret
+	XPReward    int
 	EarnedAt    *time.Time // nil if not earned
 }
 
@@ -481,9 +724,247 @@ type KYCPage struct {
 	Has2257       bool
 }
 
+// ── Security / threat detection ───────────────────────────────────────────────
+
+type SecurityEvent struct {
+	ID        string
+	EventType string
+	Severity  string
+	UserID    string
+	IPAddress string
+	UserAgent string
+	Path      string
+	Details   map[string]interface{}
+	CreatedAt time.Time
+}
+
+type BlockedIP struct {
+	IPAddress   string
+	Reason      string
+	AutoBlocked bool
+	CreatedAt   time.Time
+	ExpiresAt   *time.Time
+}
+
+type AdminAuditEntry struct {
+	ID          string
+	AdminID     string
+	AdminHandle string
+	Action      string
+	TargetType  string
+	TargetID    string
+	IPAddress   string
+	CreatedAt   time.Time
+}
+
+type AdminSecurityPage struct {
+	User                *User
+	TotalEventsToday    int
+	CriticalEvents      int
+	BlockedIPCount      int
+	AdminActionCount    int
+	RecentEvents        []SecurityEvent
+	BlockedIPs          []BlockedIP
+	AuditLog            []AdminAuditEntry
+	PendingSecurityCount int
+}
+
 // ── Achievements page data ────────────────────────────────────────────────────
 
 type AchievementsPage struct {
 	User         *User
 	Achievements []Achievement
+	EarnedCount  int
+	TotalCount   int
+	XPTotal      int
+	XPPercent    int
+	CurrentTier  string
+	NextTier     string
+	XPToNext     int
+}
+
+// ── Articles ──────────────────────────────────────────────────────────────────
+
+type Article struct {
+	ID            string
+	AuthorID      string
+	AuthorHandle  string
+	AuthorDisplay string
+	AuthorAvatar  string
+	Slug          string
+	Title         string
+	Body          string // raw Markdown — used in editor
+	BodyHTML      string // goldmark-rendered HTML — used in reader (safeHTML in template)
+	Excerpt       string
+	CoverURL      string
+	Status        string // draft | published | archived
+	PublishedAt   *time.Time
+	ViewCount     int64
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+}
+
+// ── Works (content-addressed, signed) ─────────────────────────────────────────
+
+// Work is a content-addressed authored work signed by Malkuth.
+type Work struct {
+	ID         string
+	CID        string     // "sha256:{hex}" — content-addressed identity
+	AuthorID   string
+	AuthorPIAL string
+	Body       string
+	Kind       string     // post | reply | vision | thread_part | quote | react_video
+	MediaURLs  []string
+	// ReactLayout is the React-With-Video arrangement applied at view time
+	// (presenter|pip|split|card_over|media_only|green_screen). Empty for non-RWV works.
+	ReactLayout string
+	IsNSFW     bool
+	IsGore     bool
+	IsBlocked  bool
+	ExpiresAt  *time.Time
+	CreatedAt  time.Time
+	DeletedAt  *time.Time
+	// Citations (populated when present)
+	ParentCID  string // reply-to CID, empty when not a reply
+	QuotedCID  string // quoted-work CID, empty when not a quote
+	QuotedWork *Work  // full quoted work, populated by EnrichWorksWithQuotes
+	// Editions (populated on-demand for detail view)
+	Editions []Edition
+	// Author display — joined at query time
+	AuthorHandle string
+	AuthorName   string
+	AvatarURL    string
+	IsVerified         bool
+	AuthorRole         string // user|creator|admin|founder
+	AuthorRealm        int    // 1–5
+	AuthorOfficialType string // ''|'government'|'business'
+	AuthorIsCreator    bool
+	AuthorIsAdultCreator bool // true when author has active adult creator role — used for feed filtering
+	// Aggregated reaction counts
+	LikeCount     int
+	RepostCount   int
+	BookmarkCount int
+	// Viewer interaction state
+	LikedByUser          bool
+	RepostedByUser       bool
+	BookmarkedByUser     bool
+	DislikedByUser       bool
+	ViewerFollowsAuthor  bool
+	// Repost attribution — set when this work is surfaced in a feed because
+	// someone reposted it (X-style "<name> reposted" header). The reposter, not
+	// the author; RepostedAt is when the repost happened (the feed sort time).
+	RepostedByHandle string
+	RepostedByName   string
+	RepostedAt       time.Time
+	// Formatted
+	TimeAgo string
+
+	// ── Extended fields (migrated from posts) ─────────────────────────────────
+
+	// Content classification
+	IsRepost        bool
+	RepostSourceID  string    // UUID of the original work; empty when not a repost
+	IsSensitive     bool
+	SubscriberOnly  bool
+	CommentGating   string    // open | followers | verified | none
+	ScheduledAt     *time.Time
+
+	// Taxonomy
+	Tags        []string
+	ContentType string // text | image | video | voice | poll | article
+
+	// Poll (nil when not a poll)
+	PollOptions []string   // option labels
+	PollEndsAt  *time.Time
+
+	// Voice post
+	VoiceURL           string
+	VoiceDurationSecs  float32
+
+	// Video (HLS) — two-file architecture:
+	// VideoMasterURL is the clean stream (no burn), served to the in-app player.
+	// VideoWatermarkedURL is the moving-watermark stream, what escapes the platform.
+	VideoMasterURL      string
+	VideoWatermarkedURL string
+	VideoPosterURL      string
+	VideoDurationSecs   float32
+	VideoWidth          int
+	VideoHeight         int
+
+	// Lineage — original uploader when content-scan detects a duplicate
+	LineagePIAL        string
+	LineageHandle      string
+	LineageDisplayName string // display name of the original creator (resolved at query time)
+	MediaCreatorHandle string // canonical original uploader handle (survives reposts)
+
+	// Legacy link — original posts.id for rows migrated from the posts table
+	LegacyPostID string
+
+	// Denormalised counters (updated by trigger or batch)
+	DislikeCount int
+	QuoteCount   int
+	ReplyCount   int
+	ViewCount    int
+
+	// Scan / moderation
+	ScanState string // pending | clean | age_gated | flagged | human_review | blocked
+	ScoreBand string // trending | rising | steady | fading
+
+	// Reply preview — up to 3 recent repliers, populated by EnrichWorksWithRepliers
+	LatestReplierHandles []string
+	LatestReplierAvatars []string
+
+	// Rich content — populated at query time, never stored
+	YouTubeID         string        // extracted from body when a YouTube URL is present
+	YouTubePlaylistID string        // list= param from YouTube URL, enables playlist continuation in player
+	LinkPreview       *LinkPreview  // OG metadata for the first external URL in body (nil if none)
+	Cashtag           *CashtagEmbed // first $TICKER in body — lazy-loads the cashtag_card facet (nil if none)
+
+	// IsPinned is set to true when this work is the author's pinned post on their profile.
+	IsPinned bool
+
+	// IsEdited is true when the work has been updated after initial posting.
+	IsEdited bool
+	// EditedAt is the timestamp of the most recent edit (nil if never edited).
+	EditedAt *time.Time
+}
+
+// Edition is one immutable snapshot of a Work's body.
+type Edition struct {
+	ID            string
+	WorkID        string
+	CID           string
+	Body          string
+	EditionNumber int
+	CreatedAt     time.Time
+}
+
+// MicroconversationParticipant is one distinct author in a microconversation.
+type MicroconversationParticipant struct {
+	Handle    string
+	AvatarURL string
+}
+
+// Microconversation is a reply subtree rooted at a direct reply to a focal work.
+// All posts in this exchange share a colored left-border container on the detail page
+// instead of thread lines drawn between elements.
+type Microconversation struct {
+	ConversationID string // seed reply ID
+	AccentClass    string // mc-cobalt | mc-violet | mc-rose | mc-amber | mc-emerald | mc-sky | mc-fuchsia | mc-teal
+	SeedWork       *Work
+	Participants   []MicroconversationParticipant
+	ReplyCount     int // total sub-replies in this subtree
+	MoreCount      int // ReplyCount minus shown exchanges — > 0 triggers "View N more" button
+	Exchanges      []*Work
+	IsExpanded     bool
+}
+
+// ReplyStreamItem is one entry in the merged reply stream on the work detail page.
+// Either a microconversation container (IsMicroconversation=true) or a lone reply card.
+// The stream is sorted by SortTime so temporal order is preserved across both types.
+type ReplyStreamItem struct {
+	IsMicroconversation bool
+	Microconversation   *Microconversation
+	Work                *Work
+	SortTime            time.Time
 }

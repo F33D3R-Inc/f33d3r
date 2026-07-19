@@ -1,0 +1,12 @@
+{{/*
+FACET camera_shutter_btn (atomic)
+  version: 1.0 | status: stable | layer: atomic
+  Single adaptive capture control: photo mode = tap to shoot; video mode =
+  tap to start / tap to stop (gains .is-recording while recording).
+  inputs:  none
+  signals: emits capture.shutter (data-capture-action="shutter")
+*/}}
+{{define "camera_shutter_btn"}}
+<button type="button" class="capture-shutter" data-capture-action="shutter"
+        data-facet-id="facet:f33d3r:capture:shutter" aria-label="Capture"></button>
+{{end}}

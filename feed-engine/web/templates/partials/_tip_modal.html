@@ -1,0 +1,54 @@
+{{/*
+FACET tip_modal
+  version: 1.0 | status: stable | layer: 3
+
+  inputs: none (target handle injected by openTipModal(handle) into DOM at open time)
+
+  states:
+    hidden (default) | open | sending | success | error
+
+  children: none
+
+  signals:
+    emits:    tip (POST /events {event_type:tip, target_handle, amount_aet})
+    receives: tip_received (SSE — toast shown to recipient; sender sees confirmation inline)
+
+  context:
+    base.html → overlay-slot (rendered once at page load, JS opens/closes)
+*/}}
+{{define "tip_modal"}}
+<div id="tip-modal" class="tip-modal hidden" role="dialog" aria-modal="true" aria-label="Send a tip">
+  <div class="tip-modal-overlay" onclick="closeTipModal()"></div>
+  <div class="tip-modal-card">
+    <div class="tip-modal-header">
+      <span class="tip-modal-title">Send a tip</span>
+      <button class="tip-modal-close" onclick="closeTipModal()" aria-label="Close">
+        <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="width:18px;height:18px"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="tip-modal-body">
+      <p class="tip-modal-to">Tipping <strong id="tip-modal-handle"></strong></p>
+      <div class="tip-preset-row">
+        <button class="tip-preset" onclick="setTipAmount(1)">1 AET</button>
+        <button class="tip-preset" onclick="setTipAmount(5)">5 AET</button>
+        <button class="tip-preset" onclick="setTipAmount(10)">10 AET</button>
+        <button class="tip-preset" onclick="setTipAmount(50)">50 AET</button>
+      </div>
+      <div class="tip-custom-row">
+        <label class="tip-custom-label" for="tip-amount-input">Custom amount</label>
+        <div class="tip-amount-wrap">
+          <input id="tip-amount-input" class="tip-amount-input" type="number"
+                 min="0.01" max="10000" step="0.01" placeholder="0.00">
+          <span class="tip-amount-unit">AET</span>
+        </div>
+      </div>
+      <p class="tip-modal-note">AET is sent instantly from your wallet balance.</p>
+      <div id="tip-external-links" aria-live="polite"></div>
+    </div>
+    <div class="tip-modal-footer">
+      <button type="button" class="btn-primary tip-send-btn" id="tip-send-btn" onclick="submitTip()">Send tip</button>
+      <button type="button" class="btn-ghost" onclick="closeTipModal()">Cancel</button>
+    </div>
+  </div>
+</div>
+{{end}}

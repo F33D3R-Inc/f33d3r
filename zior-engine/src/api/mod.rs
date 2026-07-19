@@ -12,6 +12,7 @@ use crate::api::handlers::ZiorState;
 
 pub fn router(state: Arc<ZiorState>) -> Router {
     Router::new()
+        .route("/metrics", get(crate::observ::metrics_handler))
         // Audio ingestion
         .route("/upload", post(handlers::upload_track))
         // Signal query (content-service reads this)
@@ -26,4 +27,5 @@ pub fn router(state: Arc<ZiorState>) -> Router {
         .route("/health", get(handlers::health))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
+        .layer(axum::middleware::from_fn(crate::observ::http_middleware))
 }

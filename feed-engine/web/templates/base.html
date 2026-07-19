@@ -1,500 +1,120 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-nav="expanded">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="f33d3r:pial" content="{{if .User}}{{.User.PIALID}}{{end}}">
+  <meta name="f33d3r:account" content="{{if .User}}{{.User.ID}}{{end}}">
+  <meta name="f33d3r:handle" content="{{if .User}}{{.User.Handle}}{{end}}">
   <title>{{block "title" .}}F33D3R{{end}}</title>
-
-  <!-- ── Favicons & app icons ──────────────────────────────────────────────── -->
-  <link rel="icon" type="image/png" href="/static/brand/favicon.png">
-  <link rel="apple-touch-icon" href="/static/brand/apple-touch-icon.png">
+  {{/* Apply saved dark/light mode before CSS loads — prevents flash */}}
+  <script>(function(){var m=localStorage.getItem('f33d3r_mode')||'dark';document.documentElement.dataset.mode=m;})()</script>
+  <style>[data-mode="dark"]{color-scheme:dark}</style>
+  <link rel="stylesheet" href="/static/css/layers.css?v=20260622b">
+  <link rel="stylesheet" href="/static/css/styles.css?v=20260622b">
+  <link rel="stylesheet" href="/static/css/components.css?v=20260622b">
+  <link rel="stylesheet" href="/static/css/desktop.css?v=20260622b">
+  {{/* responsive.css — shared site-wide responsive layer (shell/nav/messaging). Loaded after desktop.css so it can override shell layout at mobile/tablet breakpoints. */}}
+  <link rel="stylesheet" href="/static/css/responsive.css?v=20260622b">
+  <link rel="stylesheet" href="/static/css/video-overlay.css?v=20260622b">
+  <link rel="stylesheet" href="/static/css/celebrations.css?v=20260622b">
+  <link rel="icon" href="/static/brand/favicon.png" type="image/png">
   <link rel="manifest" href="/static/brand/manifest.json">
-
-  <!-- ── Open Graph / social sharing ─────────────────────────────────────── -->
-  <meta property="og:site_name" content="F33D3R">
-  <meta property="og:title" content="{{block "og-title" .}}F33D3R — Your feed, your world{{end}}">
-  <meta property="og:description" content="{{block "og-desc" .}}The next-generation social platform with real-time ranking, encrypted messaging, and creator monetization.{{end}}">
-  <meta property="og:image" content="/static/brand/og-image.png">
-  <meta property="og:image:width" content="1200">
-  <meta property="og:image:height" content="630">
-  <meta property="og:type" content="website">
-  <meta property="og:url" content="https://f33d3r.com">
-  <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:image" content="/static/brand/og-image.png">
-  <meta name="theme-color" content="#08080F">
-  <!-- Prevent flash of wrong theme before first paint -->
-  <script>
-    (function(){
-      var m=localStorage.getItem('f33d3r_mode')||'light';
-      document.documentElement.dataset.mode=m;
-    })();
-  </script>
-  <script src="https://unpkg.com/htmx.org@2.0.10/dist/htmx.min.js"></script>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600&family=Press+Start+2P&display=swap" rel="stylesheet">
-  <style>
-    /* Utility shims */
-    .dark{color-scheme:dark}
-    .font-body{font-family:"DM Sans",sans-serif}
-    .font-display{font-family:"DM Serif Display",serif}
-    .font-bold{font-weight:700}
-    .antialiased{-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
-    .flex{display:flex}.flex-shrink-0{flex-shrink:0}
-    .hidden{display:none!important}
-    .block{display:block}
-    .inline{display:inline}
-    .items-center{align-items:center}
-    .justify-center{justify-content:center}
-    .gap-6{gap:1.5rem}.gap-8{gap:2rem}
-    .mb-4{margin-bottom:1rem}
-    .py-8{padding-top:2rem;padding-bottom:2rem}
-    .py-12{padding-top:3rem;padding-bottom:3rem}
-    .text-xs{font-size:.75rem;line-height:1rem}
-    .text-sm{font-size:.875rem;line-height:1.25rem}
-    .text-accent{color:var(--accent)}
-    .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border-width:0}
-    .w-2\.5,.h-2\.5{width:.625rem;height:.625rem}
-    .w-3,.h-3{width:.75rem;height:.75rem}
-    .w-3\.5,.h-3\.5{width:.875rem;height:.875rem}
-    .w-4,.h-4{width:1rem;height:1rem}
-    .w-5,.h-5{width:1.25rem;height:1.25rem}
-    .w-6,.h-6{width:1.5rem;height:1.5rem}
-    .htmx-indicator{display:none}
-    .htmx-request .htmx-indicator,.htmx-request.htmx-indicator{display:flex}
-    /* Apply data-mode from <html> to body before CSS loads */
-    [data-mode="dark"]{color-scheme:dark}
-  </style>
-  <link rel="stylesheet" href="/static/css/styles.css?v=20260430">
-  {{if .User}}<meta name="f33d3r:unread" content="{{.User.UnreadCount}}">
-  <meta name="f33d3r:pial" content="{{.User.PIALID}}">
-  <meta name="f33d3r:handle" content="{{.User.Handle}}">{{end}}
-  <meta name="f33d3r:session" content="{{.SessionID}}">
-  <meta name="f33d3r:surface" content="{{.Surface}}">
   {{block "head-extra" .}}{{end}}
+  <script src="/static/js/htmx.min.js?v=20260622b"></script>
 </head>
-<body class="font-body antialiased" id="f33d3r-app"
-      data-theme="{{if .User}}{{.User.ThemeID}}{{else}}void{{end}}"
-      data-accent="{{if .User}}{{.User.AccentHex}}{{else}}{{end}}"
-      data-handle="{{if .User}}{{.User.Handle}}{{else}}{{end}}">
-<script>
-  // Mirror data-mode from <html> to <body> for CSS selectors
-  document.body.dataset.mode = document.documentElement.dataset.mode || 'light';
-</script>
+<body data-theme="{{if .User}}{{.User.ThemeID}}{{else}}void{{end}}" class="{{celebrationClass .User}}">
 
-<!-- Navigation progress bar -->
-<div id="nav-progress"></div>
+<div id="nav-progress" style="position:fixed;top:0;left:0;height:2px;background:var(--accent);width:0;opacity:0;z-index:9999;transition:width 200ms,opacity 320ms;pointer-events:none"></div>
 
 <div class="f33d3r-shell {{block "shell-class" .}}{{end}}">
 
-  <!-- Left sidebar -->
-  <div class="f33d3r-sidebar {{block "sidebar-hidden" .}}{{end}}" id="sidebar">
-    <div style="display:flex;flex-direction:column;flex:1;min-height:0">
-      <a href="/" class="sidebar-logo">
-        <img src="/static/brand/logo.png" alt="F33D3R"
-             style="width:36px;height:36px;border-radius:10px;object-fit:contain;flex-shrink:0"
-             onerror="this.style.display='none'">
-        <span class="logo-text">f33d3r</span>
-      </a>
+  {{/* Facet(nav_shell) — left sidebar. One call. Everything inside is a partial. */}}
+  {{template "nav_shell" .}}
 
-      <nav class="sidebar-nav">
-        <a href="/" class="nav-item {{block "nav-active-home" .}}{{end}}">
-          <svg class="nav-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>
-          <span>Home</span>
-        </a>
-        <a href="/explore" class="nav-item {{block "nav-active-explore" .}}{{end}}">
-          <svg class="nav-icon" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
-          <span>Explore</span>
-        </a>
-        <a href="/messages" class="nav-item {{block "nav-active-messages" .}}{{end}}">
-          <svg class="nav-icon" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-          <span>Messages</span>
-        </a>
-        <a href="/notifications" class="nav-item {{block "nav-active-notifications" .}}{{end}}">
-          <span style="position:relative;display:inline-flex;flex-shrink:0">
-            <svg class="nav-icon" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 0 1-3.46 0"/></svg>
-            {{if and .User .User.UnreadCount}}{{if gt .User.UnreadCount 0}}<span class="notif-count">{{if gt .User.UnreadCount 9}}9+{{else}}{{.User.UnreadCount}}{{end}}</span>{{end}}{{end}}
-          </span>
-          <span>Notifications</span>
-        </a>
-        <a href="/music" class="nav-item {{block "nav-active-music" .}}{{end}}">
-          <svg class="nav-icon" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
-          <span>Music</span>
-        </a>
-        {{if .User}}
-        <a href="/shop/{{.User.Handle}}" class="nav-item {{block "nav-active-shop" .}}{{end}}">
-          <svg class="nav-icon" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>
-          <span>Shop</span>
-        </a>
-        {{end}}
-        <a href="/wallet" class="nav-item {{block "nav-active-wallet" .}}{{end}}">
-          <svg class="nav-icon" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 3H8a2 2 0 0 0-2 2v2h12V5a2 2 0 0 0-2-2z"/><circle cx="17" cy="14" r="1" fill="currentColor"/></svg>
-          <span>Wallet</span>
-        </a>
-        <a href="/profile" class="nav-item {{block "nav-active-profile" .}}{{end}}">
-          <svg class="nav-icon" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-          <span>Profile</span>
-        </a>
-        {{if and .User (.User.IsAdmin)}}
-        <a href="/admin" class="nav-item {{block "nav-active-admin" .}}{{end}}" style="color:var(--accent)">
-          <svg class="nav-icon" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-          <span>Admin</span>
-        </a>
-        {{end}}
-      </nav>
-    </div>
-
-    <div>
-      <!-- Realm / XP widget -->
-      {{if .User}}
-      <div style="display:none;margin-bottom:14px" class="pial-widget">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:5px">
-          <span class="realm-badge realm-{{.User.Realm}}" style="font-size:10px;padding:2px 8px">R{{.User.Realm}} {{realmName .User.Realm}}</span>
-          <span style="font-size:10px;color:var(--text-muted)">{{.User.XP}} XP</span>
-        </div>
-        <div class="realm-bar-track"><div class="realm-bar-fill" style="width:{{realmPct .User.XP .User.Realm}}%"></div></div>
-      </div>
-      <style>@media(min-width:1280px){.pial-widget{display:block!important}}</style>
-      {{end}}
-
-      <!-- Dark/light mode toggle -->
-      <button class="theme-mode-toggle" id="mode-toggle-btn" title="Toggle dark/light mode"
-              style="margin-bottom:10px;margin-left:auto;margin-right:auto;display:flex">
-        <!-- Sun icon (shown in dark mode) -->
-        <svg id="mode-icon-sun" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="width:16px;height:16px;display:none"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
-        <!-- Moon icon (shown in light mode) -->
-        <svg id="mode-icon-moon" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="width:16px;height:16px"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
-      </button>
-
-      <button class="post-fab" id="post-fab">
-        <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
-        <span>Post</span>
-      </button>
-
-      {{if .User}}
-      <div class="sidebar-user-wrap" id="sidebar-user-wrap">
-        <button class="sidebar-user" id="sidebar-user-btn" type="button">
-          <div class="avatar-sm">
-            {{if .User.AvatarURL}}<img src="{{.User.AvatarURL}}" alt="{{.User.DisplayName}}" style="width:100%;height:100%;object-fit:cover;border-radius:50%">
-            {{else}}{{$colors := avatarColors .User.Handle}}<span style="width:100%;height:100%;border-radius:50%;background:linear-gradient(135deg,{{index $colors 0}},{{index $colors 1}});display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:#fff">{{firstChar .User.DisplayName}}</span>{{end}}
-          </div>
-          <div class="sidebar-user-info">
-            <p class="user-name">{{.User.DisplayName}}</p>
-            <p class="user-handle">@{{.User.Handle}}</p>
-            <p id="sidebar-aet-bal" style="font-size:11px;font-weight:700;color:var(--accent);letter-spacing:-.01em;margin-top:1px"></p>
-          </div>
-          <svg style="width:14px;height:14px;color:var(--text-muted);flex-shrink:0" fill="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/></svg>
-        </button>
-        <div class="user-menu-popup hidden" id="user-menu-popup">
-          <a href="/profile" class="user-menu-item">
-            <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-            View profile
-          </a>
-          <a href="/shop/{{.User.Handle}}" class="user-menu-item">
-            <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>
-            My Shop
-          </a>
-          <a href="/notifications" class="user-menu-item" style="position:relative">
-            <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 0 1-3.46 0"/></svg>
-            Notifications
-            {{if and .User .User.UnreadCount}}{{if gt .User.UnreadCount 0}}<span class="notif-count" style="position:static;margin-left:auto">{{if gt .User.UnreadCount 9}}9+{{else}}{{.User.UnreadCount}}{{end}}</span>{{end}}{{end}}
-          </a>
-          <a href="/bookmarks" class="user-menu-item">
-            <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M19 21l-7-5-7 5V5a2 2 0 012-2h10a2 2 0 012 2z"/></svg>
-            Bookmarks
-          </a>
-          <div class="user-menu-sep"></div>
-          <a href="/settings" class="user-menu-item">
-            <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-            Settings
-          </a>
-          <a href="/kyc" class="user-menu-item">
-            <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-            Verification
-          </a>
-          <a href="/achievements" class="user-menu-item">
-            <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="8" r="6"/><path d="M15.477 12.89L17 22l-5-3-5 3 1.523-9.11"/></svg>
-            Achievements
-          </a>
-          <div class="user-menu-sep"></div>
-          <a href="/logout" class="user-menu-item user-menu-item-danger">
-            <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>
-            Log out
-          </a>
-        </div>
-      </div>
-      {{end}}
-    </div>
-  </div>
-
-  <!-- Shared app JS must load before page-specific scripts in body blocks -->
-  <script src="/static/js/f33d3r.js?v=20260506"></script>
-  <!-- HLS video player (hls.js served locally — no CDN/CSP issues) -->
-  <script src="/static/js/video-player.js?v=20260506" defer></script>
-  <!-- X-style media lightbox viewer -->
-  <script src="/static/js/media-viewer.js?v=20260506" defer></script>
-
-  <!-- Page body -->
+  {{/* Main content area — pages provide their own .f33d3r-main wrapper */}}
   {{block "body" .}}{{end}}
 
+  {{/* Right panel — filled by pages that need it */}}
+  <aside class="f33d3r-right" id="right-panel">
+    {{block "right-panel" .}}{{end}}
+  </aside>
+
 </div>
 
-<!-- Mobile bottom nav -->
-<nav class="mobile-nav {{block "mobile-nav-hidden" .}}{{end}}">
-  <a href="/" class="mobile-nav-item {{block "mob-active-home" .}}{{end}}">
-    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>
-    <span>Home</span>
-  </a>
-  <a href="/explore" class="mobile-nav-item {{block "mob-active-explore" .}}{{end}}">
-    <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
-    <span>Explore</span>
-  </a>
-  <button class="mobile-post-btn" id="mobile-post-btn">
-    <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
-  </button>
-  <a href="/messages" class="mobile-nav-item {{block "mob-active-messages" .}}{{end}}" style="position:relative">
-    <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-    <span>Messages</span>
-  </a>
-  <button class="mobile-nav-item" id="mob-more-btn">
-    <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.5" fill="currentColor"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/><circle cx="19" cy="12" r="1.5" fill="currentColor"/></svg>
-    <span>More</span>
-  </button>
-</nav>
-
-<!-- Mobile "More" drawer -->
-<div id="mob-more-overlay" style="display:none;position:fixed;inset:0;z-index:60;background:rgba(0,0,0,.45);backdrop-filter:blur(6px)"></div>
-<div id="mob-more-drawer" style="display:none;position:fixed;bottom:0;left:0;right:0;z-index:61;background:var(--panel);border-top:1px solid var(--border-soft);border-radius:24px 24px 0 0;padding:8px 0 max(24px,env(safe-area-inset-bottom));animation:slide-up-drawer 240ms var(--spring)">
-  <div style="width:36px;height:4px;background:var(--border);border-radius:2px;margin:8px auto 16px"></div>
-  {{if .User}}
-  <div style="display:flex;align-items:center;gap:12px;padding:12px 20px 16px;border-bottom:1px solid var(--border-soft);margin-bottom:8px">
-    <div class="avatar-sm">
-      {{if .User.AvatarURL}}<img src="{{.User.AvatarURL}}" alt="" style="width:100%;height:100%;object-fit:cover;border-radius:50%">
-      {{else}}{{$c := avatarColors .User.Handle}}<span style="width:100%;height:100%;border-radius:50%;background:linear-gradient(135deg,{{index $c 0}},{{index $c 1}});display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:#fff">{{firstChar .User.DisplayName}}</span>{{end}}
-    </div>
-    <div><p style="font-size:14px;font-weight:600;color:var(--text-primary)">{{.User.DisplayName}}</p><p style="font-size:12px;color:var(--text-secondary)">@{{.User.Handle}}</p></div>
-  </div>
-  {{end}}
-  <a href="/profile" class="mob-drawer-item" onclick="closeMobileMore()">
-    <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-    Profile
-  </a>
-  {{if .User}}
-  <a href="/shop/{{.User.Handle}}" class="mob-drawer-item" onclick="closeMobileMore()">
-    <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>
-    Shop
-  </a>
-  {{end}}
-  <a href="/notifications" class="mob-drawer-item" onclick="closeMobileMore()">
-    <span style="position:relative;display:inline-flex">
-      <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 0 1-3.46 0"/></svg>
-      {{if and .User .User.UnreadCount}}{{if gt .User.UnreadCount 0}}<span class="notif-badge-dot">{{if gt .User.UnreadCount 9}}9+{{else}}{{.User.UnreadCount}}{{end}}</span>{{end}}{{end}}
-    </span>
-    Notifications
-  </a>
-  <a href="/music" class="mob-drawer-item" onclick="closeMobileMore()">
-    <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
-    Music
-  </a>
-  <a href="/wallet" class="mob-drawer-item" onclick="closeMobileMore()">
-    <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 3H8a2 2 0 0 0-2 2v2h12V5a2 2 0 0 0-2-2z"/><circle cx="17" cy="14" r="1" fill="currentColor"/></svg>
-    Wallet
-  </a>
-  <a href="/bookmarks" class="mob-drawer-item" onclick="closeMobileMore()">
-    <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M19 21l-7-5-7 5V5a2 2 0 012-2h10a2 2 0 012 2z"/></svg>
-    Bookmarks
-  </a>
-  <a href="/kyc" class="mob-drawer-item" onclick="closeMobileMore()">
-    <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-    Verification
-  </a>
-  <a href="/achievements" class="mob-drawer-item" onclick="closeMobileMore()">
-    <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="8" r="6"/><path d="M15.477 12.89L17 22l-5-3-5 3 1.523-9.11"/></svg>
-    Achievements
-  </a>
-  <a href="/settings" class="mob-drawer-item" onclick="closeMobileMore()">
-    <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-    Settings
-  </a>
-  <!-- Dark/light toggle in drawer -->
-  <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 20px">
-    <span style="font-size:15px;color:var(--text-primary);display:flex;align-items:center;gap:14px">
-      <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="width:20px;height:20px;color:var(--text-secondary)"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
-      Appearance
-    </span>
-    <button class="toggle" id="mob-mode-toggle" onclick="toggleDarkMode()" style="cursor:pointer" title="Toggle dark/light"></button>
-  </div>
-  <div style="height:1px;background:var(--border-soft);margin:4px 0"></div>
-  <a href="/logout" class="mob-drawer-item" style="color:#e53e3e" onclick="closeMobileMore()">
-    <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>
-    Log out
-  </a>
-</div>
-
-<!-- Compose modal -->
-<div id="compose-modal" class="hidden compose-overlay">
-  <div class="compose-card">
-    <div class="compose-header">
-      <button id="compose-close-btn" class="close-btn" aria-label="Close">
-        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>
-      </button>
-      <span style="font-family:'DM Serif Display',serif;font-size:15px;flex:1;text-align:center;letter-spacing:-.02em">New post</span>
-      <button id="compose-post-btn" class="btn-primary compose-post-btn" style="padding:6px 18px;font-size:13px">Post</button>
-    </div>
-    <div class="compose-form">
-      {{if .User}}
-      <div style="display:flex;gap:12px">
-        <div style="display:flex;flex-direction:column;align-items:center;gap:0">
-          <div class="post-avatar flex-shrink-0" style="{{if .User.AvatarURL}}padding:0;overflow:hidden{{else}}{{$colors := avatarColors .User.Handle}}background:linear-gradient(135deg,{{index $colors 0}},{{index $colors 1}}){{end}}">
-            {{if .User.AvatarURL}}<img src="{{.User.AvatarURL}}" style="width:100%;height:100%;object-fit:cover">
-            {{else}}{{firstChar .User.DisplayName}}{{end}}
-          </div>
-          <div style="width:2px;flex:1;background:var(--border-soft);margin-top:6px;min-height:8px"></div>
-        </div>
-        <div style="flex:1;min-width:0;padding-bottom:4px">
-          <p style="font-size:14px;font-weight:700;color:var(--text-primary);margin-bottom:4px">{{.User.DisplayName}}</p>
-          <div style="position:relative">
-            <textarea name="content" id="compose-textarea" rows="3" maxlength="25000"
-                      placeholder="What's moving through you?"
-                      class="compose-textarea"
-                      spellcheck="true" autocomplete="on" autocorrect="on" autocapitalize="sentences"></textarea>
-            <div id="mention-dropdown" style="display:none;position:absolute;top:calc(100% + 4px);left:0;right:0;background:var(--panel);border:1px solid var(--border);border-radius:12px;overflow:hidden;z-index:500;box-shadow:var(--shadow-lg);max-height:240px;overflow-y:auto"></div>
-          </div>
-          <div id="compose-location-tag" style="display:none;margin-top:6px">
-            <span id="compose-location-text" style="font-size:12px;color:var(--accent);display:inline-flex;align-items:center;gap:4px;padding:3px 10px;background:var(--accent-muted);border-radius:20px;border:1px solid color-mix(in srgb,var(--accent) 25%,transparent)">
-              <svg fill="currentColor" viewBox="0 0 24 24" style="width:10px;height:10px"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>
-              <span id="compose-location-label"></span>
-            </span>
-            <button type="button" id="compose-remove-location-btn" style="margin-left:4px;background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:16px;line-height:1;vertical-align:middle">×</button>
-          </div>
-          <div id="media-previews" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px"></div>
-        </div>
-      </div>
-      {{end}}
-      <!-- Thread extra segments — shown when compose-thread-btn is clicked -->
-      <div id="thread-segments" style="display:none"></div>
-      <button type="button" id="thread-add-btn"
-              style="display:none;margin:6px 0 0 46px;font-size:13px;color:var(--accent);background:none;border:1px dashed var(--border);border-radius:20px;padding:4px 14px;cursor:pointer;transition:background 110ms"
-              onmouseenter="this.style.background='var(--panel-hover)'" onmouseleave="this.style.background='none'">
-        + Add to thread
-      </button>
-
-      <div style="display:flex;align-items:center;gap:8px;padding:10px 0 0;margin-top:4px">
-        <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="width:14px;height:14px;color:var(--accent);flex-shrink:0"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-        <select id="compose-gating" name="comment_gating" style="background:none;border:none;outline:none;font-size:12px;color:var(--accent);cursor:pointer;font-family:inherit;font-weight:600;padding:0">
-          <option value="open">Everyone can reply</option>
-          <option value="followers">Followers only</option>
-          <option value="verified">Verified accounts only</option>
-          <option value="none">No replies</option>
-        </select>
-      </div>
-
-      <div class="compose-action-bar">
-        <label class="compose-action-btn" title="Photo or video">
-          <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>
-          <input type="file" accept="image/jpeg,image/png,image/gif,image/webp,video/mp4,video/webm,video/quicktime" multiple style="display:none" id="media-file-input">
-        </label>
-        <button type="button" class="compose-action-btn" title="Create poll" id="compose-poll-btn">
-          <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
-        </button>
-        <button type="button" class="compose-action-btn" title="GIF" id="compose-gif-btn">
-          <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M9 12H7a1 1 0 0 1-1-1V9M11 12V9l2 3 2-3v3M17 9v3"/></svg>
-        </button>
-        <button type="button" class="compose-action-btn" title="Add location" id="compose-location-btn">
-          <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
-        </button>
-        <button type="button" class="compose-action-btn" title="Mention someone" id="compose-mention-btn">
-          <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-3.92 7.94"/></svg>
-        </button>
-        <button type="button" class="compose-action-btn" title="Add hashtag" id="compose-hashtag-btn">
-          <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/></svg>
-        </button>
-        <button type="button" class="compose-action-btn" title="Create thread" id="compose-thread-btn">
-          <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><path d="M5 12h14"/></svg>
-        </button>
-        <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:12px;color:var(--text-secondary);font-weight:500">
-          <input type="checkbox" id="compose-nsfw" style="accent-color:var(--accent)">
-          <span>18+</span>
-        </label>
-        <span style="flex:1"></span>
-        <div style="position:relative;width:24px;height:24px;flex-shrink:0">
-          <svg viewBox="0 0 24 24" style="width:24px;height:24px;transform:rotate(-90deg)">
-            <circle cx="12" cy="12" r="9" fill="none" stroke="var(--border)" stroke-width="2.5"/>
-            <circle id="char-ring" cx="12" cy="12" r="9" fill="none" stroke="var(--accent)" stroke-width="2.5"
-                    stroke-dasharray="56.5" stroke-dashoffset="0" stroke-linecap="round"
-                    style="transition:stroke-dashoffset 100ms,stroke 100ms"/>
-          </svg>
-          <span id="char-count-inner" style="display:none;position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:8px;font-weight:700;color:var(--text-muted)"></span>
-        </div>
-      </div>
-    </div>
-  </div>
-</div>
-
-<!-- Poll compose panel -->
-<div id="poll-compose-panel" style="display:none;border-top:1px solid var(--border-soft);padding:12px 16px">
-  <p style="font-size:11px;font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px">Poll options</p>
-  <div id="poll-options-list" style="display:flex;flex-direction:column;gap:6px">
-    <input type="text" class="poll-option-input" placeholder="Option 1" maxlength="80"
-           style="width:100%;background:var(--panel-hover);border:1.5px solid var(--border);border-radius:var(--radius-sm);padding:8px 12px;color:var(--text-primary);font-size:14px;font-family:inherit;outline:none;transition:border-color 150ms">
-    <input type="text" class="poll-option-input" placeholder="Option 2" maxlength="80"
-           style="width:100%;background:var(--panel-hover);border:1.5px solid var(--border);border-radius:var(--radius-sm);padding:8px 12px;color:var(--text-primary);font-size:14px;font-family:inherit;outline:none;transition:border-color 150ms">
-  </div>
-  <div style="display:flex;align-items:center;justify-content:space-between;margin-top:10px">
-    <button id="poll-add-btn" type="button" style="font-size:12px;color:var(--accent);background:none;border:none;cursor:pointer;padding:0;font-family:inherit;font-weight:600">+ Add option</button>
-    <div style="display:flex;align-items:center;gap:8px">
-      <span style="font-size:12px;color:var(--text-muted)">Ends in</span>
-      <select id="poll-duration" style="background:var(--panel-hover);border:1.5px solid var(--border);border-radius:8px;padding:4px 8px;color:var(--text-primary);font-size:12px;font-family:inherit;outline:none">
-        <option value="24">24 hours</option>
-        <option value="48">2 days</option>
-        <option value="168">7 days</option>
-        <option value="">No limit</option>
-      </select>
-    </div>
-  </div>
-</div>
-
-<!-- Toast container -->
-<div id="toast-container" style="position:fixed;bottom:80px;right:20px;z-index:100;display:flex;flex-direction:column;gap:8px;pointer-events:none"></div>
-
-<!-- Mobile notification ticker -->
-<div id="mob-notif-ticker" aria-live="polite" style="display:none;position:fixed;bottom:68px;left:50%;transform:translateX(-50%);z-index:200;max-width:320px;width:calc(100% - 32px)">
-  <div id="mob-notif-inner" style="background:var(--accent);color:#fff;font-size:12px;font-weight:700;letter-spacing:.02em;border-radius:20px;padding:8px 16px;text-align:center;box-shadow:0 4px 20px var(--accent-glow);overflow:hidden;white-space:nowrap;text-overflow:ellipsis"></div>
-</div>
-
+{{/* Body-level overlay slots — Facets that portal above page content */}}
+{{template "compose_modal" .}}
+{{template "poll_panel" .}}
+{{template "topic_sheet" .}}
+{{template "tip_modal" .}}
+{{template "user_menu_popup" .}}
+{{template "capture_stage" .}}
+{{/* work_menu_overlay — Layer 3 wire template slot. work_menu_dropdown portals here when open. */}}
+<div id="work-menu-overlay"></div>
+{{/* Mobile FABs — floating compose + account on small screens */}}
 {{if .User}}
-<span id="sse-notif-wrapper" class="sse-notif-target" style="display:none"></span>
+<button class="mobile-compose-fab" onclick="openCompose()" aria-label="New post">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="width:24px;height:24px">
+    <path d="M12 5v14M5 12h14"/>
+  </svg>
+</button>
 {{end}}
+{{/* Overlay slot — HTMX-loaded Layer 3 Facets (edit_profile_modal, follow_list_modal, etc.) */}}
+<div id="overlay-slot"></div>
+{{/* Portal modal — push prompt and permission dialogs inject here via HTMX */}}
+<div id="portal-modal"></div>
+{{/* Toast container — toast() JS function appends toasts here */}}
+<div id="toast-container" class="toast-container"></div>
 
+{{/* SSE real-time push is owned solely by f33d3r.js (single EventSource for the whole app).
+     The duplicate inline connection that used to live here was removed — two connections
+     double-delivered every FA Live event. */}}
+
+{{/* Malkuth — browser cryptographic substrate (ECDSA-P256 signing, SHA-256 CID) */}}
+<script src="/static/js/malkuth.js?v=20260622b" defer></script>
+{{/* Core app runtime — loads on every page */}}
+<script src="/static/js/f33d3r.js?v=20260622b"></script>
+{{/* feed_items.js: goToPost(), openRepostSheet() — needed wherever post cards appear */}}
+<script src="/static/js/pages/feed_items.js?v=20260622b" defer></script>
+<script src="/static/js/video-player.js?v=20260622b" defer></script>
+<script src="/static/js/video-pills.js?v=20260622b" defer></script>
+<script src="/static/js/video-overlay.js?v=20260622b" defer></script>
+<script src="/static/js/media-viewer.js?v=20260622b" defer></script>
+<script src="/static/js/push-manager.js?v=20260622b" defer></script>
+<script src="/static/js/permissions.js?v=20260622b" defer></script>
+{{/* Capture Substrate — f33d3r camera stack (load in dependency order before the facade) */}}
+<script src="/static/js/capture/capture-state.js?v=20260622b" defer></script>
+<script src="/static/js/capture/capture-devices.js?v=20260622b" defer></script>
+<script src="/static/js/capture/capture-recorder.js?v=20260622b" defer></script>
+<script src="/static/js/capture/capture-preview.js?v=20260622b" defer></script>
+<script src="/static/js/capture/capture-controller.js?v=20260622b" defer></script>
+<script src="/static/js/capture/capture.js?v=20260622b" defer></script>
+{{/* React With Video — studio feature built on the camera substrate */}}
+<script src="/static/js/reactvideo/react-video-layouts.js?v=20260622b" defer></script>
+<script src="/static/js/reactvideo/react-video.js?v=20260622b" defer></script>
+{{/* Page-specific scripts injected by individual page templates */}}
+{{block "page-scripts" .}}{{end}}
+
+{{/* Dark/light mode toggle — reads localStorage, syncs icons, wires button */}}
 <script>
-// Dark/light mode toggle — persists to localStorage
 window.toggleDarkMode = function() {
-  var b = document.body;
-  var h = document.documentElement;
-  var next = (b.dataset.mode === 'dark') ? 'light' : 'dark';
-  b.dataset.mode = next;
-  h.dataset.mode = next;
+  var next = (document.documentElement.dataset.mode === 'dark') ? 'light' : 'dark';
+  document.documentElement.dataset.mode = next;
+  document.body && (document.body.dataset.mode = next);
   localStorage.setItem('f33d3r_mode', next);
   _syncModeIcons();
-}
+};
 function _syncModeIcons() {
-  var isDark = document.body.dataset.mode === 'dark';
-  var sun = document.getElementById('mode-icon-sun');
+  var isDark = document.documentElement.dataset.mode === 'dark';
+  var sun  = document.getElementById('mode-icon-sun');
   var moon = document.getElementById('mode-icon-moon');
-  var mobTog = document.getElementById('mob-mode-toggle');
   if (sun)  sun.style.display  = isDark ? 'block' : 'none';
   if (moon) moon.style.display = isDark ? 'none'  : 'block';
-  if (mobTog) { if (isDark) mobTog.classList.add('active'); else mobTog.classList.remove('active'); }
 }
-document.addEventListener('DOMContentLoaded', function() {
-  _syncModeIcons();
-  var btn = document.getElementById('mode-toggle-btn');
-  if (btn) btn.addEventListener('click', toggleDarkMode);
-});
+document.addEventListener('DOMContentLoaded', _syncModeIcons);
 </script>
-</body>
-</html>
 
+{{/* Block overrides — pages set these to mark their active nav item */}}
 {{define "head-extra"}}{{end}}
 {{define "shell-class"}}{{end}}
 {{define "sidebar-hidden"}}{{end}}
@@ -508,10 +128,19 @@ document.addEventListener('DOMContentLoaded', function() {
 {{define "nav-active-profile"}}{{end}}
 {{define "nav-active-settings"}}{{end}}
 {{define "nav-active-shop"}}{{end}}
+{{define "nav-active-org-panel"}}{{end}}
+{{define "nav-active-admin"}}{{end}}
+{{define "nav-active-analytics"}}{{end}}
+{{define "nav-active-analytics-dup"}}{{end}}
+{{define "nav-active-achievements"}}{{end}}
+{{define "nav-active-create"}}{{end}}
+{{define "nav-active-articles"}}{{end}}
+{{define "nav-active-visions"}}{{end}}
 {{define "mob-active-home"}}{{end}}
 {{define "mob-active-explore"}}{{end}}
 {{define "mob-active-notifications"}}{{end}}
 {{define "mob-active-profile"}}{{end}}
-{{define "mob-active-messages"}}{{end}}
-{{define "nav-active-admin"}}{{end}}
-{{define "nav-active-messages"}}{{end}}
+{{define "right-panel"}}{{end}}
+{{define "page-scripts"}}{{end}}
+</body>
+</html>

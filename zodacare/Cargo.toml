@@ -12,7 +12,7 @@ path = "src/main.rs"
 # Web framework
 axum = { version = "0.7", features = ["json"] }
 tokio = { version = "1", features = ["full"] }
-tower-http = { version = "0.5", features = ["cors", "trace"] }
+tower-http = { version = "0.6", features = ["cors", "trace"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -30,10 +30,15 @@ chrono = { version = "0.4", features = ["serde"] }
 
 # Observability
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
 
 # Error handling
 anyhow = "1"
+
+# Observability (S0.2)
+metrics = "0.23"
+metrics-exporter-prometheus = "0.15"
+once_cell = "1"
 
 [profile.release]
 opt-level = 3

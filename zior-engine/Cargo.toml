@@ -15,7 +15,7 @@ path = "src/lib.rs"
 # Web
 axum               = { version = "0.7", features = ["json", "multipart", "tracing"] }
 tokio              = { version = "1",   features = ["full"] }
-tower-http         = { version = "0.5", features = ["trace", "cors"] }
+tower-http         = { version = "0.6", features = ["trace", "cors"] }
 
 # Serialisation
 serde              = { version = "1", features = ["derive"] }
@@ -41,8 +41,11 @@ uuid               = { version = "1", features = ["v4", "serde"] }
 anyhow             = "1"
 thiserror          = "1"
 tracing            = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
 rand               = "0.8"
+metrics            = "0.23"
+metrics-exporter-prometheus = "0.15"
+once_cell          = "1"
 
 # HTTP client (to push signals to AethyrRank content store)
 reqwest            = { version = "0.12", features = ["json"] }

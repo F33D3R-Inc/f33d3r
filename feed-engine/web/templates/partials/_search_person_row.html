@@ -1,0 +1,36 @@
+{{/*
+FACET search_person_row
+  version: 1.0 | status: stable | layer: 2
+
+  inputs:
+    Handle       string — user handle
+    DisplayName  string — display name
+    AvatarURL    string — avatar image src (empty renders gradient initials)
+    IsVerified   bool   — shows verified badge
+
+  states:
+    default
+
+  children: none (avatar inline)
+
+  signals:
+    emits:    none (link navigates to /{Handle})
+    receives: none
+
+  context:
+    search → people tab results list
+*/}}
+{{define "search_person_row"}}
+<a href="/{{.Handle}}" class="search-person-row">
+  {{if .AvatarURL}}
+    <img src="{{.AvatarURL}}" alt="@{{.Handle}}" class="search-person-av">
+  {{else}}
+    {{$c := avatarColors .Handle}}
+    <span class="search-person-av" style="background:linear-gradient(135deg,{{index $c 0}},{{index $c 1}});display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:700;color:#fff">{{firstChar .DisplayName}}</span>
+  {{end}}
+  <div class="search-person-info">
+    <span class="search-person-name">{{.DisplayName}}{{if .IsVerified}}&nbsp;<svg style="display:inline;width:12px;height:12px;vertical-align:middle;color:var(--accent)" viewBox="0 0 24 24" fill="currentColor"><path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>{{end}}</span>
+    <span class="search-person-handle">@{{.Handle}}</span>
+  </div>
+</a>
+{{end}}

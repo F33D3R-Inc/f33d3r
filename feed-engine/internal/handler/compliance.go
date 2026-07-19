@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"html/template"
 	"log"
 	"net/http"
@@ -70,10 +71,9 @@ func (h *Handler) privacyPage(w http.ResponseWriter, r *http.Request) {
 		},
 		{
 			Title: "7. Security",
-			Body: `All data in transit is encrypted with TLS 1.3. Messages are end-to-end encrypted
-			using the Vovin protocol (ECDH-P256 + Double Ratchet + AES-GCM) — we cannot read your messages.
-			Private keys never leave your device. Passwords are bcrypt-hashed. Sessions use cryptographically
-			random tokens. We run regular security audits.`,
+			Body: `All data in transit is encrypted with TLS 1.3. Messages are end-to-end encrypted —
+			we cannot read your messages. Private keys never leave your device. Passwords are
+			bcrypt-hashed. Sessions use cryptographically random tokens. We run regular security audits.`,
 		},
 		{
 			Title: "8. Cookies",
@@ -255,6 +255,13 @@ func (h *Handler) dmcaAdminQueue(w http.ResponseWriter, r *http.Request) {
 			h.db.Exec(`UPDATE dmca_requests SET status = $1, resolved_at = $2 WHERE ticket_id = $3`,
 				status, time.Now(), ticketID)
 		}
+		// Return styled replacement for HTMX callers; redirect otherwise.
+		if r.Header.Get("HX-Request") == "true" {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			fmt.Fprintf(w, `<div id="dmca-%s" class="admin-report-resolved">✓ %s — %s</div>`,
+				ticketID, status, ticketID)
+			return
+		}
 		http.Redirect(w, r, "/admin/dmca", http.StatusSeeOther)
 		return
 	}
@@ -279,15 +286,9 @@ func (h *Handler) dmcaAdminQueue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	// Inline admin DMCA view — rendered directly, not a full page
-	h.render(w, "admin_dmca.html", map[string]interface{}{
-		"User":      caller,
-		"Title":     "DMCA Queue · Admin",
-		"SessionID": uuid.New().String(),
-		"Themes":    ThemesWithActive(caller.ThemeID),
-		"Requests":  requests,
-	})
+	// Redirect to admin panel DMCA tab
+	http.Redirect(w, r, "/admin", http.StatusSeeOther)
+	_ = uuid.New() // keep import used
 }
 
 // ── 2257 per-content record creation ─────────────────────────────────────────
@@ -487,13 +488,13 @@ func (h *Handler) requestDataExport(w http.ResponseWriter, r *http.Request) {
 		"xp":           user.XP,
 		"pial_id":      user.PIALID,
 		"exported_at":  time.Now().UTC().Format(time.RFC3339),
-		"note":         "Messages are end-to-end encrypted and cannot be exported from the server. Posts can be found at /u/" + user.Handle,
+		"note":         "Messages are end-to-end encrypted and cannot be exported from the server. Posts can be found at /" + user.Handle,
 	}
 
 	// Add post count
 	if h.db != nil {
 		var postCount int
-		h.db.QueryRow(`SELECT COUNT(*) FROM posts WHERE author_id = $1`, user.ID).Scan(&postCount)
+		h.db.QueryRow(`SELECT COUNT(*) FROM works WHERE author_id = $1 AND deleted_at IS NULL`, user.ID).Scan(&postCount)
 		export["post_count"] = postCount
 
 		var followerCount, followingCount int
@@ -509,4 +510,96 @@ func (h *Handler) requestDataExport(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Disposition", `attachment; filename="f33d3r-export.json"`)
 	json.NewEncoder(w).Encode(export)
+}
+
+// compliancePage serves GET /compliance — content moderation transparency report.
+func (h *Handler) compliancePage(w http.ResponseWriter, r *http.Request) {
+	user := h.userFromRequest(w, r)
+	h.render(w, "privacy.html", map[string]interface{}{
+		"User":   user,
+		"Title":  "Compliance & Transparency",
+		"Themes": ThemesWithActive(user.ThemeID),
+		"Sections": []legalSection{
+			{Title: "Content Moderation", Body: "F33D3R uses automated scanning and human review to enforce our Community Standards. Posts containing illegal content, CSAM, or credible threats are removed immediately."},
+			{Title: "Government Requests", Body: "We publish transparency reports for government data requests. We notify users of requests unless prohibited by law."},
+			{Title: "DMCA", Body: `Copyright complaints are handled via our <a href="/dmca">DMCA process</a>. Repeat infringers are removed from the platform.`},
+			{Title: "Contact", Body: `For compliance inquiries: <a href="mailto:f33d3r@f33d3r.pro">f33d3r@f33d3r.pro</a>`},
+		},
+	})
+}
+
+// blockedPage serves GET /blocked — list of accounts the current user has blocked.
+func (h *Handler) blockedPage(w http.ResponseWriter, r *http.Request) {
+	user := h.userFromRequest(w, r)
+	type SimpleUser struct {
+		Handle      string
+		DisplayName string
+		AvatarURL   string
+		UserID      string
+	}
+	var list []SimpleUser
+	if h.db != nil && user != nil {
+		rows, err := h.db.Query(`
+			SELECT u.id, u.handle, COALESCE(p.display_name, u.handle), COALESCE(p.avatar_url, '')
+			FROM blocks b
+			JOIN users u ON u.id = b.blocked_id
+			LEFT JOIN user_profiles p ON p.user_id = u.id
+			WHERE b.blocker_id = $1
+			ORDER BY b.created_at DESC
+		`, user.ID)
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var u SimpleUser
+				rows.Scan(&u.UserID, &u.Handle, &u.DisplayName, &u.AvatarURL)
+				list = append(list, u)
+			}
+		}
+	}
+	h.render(w, "followers.html", map[string]interface{}{
+		"User":    user,
+		"Title":   "Blocked accounts",
+		"Themes":  ThemesWithActive(user.ThemeID),
+		"Users":   list,
+		"PageTitle": "Blocked accounts",
+		"EmptyMsg":  "You haven't blocked anyone.",
+	})
+}
+
+// mutedPage serves GET /muted — list of accounts the current user has muted.
+func (h *Handler) mutedPage(w http.ResponseWriter, r *http.Request) {
+	user := h.userFromRequest(w, r)
+	type SimpleUser struct {
+		Handle      string
+		DisplayName string
+		AvatarURL   string
+		UserID      string
+	}
+	var list []SimpleUser
+	if h.db != nil && user != nil {
+		rows, err := h.db.Query(`
+			SELECT u.id, u.handle, COALESCE(p.display_name, u.handle), COALESCE(p.avatar_url, '')
+			FROM user_mutes m
+			JOIN users u ON u.id = m.muted_id
+			LEFT JOIN user_profiles p ON p.user_id = u.id
+			WHERE m.muter_id = $1
+			ORDER BY m.created_at DESC
+		`, user.ID)
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var u SimpleUser
+				rows.Scan(&u.UserID, &u.Handle, &u.DisplayName, &u.AvatarURL)
+				list = append(list, u)
+			}
+		}
+	}
+	h.render(w, "followers.html", map[string]interface{}{
+		"User":      user,
+		"Title":     "Muted accounts",
+		"Themes":    ThemesWithActive(user.ThemeID),
+		"Users":     list,
+		"PageTitle": "Muted accounts",
+		"EmptyMsg":  "You haven't muted anyone.",
+	})
 }

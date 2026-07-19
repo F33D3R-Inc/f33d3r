@@ -1,0 +1,160 @@
+{{/*
+FACET work_detail_focus
+  version: 1.1 | status: stable | layer: 2
+
+  inputs:
+    W    Work    — full work struct (all fields hydrated by handler)
+    User User    — current viewer (nil = logged-out)
+    Ctx  PageCtx — .CurrentUserHandle
+
+  states:
+    default | has-media | has-video | has-voice | has-quote | has-yt
+
+  children:
+    post_avatar, badge_pill, post_voice_player, quoted_work,
+    link_preview, youtube_embed, work_action_bar, reply_compose_row
+
+  signals:
+    emits:    follow, unfollow (via hx-post /events)
+    receives: none
+
+  context:
+    works_detail.html → focal work in thread (one per page, never swapped)
+*/}}
+{{define "work_detail_focus"}}
+{{$w := .W}}
+{{$u := .User}}
+{{$ctx := .Ctx}}
+<article class="pdf" data-work-id="{{$w.ID}}" data-work-cid="{{$w.CID}}" data-facet-id="work:{{$w.ID}}:detail" role="article">
+
+  {{/* ── Author header ── */}}
+  <div class="pdf-header">
+    <a href="/{{$w.AuthorHandle}}" class="pdf-av-link" onclick="event.stopPropagation()">
+      {{template "post_avatar" (dict "Handle" $w.AuthorHandle "AvatarURL" $w.AvatarURL "AuthorName" $w.AuthorName "Realm" $w.AuthorRealm "IsOnline" false)}}
+    </a>
+    <div class="pdf-author">
+      <div class="pdf-name-row">
+        <a href="/{{$w.AuthorHandle}}" class="pdf-name" onclick="event.stopPropagation()">{{$w.AuthorName}}</a>
+        {{template "badge_pill" (dict "Role" $w.AuthorRole "OfficialType" $w.AuthorOfficialType "IsVerified" $w.IsVerified "IsCreator" $w.AuthorIsCreator)}}
+      </div>
+      <a href="/{{$w.AuthorHandle}}" class="pdf-handle" onclick="event.stopPropagation()">@{{$w.AuthorHandle}}</a>
+    </div>
+    {{if and $u (ne $w.AuthorHandle $u.Handle) $w.AuthorPIAL}}
+    <button class="pdf-follow-btn {{if $w.ViewerFollowsAuthor}}pdf-follow-btn--following{{end}}"
+            hx-post="/events"
+            hx-vals='{"event_type":"{{if $w.ViewerFollowsAuthor}}unfollow{{else}}follow{{end}}","target_pial":"{{$w.AuthorPIAL}}"}'
+            hx-swap="outerHTML"
+            onclick="event.stopPropagation()"
+            aria-label="{{if $w.ViewerFollowsAuthor}}Unfollow @{{$w.AuthorHandle}}{{else}}Follow @{{$w.AuthorHandle}}{{end}}">
+      {{if $w.ViewerFollowsAuthor}}Following{{else}}Follow{{end}}
+    </button>
+    {{end}}
+
+    {{/* Three-dot options menu */}}
+    <div class="post-menu-wrap" onclick="event.stopPropagation()">
+      <button class="post-menu-trigger" onclick="togglePostMenu(this)" title="More" type="button">
+        <svg fill="currentColor" viewBox="0 0 24 24" style="width:16px;height:16px">
+          <circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/>
+        </svg>
+      </button>
+      <div class="post-menu-dropdown">
+        <button class="post-menu-item"
+                onclick="navigator.clipboard&&navigator.clipboard.writeText(window.location.origin+'/work/{{$w.ID}}').then(()=>{toast('Link copied');closeAllPostMenus()})">
+          <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.59 13.51 6.83 3.98M15.41 6.51l-6.82 3.98"/></svg>
+          Copy link
+        </button>
+        {{if $w.Body}}
+        <button class="post-menu-item" onclick="translatePost('{{$w.ID}}');closeAllPostMenus()">
+          <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="m5 8 6 6M4 14l6-6 2-3M2 5h12M7 2h1M22 22l-5-10-5 10M14 18h6"/></svg>
+          Translate
+        </button>
+        {{end}}
+        {{if and $u (eq $w.AuthorHandle $u.Handle)}}
+        <div class="post-menu-sep"></div>
+        {{if $w.IsPinned}}
+        <button class="post-menu-item"
+                hx-post="/events" hx-vals='{"event_type":"unpin_post"}'
+                hx-swap="none"
+                onclick="closeAllPostMenus();toast('Post unpinned from your profile')">
+          <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"/></svg>
+          Unpin from profile
+        </button>
+        {{else}}
+        <button class="post-menu-item"
+                hx-post="/events" hx-vals='{"event_type":"pin_post","post_id":"{{$w.ID}}"}'
+                hx-swap="none"
+                onclick="closeAllPostMenus();toast('Post pinned to your profile')">
+          <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"/></svg>
+          Pin to profile
+        </button>
+        {{end}}
+        <button class="post-menu-item post-menu-item-danger"
+                onclick="deleteWork('{{$w.ID}}')" type="button">
+          <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+          Delete post
+        </button>
+        {{else if $u}}
+        <div class="post-menu-sep"></div>
+        <button class="post-menu-item"
+                hx-post="/events" hx-vals='{"event_type":"mute","target_handle":"{{$w.AuthorHandle}}"}'
+                hx-swap="none"
+                onclick="closeAllPostMenus();toast('@{{$w.AuthorHandle}} muted')">
+          <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>
+          Mute @{{$w.AuthorHandle}}
+        </button>
+        <button class="post-menu-item"
+                hx-post="/events" hx-vals='{"event_type":"block","target_handle":"{{$w.AuthorHandle}}"}'
+                hx-swap="none"
+                onclick="closeAllPostMenus();toast('@{{$w.AuthorHandle}} blocked')">
+          <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>
+          Block @{{$w.AuthorHandle}}
+        </button>
+        <button class="post-menu-item post-menu-item-danger"
+                onclick="reportPost('{{$w.ID}}');closeAllPostMenus()">
+          <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+          Report post
+        </button>
+        {{end}}
+      </div>
+    </div>
+  </div>
+
+  {{/* ── Body ── */}}
+  {{if $w.Body}}
+  <div class="pdf-body post-body">{{markdownHTML $w.Body}}</div>
+  {{end}}
+
+  {{/* Translation reveal target — HTMX swaps translate_result Facet here */}}
+  <div class="post-translate-wrap" id="translate-wrap-{{$w.ID}}" style="display:none"></div>
+
+  {{/* ── Work content — same canonical render as the feed (media plays, same gate) ── */}}
+  {{template "work_core" (dict "W" $w "Ctx" $ctx "Variant" "detail")}}
+
+  {{/* ── Metadata row: absolute timestamp · views ── */}}
+  <div class="pdf-meta">
+    <time class="pdf-time" datetime="{{$w.CreatedAt.Format "2006-01-02T15:04:05Z07:00"}}">
+      {{$w.CreatedAt.Format "3:04 PM · Jan 2, 2006"}}
+    </time>
+    <span class="pdf-sep">·</span>
+    <span class="pdf-views">{{$w.ViewCount}} views</span>
+  </div>
+
+  {{/* ── Counts row ── */}}
+  {{if or (gt $w.RepostCount 0) (gt $w.QuoteCount 0) (gt $w.LikeCount 0)}}
+  <div class="pdf-counts">
+    {{if gt $w.RepostCount 0}}<span class="pdf-count"><strong>{{$w.RepostCount}}</strong> Reposts</span>{{end}}
+    {{if gt $w.QuoteCount 0}}<span class="pdf-count"><strong>{{$w.QuoteCount}}</strong> Quotes</span>{{end}}
+    {{if gt $w.LikeCount 0}}<span class="pdf-count"><strong>{{$w.LikeCount}}</strong> Likes</span>{{end}}
+  </div>
+  {{end}}
+
+  {{/* ── Action bar — spread full width ── */}}
+  <div id="focal-engagement-{{$w.ID}}">
+    {{template "work_action_bar" (dict "W" $w "Ctx" $ctx)}}
+  </div>
+
+  {{/* ── Inline reply compose ── */}}
+  {{template "reply_compose_row" (dict "PostID" $w.ID "AuthorHandle" $w.AuthorHandle "AuthorName" $w.AuthorName "User" $u)}}
+
+</article>
+{{end}}

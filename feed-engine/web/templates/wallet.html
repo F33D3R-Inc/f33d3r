@@ -1,160 +1,30 @@
 {{define "title"}}Wallet · F33D3R{{end}}
 {{define "nav-active-wallet"}}active{{end}}
 {{define "body"}}
-  <main class="f33d3r-main">
-    <header class="top-bar">
-      <h1>Wallet</h1>
-      <span style="font-size:11px;font-weight:600;letter-spacing:.08em;padding:4px 12px;border-radius:20px;border:1px solid var(--accent);color:var(--accent);background:color-mix(in srgb,var(--accent) 8%,transparent)">ETHRA</span>
-    </header>
+<div class="settings-shell" id="main-col">
 
-    <div style="padding:0 0 24px">
+  {{/* ── Wallet navigation panel (col 2) ── */}}
+  {{template "wallet_nav" .}}
 
-      <!-- Pixel display screen — balance + quick actions -->
-      <div class="pixel-frame" style="margin:0 0 24px;padding:24px;background:var(--panel);position:relative">
-        <span class="pixel-corner" style="position:absolute;top:-2px;left:-2px"></span>
-        <span class="pixel-corner" style="position:absolute;top:-2px;right:-2px"></span>
-        <span class="pixel-corner" style="position:absolute;bottom:-2px;left:-2px"></span>
-        <span class="pixel-corner" style="position:absolute;bottom:-2px;right:-2px"></span>
+  {{/* ── Wallet content panel (col 3) — HTMX target ── */}}
+  <div class="settings-content-panel" id="wallet-panel" aria-live="polite">
+    {{template "wallet_panel_overview" .}}
+  </div>
 
-        <p style="font-family:'Press Start 2P',monospace;font-size:7px;color:var(--accent);letter-spacing:.1em;margin-bottom:14px">AVAILABLE BALANCE</p>
-
-        {{if .Wallet.Online}}
-        <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:16px">
-          <span class="pixel-balance">{{.Wallet.Balance}}</span>
-          <span class="pixel-balance-unit">AET</span>
-        </div>
-        {{if .Wallet.Address}}
-        <p style="font-size:9px;color:var(--text-muted);font-family:'Courier New',monospace;word-break:break-all;border-top:1px dashed color-mix(in srgb,var(--accent) 25%,transparent);padding-top:10px;margin-top:2px">{{.Wallet.Address}}</p>
-        {{end}}
-        {{else}}
-        <p class="pixel-balance" style="color:var(--text-muted);margin-bottom:16px">---</p>
-        {{if .Wallet.Error}}
-        <p style="font-family:'Press Start 2P',monospace;font-size:7px;color:var(--text-muted)">{{.Wallet.Error}}</p>
-        {{else}}
-        <p style="font-family:'Press Start 2P',monospace;font-size:7px;color:var(--text-muted)">Thessalon offline</p>
-        {{end}}
-        {{end}}
-
-        <div class="pixel-divider" style="margin:16px 0"></div>
-        <p style="font-family:'Press Start 2P',monospace;font-size:7px;color:var(--text-muted);text-align:center;letter-spacing:.05em">THESSALON ENGINE COMING SOON</p>
-      </div>
-
-      <!-- Account status -->
-      <div class="panel-card">
-        <h3 class="panel-title">Account</h3>
-        <div style="display:flex;flex-direction:column;gap:2px">
-          <div class="engine-status-row">
-            <span class="engine-status-label">Handle</span>
-            <span class="engine-status-val">@{{if .User}}{{.User.Handle}}{{else}}—{{end}}</span>
-          </div>
-          <div class="engine-status-row">
-            <span class="engine-status-label">Realm</span>
-            <span class="engine-status-val" style="color:var(--accent)">{{if .User}}{{realmName .User.Realm}}{{else}}Wanderer{{end}}</span>
-          </div>
-          <div class="engine-status-row">
-            <span class="engine-status-label">XP</span>
-            <span class="engine-status-val">{{if .User}}{{.User.XP}}{{else}}0{{end}}</span>
-          </div>
-          <div class="engine-status-row">
-            <span class="engine-status-label">Network</span>
-            <span id="wallet-network-status" class="engine-status-val" style="color:{{if .Wallet.Online}}#22c55e{{else}}#ef4444{{end}}">
-              {{if .Wallet.Online}}Online{{else}}Connecting…{{end}}
-            </span>
-          </div>
-        </div>
-      </div>
-
-      <!-- Send AET / Tip -->
-      <div class="panel-card">
-        <h3 class="panel-title">Send AET</h3>
-        <div style="display:flex;flex-direction:column;gap:10px">
-          <div>
-            <label class="settings-label">Recipient @handle or PIAL</label>
-            <input id="tip-recipient" type="text" placeholder="@handle" class="settings-input" style="margin-bottom:8px" autocomplete="off">
-          </div>
-          <div style="display:flex;gap:8px">
-            <div style="flex:1">
-              <label class="settings-label">Amount (AET)</label>
-              <input id="tip-amount" type="number" min="0.01" step="0.01" placeholder="1.00" class="settings-input">
-            </div>
-          </div>
-          <p style="font-size:11px;color:var(--text-muted)">1% network fee. Tip is instant and permanent.</p>
-          <button onclick="sendTip()" class="btn-primary" style="width:100%;padding:11px">Send AET</button>
-          <p id="tip-result" style="font-size:12px;text-align:center;min-height:16px"></p>
-        </div>
-      </div>
-
-      <!-- Transaction history -->
-      <div class="panel-card">
-        <h3 class="panel-title">Recent transactions</h3>
-        <div id="tx-list" style="font-size:12px">
-          <div style="color:var(--text-muted);text-align:center;padding:20px 0">Loading…</div>
-        </div>
-      </div>
-
-      <!-- Governance -->
-      <div class="panel-card">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
-          <h3 class="panel-title" style="margin-bottom:0">Governance</h3>
-          <button onclick="toggleNewProposal()" style="font-size:11px;color:var(--accent);background:none;border:none;cursor:pointer">+ New</button>
-        </div>
-        <div id="proposals-list" style="display:flex;flex-direction:column;gap:8px">
-          <div style="color:var(--text-muted);font-size:12px;text-align:center;padding:16px 0">Loading…</div>
-        </div>
-        <!-- New proposal form (hidden) -->
-        <div id="proposal-form" style="display:none;margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">
-          <input id="prop-title" type="text" placeholder="Proposal title" class="settings-input" style="margin-bottom:8px">
-          <textarea id="prop-desc" placeholder="Description (optional)" class="settings-input settings-textarea" style="margin-bottom:8px;min-height:60px"></textarea>
-          <div style="display:flex;gap:8px;margin-bottom:8px">
-            <select id="prop-weight" class="settings-input" style="flex:1">
-              <option value="identity">1 vote per person</option>
-              <option value="token">Token-weighted</option>
-              <option value="equal">Equal weight</option>
-            </select>
-            <input id="prop-ends" type="datetime-local" class="settings-input" style="flex:1">
-          </div>
-          <button onclick="submitProposal()" class="btn-primary" style="width:100%;padding:10px;font-size:13px">Submit proposal</button>
-        </div>
-      </div>
-
-      <!-- Earn AET section -->
-      <div class="panel-card">
-        <h3 class="panel-title">Earn AET</h3>
-        <div style="display:flex;flex-direction:column;gap:10px">
-          <a href="/" style="display:flex;align-items:center;gap:12px;text-decoration:none;padding:10px;border-radius:10px;border:1px solid var(--border);transition:border-color 120ms" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
-            <div style="width:36px;height:36px;border-radius:10px;background:color-mix(in srgb,var(--accent) 12%,transparent);display:flex;align-items:center;justify-content:center;flex-shrink:0"><svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="width:16px;height:16px;color:var(--accent)"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/></svg></div>
-            <div><p style="font-size:13px;font-weight:500;color:var(--text-primary);margin:0">Post &amp; engage</p><p style="font-size:11px;color:var(--text-secondary);margin:2px 0 0">Earn when your posts resonate</p></div>
-          </a>
-          <a href="/music" style="display:flex;align-items:center;gap:12px;text-decoration:none;padding:10px;border-radius:10px;border:1px solid var(--border);transition:border-color 120ms" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
-            <div style="width:36px;height:36px;border-radius:10px;background:color-mix(in srgb,var(--accent) 12%,transparent);display:flex;align-items:center;justify-content:center;flex-shrink:0"><svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="width:16px;height:16px;color:var(--accent)"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg></div>
-            <div><p style="font-size:13px;font-weight:500;color:var(--text-primary);margin:0">Upload music</p><p style="font-size:11px;color:var(--text-secondary);margin:2px 0 0">Earn via Zior streams</p></div>
-          </a>
-        </div>
-      </div>
-
-    </div>
-  </main>
-
-  <aside class="f33d3r-right">
-    <div class="panel-card mb-4">
-      <h3 class="panel-title">About AET</h3>
-      <p style="font-size:13px;color:var(--text-secondary);line-height:1.7;margin-bottom:12px">
-        AET is F33D3R's native token. Earn through creative output, community engagement, and Realm progression.
-      </p>
-      <div style="display:flex;flex-direction:column;gap:8px;font-size:12px;color:var(--text-secondary)">
-        <div style="display:flex;gap:8px"><span style="color:var(--accent)">✦</span><span>Earn for quality content</span></div>
-        <div style="display:flex;gap:8px"><span style="color:var(--accent)">✦</span><span>Tip other creators directly</span></div>
-        <div style="display:flex;gap:8px"><span style="color:var(--accent)">✦</span><span>Buy exclusive tracks and content</span></div>
-        <div style="display:flex;gap:8px"><span style="color:var(--accent)">✦</span><span>Realm milestones grant bonus AET</span></div>
-      </div>
-    </div>
-    <div class="panel-card">
-      <h3 class="panel-title">Thessalon engine</h3>
-      <div style="padding:12px;background:color-mix(in srgb,var(--accent) 5%,transparent);border:1px solid color-mix(in srgb,var(--accent) 15%,transparent);border-radius:10px">
-        <p style="font-size:12px;color:var(--text-secondary);line-height:1.6">Full token transfers, external withdrawals, and creator monetization are coming with the Thessalon engine — the financial backbone of the network.</p>
-      </div>
-    </div>
-  </aside>
-
-<script src="/static/js/pages/wallet.js?v=20260426"></script>
+</div>
+{{end}}
+{{define "right-panel"}}{{template "sidebar_right" .}}{{end}}
+{{define "page-scripts"}}
+<script src="/static/js/pages/wallet.js?v=20260622b" defer></script>
+<script>
+function walletNavActivate(el) {
+  document.querySelectorAll('#wallet-nav-panel .settings-nav-item').forEach(function(i){ i.classList.remove('active'); });
+  el.classList.add('active');
+}
+document.addEventListener('DOMContentLoaded', function() {
+  document.querySelectorAll('#wallet-nav-panel .settings-nav-item').forEach(function(el) {
+    el.addEventListener('click', function(){ walletNavActivate(el); });
+  });
+});
+</script>
 {{end}}

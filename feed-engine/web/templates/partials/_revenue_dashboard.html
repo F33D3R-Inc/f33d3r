@@ -1,0 +1,82 @@
+{{/*
+FACET revenue_dashboard
+  version: 1.0 | status: stable | layer: 3
+
+  inputs:
+    Earnings    *CreatorEarnings — total_aet, subscriptions_aet, ppv_aet, tips_aet, tx_count
+    Wallet      *CreatorWallet  — balance_aet (string)
+    Transactions []CreatorTx    — TxType, FromHandle, AmountAET, TimeAgo
+    EarningsOnline bool         — whether Themis responded
+    WalletOnline   bool         — whether Ain Soph responded
+
+  states:
+    default | no-transactions | service-offline
+
+  children:
+    revenue_summary_card
+    revenue_transaction_row
+
+  signals:
+    emits:    none
+    receives: none
+
+  context:
+    creator_earnings → #creator-panel
+*/}}
+{{define "revenue_dashboard"}}
+<div class="revenue-dashboard">
+
+  {{/* ── Summary grid ── */}}
+  <div class="crt-section">
+    <div class="crt-section-head">
+      <h2 class="crt-section-title">Earnings breakdown</h2>
+      {{if not .EarningsOnline}}<span class="revenue-dashboard__offline-badge">Themis offline</span>{{end}}
+    </div>
+    <div class="revenue-summary-grid">
+      {{template "revenue_summary_card" dict "Label" "Total Earned" "AmountAET" .Earnings.TotalDisplay "Icon" "total" "TrendPct" 0.0}}
+      {{template "revenue_summary_card" dict "Label" "Subscriptions" "AmountAET" .Earnings.SubsDisplay "Icon" "subscriptions" "TrendPct" 0.0}}
+      {{template "revenue_summary_card" dict "Label" "Tips" "AmountAET" .Earnings.TipsDisplay "Icon" "tips" "TrendPct" 0.0}}
+      {{template "revenue_summary_card" dict "Label" "Pay-per-view" "AmountAET" .Earnings.PPVDisplay "Icon" "ppv" "TrendPct" 0.0}}
+    </div>
+  </div>
+
+  {{/* ── Wallet balance card ── */}}
+  <div class="crt-section">
+    <div class="crt-section-head">
+      <h2 class="crt-section-title">Wallet</h2>
+      {{if not .WalletOnline}}<span class="revenue-dashboard__offline-badge">Ain Soph offline</span>{{end}}
+    </div>
+    <div class="revenue-wallet-card">
+      <div class="revenue-wallet-card__left">
+        <div class="revenue-wallet-card__label">Current balance</div>
+        <div class="revenue-wallet-card__balance">{{.Wallet.BalanceAET}}</div>
+      </div>
+      <a href="/wallet" class="revenue-wallet-card__btn">Withdraw &rarr;</a>
+    </div>
+  </div>
+
+  {{/* ── Recent transactions ── */}}
+  <div class="crt-section">
+    <div class="crt-section-head">
+      <h2 class="crt-section-title">Recent transactions</h2>
+      {{if .Earnings.TxCount}}<span class="crt-section-sub">{{.Earnings.TxCount}} total</span>{{end}}
+    </div>
+    {{if .Transactions}}
+      <div class="revenue-tx-list">
+        {{range .Transactions}}
+          {{template "revenue_transaction_row" .}}
+        {{end}}
+      </div>
+    {{else}}
+      <div class="crt-empty">
+        <div class="crt-empty-icon">
+          <svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" width="32" height="32" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 18.75a60.07 60.07 0 0 1 15.797 2.101c.727.198 1.453-.342 1.453-1.096V18.75M3.75 4.5v.75A.75.75 0 0 1 3 6h-.75m0 0v-.375c0-.621.504-1.125 1.125-1.125H20.25M2.25 6v9m18-10.5v.75c0 .414.336.75.75.75h.75m-1.5-1.5h.375c.621 0 1.125.504 1.125 1.125v9.75c0 .621-.504 1.125-1.125 1.125h-.375m1.5-1.5H21a.75.75 0 0 0-.75.75v.75m0 0H3.75m0 0h-.375a1.125 1.125 0 0 1-1.125-1.125V15m1.5 1.5v-.75A.75.75 0 0 0 3 15h-.75M15 10.5a3 3 0 1 1-6 0 3 3 0 0 1 6 0Zm3 0h.008v.008H18V10.5Zm-12 0h.008v.008H6V10.5Z"/></svg>
+        </div>
+        <div class="crt-empty-title">No transactions yet</div>
+        <div class="crt-empty-sub">Earnings will appear here once subscribers, tips, or PPV sales come in.</div>
+      </div>
+    {{end}}
+  </div>
+
+</div>
+{{end}}

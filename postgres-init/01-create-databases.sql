@@ -10,3 +10,7 @@ SELECT 'CREATE DATABASE f33d3r_handles'  WHERE NOT EXISTS (SELECT FROM pg_databa
 SELECT 'CREATE DATABASE f33d3r_verity'   WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'f33d3r_verity')\gexec
 SELECT 'CREATE DATABASE f33d3r_ledger'    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'f33d3r_ledger')\gexec
 SELECT 'CREATE DATABASE f33d3r_commerce' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'f33d3r_commerce')\gexec
+SELECT 'CREATE DATABASE f33d3r_herald'   WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'f33d3r_herald')\gexec
+SELECT 'CREATE DATABASE f33d3r_lore'     WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'f33d3r_lore')\gexec
+SELECT 'CREATE DATABASE f33d3r_library' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'f33d3r_library')\gexec
+SELECT 'CREATE DATABASE f33d3r_market'  WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'f33d3r_market')\gexec
