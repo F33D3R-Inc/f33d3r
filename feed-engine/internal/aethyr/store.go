@@ -254,7 +254,7 @@ func PostToAethyrContent(p *model.Post) model.AethyrContent {
 	}
 
 	// Topic vector: deterministic from author seed (8 dims)
-	topicVec := seedVector(p.AuthorID, 8)
+	topicVec := SeedVector(p.AuthorID, 8)
 
 	return model.AethyrContent{
 		ContentID:             p.ContentID,
@@ -272,6 +272,9 @@ func PostToAethyrContent(p *model.Post) model.AethyrContent {
 		CreatorRevenueRate:    0.20,
 		LtvEstimate:           0.15,
 		AdultProbability:      0.0,
+		PostsLast24h:          0,   // patched in buildRankRequest via BatchGetCreatorPostCounts24h
+		SelfReplyCadence:      0.0, // patched in buildRankRequest via BatchGetSelfReplyFirst30m
+		CharCount:             uint64(len([]rune(p.Body))),
 		Engagement: model.AethyrEngagement{
 			Likes:           float64(p.Likes),
 			Shares:          float64(p.Reposts),
@@ -294,17 +297,19 @@ func FallbackRankPosts(posts []*model.Post) []*model.Post {
 }
 
 func fallbackScore(p *model.Post) float64 {
-	if p.Impressions == 0 {
-		return 0
-	}
-	eng := float64(p.Likes+p.Reposts*3+p.Comments*2+p.Saves*4) / float64(p.Impressions)
 	age := time.Since(p.CreatedAt).Hours()
 	freshness := math.Exp(-0.693 / 24.0 * age)
+	if p.Impressions == 0 {
+		// No impression data yet — score by freshness alone so new posts surface.
+		return freshness
+	}
+	eng := float64(p.Likes+p.Reposts*3+p.Comments*2+p.Saves*4) / float64(p.Impressions)
 	return eng * freshness
 }
 
-// seedVector produces a deterministic normalised float32 vector from a string seed.
-func seedVector(seed string, dim int) []float32 {
+// SeedVector produces a deterministic normalised float32 vector from a string seed.
+// Exported so the handler layer can compute implicit interest vectors from author IDs.
+func SeedVector(seed string, dim int) []float32 {
 	h := uint64(14695981039346656037)
 	for _, c := range seed {
 		h ^= uint64(c)

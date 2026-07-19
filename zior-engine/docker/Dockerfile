@@ -1,4 +1,4 @@
-FROM rust:1.95.0-slim-bookworm AS builder
+FROM rust:latest AS builder
 RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY Cargo.toml Cargo.lock* ./
@@ -8,7 +8,7 @@ COPY src    ./src
 COPY config ./config
 RUN touch src/main.rs src/lib.rs && cargo build --release
 
-FROM debian:bookworm-slim
+FROM debian:latest
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=builder /app/target/release/zior-engine .

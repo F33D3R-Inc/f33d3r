@@ -3,7 +3,6 @@ package handler
 import (
 	"encoding/json"
 	"fmt"
-	"html/template"
 	"log"
 	"net/http"
 	"strings"
@@ -12,6 +11,95 @@ import (
 	"github.com/f33d3r/feed-engine/internal/model"
 	"github.com/f33d3r/feed-engine/internal/realm"
 )
+
+// followEvent handles POST /events with event_type=follow|unfollow (D-070 lane).
+// target_pial must be the author's PIAL UUID.
+func (h *Handler) followEvent(w http.ResponseWriter, r *http.Request) {
+	_ = r.ParseForm()
+	targetPIAL := strings.TrimSpace(r.FormValue("target_pial"))
+	if targetPIAL == "" {
+		htmxError(w, r, "target_pial required", http.StatusBadRequest)
+		return
+	}
+	user := h.userFromRequest(w, r)
+	if user == nil || user.ID == "" {
+		htmxError(w, r, "not authenticated", http.StatusUnauthorized)
+		return
+	}
+	targetID, err := dbpkg.GetUserIDFromPIAL(h.db, targetPIAL)
+	if err != nil || targetID == "" {
+		htmxError(w, r, "user not found", http.StatusNotFound)
+		return
+	}
+	if user.ID == targetID {
+		htmxError(w, r, "cannot follow yourself", http.StatusBadRequest)
+		return
+	}
+
+	isFollow := r.FormValue("event_type") == "follow"
+	if h.db != nil {
+		if isFollow {
+			_ = dbpkg.FollowUser(h.db, user.ID, targetID)
+			go realm.AwardXP(h.db, user.ID, "follow", targetID, realm.XPFollow)
+			go func() {
+				h.notifyUser(targetID, "follow", user.ID, user.ID, "user")
+				go h.HeraldNotify(targetPIAL, "follow",
+					"@"+user.Handle+" followed you", "",
+					"", "/@"+user.Handle)
+			}()
+			go dbpkg.RecordFollowerEvent(h.db, user.ID, targetID, "follow")
+			go dbpkg.TryAwardTrollOnFollow(h.db, targetID)
+			// FA Live: push follow_accepted to the follower's SSE stream.
+			// Data is just the target PIAL — JS updates all [data-pial] buttons by class.
+			go PublishToUser(user.PIALID, SSEEvent{
+				Type: "follow_accepted",
+				Data: targetPIAL,
+			})
+		} else {
+			_ = dbpkg.UnfollowUser(h.db, user.ID, targetID)
+			go dbpkg.RecordFollowerEvent(h.db, user.ID, targetID, "unfollow")
+			go dbpkg.TryAwardTrollOnFollow(h.db, targetID)
+		}
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	source := r.FormValue("source")
+	switch source {
+	case "follow_list":
+		// Followers/following list: toggle between suggested-follow-btn states.
+		if isFollow {
+			fmt.Fprintf(w, `<button class="suggested-follow-btn following" data-pial="%s"
+				hx-post="/events" hx-target="this" hx-swap="outerHTML"
+				hx-vals='{"event_type":"unfollow","target_pial":"%s","source":"follow_list"}'>Following</button>`, targetPIAL, targetPIAL)
+		} else {
+			fmt.Fprintf(w, `<button class="suggested-follow-btn" data-pial="%s"
+				hx-post="/events" hx-target="this" hx-swap="outerHTML"
+				hx-vals='{"event_type":"follow","target_pial":"%s","source":"follow_list"}'>Follow</button>`, targetPIAL, targetPIAL)
+		}
+	case "suggested":
+		// Right-rail / who-to-follow: toggle suggested-follow-btn states.
+		if isFollow {
+			fmt.Fprintf(w, `<button class="suggested-follow-btn following" data-pial="%s"
+				hx-post="/events" hx-target="this" hx-swap="outerHTML"
+				hx-vals='{"event_type":"unfollow","target_pial":"%s","source":"suggested"}'>Following</button>`, targetPIAL, targetPIAL)
+		} else {
+			fmt.Fprintf(w, `<button class="suggested-follow-btn" data-pial="%s"
+				hx-post="/events" hx-target="this" hx-swap="outerHTML"
+				hx-vals='{"event_type":"follow","target_pial":"%s","source":"suggested"}'>Follow</button>`, targetPIAL, targetPIAL)
+		}
+	default:
+		// Profile page: return toggled profile-follow-btn.
+		if isFollow {
+			fmt.Fprintf(w, `<button class="profile-follow-btn following" data-pial="%s"
+				hx-post="/events" hx-target="this" hx-swap="outerHTML"
+				hx-vals='{"event_type":"unfollow","target_pial":"%s"}'>Following</button>`, targetPIAL, targetPIAL)
+		} else {
+			fmt.Fprintf(w, `<button class="profile-follow-btn" data-pial="%s"
+				hx-post="/events" hx-target="this" hx-swap="outerHTML"
+				hx-vals='{"event_type":"follow","target_pial":"%s"}'>Follow</button>`, targetPIAL, targetPIAL)
+		}
+	}
+}
 
 func (h *Handler) followAPI(w http.ResponseWriter, r *http.Request) {
 	_ = r.ParseForm()
@@ -33,8 +121,10 @@ func (h *Handler) followAPI(w http.ResponseWriter, r *http.Request) {
 			_ = dbpkg.FollowUser(h.db, user.ID, targetID)
 			go realm.AwardXP(h.db, user.ID, "follow", targetID, realm.XPFollow)
 			go func() {
-				_ = dbpkg.CreateNotification(h.db, targetID, "follow", user.ID, user.ID, "user")
-				dbpkg.IncrementUnreadCount(h.db, targetID)
+				h.notifyUser(targetID, "follow", user.ID, user.ID, "user")
+				go h.HeraldNotify(dbpkg.GetUserPIAL(h.db, targetID), "follow",
+					"@"+user.Handle+" followed you", "",
+					"", "/@"+user.Handle)
 			}()
 		}
 	}
@@ -61,7 +151,7 @@ func (h *Handler) userListAPI(w http.ResponseWriter, r *http.Request) {
 	handle  := parts[2]
 	listType := parts[3] // "followers" or "following"
 
-	if listType != "followers" && listType != "following" {
+	if listType != "followers" && listType != "following" && listType != "subscribers" {
 		http.NotFound(w, r)
 		return
 	}
@@ -78,39 +168,28 @@ func (h *Handler) userListAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	viewer := h.userFromRequest(w, r)
 	var entries []dbpkg.FollowListEntry
-	if listType == "followers" {
-		entries, _ = dbpkg.GetFollowers(h.db, target.ID, 100)
-	} else {
-		entries, _ = dbpkg.GetFollowing(h.db, target.ID, 100)
-	}
-
-	title := "Followers"
-	if listType == "following" {
+	var title string
+	switch listType {
+	case "followers":
+		entries, _ = dbpkg.GetFollowers(h.db, target.ID, viewer.ID, 100)
+		title = "Followers"
+	case "following":
+		entries, _ = dbpkg.GetFollowing(h.db, target.ID, viewer.ID, 100)
 		title = "Following"
+	case "subscribers":
+		entries, _ = dbpkg.GetSubscribers(h.db, target.ID, 100)
+		title = "Subscribers"
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprintf(w, `<div style="padding-bottom:4px;margin-bottom:14px;border-bottom:1px solid var(--border);font-size:14px;font-weight:600;color:var(--text-primary)">%s — @%s</div>`, title, template.HTMLEscapeString(handle))
-	if len(entries) == 0 {
-		fmt.Fprintf(w, `<p style="font-size:13px;color:var(--text-muted)">None yet.</p>`)
-		return
-	}
-	for _, e := range entries {
-		av := ""
-		if e.AvatarURL != "" {
-			av = fmt.Sprintf(`<img src="%s" style="width:100%%;height:100%%;object-fit:cover;border-radius:50%%">`, template.HTMLEscapeString(e.AvatarURL))
-		} else {
-			colors := AvatarColors(e.Handle)
-			av = fmt.Sprintf(`<span style="width:100%%;height:100%%;border-radius:50%%;background:linear-gradient(135deg,%s,%s);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:#fff">%s</span>`,
-				colors[0], colors[1], strings.ToUpper(string([]rune(e.DisplayName)[0:1])))
-		}
-		fmt.Fprintf(w, `<a href="/u/%s" style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid color-mix(in srgb,var(--border) 50%%,transparent);text-decoration:none">
-			<div class="avatar-sm" style="flex-shrink:0">%s</div>
-			<div><p style="font-size:13px;font-weight:500;color:var(--text-primary)">%s</p>
-			<p style="font-size:11px;color:var(--text-muted)">@%s</p></div>
-		</a>`, template.HTMLEscapeString(e.Handle), av, template.HTMLEscapeString(e.DisplayName), template.HTMLEscapeString(e.Handle))
-	}
+	h.renderPartial(w, "follow_list_popup", map[string]interface{}{
+		"Title":        title,
+		"Handle":       handle,
+		"Users":        entries,
+		"ViewerHandle": viewer.Handle,
+	})
 }
 
 func (h *Handler) mentionSearchAPI(w http.ResponseWriter, r *http.Request) {
@@ -174,6 +253,8 @@ func (h *Handler) feedbackAPI(w http.ResponseWriter, r *http.Request) {
 		for _, ev := range req.Events {
 			switch ev.EventType {
 			case "impression":
+				dbpkg.IncrementImpression(h.db, ev.ContentID)
+			case "view_complete":
 				dbpkg.IncrementImpression(h.db, ev.ContentID)
 			}
 		}

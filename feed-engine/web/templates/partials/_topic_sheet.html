@@ -1,0 +1,64 @@
+{{/*
+FACET topic_sheet
+  version: 1.0 | status: stable | layer: 3
+
+  inputs: none (surface list is static; server populates available topics at render time)
+
+  states:
+    hidden (default) | open
+
+  children: none
+
+  signals:
+    emits:    pin_surface, unpin_surface (POST /events — hx-swap targets #feed-surface-tabs)
+    receives: none
+
+  context:
+    base.html → drawer-slot or overlay-slot (opened by openTopicSheet() in f33d3r.js)
+*/}}
+{{define "topic_sheet"}}
+<div id="topic-sheet" class="topic-sheet hidden" aria-modal="true" role="dialog" aria-label="Add a feed">
+  <div class="topic-sheet-overlay" onclick="closeTopicSheet()"></div>
+  <div class="topic-sheet-card">
+
+    <div class="topic-sheet-header">
+      <span class="topic-sheet-title">Add a feed</span>
+      <button class="topic-sheet-close" onclick="closeTopicSheet()" aria-label="Close">
+        <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="width:18px;height:18px"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+
+    <div class="topic-sheet-body">
+      <p class="topic-sheet-hint">Pin interest feeds to your tab bar.</p>
+      <div id="surface-grid" class="surface-grid"
+           hx-get="/partials/surface-sheet"
+           hx-trigger="revealed"
+           hx-swap="innerHTML">
+        <div class="surface-grid-loading">Loading…</div>
+      </div>
+    </div>
+
+  </div>
+</div>
+{{end}}
+
+{{define "surface_sheet_content"}}
+{{/* Facet(surface_sheet_content)
+     Inner content of the surface discovery sheet — loaded via HTMX on reveal.
+     Context: Surfaces ([]model.FeedSurface) with IsPinned set for current user. */}}
+{{range .Surfaces}}
+<button class="surface-chip {{if .IsPinned}}pinned{{end}}"
+        hx-post="/events"
+        hx-vals='{"event_type":"{{if .IsPinned}}unpin_surface{{else}}pin_surface{{end}}","surface_id":"{{.ID}}"}'
+        hx-target="#feed-surface-tabs"
+        hx-swap="innerHTML"
+        hx-on::after-request="this.classList.toggle('pinned')"
+        title="{{if .IsPinned}}Unpin{{else}}Pin{{end}} {{.Label}}">
+  <span class="surface-chip-emoji">{{.Emoji}}</span>
+  <span class="surface-chip-label">{{.Label}}</span>
+  <span class="surface-chip-pin">{{if .IsPinned}}✓{{else}}+{{end}}</span>
+</button>
+{{else}}
+<p style="color:var(--text-secondary);font-size:13px;padding:16px 0">No surfaces available.</p>
+{{end}}
+{{end}}

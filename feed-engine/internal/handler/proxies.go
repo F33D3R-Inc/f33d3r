@@ -88,7 +88,46 @@ func (h *Handler) ledgerProxy(w http.ResponseWriter, r *http.Request) {
 	proxy.ServeHTTP(w, r)
 }
 
-// ── Thessalon proxy: /thessalon/v1/... → thessalon:8084/v1/... ───────────────
+// ── Themis proxy: /themis/v1/... → themis:8100/v1/... ────────────────────────
+func (h *Handler) themisProxy(w http.ResponseWriter, r *http.Request) {
+	user := h.userFromRequest(w, r)
+	if user.PIALID == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte(`{"error":"pial_not_ready"}`))
+		return
+	}
+
+	upstreamURL, err := url.Parse(h.themisURL)
+	if err != nil {
+		http.Error(w, "proxy config error", http.StatusInternalServerError)
+		return
+	}
+
+	pathSuffix := strings.TrimPrefix(r.URL.Path, "/themis")
+	if pathSuffix == "" { pathSuffix = "/" }
+	pialID := user.PIALID
+
+	proxy := &httputil.ReverseProxy{
+		Director: func(req *http.Request) {
+			req.URL.Scheme = upstreamURL.Scheme
+			req.URL.Host   = upstreamURL.Host
+			req.URL.Path   = pathSuffix
+			if r.URL.RawQuery != "" { req.URL.RawQuery = r.URL.RawQuery }
+			req.Host = upstreamURL.Host
+			req.Header.Set("X-Pial-Identity", pialID)
+			req.Header.Set("X-Pial-Handle",   user.Handle)
+			req.Header.Del("Cookie")
+		},
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			log.Printf("themis proxy: %v", err)
+			http.Error(w, `{"error":"themis_unavailable"}`, http.StatusBadGateway)
+		},
+	}
+	proxy.ServeHTTP(w, r)
+}
+
+// ── Thessalon proxy: /thessalon/v1/... → themis:8100/v1/... (Thessalon merged into Themis) ───
 func (h *Handler) thessalonProxy(w http.ResponseWriter, r *http.Request) {
 	user := h.userFromRequest(w, r)
 	if user.PIALID == "" {
@@ -98,7 +137,7 @@ func (h *Handler) thessalonProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	upstreamURL, err := url.Parse(h.thessalonURL)
+	upstreamURL, err := url.Parse(h.themisURL)
 	if err != nil {
 		http.Error(w, "proxy config error", http.StatusInternalServerError)
 		return
@@ -121,7 +160,7 @@ func (h *Handler) thessalonProxy(w http.ResponseWriter, r *http.Request) {
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			log.Printf("thessalon proxy: %v", err)
-			http.Error(w, `{"error":"thessalon_unavailable"}`, http.StatusBadGateway)
+			http.Error(w, `{"error":"themis_unavailable"}`, http.StatusBadGateway)
 		},
 	}
 	proxy.ServeHTTP(w, r)

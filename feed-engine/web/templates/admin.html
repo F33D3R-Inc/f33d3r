@@ -1,301 +1,33 @@
 {{define "title"}}Admin · F33D3R{{end}}
 {{define "nav-active-admin"}}active{{end}}
 {{define "body"}}
-  <main class="f33d3r-main">
-    <header class="top-bar">
-      <h1>Admin</h1>
-      <span style="font-size:11px;padding:3px 10px;border-radius:20px;background:color-mix(in srgb,var(--accent) 12%,transparent);color:var(--accent);font-weight:600">ADMIN</span>
-    </header>
+<div class="settings-shell" id="main-col">
 
-    <!-- Stats -->
-    <div class="settings-section">
-      <label class="settings-label">Platform stats</label>
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
-        <div style="padding:16px;border-radius:12px;background:var(--panel);border:1px solid var(--border);text-align:center">
-          <p style="font-size:26px;font-weight:700;color:var(--accent)">{{.UserCount}}</p>
-          <p style="font-size:11px;color:var(--text-secondary);margin-top:2px">Accounts</p>
-        </div>
-        <div style="padding:16px;border-radius:12px;background:var(--panel);border:1px solid var(--border);text-align:center">
-          <p style="font-size:26px;font-weight:700;color:var(--accent)">{{.PIALCount}}</p>
-          <p style="font-size:11px;color:var(--text-secondary);margin-top:2px">PIAL roots</p>
-        </div>
-        <div style="padding:16px;border-radius:12px;background:var(--panel);border:1px solid var(--border);text-align:center">
-          <p style="font-size:26px;font-weight:700;color:var(--accent)">{{.PostCount}}</p>
-          <p style="font-size:11px;color:var(--text-secondary);margin-top:2px">Posts</p>
-        </div>
-      </div>
-    </div>
+  {{template "admin_nav" .}}
 
-    <!-- PIAL lookup -->
-    <div class="settings-section">
-      <label class="settings-label">PIAL lookup</label>
-      <form method="GET" action="/admin" style="display:flex;gap:8px">
-        <input type="text" name="lookup" class="settings-input" style="flex:1"
-               placeholder="@handle" value="{{.LookupHandle}}">
-        <button type="submit" class="btn-secondary" style="padding:10px 16px;white-space:nowrap">Look up</button>
-      </form>
-
-      {{if .LookupUser}}
-      <div style="margin-top:16px;padding:16px;border-radius:12px;background:var(--panel);border:1px solid var(--border)">
-        <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
-          <div class="avatar-sm">
-            {{if .LookupUser.AvatarURL}}<img src="{{.LookupUser.AvatarURL}}" style="width:100%;height:100%;object-fit:cover;border-radius:50%">
-            {{else}}{{$c := avatarColors .LookupUser.Handle}}<span style="width:100%;height:100%;border-radius:50%;background:linear-gradient(135deg,{{index $c 0}},{{index $c 1}});display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:#fff">{{firstChar .LookupUser.DisplayName}}</span>{{end}}
-          </div>
-          <div>
-            <p style="font-size:14px;font-weight:600">{{.LookupUser.DisplayName}}</p>
-            <p style="font-size:11px;color:var(--text-secondary)">@{{.LookupUser.Handle}}</p>
-          </div>
-          <div style="margin-left:auto;text-align:right">
-            <p style="font-size:10px;color:var(--text-muted);font-family:monospace">PIAL</p>
-            <p style="font-size:10px;color:var(--text-secondary);font-family:monospace">{{.LookupUser.PIALID}}</p>
-          </div>
-        </div>
-
-        <!-- Capability tree -->
-        <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:16px">
-          {{range $cap, $c := .LookupCaps}}
-          <div style="display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:8px;background:color-mix(in srgb,var(--surface) 60%,transparent)">
-            <span style="font-size:12px;font-family:monospace;flex:1;color:var(--text-primary)">{{$cap}}</span>
-            <span style="font-size:11px;padding:2px 8px;border-radius:20px;font-weight:600;
-              {{if eq $c.State "granted"}}background:color-mix(in srgb,#22c55e 15%,transparent);color:#22c55e
-              {{else if eq $c.State "revoked"}}background:color-mix(in srgb,#ef4444 15%,transparent);color:#ef4444
-              {{else if eq $c.State "restricted"}}background:color-mix(in srgb,#f59e0b 15%,transparent);color:#f59e0b
-              {{else}}background:color-mix(in srgb,#6b7280 15%,transparent);color:#6b7280{{end}}">
-              {{$c.State}}
-            </span>
-            {{if $c.Reason}}<span style="font-size:10px;color:var(--text-muted)">{{$c.Reason}}</span>{{end}}
-          </div>
-          {{else}}
-          <p style="font-size:12px;color:var(--text-muted)">No PIAL root linked to this account yet.</p>
-          {{end}}
-        </div>
-
-        <!-- Role management -->
-        <div style="margin-bottom:14px;padding:12px;background:color-mix(in srgb,var(--accent) 6%,transparent);border:1px solid color-mix(in srgb,var(--accent) 18%,transparent);border-radius:10px">
-          <p style="font-size:11px;font-weight:600;color:var(--text-secondary);margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em">Current role</p>
-          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-            <span style="font-size:12px;padding:3px 10px;border-radius:20px;font-weight:600;background:color-mix(in srgb,var(--accent) 15%,transparent);color:var(--accent)">{{.LookupUser.Role}}</span>
-            {{if .LookupUser.IsVerified}}<span style="font-size:11px;padding:3px 8px;border-radius:20px;background:color-mix(in srgb,#22c55e 15%,transparent);color:#22c55e;font-weight:600">✓ Verified</span>{{end}}
-            {{if .LookupUser.IsCreator}}<span style="font-size:11px;padding:3px 8px;border-radius:20px;background:color-mix(in srgb,#a78bfa 15%,transparent);color:#a78bfa;font-weight:600">Creator</span>{{end}}
-          </div>
-        </div>
-
-        <!-- Set role form -->
-        <form method="POST" action="/api/admin/set-role" style="display:flex;flex-direction:column;gap:8px;margin-bottom:14px">
-          <input type="hidden" name="target_handle" value="{{.LookupUser.Handle}}">
-          <p style="font-size:12px;font-weight:500;color:var(--text-secondary)">Set platform role</p>
-          <div style="display:flex;gap:8px">
-            <select name="role" class="settings-input" style="flex:1;padding:8px 10px">
-              <option value="user" {{if eq .LookupUser.Role "user"}}selected{{end}}>user — standard account</option>
-              <option value="creator" {{if eq .LookupUser.Role "creator"}}selected{{end}}>creator — verified creator</option>
-              <option value="admin" {{if eq .LookupUser.Role "admin"}}selected{{end}}>admin — platform admin</option>
-              <option value="founder" {{if eq .LookupUser.Role "founder"}}selected{{end}}>founder — company founder</option>
-            </select>
-            <button type="submit" class="btn-primary" style="padding:10px 16px;white-space:nowrap">Set role</button>
-          </div>
-          <div style="display:flex;gap:16px;font-size:12px;padding:4px 2px">
-            <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
-              <input type="checkbox" name="is_verified" value="1" {{if .LookupUser.IsVerified}}checked{{end}}>
-              Verified badge
-            </label>
-            <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
-              <input type="checkbox" name="is_creator" value="1" {{if .LookupUser.IsCreator}}checked{{end}}>
-              Creator mode
-            </label>
-          </div>
-        </form>
-
-        <!-- Set capability form -->
-        {{if .LookupUser.PIALID}}
-        <form method="POST" action="/admin" style="display:flex;flex-direction:column;gap:8px">
-          <input type="hidden" name="target_handle" value="{{.LookupUser.Handle}}">
-          <p style="font-size:12px;font-weight:500;color:var(--text-secondary);margin-bottom:4px">Set PIAL capability</p>
-          <div style="display:flex;gap:8px">
-            <select name="capability" class="settings-input" style="flex:1;padding:8px 10px">
-              {{range $.AllCaps}}<option value="{{.}}">{{.}}</option>{{end}}
-            </select>
-            <select name="state" class="settings-input" style="width:140px;padding:8px 10px">
-              <option value="granted">granted</option>
-              <option value="restricted">restricted</option>
-              <option value="revoked">revoked</option>
-              <option value="cooldown">cooldown</option>
-            </select>
-          </div>
-          <div style="display:flex;gap:8px">
-            <input type="text" name="reason" class="settings-input" style="flex:1" placeholder="Reason (optional)">
-            <button type="submit" class="btn-primary" style="padding:10px 16px;white-space:nowrap">Apply</button>
-          </div>
-          <p style="font-size:10px;color:var(--text-muted)">Logged to PIAL event ledger — applies to all accounts bound to this PIAL root.</p>
-        </form>
-        {{end}}
-      </div>
-      {{end}}
-    </div>
-
-    <!-- Quick actions -->
-    <div class="settings-section" style="margin-top:24px">
-      <label class="settings-label">Quick actions</label>
-
-      <!-- Inject AET -->
-      <div style="padding:16px;border-radius:12px;background:var(--panel);border:1px solid var(--border);margin-bottom:12px">
-        <p style="font-size:12px;font-weight:600;color:var(--text-secondary);margin-bottom:10px">Inject AET to wallet</p>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
-          <input type="text" id="aet-handle" placeholder="@handle" class="settings-input" style="width:130px;padding:8px 10px;font-size:12px">
-          <input type="number" id="aet-amount" placeholder="Amount" class="settings-input" style="width:100px;padding:8px 10px;font-size:12px" min="1" max="1000000" step="1">
-          <input type="text" id="aet-reason" placeholder="Reason (optional)" class="settings-input" style="flex:1;min-width:120px;padding:8px 10px;font-size:12px">
-          <button onclick="adminAction('/api/admin/inject-aet','aet-result',{target_handle:document.getElementById('aet-handle').value,amount:document.getElementById('aet-amount').value,reason:document.getElementById('aet-reason').value})"
-                  class="btn-primary" style="padding:8px 14px;font-size:12px;white-space:nowrap">Inject AET</button>
-        </div>
-        <div id="aet-result" style="margin-top:6px;min-height:18px"></div>
-      </div>
-
-      <!-- Reset password -->
-      <div style="padding:16px;border-radius:12px;background:var(--panel);border:1px solid var(--border);margin-bottom:12px">
-        <p style="font-size:12px;font-weight:600;color:var(--text-secondary);margin-bottom:10px">Reset user password</p>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
-          <input type="text" id="pwd-handle" placeholder="@handle" class="settings-input" style="width:130px;padding:8px 10px;font-size:12px">
-          <input type="password" id="pwd-new" placeholder="New password (min 8)" class="settings-input" style="flex:1;min-width:160px;padding:8px 10px;font-size:12px">
-          <button onclick="adminAction('/api/admin/reset-password','pwd-result',{target_handle:document.getElementById('pwd-handle').value,new_password:document.getElementById('pwd-new').value})"
-                  class="btn-primary" style="padding:8px 14px;font-size:12px;white-space:nowrap">Reset</button>
-        </div>
-        <div id="pwd-result" style="margin-top:6px;min-height:18px"></div>
-      </div>
-
-      <!-- Set email -->
-      <div style="padding:16px;border-radius:12px;background:var(--panel);border:1px solid var(--border)">
-        <p style="font-size:12px;font-weight:600;color:var(--text-secondary);margin-bottom:10px">Set user email (for password reset)</p>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
-          <input type="text" id="email-handle" placeholder="@handle" class="settings-input" style="width:130px;padding:8px 10px;font-size:12px">
-          <input type="email" id="email-addr" placeholder="user@example.com" class="settings-input" style="flex:1;min-width:180px;padding:8px 10px;font-size:12px">
-          <button onclick="adminAction('/api/admin/set-email','email-result',{target_handle:document.getElementById('email-handle').value,email:document.getElementById('email-addr').value})"
-                  class="btn-primary" style="padding:8px 14px;font-size:12px;white-space:nowrap">Set email</button>
-        </div>
-        <div id="email-result" style="margin-top:6px;min-height:18px"></div>
-      </div>
-    </div>
-
-    <!-- Recent users -->
-    {{if .RecentUsers}}
-    <div class="settings-section" style="margin-top:24px">
-      <label class="settings-label">Recent sign-ups (last 20)</label>
-      <div style="overflow-x:auto">
-        <table style="width:100%;border-collapse:collapse;font-size:12px">
-          <thead>
-            <tr style="border-bottom:1px solid var(--border)">
-              <th style="text-align:left;padding:6px 8px;color:var(--text-muted);font-weight:500">Handle</th>
-              <th style="text-align:left;padding:6px 8px;color:var(--text-muted);font-weight:500">Display name</th>
-              <th style="text-align:left;padding:6px 8px;color:var(--text-muted);font-weight:500">Role</th>
-              <th style="text-align:left;padding:6px 8px;color:var(--text-muted);font-weight:500">Joined</th>
-              <th style="text-align:left;padding:6px 8px;color:var(--text-muted);font-weight:500"></th>
-            </tr>
-          </thead>
-          <tbody>
-            {{range .RecentUsers}}
-            <tr style="border-bottom:1px solid color-mix(in srgb,var(--border) 50%,transparent)">
-              <td style="padding:7px 8px"><a href="/u/{{.Handle}}" style="color:var(--accent);text-decoration:none">@{{.Handle}}</a></td>
-              <td style="padding:7px 8px;color:var(--text-secondary)">{{.DisplayName}}</td>
-              <td style="padding:7px 8px">
-                <span style="font-size:10px;padding:2px 7px;border-radius:20px;font-weight:600;
-                  {{if eq .Role "admin"}}background:color-mix(in srgb,#f59e0b 15%,transparent);color:#f59e0b
-                  {{else if eq .Role "founder"}}background:color-mix(in srgb,var(--accent) 15%,transparent);color:var(--accent)
-                  {{else if eq .Role "creator"}}background:color-mix(in srgb,#a78bfa 15%,transparent);color:#a78bfa
-                  {{else}}background:color-mix(in srgb,#6b7280 15%,transparent);color:#6b7280{{end}}">
-                  {{.Role}}{{if .IsVerified}} ✓{{end}}
-                </span>
-              </td>
-              <td style="padding:7px 8px;color:var(--text-muted)">{{.CreatedAt.Format "Jan 2 2006"}}</td>
-              <td style="padding:7px 8px">
-                <a href="/admin?lookup={{.Handle}}" style="font-size:11px;color:var(--accent);text-decoration:none">Manage →</a>
-              </td>
-            </tr>
-            {{end}}
-          </tbody>
-        </table>
-      </div>
-    </div>
+  <div class="settings-content-panel admin-content-panel" id="admin-content" hx-history-elt aria-live="polite">
+    {{$s := .ActiveSection}}
+    {{if or (eq $s "overview") (eq $s "")}}
+    {{template "admin_panel_overview" .}}
+    {{else}}
+    {{/* Non-overview: HTMX fetches the correct section on load — no flash, no 404 on back */}}
+    <div hx-get="/admin/partials/{{$s}}" hx-trigger="load" hx-swap="outerHTML"></div>
     {{end}}
+  </div>
 
-    <!-- Moderation queue -->
-    <div class="settings-section" style="border-bottom:none;margin-top:24px">
-      <label class="settings-label" style="font-size:13px;margin-bottom:12px">Moderation queue ({{len .PendingReports}} pending)</label>
-      {{if .PendingReports}}
-      <div style="display:flex;flex-direction:column;gap:8px">
-        {{range .PendingReports}}
-        <div id="report-{{.ID}}" style="background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:6px">
-          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
-            <span style="font-size:12px;font-weight:600;color:var(--text-primary)">@{{.ReporterHandle}}</span>
-            <span style="font-size:10px;color:var(--text-muted);font-family:monospace">{{.ContentType}} · {{.CreatedAt.Format "Jan 2 15:04"}}</span>
-          </div>
-          <div style="font-size:11px;color:var(--text-secondary)">
-            <span style="color:var(--accent)">{{.Reason}}</span>
-            {{if .Detail}} — {{.Detail}}{{end}}
-          </div>
-          {{if .PostBody}}
-          <div style="font-size:11px;background:var(--bg);border-radius:6px;padding:8px;border:1px solid var(--border);color:var(--text-secondary);white-space:pre-wrap;max-height:80px;overflow:hidden">{{.PostBody}}</div>
-          {{end}}
-          <div style="display:flex;gap:8px;margin-top:4px">
-            <button hx-post="/api/admin/report/resolve"
-                    hx-vals='{"report_id":"{{.ID}}","status":"resolved"}'
-                    hx-target="#report-{{.ID}}"
-                    hx-swap="outerHTML"
-                    style="font-size:11px;padding:4px 12px;border-radius:6px;border:none;background:var(--accent);color:#fff;cursor:pointer">Resolve</button>
-            <button hx-post="/api/admin/report/resolve"
-                    hx-vals='{"report_id":"{{.ID}}","status":"dismissed"}'
-                    hx-target="#report-{{.ID}}"
-                    hx-swap="outerHTML"
-                    style="font-size:11px;padding:4px 12px;border-radius:6px;border:1px solid var(--border);background:transparent;color:var(--text-secondary);cursor:pointer">Dismiss</button>
-          </div>
-        </div>
-        {{end}}
-      </div>
-      {{else}}
-      <p style="font-size:12px;color:var(--text-muted)">No pending reports.</p>
-      {{end}}
-    </div>
-  </main>
-
-  <aside class="f33d3r-right">
-    <div class="panel-card">
-      <h3 class="panel-title">PIAL architecture</h3>
-      <div style="display:flex;flex-direction:column;gap:8px;font-size:11px;color:var(--text-secondary)">
-        <p style="font-weight:600;color:var(--text-primary)">Accounts are disposable.<br>PIAL is persistent.<br>Permissions are derived.</p>
-        <div style="height:1px;background:var(--border);margin:4px 0"></div>
-        <p><span style="color:var(--accent)">PIAL root</span> — identity anchor</p>
-        <p><span style="color:var(--accent)">Capabilities</span> — what the identity can do</p>
-        <p><span style="color:var(--accent)">Event ledger</span> — immutable behavior log</p>
-        <p style="color:var(--text-muted);margin-top:4px">Psychology (AethyrRank) writes to shadow models only — never to PIAL.</p>
-      </div>
-    </div>
-    <div class="panel-card" style="margin-top:12px">
-      <h3 class="panel-title">Logged in as</h3>
-      {{if .User}}
-      <div style="display:flex;align-items:center;gap:10px">
-        <div class="avatar-sm">
-          {{if .User.AvatarURL}}<img src="{{.User.AvatarURL}}" style="width:100%;height:100%;object-fit:cover;border-radius:50%">
-          {{else}}{{$c := avatarColors .User.Handle}}<span style="width:100%;height:100%;border-radius:50%;background:linear-gradient(135deg,{{index $c 0}},{{index $c 1}});display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:#fff">{{firstChar .User.DisplayName}}</span>{{end}}
-        </div>
-        <div>
-          <p style="font-size:13px;font-weight:500">{{.User.DisplayName}}</p>
-          <p style="font-size:11px;color:var(--accent)">@{{.User.Handle}} · admin</p>
-        </div>
-      </div>
-      {{end}}
-    </div>
-  </aside>
-
+</div>
+{{end}}
+{{define "page-scripts"}}
+<script src="/static/js/pages/admin.js?v=20260622b" defer></script>
 <script>
-window.adminAction = function(endpoint, resultId, fields) {
-  const el = document.getElementById(resultId);
-  el.innerHTML = '<span style="color:var(--text-muted);font-size:12px">Working…</span>';
-  const form = new FormData();
-  for (const [k, v] of Object.entries(fields)) form.append(k, v);
-  fetch(endpoint, {method:'POST', body: form,
-    headers: {'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]')?.content || ''}
-  })
-  .then(r => r.text())
-  .then(html => { el.innerHTML = html; })
-  .catch(() => { el.innerHTML = '<span style="color:#ef4444;font-size:12px">Request failed.</span>'; });
+function adminNavActivate(el) {
+  document.querySelectorAll('.admin-nav-item').forEach(function(i){ i.classList.remove('is-active'); });
+  el.classList.add('is-active');
 }
+document.addEventListener('DOMContentLoaded', function() {
+  var path = window.location.pathname;
+  var match = document.querySelector('.admin-nav-item[hx-push-url="' + path + '"]');
+  if (match) adminNavActivate(match);
+});
 </script>
 {{end}}

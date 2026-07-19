@@ -1,0 +1,70 @@
+{{/*
+FACET post_analytics
+  version: 1.0 | status: stable | layer: 2
+
+  inputs:
+    .PostID      string — post UUID
+    .Impressions int64  — view count (works.view_count); labelled "Views"
+    .Likes       int64
+    .Dislikes    int64
+    .Reposts     int64
+    .Comments    int64
+    .Saves       int64
+    .ViewSeconds int64  — cumulative view-time seconds
+
+  states:
+    default
+
+  children: none
+
+  signals:
+    emits:    none
+    receives: none
+
+  context:
+    post_menu → analytics overlay (owner only)
+*/}}
+{{define "post_analytics"}}
+<div class="post-analytics-overlay" onclick="this.remove()" role="dialog" aria-label="Post analytics">
+  <div class="post-analytics-card" onclick="event.stopPropagation()">
+    <div class="post-analytics-header">
+      <span class="post-analytics-title">Post analytics</span>
+      <button class="post-analytics-close" onclick="this.closest('.post-analytics-overlay').remove()" aria-label="Close">
+        <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="width:18px;height:18px"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="post-analytics-grid">
+      <div class="pa-stat">
+        <span class="pa-num">{{.Impressions}}</span>
+        <span class="pa-label">Views</span>
+      </div>
+      <div class="pa-stat">
+        <span class="pa-num">{{.Likes}}</span>
+        <span class="pa-label">Likes</span>
+      </div>
+      <div class="pa-stat">
+        <span class="pa-num">{{.Comments}}</span>
+        <span class="pa-label">Replies</span>
+      </div>
+      <div class="pa-stat">
+        <span class="pa-num">{{.Reposts}}</span>
+        <span class="pa-label">Reposts</span>
+      </div>
+      <div class="pa-stat">
+        <span class="pa-num">{{.Saves}}</span>
+        <span class="pa-label">Bookmarks</span>
+      </div>
+      <div class="pa-stat">
+        <span class="pa-num">{{.Dislikes}}</span>
+        <span class="pa-label">Dislikes</span>
+      </div>
+    </div>
+    {{if gt .ViewSeconds 0}}
+    <div class="pa-viewtime">
+      <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="width:13px;height:13px"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+      {{div .ViewSeconds 60}} min view time
+    </div>
+    {{end}}
+  </div>
+</div>
+{{end}}

@@ -73,6 +73,25 @@ CREATE INDEX IF NOT EXISTS idx_dl_pial      ON decision_log(pial_id, created_at 
 CREATE INDEX IF NOT EXISTS idx_dl_decision  ON decision_log(decision, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_dl_action    ON decision_log(action, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_dl_today     ON decision_log(created_at DESC);
+
+-- ── PIAL Signing Keys ─────────────────────────────────────────────────────────
+-- ECDSA-P256 public keys used by Themis to verify marketplace event signatures.
+CREATE TABLE IF NOT EXISTS pial_signing_keys (
+    pial_id       UUID        PRIMARY KEY,
+    public_key_b64 TEXT       NOT NULL,
+    algorithm     TEXT        NOT NULL DEFAULT 'ECDSA-P256',
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- ── PIAL ECDH Keys ────────────────────────────────────────────────────────────
+-- ECDH-P256 public keys used by Themis to wrap content encryption keys (CEK).
+CREATE TABLE IF NOT EXISTS pial_ecdh_keys (
+    pial_id        UUID        PRIMARY KEY,
+    public_key_b64 TEXT        NOT NULL,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 "#;
 
 pub async fn migrate(pool: &PgPool) -> Result<()> {
@@ -115,4 +134,47 @@ pub async fn count_denials_today(pool: &PgPool) -> Result<i64> {
     .fetch_one(pool)
     .await?;
     Ok(row.0)
+}
+
+/// Upsert a PIAL ECDSA signing public key.
+pub async fn upsert_signing_key(pool: &PgPool, pial_id: uuid::Uuid, public_key_b64: &str, algorithm: &str) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO pial_signing_keys (pial_id, public_key_b64, algorithm, updated_at)
+         VALUES ($1, $2, $3, NOW())
+         ON CONFLICT (pial_id) DO UPDATE
+           SET public_key_b64 = EXCLUDED.public_key_b64,
+               algorithm = EXCLUDED.algorithm,
+               updated_at = NOW()"
+    ).bind(pial_id).bind(public_key_b64).bind(algorithm)
+     .execute(pool).await?;
+    Ok(())
+}
+
+/// Fetch a PIAL ECDSA signing public key, returning None if not found.
+pub async fn get_signing_key(pool: &PgPool, pial_id: uuid::Uuid) -> Result<Option<String>> {
+    let row = sqlx::query_scalar::<_, String>(
+        "SELECT public_key_b64 FROM pial_signing_keys WHERE pial_id = $1"
+    ).bind(pial_id).fetch_optional(pool).await?;
+    Ok(row)
+}
+
+/// Upsert a PIAL ECDH public key.
+pub async fn upsert_ecdh_key(pool: &PgPool, pial_id: uuid::Uuid, public_key_b64: &str) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO pial_ecdh_keys (pial_id, public_key_b64, updated_at)
+         VALUES ($1, $2, NOW())
+         ON CONFLICT (pial_id) DO UPDATE
+           SET public_key_b64 = EXCLUDED.public_key_b64,
+               updated_at = NOW()"
+    ).bind(pial_id).bind(public_key_b64)
+     .execute(pool).await?;
+    Ok(())
+}
+
+/// Fetch a PIAL ECDH public key, returning None if not found.
+pub async fn get_ecdh_key(pool: &PgPool, pial_id: uuid::Uuid) -> Result<Option<String>> {
+    let row = sqlx::query_scalar::<_, String>(
+        "SELECT public_key_b64 FROM pial_ecdh_keys WHERE pial_id = $1"
+    ).bind(pial_id).fetch_optional(pool).await?;
+    Ok(row)
 }

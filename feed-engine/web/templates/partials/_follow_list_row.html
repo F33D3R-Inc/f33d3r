@@ -1,0 +1,51 @@
+{{/*
+FACET follow_list_row
+  version: 1.1 | status: stable | layer: 2
+
+  inputs:
+    Handle        string — user handle
+    DisplayName   string — display name
+    AvatarURL     string — avatar image src
+    PIALID        string — used in follow POST payload (never rendered in HTML)
+    ViewerFollows bool   — viewer already follows this user → show Unfollow
+    ViewerHandle  string — viewer's own handle; hides follow button on own row
+
+  states:
+    default | following (ViewerFollows=true) | is-self (button hidden)
+
+  children:
+    user_avatar (inline)
+
+  signals:
+    emits:    follow, unfollow (POST /events)
+    receives: none
+
+  context:
+    followers.html, following.html, follow_list_modal → list rows
+*/}}
+{{define "follow_list_row"}}
+<div class="follow-list-row">
+  <a href="/{{.Handle}}" class="follow-list-av">
+    {{template "user_avatar" (dict "Handle" .Handle "AvatarURL" .AvatarURL "DisplayName" .DisplayName "Realm" "" "Size" "sm")}}
+  </a>
+  <a href="/{{.Handle}}" class="follow-list-info">
+    <p class="follow-list-name">{{.DisplayName}}</p>
+    <p class="follow-list-handle">@{{.Handle}}</p>
+  </a>
+  {{if and .PIALID (ne .Handle .ViewerHandle)}}
+    {{if .ViewerFollows}}
+    <button class="suggested-follow-btn following" data-pial="{{.PIALID}}"
+            hx-post="/events"
+            hx-vals='{"event_type":"unfollow","target_pial":"{{.PIALID}}","source":"follow_list"}'
+            hx-target="this"
+            hx-swap="outerHTML">Following</button>
+    {{else}}
+    <button class="suggested-follow-btn" data-pial="{{.PIALID}}"
+            hx-post="/events"
+            hx-vals='{"event_type":"follow","target_pial":"{{.PIALID}}","source":"follow_list"}'
+            hx-target="this"
+            hx-swap="outerHTML">Follow</button>
+    {{end}}
+  {{end}}
+</div>
+{{end}}

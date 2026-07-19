@@ -1,0 +1,64 @@
+{{/*
+FACET share_sheet
+  version: 1.0 | status: stable | layer: 3
+
+  inputs:
+    ShareURL   string — canonical public link, e.g. https://f33d3r.com/mia/work/{id}
+    ShareText  string — short post text used as the native-share message body
+
+  states:
+    default
+
+  children: none
+
+  signals:
+    emits:    none (server mutation). Client-only: navigator.clipboard / navigator.share
+              via shareCopy() / shareNative() in f33d3r.js — browser hardware projection.
+    receives: none
+
+  context:
+    #overlay-slot — hx-get="/facets/share_sheet?work_id={id}" from the work_action_bar
+    share button. Backdrop click or Close removes it from the DOM (no nav target).
+    Reuses the generic block-confirm-* modal shell (no bespoke modal CSS).
+*/}}
+{{define "share_sheet"}}
+<div id="share-sheet"
+     class="block-confirm-sheet"
+     role="dialog"
+     aria-modal="true"
+     aria-label="Share"
+     onclick="if(event.target===this)this.remove()">
+  <div class="block-confirm-card">
+
+    <div class="block-confirm-header">
+      <span class="block-confirm-title">Share</span>
+      <button type="button"
+              class="block-confirm-close"
+              aria-label="Close"
+              onclick="document.getElementById('share-sheet').remove()">
+        <svg fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24" style="width:18px;height:18px"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+
+    <div class="block-confirm-body">
+      <input id="share-sheet-url"
+             class="share-url-input"
+             type="text"
+             readonly
+             value="{{.ShareURL}}"
+             onclick="this.select()"
+             aria-label="Shareable link">
+      <div class="share-sheet-actions">
+        <button type="button" class="btn-secondary" onclick="shareCopy(this)">Copy link</button>
+        {{/* Web Share API — native sheet listing Instagram, Snapchat, etc. Falls back to copy. */}}
+        <button type="button"
+                class="btn-primary"
+                data-share-url="{{.ShareURL}}"
+                data-share-text="{{.ShareText}}"
+                onclick="shareNative(this)">Share via…</button>
+      </div>
+    </div>
+
+  </div>
+</div>
+{{end}}

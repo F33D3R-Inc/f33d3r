@@ -1,0 +1,36 @@
+{{/*
+FACET feed_tab
+  version: 1.0 | status: stable | layer: 1
+
+  inputs:
+    Surface         string  — surface key ("following" | "forYou" | "explore" | …)
+    Label           string  — visible tab text
+    Active          bool    — applies .is-active, sets aria-selected
+    HasTopicFilter  bool    — shows the ▾ topic-sheet trigger arrow
+
+  states:
+    default | is-active
+
+  children: none
+
+  signals:
+    emits:    switchSurface (JS, not a POST /events)
+    receives: none
+
+  context:
+    index → feed toolbar tab strip
+*/}}
+{{define "feed_tab"}}
+<button class="feed-tab{{if .Active}} is-active{{end}}"
+        data-surface="{{.Surface}}"
+        onclick="switchSurface(this,'{{.Surface}}')"
+        role="tab"
+        aria-selected="{{if .Active}}true{{else}}false{{end}}">
+  {{.Label}}
+  {{if .HasTopicFilter}}
+  <button class="feed-tab-arrow"
+          onclick="event.stopPropagation();openTopicSheet()"
+          title="Filter topics" aria-label="Filter topics">▾</button>
+  {{end}}
+</button>
+{{end}}

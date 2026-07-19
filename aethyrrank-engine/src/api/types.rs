@@ -28,6 +28,12 @@ pub struct UserState {
     /// Absent for legacy clients → defaults to Realm 1.
     #[serde(default = "default_realm")]
     pub realm_level: u8,
+    /// NEXUS blinded shard — SHA256(nexus_id + "aethyrrank-nexus-v1").
+    /// When present, interaction history and affinities are aggregated across
+    /// all personas under the same NEXUS identity (multi-persona users).
+    /// Absent for single-account users.
+    #[serde(default)]
+    pub nexus_shard_id: Option<String>,
 }
 
 fn default_realm() -> u8 {
@@ -66,6 +72,27 @@ pub struct ContentItem {
     /// Probability this item belongs to the adult content manifold (0.0–1.0).
     /// Computed by the content-service classifier before submission to AethyrRank.
     pub adult_probability: f64,
+
+    // ── Content quality signals ───────────────────────────────────────────
+    /// Number of posts this creator published in the last 24 hours.
+    /// Burst posting decays per-post signal weight (author dilution penalty).
+    #[serde(default)]
+    pub posts_last_24h: u64,
+
+    /// 1.0 if creator replied to their own post within 30 min of publishing, else 0.0.
+    /// Active early engagement — weighted into composite velocity score.
+    #[serde(default)]
+    pub self_reply_cadence: f64,
+
+    /// Unicode character count of the post body.
+    /// Long-form posts (>=1000 chars) receive a quality signal boost.
+    #[serde(default)]
+    pub char_count: u64,
+
+    /// True when the content creator is followed by the requesting user.
+    /// In-network content receives a score boost to prioritise the social graph.
+    #[serde(default)]
+    pub is_in_network: bool,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -136,6 +163,10 @@ pub struct ScoreBreakdown {
 #[derive(Debug, Deserialize)]
 pub struct FeedbackRequest {
     pub user_id: String,
+    /// NEXUS blinded shard. When present, model updates key on this shard rather
+    /// than user_id so multi-persona users share one behavioral model.
+    #[serde(default)]
+    pub nexus_shard_id: Option<String>,
     pub session_id: String,
     pub surface: String,
     pub events: Vec<FeedbackEvent>,

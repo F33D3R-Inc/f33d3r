@@ -1,0 +1,30 @@
+{{/*
+FACET avatar_group
+  version: 1.0 | status: stable | layer: 5
+
+  inputs:
+    Users  []struct{ AvatarURL string; Handle string } — up to 3 users; extras ignored
+
+  states:
+    default (1–3 stacked avatars)
+
+  children:
+    avatar_img
+
+  signals:
+    emits:    none
+    receives: none
+
+  context:
+    notification_grouped_avatars → like/repost notification row
+    who_to_follow_row            → mutual followers strip
+*/}}
+{{define "avatar_group"}}
+<div class="avatar-group" aria-label="{{len .Users}} users">
+  {{range $i, $u := .Users}}{{if lt $i 3}}
+  <div class="avatar-group__item" style="z-index:{{if eq $i 0}}3{{else if eq $i 1}}2{{else}}1{{end}}">
+    {{template "avatar_img" (dict "URL" $u.AvatarURL "Handle" $u.Handle "Size" "sm")}}
+  </div>
+  {{end}}{{end}}
+</div>
+{{end}}

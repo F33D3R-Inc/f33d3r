@@ -8,10 +8,11 @@ The content moderation and risk scoring brain for F33D3R.
 **Language:** Rust 1.95.0 (axum, sqlx, tokio)
 
 Zodacare receives content reports from users, scores reporter and reported-user risk, and issues moderation actions that
-flow through to Elohim Veni for capability enforcement.
+are written into the PIAL record (feed-engine) — the system of record and sole authority for capabilities.
 
-**Architecture rule:** Zodacare assesses risk and issues actions. It does NOT enforce capabilities directly — that is
-Elohim Veni's job. Zodacare tells Elohim Veni what to do; Elohim Veni decides how and records it immutably.
+**Architecture rule:** Zodacare assesses risk and issues actions; the moderation decision pipeline (Elohim Veni) computes
+the capability change and writes it to PIAL. No brain owns auth — PIAL is the record, and only the user or an admin
+overrides it. Brains are pipelines that propose changes by writing PIAL.
 
 ---
 
@@ -96,7 +97,7 @@ Risk scores decay over time for accounts with no new violations.
 | `suspend`  | Set POSTING + MESSAGING to `restricted` (7 days)  |
 | `ban`      | Set all capabilities to `revoked`, tombstone PIAL |
 
-All actions are forwarded to Elohim Veni for immutable logging and enforcement.
+All actions are forwarded to Elohim Veni, which writes the capability change to the PIAL record (the authority) and keeps an immutable audit log.
 
 ---
 

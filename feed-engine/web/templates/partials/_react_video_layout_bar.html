@@ -1,0 +1,32 @@
+{{/*
+FACET react_video_layout_bar (composite)
+  version: 1.0 | status: stable | layer: 2
+  The layout selector for the React-With-Video studio. Each button emits
+  rv-action="layout" with a data-layout; the studio JS applies it (CSS arrangement)
+  and flashes the mode name. Green screen keys the reactor over the post.
+  signals: emits reactvideo.layout (data-rv-action="layout" data-layout=…)
+  context: react_video_studio
+*/}}
+{{define "react_video_layout_bar"}}
+<div class="rvs-layouts" data-facet-id="facet:f33d3r:reactvideo:layouts">
+  <button type="button" class="rvs-layout-btn is-active" data-rv-action="layout" data-layout="presenter"   title="Presenter"            aria-label="Presenter layout">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>
+  </button>
+  <button type="button" class="rvs-layout-btn" data-rv-action="layout" data-layout="pip"        title="Picture in Picture"  aria-label="Picture in picture layout">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="14" rx="2"/><rect x="12" y="11" width="7" height="5" rx="1" fill="currentColor"/></svg>
+  </button>
+  <button type="button" class="rvs-layout-btn" data-rv-action="layout" data-layout="split"      title="Split"               aria-label="Split layout">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 12h18"/></svg>
+  </button>
+  <button type="button" class="rvs-layout-btn" data-rv-action="layout" data-layout="card_over"  title="Post with media"     aria-label="Post card over camera layout">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="2"/><rect x="6" y="6" width="12" height="6" rx="1" fill="currentColor"/></svg>
+  </button>
+  <button type="button" class="rvs-layout-btn" data-rv-action="layout" data-layout="media_only" title="Post media only"     aria-label="Post media only layout">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 14l5-4 4 3 3-2 6 5"/></svg>
+  </button>
+  <button type="button" class="rvs-layout-btn" data-rv-action="layout" data-layout="green_screen" title="Green screen"      aria-label="Green screen layout">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="9" r="3.5"/><path d="M5 20a7 7 0 0 1 14 0"/><path d="M2 4l20 16" stroke-dasharray="2 2"/></svg>
+  </button>
+</div>
+<div class="rvs-layout-label" data-facet-id="facet:f33d3r:reactvideo:layout-label" aria-live="polite"></div>
+{{end}}

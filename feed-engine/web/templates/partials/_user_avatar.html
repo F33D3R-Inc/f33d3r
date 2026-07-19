@@ -1,0 +1,42 @@
+{{/*
+FACET user_avatar
+  version: 1.0 | status: stable | layer: 1
+
+  inputs:
+    Handle       string  — required; gradient seed and aria label
+    AvatarURL    string  — optional; photo when present, gradient initials when absent
+    DisplayName  string  — used for initials; falls back to Handle
+    Realm        int     — 1–5; realm ring shown when > 1
+    Size         string  — "sm" (32px) | "md" (40px) | "post" (36px) | "lg" (72px) | "xl" (96px); default "md"
+    IsOnline     bool    — delegates to status_dot
+
+  states:
+    default | online | realm-ring (R2+)
+
+  children:
+    status_dot
+
+  signals:
+    emits:    none
+    receives: none
+
+  context:
+    post_card, post_avatar → post-size avatar column
+    nav_account            → identity strip
+    suggested_user_row     → sm avatar
+    quoted_post            → sm avatar
+    profile_header         → xl avatar slot
+*/}}
+{{define "user_avatar"}}
+<div class="user-av-wrap user-av--{{if .Size}}{{.Size}}{{else}}md{{end}}{{with .Realm}}{{if gt . 1}} realm-ring realm-ring--r{{.}}{{end}}{{end}}">
+  <div class="user-av"
+       style="{{if not .AvatarURL}}{{$c := avatarColors .Handle}}background:linear-gradient(135deg,{{index $c 0}},{{index $c 1}}){{end}}">
+    {{if .AvatarURL}}
+      <img src="{{.AvatarURL}}" alt="{{if .DisplayName}}{{.DisplayName}}{{else}}{{.Handle}}{{end}}" loading="lazy" decoding="async">
+    {{else}}
+      {{if .DisplayName}}{{firstChar .DisplayName}}{{else}}{{firstChar .Handle}}{{end}}
+    {{end}}
+  </div>
+  {{template "status_dot" (dict "IsOnline" .IsOnline)}}
+</div>
+{{end}}

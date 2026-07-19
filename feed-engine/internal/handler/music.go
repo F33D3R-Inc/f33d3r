@@ -2,6 +2,8 @@ package handler
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -31,17 +33,24 @@ func (h *Handler) musicPage(w http.ResponseWriter, r *http.Request) {
 		artistStats = dbpkg.GetArtistStats(h.db, user.ID)
 	}
 
+	rail := h.railData(user, "music")
 	h.render(w, "music.html", map[string]interface{}{
-		"User":        user,
-		"Surface":     "music",
-		"SessionID":   sessionID,
-		"Title":       "Zior · Music",
-		"ShowScores":  h.cfg.ShowScores,
-		"Clusters":    h.fetchClusters(r.Context()),
-		"Themes":      ThemesWithActive(user.ThemeID),
-		"MyTracks":    myTracks,
-		"ArtistStats": artistStats,
-		"Genre":       genre,
+		"User":           user,
+		"Surface":        "music",
+		"SessionID":      sessionID,
+		"Title":          "Zior · Music",
+		"ShowScores":     h.cfg.ShowScores,
+		"Clusters":       h.fetchClusters(r.Context()),
+		"Themes":         ThemesWithActive(user.ThemeID),
+		"MyTracks":       myTracks,
+		"ArtistStats":    artistStats,
+		"Genre":          genre,
+		"TrendingTags":   rail["TrendingTags"],
+		"SuggestedUsers": rail["SuggestedUsers"],
+		"RailContext":    rail["RailContext"],
+		"RailCreators":   rail["RailCreators"],
+		"RailNewsItems":  rail["RailNewsItems"],
+		"RailNewsLabel":  rail["RailNewsLabel"],
 	})
 }
 
@@ -59,15 +68,12 @@ func (h *Handler) tracksPartial(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := h.tracksHTML.ExecuteTemplate(w, "track_items.html", map[string]interface{}{
+	h.renderPartial(w, "music_tracks", map[string]interface{}{
 		"Tracks":            tracks,
 		"CurrentUserHandle": user.Handle,
 		"Genre":             genre,
 		"After":             after,
-	}); err != nil {
-		log.Printf("[tracks] template: %v", err)
-	}
+	})
 }
 
 func (h *Handler) uploadTrack(w http.ResponseWriter, r *http.Request) {
@@ -120,6 +126,24 @@ func (h *Handler) uploadTrack(w http.ResponseWriter, r *http.Request) {
 	dst.Close()
 	audioURL := "/static/uploads/audio/" + audioName
 
+	// CSAM hash check — synchronous, pre-storage. Mirrors the image/video pipeline.
+	audioBytes, readErr := os.ReadFile(filepath.Join(audioDir, audioName))
+	if readErr == nil && h.db != nil {
+		audioHasher := sha256.New()
+		audioHasher.Write(audioBytes)
+		audioSHA256 := hex.EncodeToString(audioHasher.Sum(nil))
+		if banned, banCat, _ := dbpkg.IsBannedHash(h.db, "sha256", audioSHA256); banned {
+			os.Remove(filepath.Join(audioDir, audioName))
+			pial := ""
+			if user != nil { pial = user.PIALID }
+			h.db.Exec(`INSERT INTO csam_scan_log (media_url, pial_id, content_type, result, score) VALUES ($1,$2,'audio','flagged',1.0)`,
+				audioURL, pial)
+			log.Printf("[csam-BLOCK] banned sha256 track %s (%s) — pial=%s", audioSHA256[:16], banCat, pial)
+			http.Error(w, "This content cannot be uploaded", http.StatusBadRequest)
+			return
+		}
+	}
+
 	// Optional cover art
 	coverURL := ""
 	if coverFile, coverHeader, err := r.FormFile("cover"); err == nil {
@@ -138,6 +162,7 @@ func (h *Handler) uploadTrack(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "server error", http.StatusInternalServerError)
 			return
 		}
+		go h.publishMediaUploadedEvent(id, audioURL, user.PIALID)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"id": id, "audio_url": audioURL, "content_type": contentType})
 		return
@@ -208,3 +233,4 @@ func (h *Handler) fetchClusters(ctx context.Context) []model.MusicCluster {
 	_ = c
 	return []model.MusicCluster{}
 }
+

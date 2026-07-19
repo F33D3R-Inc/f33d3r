@@ -1,0 +1,81 @@
+{{/*
+FACET page_header
+  version: 1.0 | status: stable | layer: 1
+
+  inputs:
+    Title          string — required; heading text shown in .main-head-title
+    Subtitle       string — optional; secondary label shown in .main-head-sub; displayed when non-empty
+    BackURL        string — optional; "#back" → history.back(); any other value → href; omit entirely for no back button
+    ExtraClass     string — optional; extra CSS class appended to the outer .main-head div (e.g. "anl-head")
+    UseRow         bool   — wraps title + subtitle in .main-head-row (side-by-side layout used by index, analytics)
+    UseContent     bool   — wraps content in .main-head-content div (used when title + right-side action coexist)
+    RightContent   string — optional HTML string appended inside .main-head-content; rendered via safeHTML; must be trusted static markup
+    RightChip      string — optional chip label shown in .main-head-sub (displayed alongside a dot indicator)
+    RightChipOK    bool   — true → chip class "chip ok" (green dot); false → "chip" (neutral)
+    RightChipID    string — optional id attribute on the chip span (e.g. "engine-dot")
+    StatusLabel    string — optional status indicator label shown after the title row (e.g. "Live" / "Cached")
+    StatusOK       bool   — true → green dot; false → dot--muted
+    StatusTitle    string — tooltip title attribute on the status dot wrapper
+    VerityTier     int    — when > 0 renders a kyc-tier-badge span after the title
+    HasMarkAllRead bool   — when true renders a "Mark all read" button aligned to the right (notifications page)
+
+  states:
+    default | with-back | with-subtitle | with-row | with-content | with-chip | with-status | with-verity-tier | with-mark-all-read
+
+  children:
+    — (atomic; composes nothing)
+
+  signals:
+    emits:    —
+    receives: —
+
+  context:
+    base.html → all page templates that render a sticky page-level header
+*/}}
+{{define "page_header"}}
+<div class="main-head{{if .ExtraClass}} {{.ExtraClass}}{{end}}">
+  {{- if .BackURL}}
+  <button class="back-btn"
+          {{if eq .BackURL "#back"}}onclick="history.back()"{{else}}onclick="location.href='{{.BackURL}}'"{{end}}
+          aria-label="Back">
+    <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="width:18px;height:18px"><path d="m15 18-6-6 6-6"/></svg>
+  </button>
+  {{- end}}
+  {{- if .UseRow}}
+  <div class="main-head-row">
+    <div class="main-head-title">{{.Title}}</div>
+    {{- if or .Subtitle .RightChip .StatusLabel}}
+    <div class="main-head-sub">
+      {{- if .RightChip}}
+      <span class="{{if .RightChipOK}}chip ok{{else}}chip{{end}}"{{if .RightChipID}} id="{{.RightChipID}}"{{end}}><span class="dot"></span>{{.RightChip}}</span>
+      {{- end}}
+      {{- if .Subtitle}}<span>{{.Subtitle}}</span>{{- end}}
+      {{- if .StatusLabel}}
+      <div class="anl-status-dot"{{if .StatusTitle}} title="{{.StatusTitle}}"{{end}}>
+        <span class="dot{{if not .StatusOK}} dot-muted{{end}}"></span>
+        {{.StatusLabel}}
+      </div>
+      {{- end}}
+    </div>
+    {{- end}}
+  </div>
+  {{- else if .UseContent}}
+  <div class="main-head-content">
+    <div class="main-head-title">{{.Title}}</div>
+    {{- if .RightContent}}{{safeHTML .RightContent}}{{- end}}
+  </div>
+  {{- else}}
+  <div class="main-head-title">{{.Title}}</div>
+  {{- if .VerityTier}}{{if gt .VerityTier 0}}<span class="kyc-tier-badge">Tier {{.VerityTier}}</span>{{end}}{{- end}}
+  {{- if .Subtitle}}<div class="main-head-sub">{{.Subtitle}}</div>{{- end}}
+  {{- if .HasMarkAllRead}}
+  <button class="btn-ghost" style="font-size:12px;margin-left:auto"
+          hx-post="/api/notifications/read-all"
+          hx-swap="none"
+          onclick="document.querySelectorAll('.notif-item.unread').forEach(function(el){el.classList.remove('unread');el.querySelector('.notif-unread-dot')&&el.querySelector('.notif-unread-dot').remove()})">
+    Mark all read
+  </button>
+  {{- end}}
+  {{- end}}
+</div>
+{{end}}

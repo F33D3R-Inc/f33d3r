@@ -1,0 +1,5 @@
+SocksPort 0
+Log notice stdout
+DataDirectory /var/lib/tor
+HiddenServiceDir /var/lib/tor/hs
+HiddenServicePort 80 feed-engine:8081

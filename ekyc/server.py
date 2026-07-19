@@ -12,18 +12,60 @@ import base64
 import json
 import logging
 import hashlib
+import random
+import threading
+import time
+import uuid as _uuid
 from datetime import date
 from typing import Optional
 
 import numpy as np
 from PIL import Image
 import pytesseract
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response
+import prometheus_client as prom
+
+from nexus_biometric import nexus_biometric_bp
+from mrz import detect_mrz, parse_mrz_lines
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [ekyc] %(levelname)s %(message)s")
 log = logging.getLogger("ekyc")
 
 app = Flask(__name__)
+app.register_blueprint(nexus_biometric_bp)
+
+# ── Prometheus metrics ────────────────────────────────────────────────────────
+_kyc_verifications = prom.Counter(
+    "ekyc_verifications_total", "KYC verification attempts",
+    ["result"]  # "passed" | "failed" | "liveness_failed" | "presentation_attack"
+)
+_kyc_duration = prom.Histogram(
+    "ekyc_verification_duration_seconds", "Time to complete full KYC pipeline",
+    buckets=[0.1, 0.5, 1.0, 2.0, 5.0, 10.0]
+)
+# ekyc_nexus_biometric_hashes_total is registered in nexus_biometric.py — do not duplicate here
+_mrz_verifications = prom.Counter(
+    "ekyc_mrz_verifications_total", "MRZ age-verification attempts",
+    ["result"]  # "verified_18plus" | "verified_under18" | "invalid" | "no_mrz"
+)
+_risk_scores = prom.Histogram(
+    "ekyc_risk_score", "Login risk scores computed",
+    buckets=[0.0, 0.1, 0.2, 0.3, 0.5, 0.7, 0.9, 1.0]
+)
+
+# ── Liveness challenge session store ──────────────────────────────────────────
+_challenge_lock     = threading.Lock()
+_challenge_sessions: dict = {}   # session_id → {challenges, expires_at, used}
+_CHALLENGE_TTL      = 120        # seconds
+_LIVENESS_CHALLENGES = ["blink", "look_up", "smile"]
+
+def _prune_sessions():
+    now = time.time()
+    with _challenge_lock:
+        expired = [k for k, v in list(_challenge_sessions.items()) if v["expires_at"] < now]
+        for k in expired:
+            del _challenge_sessions[k]
+
 
 # ── Lazy model init ────────────────────────────────────────────────────────────
 _face_app = None
@@ -279,14 +321,86 @@ def validate_liveness(results: list) -> dict:
     }
 
 
+# ── Server-side liveness frame validation ─────────────────────────────────────
+def validate_liveness_frames(session_id: str, frames: list) -> dict:
+    """Validates challenge-response frames captured against a server-issued session."""
+    fa = get_face_app()
+
+    with _challenge_lock:
+        session = _challenge_sessions.get(session_id)
+        if not session:
+            return {"passed": False, "reason": "invalid_session", "score": 0.0}
+        if session.get("used"):
+            return {"passed": False, "reason": "session_already_used", "score": 0.0}
+        if time.time() > session["expires_at"]:
+            del _challenge_sessions[session_id]
+            return {"passed": False, "reason": "session_expired", "score": 0.0}
+        challenges = session["challenges"]
+        session["used"] = True  # one-time use
+
+    if not frames:
+        return {"passed": False, "reason": "no_frames", "score": 0.0}
+
+    n = len(challenges)
+    embeddings = []
+    faces_found = 0
+
+    for frame_b64 in frames[:n]:
+        img = decode_b64(frame_b64)
+        if img is None:
+            continue
+        if fa is not None:
+            try:
+                faces = fa.get(pil_to_bgr(img))
+                if faces:
+                    f = max(faces, key=lambda x: x.bbox[2] * x.bbox[3])
+                    embeddings.append(f.embedding)
+                    faces_found += 1
+            except Exception:
+                pass
+        else:
+            faces_found += 1  # model unavailable — trust frame
+
+    if faces_found < max(1, n * 2 // 3):
+        return {
+            "passed": False, "reason": "face_not_detected_in_frames",
+            "score": 0.0, "faces_found": faces_found, "frames_checked": n,
+        }
+
+    # Replay attack: if all embeddings are nearly identical it is a static photo
+    if len(embeddings) >= 2:
+        sims = []
+        for a in range(len(embeddings)):
+            for b in range(a + 1, len(embeddings)):
+                e1, e2 = embeddings[a], embeddings[b]
+                s = float(np.dot(e1, e2) / (np.linalg.norm(e1) * np.linalg.norm(e2) + 1e-8))
+                sims.append(s)
+        if sims and all(s > 0.995 for s in sims):
+            return {"passed": False, "reason": "static_replay_detected", "score": 0.0}
+        # All inter-frame similarities extremely low → different people or garbage frames
+        if sims and all(s < 0.08 for s in sims):
+            return {"passed": False, "reason": "identity_inconsistent", "score": 0.0}
+
+    score = round(faces_found / n, 3)
+    return {
+        "passed":            True,
+        "score":             score,
+        "challenges_total":  n,
+        "challenges_passed": faces_found,
+    }
+
+
 # ── /v1/verify — full KYC pipeline ────────────────────────────────────────────
 @app.route("/v1/verify", methods=["POST"])
 def verify():
+    _t0  = time.monotonic()
     data = request.get_json(force=True) or {}
 
-    doc_b64  = data.get("document_image", "")
-    face_b64 = data.get("face_image", "")
-    liveness = data.get("liveness_results", [])
+    doc_b64              = data.get("document_image", "")
+    face_b64             = data.get("face_image", "")
+    liveness             = data.get("liveness_results", [])
+    liveness_session_id  = data.get("liveness_session_id", "")
+    liveness_frames      = data.get("liveness_challenge_frames", [])
 
     out = {
         "pass":         False,
@@ -301,9 +415,14 @@ def verify():
     }
 
     # ── Liveness ──────────────────────────────────────────────────────────────
-    out["liveness"] = validate_liveness(liveness)
+    if liveness_session_id and liveness_frames:
+        out["liveness"] = validate_liveness_frames(liveness_session_id, liveness_frames)
+    else:
+        out["liveness"] = validate_liveness(liveness)
     if not out["liveness"]["passed"]:
         out["reason"] = "liveness_failed"
+        _kyc_verifications.labels(result="liveness_failed").inc()
+        _kyc_duration.observe(time.monotonic() - _t0)
         return jsonify(out)
 
     # ── Decode images ─────────────────────────────────────────────────────────
@@ -318,6 +437,8 @@ def verify():
     out["antispoof"] = phase4_antispoof(face_img)
     if not out["antispoof"]["likely_real"]:
         out["reason"] = "presentation_attack"
+        _kyc_verifications.labels(result="presentation_attack").inc()
+        _kyc_duration.observe(time.monotonic() - _t0)
         return jsonify(out)
 
     # ── Phase 3: OCR ─────────────────────────────────────────────────────────
@@ -349,6 +470,8 @@ def verify():
         "face_mismatch" if not face_ok else "age_failed"
     )
 
+    _kyc_verifications.labels(result="passed" if out["pass"] else out["reason"]).inc()
+    _kyc_duration.observe(time.monotonic() - _t0)
     return jsonify(out)
 
 
@@ -379,6 +502,7 @@ def risk_score():
         score += 0.05
 
     score = round(min(score, 1.0), 4)
+    _risk_scores.observe(score)
 
     return jsonify({
         "pial_id":         pial_id,
@@ -390,9 +514,121 @@ def risk_score():
     })
 
 
+@app.route("/v1/liveness/challenge", methods=["POST"])
+def liveness_challenge():
+    _prune_sessions()
+    session_id = str(_uuid.uuid4())
+    challenges = random.sample(_LIVENESS_CHALLENGES, len(_LIVENESS_CHALLENGES))
+    with _challenge_lock:
+        _challenge_sessions[session_id] = {
+            "challenges":  challenges,
+            "expires_at":  time.time() + _CHALLENGE_TTL,
+            "used":        False,
+        }
+    log.info(f"liveness challenge issued session={session_id} order={challenges}")
+    return jsonify({"session_id": session_id, "challenges": challenges, "ttl": _CHALLENGE_TTL})
+
+
+# ── /v1/mrz/verify — Lane 1 age gate ─────────────────────────────────────────
+@app.route("/v1/mrz/verify", methods=["POST"])
+def mrz_verify():
+    """
+    Multipart POST with an 'image' file field.
+
+    Detects the MRZ in the image, validates all ICAO checksums, extracts DOB,
+    and returns only the age-band result.  The image is never stored anywhere —
+    it is consumed entirely in-memory and discarded after this function returns.
+
+    Response 200 (always — errors are conveyed in the body):
+      {"verified": false, "error": "no_mrz_detected"}
+      {"verified": true,  "is_18_plus": true, "age_band": "18+",
+       "doc_type": "P", "country": "USA"}
+    """
+    file = request.files.get("image")
+    if file is None:
+        return jsonify({"error": "image required"}), 400
+
+    image_bytes = file.read()   # read once; local variable — GC'd after return
+    result = detect_mrz(image_bytes)
+    del image_bytes             # belt-and-suspenders: drop reference immediately
+
+    if not result.get("valid"):
+        error = result.get("error", "unknown")
+        label = "no_mrz" if error in ("no_mrz_detected", "no_mrz_lines") else "invalid"
+        _mrz_verifications.labels(result=label).inc()
+        log.info("mrz_verify invalid error=%s", error)
+        return jsonify({"verified": False, "error": error}), 200
+
+    is_18 = result["is_18_plus"]
+    label = "verified_18plus" if is_18 else "verified_under18"
+    _mrz_verifications.labels(result=label).inc()
+    log.info("mrz_verify ok country=%s doc_type=%s is_18_plus=%s",
+             result.get("country"), result.get("doc_type"), is_18)
+
+    return jsonify({
+        "verified":    True,
+        "is_18_plus":  is_18,
+        "age_band":    "18+" if is_18 else "under_18",
+        "doc_type":    result.get("doc_type"),
+        "country":     result.get("country"),
+        # DOB and age are intentionally omitted — only the band is returned.
+    }), 200
+
+
+# ── /v1/mrz/validate_text — checksum validation for raw MRZ strings ───────────
+@app.route("/v1/mrz/validate_text", methods=["POST"])
+def mrz_validate_text():
+    """
+    JSON POST: {"mrz_lines": ["line1", "line2"]}
+
+    Validates checksums and parses fields from raw MRZ text.  Useful for
+    testing and for clients that perform their own OCR.
+
+    Response 200:
+      {"valid": false, "error": "checksum_failed", "valid_score": 60, ...}
+      {"valid": true, "is_18_plus": true, "age_band": "18+",
+       "doc_type": "P", "country": "USA", "mrz_type": "TD3", "valid_score": 100}
+    """
+    data = request.get_json(force=True) or {}
+    mrz_lines = data.get("mrz_lines", [])
+
+    if not mrz_lines or not isinstance(mrz_lines, list):
+        return jsonify({"error": "mrz_lines array required"}), 400
+
+    result = parse_mrz_lines([str(l) for l in mrz_lines])
+
+    if not result.get("valid"):
+        return jsonify({
+            "valid":       False,
+            "error":       result.get("error"),
+            "valid_score": result.get("valid_score"),
+            "mrz_type":    result.get("mrz_type"),
+        }), 200
+
+    is_18 = result["is_18_plus"]
+    return jsonify({
+        "valid":       True,
+        "is_18_plus":  is_18,
+        "age_band":    "18+" if is_18 else "under_18",
+        "doc_type":    result.get("doc_type"),
+        "country":     result.get("country"),
+        "mrz_type":    result.get("mrz_type"),
+        "valid_score": result.get("valid_score"),
+        # DOB intentionally omitted from response.
+    }), 200
+
+
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok", "service": "ekyc", "port": 8099})
+
+
+@app.route("/metrics", methods=["GET"])
+def metrics():
+    return Response(
+        prom.generate_latest(prom.REGISTRY),
+        mimetype=prom.CONTENT_TYPE_LATEST,
+    )
 
 
 if __name__ == "__main__":

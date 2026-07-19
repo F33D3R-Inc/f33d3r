@@ -38,7 +38,7 @@ esac
 # ── 1. Directory layout ───────────────────────────────────────────────────────
 section "Checking directory layout"
 MISSING=""
-for d in feed-engine aethyrrank-engine zior-engine aethyr-schema-registry ain-soph aethyr-msg; do
+for d in feed-engine aethyrrank-engine zior-engine aethyr-schema-registry ain-soph; do
   if [ ! -d "$d" ]; then MISSING="$MISSING $d"; fi
 done
 if [ -n "$MISSING" ]; then
@@ -177,7 +177,6 @@ check_service "thessalon"              "8084"
 check_service "caeor"                  "8086"
 check_service "ain-soph"               "8089"
 check_service "zodacare"               "8090"
-check_service "aethyr-msg (Vovin)"     "8092"
 check_service "elohim-veni"            "8093"
 check_service "registry-brain"         "8094"
 check_service "verity"                 "8095"

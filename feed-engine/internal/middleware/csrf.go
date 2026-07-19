@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -30,6 +31,13 @@ func CSRF(next http.Handler) http.Handler {
 			return
 		}
 
+		// Internal service-to-service endpoints — authenticated via X-Internal-Key header,
+		// not via browser session. CSRF does not apply to server→server calls.
+		if strings.HasPrefix(r.URL.Path, "/api/internal/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		// HTMX sends HX-Request: true on all its requests — browsers cannot
 		// forge this header cross-site (blocked by CORS preflight or same-origin).
 		if r.Header.Get("HX-Request") == "true" {
@@ -38,11 +46,12 @@ func CSRF(next http.Handler) http.Handler {
 		}
 
 		// Origin check for regular form POSTs.
+		// Parse the origin URL and compare the host exactly — HasPrefix is vulnerable
+		// to prefix attacks (e.g. "https://host.evil.com" has prefix "https://host").
 		origin := r.Header.Get("Origin")
 		if origin != "" && origin != "null" {
-			host := r.Host
-			if !strings.HasPrefix(origin, "http://"+host) &&
-				!strings.HasPrefix(origin, "https://"+host) {
+			parsed, err := url.Parse(origin)
+			if err != nil || parsed.Host != r.Host {
 				http.Error(w, "403 Forbidden", http.StatusForbidden)
 				return
 			}

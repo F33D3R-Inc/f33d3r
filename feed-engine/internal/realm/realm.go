@@ -80,7 +80,7 @@ func AwardXP(db *sql.DB, userID, eventType, contentID string, xpDelta int) {
 
 	// Record the event.
 	if _, err := tx.Exec(`
-		INSERT INTO xp_events (user_id, event_type, xp_delta, content_id)
+		INSERT INTO xp_events (user_id, reason, xp_delta, content_id)
 		VALUES ($1, $2, $3, $4)
 	`, userID, eventType, xpDelta, contentID); err != nil {
 		tx.Rollback()

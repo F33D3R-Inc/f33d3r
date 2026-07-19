@@ -1,0 +1,60 @@
+{{/*
+FACET article_card
+  version: 1.0 | status: stable | layer: 1
+
+  inputs:
+    .ID            string     — article UUID
+    .AuthorHandle  string     — author handle
+    .AuthorDisplay string     — author display name
+    .AuthorAvatar  string     — author avatar URL
+    .Slug          string     — URL slug
+    .Title         string     — article title
+    .Excerpt       string     — plain-text excerpt (~200 chars)
+    .CoverURL      string     — optional cover image URL
+    .PublishedAt   *time.Time — publish timestamp
+    .ViewCount     int64      — view count
+
+  states:
+    default | has-cover
+
+  children:
+    none
+
+  signals:
+    emits:    none
+    receives: none
+
+  context:
+    articles.html    → article-list
+    profile.html     → articles tab
+*/}}
+{{define "article_card"}}
+<a href="/article/{{.Slug}}" class="article-card{{if .CoverURL}} article-card--cover{{end}}">
+  {{if .CoverURL}}
+  <div class="article-card__cover">
+    <img src="{{.CoverURL}}" alt="{{.Title}}" loading="lazy">
+  </div>
+  {{end}}
+  <div class="article-card__body">
+    <div class="article-card__byline">
+      {{if .AuthorAvatar}}
+      <img src="{{.AuthorAvatar}}" alt="@{{.AuthorHandle}}" class="article-card__av" loading="lazy">
+      {{else}}
+      <div class="article-card__av article-card__av--init">{{firstChar .AuthorHandle}}</div>
+      {{end}}
+      <span class="article-card__author">{{if .AuthorDisplay}}{{.AuthorDisplay}}{{else}}@{{.AuthorHandle}}{{end}}</span>
+      {{if .PublishedAt}}
+      <span class="article-card__dot">·</span>
+      <time class="article-card__date" data-ts="{{.PublishedAt.Unix}}">{{timeAgo .PublishedAt}}</time>
+      {{end}}
+    </div>
+    <h3 class="article-card__title">{{.Title}}</h3>
+    {{if .Excerpt}}
+    <p class="article-card__excerpt">{{.Excerpt}}</p>
+    {{end}}
+    {{if gt .ViewCount 0}}
+    <span class="article-card__views">{{.ViewCount}} views</span>
+    {{end}}
+  </div>
+</a>
+{{end}}

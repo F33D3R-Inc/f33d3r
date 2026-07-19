@@ -1,0 +1,234 @@
+{{define "title"}}Analytics · F33D3R{{end}}
+{{define "nav-active-analytics"}}active{{end}}
+{{define "body"}}
+<main class="f33d3r-main" id="main-col">
+
+  {{/* Facet(analytics_header) — title + period selector + astraon status */}}
+  <div class="main-head anl-head">
+    <div class="main-head-row">
+      <div class="main-head-title">Analytics</div>
+      {{if .Summary}}<div class="main-head-sub">Your analytics</div>{{end}}
+      <div class="anl-status-dot" title="{{if .AstraonOnline}}Astraon live{{else}}DB fallback{{end}}">
+        <span class="dot{{if not .AstraonOnline}} dot-muted{{end}}"></span>
+        {{if .AstraonOnline}}Live{{else}}Cached{{end}}
+      </div>
+    </div>
+
+    {{/* Facet(analytics_period_tabs) — 7d / 30d / 90d / All */}}
+    <div class="anl-period-tabs">
+      <a href="/analytics?period=7&sort={{.SortBy}}"  class="anl-period-tab{{if eq .Period 7}} active{{end}}">7 days</a>
+      <a href="/analytics?period=30&sort={{.SortBy}}" class="anl-period-tab{{if eq .Period 30}} active{{end}}">30 days</a>
+      <a href="/analytics?period=90&sort={{.SortBy}}" class="anl-period-tab{{if eq .Period 90}} active{{end}}">90 days</a>
+      <a href="/analytics?period=all&sort={{.SortBy}}"class="anl-period-tab{{if eq .Period 0}} active{{end}}">All time</a>
+    </div>
+  </div>
+
+  {{if .Summary}}
+  {{$s := .Summary}}
+  {{/* Facet(analytics_summary_grid) — 6 key metric cards */}}
+  <div class="anl-stats-grid">
+    <div class="anl-stat-card">
+      <div class="anl-stat-icon">
+        <svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+      </div>
+      <div class="anl-stat-body">
+        <div class="anl-stat-value">{{fmtNum $s.Impressions}}</div>
+        <div class="anl-stat-label">Impressions</div>
+      </div>
+      {{if notNil $s.ImpressionsPctChange}}
+      <div class="anl-stat-change {{if gt (derefF64 $s.ImpressionsPctChange) 0.0}}anl-change-up{{else}}anl-change-down{{end}}">
+        {{if gt (derefF64 $s.ImpressionsPctChange) 0.0}}↑{{else}}↓{{end}}{{printf "%.0f" (absFloat (derefF64 $s.ImpressionsPctChange))}}%
+      </div>
+      {{end}}
+    </div>
+
+    <div class="anl-stat-card">
+      <div class="anl-stat-icon">
+        <svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+      </div>
+      <div class="anl-stat-body">
+        <div class="anl-stat-value">{{fmtNum $s.Likes}}</div>
+        <div class="anl-stat-label">Likes</div>
+      </div>
+    </div>
+
+    <div class="anl-stat-card">
+      <div class="anl-stat-icon">
+        <svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path d="M17 1l4 4-4 4"/><path d="M3 11V9a4 4 0 014-4h14M7 23l-4-4 4-4"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg>
+      </div>
+      <div class="anl-stat-body">
+        <div class="anl-stat-value">{{fmtNum $s.Reposts}}</div>
+        <div class="anl-stat-label">Reposts</div>
+      </div>
+    </div>
+
+    <div class="anl-stat-card">
+      <div class="anl-stat-icon">
+        <svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+      </div>
+      <div class="anl-stat-body">
+        <div class="anl-stat-value">{{fmtNum $s.Replies}}</div>
+        <div class="anl-stat-label">Replies</div>
+      </div>
+    </div>
+
+    <div class="anl-stat-card">
+      <div class="anl-stat-icon">
+        <svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path d="M19 21l-7-5-7 5V5a2 2 0 012-2h10a2 2 0 012 2z"/></svg>
+      </div>
+      <div class="anl-stat-body">
+        <div class="anl-stat-value">{{fmtNum $s.Saves}}</div>
+        <div class="anl-stat-label">Saves</div>
+      </div>
+    </div>
+
+    <div class="anl-stat-card anl-stat-card--accent">
+      <div class="anl-stat-icon">
+        <svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+      </div>
+      <div class="anl-stat-body">
+        <div class="anl-stat-value">{{printf "%.2f" $s.EngagementRate}}%</div>
+        <div class="anl-stat-label">Engagement rate</div>
+      </div>
+    </div>
+
+    <div class="anl-stat-card">
+      <div class="anl-stat-icon">
+        <svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87m-4-12a4 4 0 0 1 0 7.75"/></svg>
+      </div>
+      <div class="anl-stat-body">
+        <div class="anl-stat-value">{{fmtNum $s.CurrentFollowers}}</div>
+        <div class="anl-stat-label">Followers</div>
+        {{if gt $s.FollowersGained 0}}<div class="anl-stat-sub">+{{fmtNum $s.FollowersGained}} this period</div>{{end}}
+      </div>
+    </div>
+
+    <div class="anl-stat-card">
+      <div class="anl-stat-icon">
+        <svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+      </div>
+      <div class="anl-stat-body">
+        <div class="anl-stat-value">{{fmtDuration64 $s.ViewTimeSecs}}</div>
+        <div class="anl-stat-label">Watch time</div>
+      </div>
+    </div>
+  </div>
+  {{end}}
+
+  {{/* Facet(analytics_timeline_section) — sparkline bar chart */}}
+  {{if .Timeline}}
+  {{$tl := .Timeline}}
+  <div class="anl-section">
+    <div class="anl-section-header">
+      <h2 class="anl-section-title">Activity</h2>
+      <span class="anl-section-sub">Last {{if eq $tl.PeriodDays 0}}all{{else}}{{$tl.PeriodDays}}{{end}} days</span>
+    </div>
+    {{if $tl.Points}}
+    <div class="anl-chart-wrap">
+      <div class="anl-chart-labels">
+        <span>{{fmtNum $tl.MaxImpressions}}</span>
+        <span>0</span>
+      </div>
+      <div class="anl-bar-chart" id="anl-timeline-chart">
+        {{range $tl.Points}}
+        <div class="anl-bar-col" title="{{.Date}}: {{fmtNum .Impressions}} impressions, {{fmtNum .Likes}} likes">
+          <div class="anl-bar-imp" style="height:{{pct64 .Impressions $tl.MaxImpressions}}%"></div>
+          <div class="anl-bar-eng" style="height:{{if gt $tl.MaxEngagement 0.0}}{{printf "%.0f" (div64 .Engagement $tl.MaxEngagement)}}{{else}}0{{end}}%"></div>
+        </div>
+        {{end}}
+      </div>
+      <div class="anl-chart-legend">
+        <span class="anl-legend-imp">Impressions</span>
+        <span class="anl-legend-eng">Engagement</span>
+      </div>
+    </div>
+    {{else}}
+    {{template "stateEmpty" (dict "Title" "No activity" "Sub" "No data for this period")}}
+    {{end}}
+  </div>
+  {{end}}
+
+  {{/* Facet(analytics_posts_section) — sortable post performance table */}}
+  {{if .Posts}}
+  {{$cp := .Posts}}
+  <div class="anl-section">
+    <div class="anl-section-header">
+      <h2 class="anl-section-title">Top posts</h2>
+      {{/* Sort tabs */}}
+      <div class="anl-sort-tabs">
+        <a href="/analytics?period={{$.Period}}&sort=impressions" class="anl-sort-tab{{if eq $.SortBy "impressions"}} active{{end}}">Impressions</a>
+        <a href="/analytics?period={{$.Period}}&sort=likes"       class="anl-sort-tab{{if eq $.SortBy "likes"}} active{{end}}">Likes</a>
+        <a href="/analytics?period={{$.Period}}&sort=engagement"  class="anl-sort-tab{{if eq $.SortBy "engagement"}} active{{end}}">Engagement</a>
+        <a href="/analytics?period={{$.Period}}&sort=date"        class="anl-sort-tab{{if eq $.SortBy "date"}} active{{end}}">Newest</a>
+      </div>
+    </div>
+    <div class="anl-posts-table">
+      {{range $cp.Posts}}
+      {{template "analytics_post_row" .}}
+      {{end}}
+      {{if not $cp.Posts}}
+      {{template "stateEmpty" (dict "Title" "No posts yet" "Sub" "Your top posts will appear here once you start posting")}}
+      {{end}}
+    </div>
+  </div>
+  {{end}}
+
+  {{/* Facet(analytics_breakdown_section) — content type distribution */}}
+  {{if .Breakdown}}
+  {{$bd := .Breakdown}}
+  <div class="anl-section">
+    <div class="anl-section-header">
+      <h2 class="anl-section-title">Content breakdown</h2>
+    </div>
+    <div class="anl-breakdown-grid">
+      {{range $bd.Types}}
+      <div class="anl-breakdown-item">
+        <div class="anl-breakdown-bar-wrap">
+          <div class="anl-breakdown-bar anl-type-bar-{{.ContentType}}" style="width:{{printf "%.1f" .PctOfPosts}}%"></div>
+        </div>
+        <div class="anl-breakdown-meta">
+          <span class="anl-breakdown-type">{{.ContentType}}</span>
+          <span class="anl-breakdown-count">{{fmtNum .Count}} posts · {{printf "%.1f" .PctOfPosts}}%</span>
+          <span class="anl-breakdown-eng">avg {{printf "%.2f" .AvgEngagement}}% eng</span>
+        </div>
+      </div>
+      {{end}}
+      {{if not $bd.Types}}
+      <p class="anl-empty-text">No content data yet</p>
+      {{end}}
+    </div>
+  </div>
+  {{end}}
+
+  {{/* Facet(analytics_audience_section) — follower growth chart */}}
+  {{if .Audience}}
+  {{$aud := .Audience}}
+  <div class="anl-section">
+    <div class="anl-section-header">
+      <h2 class="anl-section-title">Audience</h2>
+      <span class="anl-section-sub">{{fmtNum $aud.TotalFollowers}} total followers</span>
+    </div>
+    {{if $aud.Points}}
+    <div class="anl-aud-chart">
+      {{range $aud.Points}}
+      <div class="anl-aud-col" title="{{.Date}}: +{{.NewFollowers}} followers">
+        <div class="anl-aud-bar" style="height:{{.NewFollowers}}px;max-height:60px"></div>
+        <span class="anl-aud-label">{{.Date}}</span>
+      </div>
+      {{end}}
+    </div>
+    {{else}}
+    <p class="anl-empty-text">No follower growth data in this period</p>
+    {{end}}
+  </div>
+  {{end}}
+
+  {{/* Empty state */}}
+  {{if and (not .Summary) (not .Posts)}}
+  {{template "stateEmpty" (dict "Title" "No analytics yet" "Sub" "Post something to start tracking performance")}}
+  {{end}}
+
+</main>
+{{end}}
+{{define "right-panel"}}{{template "sidebar_right" .}}{{end}}
+{{define "page-scripts"}}<script src="/static/js/pages/analytics.js?v=20260622b" defer></script>{{end}}

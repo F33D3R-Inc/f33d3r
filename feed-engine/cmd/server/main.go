@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
@@ -33,6 +34,11 @@ func main() {
 	defer observ.Shutdown()
 
 	startupLog := observ.L(context.Background())
+
+	if cfg.InternalAPIKey == "" {
+		fmt.Fprintln(os.Stderr, "FATAL: INTERNAL_API_KEY is not set. Set this env var to a strong random secret before starting the server.")
+		os.Exit(1)
+	}
 
 	// Database — optional in dev mode
 	var database *sql.DB
@@ -66,13 +72,17 @@ func main() {
 	// Background cron jobs — session cleanup, health monitor, subscription expiry
 	cron.Start(database, cfg, &http.Client{Timeout: 15 * time.Second})
 
+	// Recover any AET trapped in shadow accounts (account UUID vs PIAL UUID mismatch).
+	// Runs once in the background — no-op if all balances are already correct.
+	go handler.RecoverShadowBalances(context.Background(), database, cfg.AinSophURL)
+
 	// Middleware chain (outer → inner):
 	//   security headers → request-id + logging + metrics → routes
 	srv := &http.Server{
 		Addr:         cfg.Host + ":" + cfg.Port,
 		Handler:      securityHeaders(observ.Middleware(h.Routes())),
-		ReadTimeout:  cfg.ReadTimeout,
-		WriteTimeout: cfg.WriteTimeout,
+		ReadTimeout:  0,
+		WriteTimeout: 0,
 		IdleTimeout:  120 * time.Second,
 	}
 
@@ -120,8 +130,8 @@ func securityHeaders(next http.Handler) http.Handler {
 		h.Set("Permissions-Policy",
 			"camera=(), microphone=(), geolocation=(), payment=(), usb=(), bluetooth=()")
 
-		// HSTS: enforce HTTPS for 1 year (enable in prod behind TLS terminator)
-		// h.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains; preload")
+		// HSTS: enforce HTTPS for 1 year — behind Caddy TLS terminator in production.
+		h.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 
 		// Content-Security-Policy: lock down script execution.
 		// - 'self' only for scripts (external CDN scripts are allowlisted explicitly)
@@ -133,13 +143,17 @@ func securityHeaders(next http.Handler) http.Handler {
 				// 'unsafe-inline' required for onclick/oninput event handler attributes.
 				// All sensitive data lives in <meta> tags not inline JS — no injection risk.
 				// Inline <script> blocks are eliminated; this only enables HTML attribute handlers.
-				"script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://unpkg.com; "+
+				// 'wasm-unsafe-eval' is required to instantiate the browser WASM crypto core.
+				// It permits WebAssembly compilation only — not JS eval().
+				"script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://cdn.tailwindcss.com https://unpkg.com; "+
 				"style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "+
 				"font-src 'self' https://fonts.gstatic.com; "+
 				"img-src 'self' data: blob: https:; "+
 				"connect-src 'self' https://nominatim.openstreetmap.org; "+
 				"media-src 'self' blob:; "+
 				"worker-src 'self' blob:; "+
+				// YouTube privacy-enhanced embeds (youtube-nocookie.com) — no cookies set until play.
+				"frame-src 'self' https://www.youtube-nocookie.com; "+
 				"frame-ancestors 'none'; "+
 				"base-uri 'self'; "+
 				"form-action 'self'",

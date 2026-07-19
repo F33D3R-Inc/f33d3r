@@ -18,7 +18,33 @@ pub fn compute_aesq(user: &UserState, item: &ContentItem, config: &ScoringConfig
     let a = alignment(&user.interest_vector, &item.topic_vector);
     let e = expansion(&user.interest_vector, &item.topic_vector);
     let s = shadow(item.exposure_count, item.creator_exposure);
-    let q = quality(&item.engagement, config);
+    let q_raw = quality(&item.engagement, config);
+
+    // Media multiplier: video/audio/image carries stronger engagement signal.
+    let media_mult = match item.content_type.as_str() {
+        "video" | "audio" | "image" => 1.5_f64,
+        _ => 1.0_f64,
+    };
+
+    // Long-form multiplier: effort signal — longer posts get more weight.
+    let longform_mult = if item.char_count >= 1000 {
+        1.25_f64
+    } else if item.char_count >= 280 {
+        1.10_f64
+    } else {
+        1.0_f64
+    };
+
+    // Author dilution: burst posting decays per-post signal weight.
+    // No penalty up to 4 posts/day; 10% penalty per additional post, floor 0.5.
+    let dilution = if item.posts_last_24h > 4 {
+        (1.0 - 0.10 * (item.posts_last_24h - 4) as f64).max(0.5)
+    } else {
+        1.0_f64
+    };
+
+    let q = (q_raw * media_mult * longform_mult * dilution).clamp(0.0, 1.0);
+
     let f = compute_freshness(item.published_at, config.freshness.half_life_hours);
 
     let w = &config.weights;

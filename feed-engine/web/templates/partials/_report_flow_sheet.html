@@ -1,0 +1,120 @@
+{{/*
+FACET report_flow_sheet
+  version: 1.0 | status: stable | layer: 3
+
+  inputs:
+    PostID  string — ID of the post being reported
+
+  states:
+    default | submitted (thank-you message after POST /events settles)
+
+  children: none
+
+  signals:
+    emits:    report_content (POST /events {event_type, post_id, reason, details}) — on submit
+    receives: none
+
+  context:
+    overlay-slot; opened by openReportSheet(postID) in f33d3r.js
+    Backdrop click or Cancel removes from DOM
+*/}}
+{{define "report_flow_sheet"}}
+<div id="report-flow-sheet"
+     class="report-flow-sheet"
+     role="dialog"
+     aria-modal="true"
+     aria-label="Report content"
+     onclick="if(event.target===this)this.remove()">
+  <div class="report-flow-card">
+
+    {{/* ── Facet(report_flow_header) ── */}}
+    <div class="report-flow-header">
+      <span class="report-flow-title">Report</span>
+      <button type="button"
+              class="report-flow-close"
+              aria-label="Close"
+              onclick="document.getElementById('report-flow-sheet').remove()">
+        <svg fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24" style="width:18px;height:18px"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+
+    {{/* ── Facet(report_flow_body) ── */}}
+    {{/* default state — reason picker + details */}}
+    <div id="report-flow-form" class="report-flow-body">
+      <p class="report-flow-hint">Why are you reporting this post?</p>
+
+      <div class="report-flow-reasons">
+        <label class="report-flow-reason-row">
+          <input type="radio" name="report-reason" value="spam" class="report-flow-radio"> Spam
+        </label>
+        <label class="report-flow-reason-row">
+          <input type="radio" name="report-reason" value="harassment" class="report-flow-radio"> Harassment or bullying
+        </label>
+        <label class="report-flow-reason-row">
+          <input type="radio" name="report-reason" value="nsfw" class="report-flow-radio"> Explicit or adult content
+        </label>
+        <label class="report-flow-reason-row">
+          <input type="radio" name="report-reason" value="misinformation" class="report-flow-radio"> Misinformation
+        </label>
+        <label class="report-flow-reason-row">
+          <input type="radio" name="report-reason" value="other" class="report-flow-radio"> Something else
+        </label>
+      </div>
+
+      <textarea id="report-flow-details"
+                class="report-flow-details"
+                rows="3"
+                maxlength="500"
+                placeholder="Additional details (optional)"></textarea>
+
+      <div class="report-flow-footer">
+        <button type="button"
+                class="btn-secondary"
+                onclick="document.getElementById('report-flow-sheet').remove()">
+          Cancel
+        </button>
+        <button type="button"
+                class="btn-primary report-flow-submit"
+                onclick="submitReport('{{.PostID}}')">
+          Submit report
+        </button>
+      </div>
+    </div>
+
+    {{/* submitted state — swapped in by submitReport() via hx-swap */}}
+    <div id="report-flow-thanks" class="report-flow-thanks" style="display:none">
+      <svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" style="width:40px;height:40px;color:var(--accent)" aria-hidden="true">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+      </svg>
+      <p class="report-flow-thanks-title">Report submitted</p>
+      <p class="report-flow-thanks-sub">Thanks for helping keep F33D3R safe. We review every report.</p>
+      <button type="button"
+              class="btn-secondary"
+              onclick="document.getElementById('report-flow-sheet').remove()">
+        Done
+      </button>
+    </div>
+
+  </div>
+</div>
+
+<script>
+(function(){
+  function submitReport(postID) {
+    const reason = document.querySelector('input[name="report-reason"]:checked');
+    if (!reason) { return; }
+    const details = document.getElementById('report-flow-details').value;
+    const btn = document.querySelector('.report-flow-submit');
+    btn.disabled = true;
+    htmx.ajax('POST', '/events', {
+      values: { event_type:'report_content', post_id: postID, reason: reason.value, details: details },
+      handler: function() {
+        document.getElementById('report-flow-form').style.display = 'none';
+        document.getElementById('report-flow-thanks').style.display = 'flex';
+      }
+    });
+  }
+  window.submitReport = submitReport;
+})();
+</script>
+{{end}}

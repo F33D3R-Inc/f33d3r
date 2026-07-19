@@ -1,0 +1,39 @@
+{{/*
+FACET badge_pill
+  version: 1.1 | status: stable | layer: 1
+
+  inputs:
+    Role         string  — "founder" | "admin" | "user"
+    OfficialType string  — "government" | "business" | ""
+    IsVerified   bool    — verified identity
+    IsCreator    bool    — creator account
+
+  states:
+    founder | admin | government | business | creator (requires IsVerified) | verified | none
+
+  children: none
+
+  signals:
+    emits:    none
+    receives: none
+
+  context:
+    post_card      → author row
+    profile_header → name row
+    nav_account    → identity strip
+*/}}
+{{define "badge_pill"}}
+{{if eq .Role "founder"}}
+  <span class="role-badge role-founder">Founder</span>
+{{else if eq .Role "admin"}}
+  <span class="role-badge role-admin">Admin</span>
+{{else if eq .OfficialType "government"}}
+  <span class="role-badge role-government">Government</span>
+{{else if eq .OfficialType "business"}}
+  <span class="role-badge role-business">Business</span>
+{{else if and .IsCreator .IsVerified}}
+  <span class="role-badge role-creator">Creator</span>
+{{else if .IsVerified}}
+  <span class="role-badge role-verified">Verified</span>
+{{end}}
+{{end}}

@@ -26,7 +26,6 @@ var (
 	reSettings  = regexp.MustCompile(`^/settings(/.*)?$`)
 	reShop      = regexp.MustCompile(`^/shop/[^/]+(/.*)?$`)
 	reTrack     = regexp.MustCompile(`^/api/track/[^/]+$`)
-	reVovin     = regexp.MustCompile(`^/vovin/.+$`)
 	reAinSoph   = regexp.MustCompile(`^/ainsoph/.+$`)
 	reVerity    = regexp.MustCompile(`^/verity/.+$`)
 	reLedger    = regexp.MustCompile(`^/ledger/.+$`)
@@ -65,8 +64,6 @@ func normalisePath(p string) string {
 		return "/admin/*"
 	case reSettings.MatchString(p):
 		return "/settings/*"
-	case reVovin.MatchString(p):
-		return "/vovin/*"
 	case reAinSoph.MatchString(p):
 		return "/ainsoph/*"
 	case reVerity.MatchString(p):

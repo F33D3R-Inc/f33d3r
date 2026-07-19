@@ -1,6 +1,8 @@
 package observ
 
 import (
+	"bufio"
+	"net"
 	"net/http"
 	"strconv"
 	"time"
@@ -103,6 +105,16 @@ func (s *statusRecorder) Flush() {
 	if f, ok := s.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}
+}
+
+// Hijack proxies http.Hijacker when supported (WebSocket proxies rely on this).
+// Without this, a WebSocket proxy can't upgrade HTTP → WebSocket through the logging
+// middleware, causing every push connection to fail with a silent 502.
+func (s *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if h, ok := s.ResponseWriter.(http.Hijacker); ok {
+		return h.Hijack()
+	}
+	return nil, nil, http.ErrNotSupported
 }
 
 // LoggingMiddleware emits one structured log line per request, AFTER the

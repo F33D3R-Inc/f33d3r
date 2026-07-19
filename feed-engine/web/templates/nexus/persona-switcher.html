@@ -1,0 +1,24 @@
+{{define "persona_switcher"}}
+{{/* Facet(persona_switcher) — Nexus multi-account switcher panel */}}
+<div class="persona-switcher">
+  {{range .Personas}}
+  <button class="persona-row {{if .IsActive}}is-active{{end}}"
+          hx-post="/events"
+          hx-vals='{"event_type":"nexus.persona.switched","target_pial_shard_id":"{{.PIALShardID}}"}'
+          hx-swap="none" type="button">
+    {{if .AvatarURL}}
+      <img class="persona-av" src="{{.AvatarURL}}" alt="@{{.Handle}}">
+    {{else}}
+      {{$c := avatarColors .Handle}}
+      <span class="persona-av persona-av-init" style="background:linear-gradient(135deg,{{index $c 0}},{{index $c 1}})">{{firstChar .DisplayName}}</span>
+    {{end}}
+    <div class="persona-info">
+      <span class="persona-name">{{if .DisplayName}}{{.DisplayName}}{{else}}@{{.Handle}}{{end}}</span>
+      <span class="persona-handle">@{{.Handle}}</span>
+    </div>
+    {{if .IsActive}}<span class="persona-active-dot"></span>{{end}}
+    {{if gt .UnreadCount 0}}<span class="persona-unread">{{.UnreadCount}}</span>{{end}}
+  </button>
+  {{end}}
+</div>
+{{end}}

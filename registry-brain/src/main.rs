@@ -1,5 +1,6 @@
 mod db;
 mod models;
+mod observ;
 
 use axum::{
     extract::{Path, Query, State},
@@ -13,7 +14,6 @@ use serde_json::{json, Value};
 use sqlx::PgPool;
 use std::sync::Arc;
 use tracing::info;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 use uuid::Uuid;
 
 use models::*;
@@ -41,10 +41,7 @@ fn validate_handle(handle: &str) -> Result<(), (StatusCode, Json<Value>)> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::registry()
-        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
-        .with(tracing_subscriber::fmt::layer())
-        .init();
+    observ::init("registrar")?;
 
     let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
     let port = std::env::var("PORT").unwrap_or_else(|_| "8094".into());
@@ -56,6 +53,7 @@ async fn main() -> anyhow::Result<()> {
     let state = Arc::new(AppState { pool });
 
     let app = Router::new()
+        .route("/metrics",                         get(observ::metrics_handler))
         .route("/health",                          get(health))
         .route("/v1/handles",                      post(register_handle))
         .route("/v1/handles/:handle",             get(resolve_handle))
@@ -68,7 +66,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/auctions/:id/bid",            post(place_bid))
         .route("/v1/auctions/:id/settle",         post(settle_auction))
         .route("/v1/search",                       get(search_handles))
-        .with_state(state);
+        .with_state(state)
+        .layer(axum::middleware::from_fn(observ::http_middleware));
 
     let addr = format!("0.0.0.0:{port}");
     let listener = tokio::net::TcpListener::bind(&addr).await?;

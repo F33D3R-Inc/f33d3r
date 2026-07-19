@@ -1,0 +1,60 @@
+{{/*
+FACET creator_content
+  version: 1.0 | status: stable | layer: 2
+
+  inputs:
+    Works  []*model.Work — may be nil; each: ID, Body, ContentType, ViewCount, CreatedAt, TimeAgo
+    User   *model.User   — .Handle
+
+  states:
+    default | empty
+
+  children: none
+
+  signals:
+    emits:    delete_work (POST /events — on work delete action)
+    receives: none
+
+  context:
+    creator_dashboard → #creator-panel (hx-get /creator/content)
+*/}}
+{{define "creator_content"}}
+
+<div class="crt-content">
+
+  <div class="crt-section-head">
+    <h2 class="crt-section-title">Content Library</h2>
+  </div>
+
+  {{if .Works}}
+  <div class="crt-content-list">
+    {{range .Works}}
+    <div class="crt-content-row" onclick="window.location='/work/{{.ID}}'">
+      <div class="crt-content-main">
+        <div class="crt-content-meta">
+          {{if .ContentType}}<span class="crt-content-type stu-type-{{.ContentType}}">{{.ContentType}}</span>{{end}}
+          <time class="crt-content-age post-time" data-ts="{{.CreatedAt.Unix}}">{{.TimeAgo}}</time>
+        </div>
+        {{if .Body}}
+        <p class="crt-content-preview">{{safeHTML .Body}}</p>
+        {{end}}
+      </div>
+      <div class="crt-content-stats">
+        {{if .ViewCount}}
+        <span class="crt-content-stat" title="Views">
+          <svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" style="width:12px;height:12px"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+          {{.ViewCount}}
+        </span>
+        {{end}}
+      </div>
+    </div>
+    {{end}}
+  </div>
+  {{else}}
+  <div class="crt-empty">
+    <p class="crt-empty-text">Your posts will appear here with performance data.</p>
+  </div>
+  {{end}}
+
+</div>
+{{end}}

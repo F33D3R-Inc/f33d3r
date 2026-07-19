@@ -46,7 +46,10 @@ impl PIALCapability {
     }
 }
 
-/// All capability types. Elohim Veni is the only brain that may modify these.
+/// All capability types. PIAL is the single system of record and sole authority for
+/// capabilities; only the user or an admin may change them. Moderation brains (abraxas,
+/// zodacare, verity, Elohim Veni) are pipelines that propose changes by writing PIAL —
+/// none owns auth.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum CapabilityKind {
@@ -89,7 +92,7 @@ pub enum CapabilityState {
     Cooldown,
 }
 
-/// Full capability map for one PIAL — returned by Elohim Veni.
+/// Full capability map for one PIAL — read from the PIAL record (feed-engine).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PIALCapabilityMap(pub Vec<PIALCapability>);
 
@@ -99,8 +102,8 @@ impl PIALCapabilityMap {
     }
 }
 
-/// Signed capability token — issued by Elohim Veni for offline verification.
-/// Brains validate the signature without calling Elohim Veni on every request.
+/// Signed capability token for offline verification — minted from the PIAL record.
+/// Brains validate the signature locally without calling back on every request.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PIALToken {
     pub pial_id:      Uuid,
@@ -138,7 +141,8 @@ pub enum DecisionAction {
     Deny,
 }
 
-/// Trust score for a PIAL — managed by Elohim Veni.
+/// Trust score for a PIAL — a moderation signal written into the PIAL record.
+/// Advisory input to capability decisions; it does not own auth.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PIALTrustScore {
     pub pial_id:           Uuid,

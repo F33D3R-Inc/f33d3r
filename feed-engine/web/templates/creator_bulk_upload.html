@@ -1,0 +1,39 @@
+{{define "title"}}Bulk Upload · F33D3R{{end}}
+{{define "nav-active-create"}}active{{end}}
+{{define "body"}}
+<main class="f33d3r-main bulk-upload-shell" id="main-col" role="main">
+
+  <div class="bulk-upload-page">
+
+    <header class="bulk-upload-page__header">
+      <a class="bulk-upload-page__back" href="/create" aria-label="Back to Creator Dashboard">
+        <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <polyline points="15 18 9 12 15 6"/>
+        </svg>
+        Creator Dashboard
+      </a>
+      <h1 class="bulk-upload-page__title">Bulk Video Import</h1>
+      <p class="bulk-upload-page__subtitle">
+        Upload your entire catalogue — up to 20 videos at once. Each video is
+        individually transcoded and queued. Progress is shown below.
+      </p>
+    </header>
+
+    {{/* Drop zone — hidden once upload starts */}}
+    <section class="bulk-upload-page__drop-section" id="bulk-upload-drop-section">
+      {{template "bulk_upload_drop" .}}
+    </section>
+
+    {{/* Progress dashboard — hidden until upload starts */}}
+    <section class="bulk-upload-page__progress-section" id="bulk-upload-progress-section" hidden>
+      {{template "bulk_upload_progress" (dict "BatchID" "" "Total" 0 "Ready" 0)}}
+    </section>
+
+  </div>
+
+</main>
+{{end}}
+{{define "right-panel"}}{{template "sidebar_right" .}}{{end}}
+{{define "page-scripts"}}
+<script src="/static/js/pages/bulk-upload.js?v=20260622b" defer></script>
+{{end}}

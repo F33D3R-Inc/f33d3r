@@ -1,86 +1,41 @@
 {{define "title"}}Bookmarks · F33D3R{{end}}
 {{define "nav-active-bookmarks"}}active{{end}}
 {{define "body"}}
-  <main class="f33d3r-main">
-    <header class="top-bar">
-      <div>
-        <h1>Bookmarks</h1>
-        <p style="font-size:12px;color:var(--text-secondary);margin-top:2px">@{{if .User}}{{.User.Handle}}{{end}}</p>
-      </div>
-      {{if .Posts}}
-      <button style="font-size:12px;color:var(--accent);background:none;border:none;cursor:pointer;padding:4px 8px"
-              onclick="if(confirm('Clear all bookmarks?')){}">Clear all</button>
-      {{end}}
-    </header>
-
-    <!-- Filter tabs -->
-    <div style="display:flex;border-bottom:1px solid var(--border);overflow-x:auto">
-      <button class="notif-tab active" onclick="filterBookmarks(this,'all')">All</button>
-      <button class="notif-tab" onclick="filterBookmarks(this,'text')">Text</button>
-      <button class="notif-tab" onclick="filterBookmarks(this,'audio')">Music</button>
+<main class="f33d3r-main" id="main-col">
+  <div class="main-head">
+    <div class="main-head-title">Bookmarks</div>
+    <div class="feed-tabs-scroll bm-filter-tabs" role="tablist">
+      <button class="feed-tab {{if eq .Filter ""}}is-active{{end}}"
+              hx-get="/bookmarks/items?filter="
+              hx-target="#bm-feed" hx-swap="innerHTML"
+              hx-push-url="/bookmarks"
+              role="tab">All</button>
+      <button class="feed-tab {{if eq .Filter "text"}}is-active{{end}}"
+              hx-get="/bookmarks/items?filter=text"
+              hx-target="#bm-feed" hx-swap="innerHTML"
+              hx-push-url="/bookmarks?filter=text"
+              role="tab">Posts</button>
+      <button class="feed-tab {{if eq .Filter "audio"}}is-active{{end}}"
+              hx-get="/bookmarks/items?filter=audio"
+              hx-target="#bm-feed" hx-swap="innerHTML"
+              hx-push-url="/bookmarks?filter=audio"
+              role="tab">Music</button>
+      <button class="feed-tab {{if eq .Filter "video"}}is-active{{end}}"
+              hx-get="/bookmarks/items?filter=video"
+              hx-target="#bm-feed" hx-swap="innerHTML"
+              hx-push-url="/bookmarks?filter=video"
+              role="tab">Videos</button>
     </div>
-
-    {{if .Posts}}
-    <div id="bm-list">
-      {{range .Posts}}
-      {{$p := .}}
-      <article class="post-card" data-type="{{$p.ContentType}}"
-               onclick="window.location='/post/{{$p.ID}}'">
-        <div style="display:flex;gap:12px">
-          <a href="/u/{{$p.AuthorHandle}}" onclick="event.stopPropagation()">
-            <div class="post-avatar flex-shrink-0" style="{{if $p.AvatarURL}}padding:0;overflow:hidden{{else}}{{$colors := avatarColors $p.AuthorHandle}}background:linear-gradient(135deg,{{index $colors 0}},{{index $colors 1}}){{end}}">
-              {{if $p.AvatarURL}}<img src="{{$p.AvatarURL}}" style="width:100%;height:100%;object-fit:cover">
-              {{else}}{{firstChar $p.AuthorName}}{{end}}
-            </div>
-          </a>
-          <div style="flex:1;min-width:0">
-            <div style="display:flex;align-items:baseline;gap:6px;margin-bottom:4px">
-              <a href="/u/{{$p.AuthorHandle}}" onclick="event.stopPropagation()" style="font-size:14px;font-weight:500;color:var(--text-primary);text-decoration:none">{{$p.AuthorName}}</a>
-              {{if $p.IsVerified}}<span class="verified-badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M20 6L9 17l-5-5"/></svg></span>{{end}}
-              <span class="post-handle">@{{$p.AuthorHandle}}</span>
-              <span class="post-time" style="margin-left:auto">{{$p.TimeAgo}}</span>
-            </div>
-            <p class="post-body">{{$p.Body}}</p>
-            {{if $p.MediaURLs}}<div class="post-media-row" style="margin-top:8px">{{range $p.MediaURLs}}<img src="{{.}}" class="post-media-thumb" onerror="this.style.display='none'">{{end}}</div>{{end}}
-            {{if $p.Tags}}<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:6px">{{range $p.Tags}}<span class="post-tag">#{{.}}</span>{{end}}</div>{{end}}
-            <div style="display:flex;align-items:center;gap:16px;margin-top:10px">
-              <span style="font-size:12px;color:var(--text-secondary);display:flex;align-items:center;gap:4px">
-                <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>{{$p.Likes}}
-              </span>
-              <span style="font-size:12px;color:var(--text-secondary);display:flex;align-items:center;gap:4px">
-                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>{{$p.Comments}}
-              </span>
-              <button class="action-btn saved" style="margin-left:auto"
-                      onclick="event.stopPropagation()"
-                      hx-post="/api/bookmark" hx-target="closest article" hx-swap="outerHTML"
-                      hx-vals='{"post_id":"{{$p.ID}}","action":"remove"}' title="Remove bookmark">
-                <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor"><path d="M19 21l-7-5-7 5V5a2 2 0 012-2h10a2 2 0 012 2z"/></svg>
-              </button>
-            </div>
-          </div>
-        </div>
-      </article>
-      {{end}}
-    </div>
+  </div>
+  <div id="bm-feed" aria-live="polite">
+    {{if .Works}}
+    {{$ctx := dict "CurrentUserHandle" .CurrentUserHandle "User" .User}}
+    {{range .Works}}{{template "work_card" (dict "W" . "Ctx" $ctx)}}{{end}}
     {{else}}
-    <div style="padding:80px 20px;text-align:center">
-      <svg style="width:40px;height:40px;margin:0 auto 16px;opacity:0.3;color:var(--text-secondary)" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path d="M19 21l-7-5-7 5V5a2 2 0 012-2h10a2 2 0 012 2z"/></svg>
-      <p style="font-size:18px;font-weight:500;margin-bottom:6px">No bookmarks yet</p>
-      <p style="font-size:14px;color:var(--text-secondary)">Save posts to read later by tapping the bookmark icon.</p>
-    </div>
+    {{template "stateEmpty" (dict "Title" "No bookmarks yet" "Sub" "Works you save will appear here")}}
     {{end}}
-  </main>
-
-  <aside class="f33d3r-right">
-    <div class="panel-card">
-      <h3 class="panel-title">Bookmark tips</h3>
-      <div style="display:flex;flex-direction:column;gap:12px;font-size:13px;color:var(--text-secondary)">
-        <p>Tap <svg style="width:14px;height:14px;display:inline;vertical-align:middle" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M19 21l-7-5-7 5V5a2 2 0 012-2h10a2 2 0 012 2z"/></svg> on any post to save it here.</p>
-        <p>Bookmarks are private — only you can see them.</p>
-        <p>Use the filter tabs to find saved content by type.</p>
-      </div>
-    </div>
-  </aside>
-
-<script src="/static/js/pages/bookmarks.js?v=20260426"></script>
+  </div>
+</main>
 {{end}}
+{{define "right-panel"}}{{template "sidebar_right" .}}{{end}}
+{{define "page-scripts"}}<script src="/static/js/pages/bookmarks.js?v=20260622b" defer></script>{{end}}

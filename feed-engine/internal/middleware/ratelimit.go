@@ -52,9 +52,11 @@ func (rl *RateLimiter) allow(key string) bool {
 }
 
 func (rl *RateLimiter) clientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		parts := strings.SplitN(xff, ",", 2)
-		return strings.TrimSpace(parts[0])
+	// X-Real-IP is set by Caddy to the true client IP and cannot be spoofed.
+	// X-Forwarded-For is client-controlled (clients prepend arbitrary IPs) so
+	// we never use it for security decisions.
+	if xri := r.Header.Get("X-Real-IP"); xri != "" {
+		return strings.TrimSpace(xri)
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {

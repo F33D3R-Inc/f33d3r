@@ -1,0 +1,69 @@
+{{/*
+FACET wallet_nav
+  version: 1.0 | status: stable | layer: 2
+
+  inputs:
+    ActiveSection    string — "overview"|"send"|"history"|"governance"
+    Wallet.Balance   string — formatted balance string shown in nav header
+
+  states:
+    section-active (per item)
+
+  children: none
+
+  signals:
+    emits:    none (items hx-get wallet panel sections)
+    receives: balance (SSE — updates Wallet.Balance display)
+
+  context:
+    wallet → left column of three-panel layout
+*/}}
+{{define "wallet_nav"}}
+<nav class="settings-nav-panel" id="wallet-nav-panel" aria-label="Wallet navigation">
+  <div class="wallet-nav-head">
+    <div class="wallet-nav-title">Wallet</div>
+    {{if .Wallet}}
+    <div class="wallet-nav-balance" id="wallet-nav-balance">{{.Wallet.Balance}}</div>
+    {{end}}
+  </div>
+
+  <div class="settings-nav-group">
+    <a class="settings-nav-item{{if eq .ActiveSection "overview"}} active{{end}}"
+       hx-get="/wallet/partials/overview"
+       hx-target="#wallet-panel"
+       hx-swap="innerHTML"
+       hx-push-url="/wallet/overview"
+       onclick="walletNavActivate(this)">
+      <svg class="settings-nav-icon" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/><path d="M6 15h2"/><path d="M10 15h4"/></svg>
+      Overview
+    </a>
+    <a class="settings-nav-item{{if eq .ActiveSection "send"}} active{{end}}"
+       hx-get="/wallet/partials/send"
+       hx-target="#wallet-panel"
+       hx-swap="innerHTML"
+       hx-push-url="/wallet/send"
+       onclick="walletNavActivate(this)">
+      <svg class="settings-nav-icon" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+      Send AET
+    </a>
+    <a class="settings-nav-item{{if eq .ActiveSection "history"}} active{{end}}"
+       hx-get="/wallet/partials/history"
+       hx-target="#wallet-panel"
+       hx-swap="innerHTML"
+       hx-push-url="/wallet/history"
+       onclick="walletNavActivate(this)">
+      <svg class="settings-nav-icon" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+      History
+    </a>
+    <a class="settings-nav-item{{if eq .ActiveSection "governance"}} active{{end}}"
+       hx-get="/wallet/partials/governance"
+       hx-target="#wallet-panel"
+       hx-swap="innerHTML"
+       hx-push-url="/wallet/governance"
+       onclick="walletNavActivate(this)">
+      <svg class="settings-nav-icon" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
+      Governance
+    </a>
+  </div>
+</nav>
+{{end}}

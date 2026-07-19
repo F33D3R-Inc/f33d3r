@@ -1,5 +1,7 @@
 mod db;
 mod models;
+mod nexus;
+mod observ;
 
 use axum::{
     extract::{Path, State},
@@ -13,7 +15,6 @@ use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use std::sync::Arc;
 use tracing::info;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 use uuid::Uuid;
 
 use models::*;
@@ -31,10 +32,7 @@ fn err(status: StatusCode, msg: &str) -> (StatusCode, Json<Value>) {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::registry()
-        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
-        .with(tracing_subscriber::fmt::layer())
-        .init();
+    observ::init("verity")?;
 
     let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
     let port = std::env::var("PORT").unwrap_or_else(|_| "8095".into());
@@ -43,9 +41,11 @@ async fn main() -> anyhow::Result<()> {
     db::migrate(&pool).await?;
     info!("Verity schema up to date");
 
-    let state = Arc::new(AppState { pool });
+    let state = Arc::new(AppState { pool: pool.clone() });
+    let nexus_state = Arc::new(nexus::NexusState { pool });
 
     let app = Router::new()
+        .route("/metrics",                     get(observ::metrics_handler))
         .route("/health",                      get(health))
         // Decision engine — called by Elohim Veni / Nantar
         .route("/v1/decide",                   post(decide))
@@ -67,7 +67,9 @@ async fn main() -> anyhow::Result<()> {
         // CSAM scan — called by Caeor after every media upload
         .route("/v1/compliance/csam/scan",     post(compliance_csam_scan))
         .route("/v1/compliance/csam/:hash",    get(compliance_csam_status))
-        .with_state(state);
+        .with_state(state)
+        .merge(nexus::nexus_router(nexus_state))
+        .layer(axum::middleware::from_fn(observ::http_middleware));
 
     let addr = format!("0.0.0.0:{port}");
     let listener = tokio::net::TcpListener::bind(&addr).await?;

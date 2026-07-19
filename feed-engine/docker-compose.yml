@@ -2,7 +2,10 @@ version: "3.9"
 
 services:
   feed-engine:
-    build: .
+    build:
+      # Context is the repo root (parent) so the build can reach shared assets.
+      context: ..
+      dockerfile: feed-engine/Dockerfile
     ports:
       - "8081:8081"
     environment:

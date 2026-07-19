@@ -56,9 +56,33 @@ spec:
               value: "http://vovin:8092"
             - name: ELOHIM_VENI_URL
               value: "http://elohim-veni:8093"
+            - name: THEMIS_URL
+              value: "http://themis:8100"
             - name: ZODACARE_URL
               value: "http://zodacare:8090"
+            - name: INTERNAL_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: f33d3r-secrets
+                  key: internal-api-key
+            - name: MEDIA_TOKEN_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: f33d3r-secrets
+                  key: media-token-secret
+            - name: METRICS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: f33d3r-secrets
+                  key: metrics-token
+                  optional: true
+            - name: KAFKA_BROKERS
+              value: "sitra-achra:9092"
+            - name: REDIS_URL
+              value: "redis://redis:6379"
             - name: SHOW_SCORES
+              value: "false"
+            - name: DEV_MODE
               value: "false"
             - name: RUST_LOG
               value: "info"

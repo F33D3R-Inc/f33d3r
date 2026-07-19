@@ -1,0 +1,38 @@
+{{define "title"}}#{{.Tag}} · F33D3R{{end}}
+{{define "body"}}
+<main class="f33d3r-main" id="main-col">
+  <div class="main-head">
+    <button class="back-btn" onclick="history.back()" aria-label="Back">
+      <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="width:18px;height:18px"><path d="m15 18-6-6 6-6"/></svg>
+    </button>
+    <div class="main-head-content">
+      <div class="main-head-title">#{{.Tag}}</div>
+      {{if .CurrentUserHandle}}
+      {{if .IsFollowingTopic}}
+      <button class="btn-follow btn-following"
+              hx-post="/events" hx-vals='{"event_type":"unfollow_topic","tag":"{{.Tag}}"}'
+              hx-swap="outerHTML"
+              hx-target="this">Following</button>
+      {{else}}
+      <button class="btn-follow"
+              hx-post="/events" hx-vals='{"event_type":"follow_topic","tag":"{{.Tag}}"}'
+              hx-swap="outerHTML"
+              hx-target="this">Follow</button>
+      {{end}}
+      {{end}}
+    </div>
+  </div>
+  <div id="tag-feed" role="feed" aria-live="polite">
+    {{if .Works}}
+    {{$ctx := dict "CurrentUserHandle" .CurrentUserHandle "User" .User}}
+    {{range .Works}}
+    {{template "work_card" (dict "W" . "Ctx" $ctx)}}
+    {{end}}
+    {{else}}
+    {{template "stateEmpty" (dict "Title" "No posts yet" "Sub" (printf "Be the first to post with #%s" .Tag))}}
+    {{end}}
+  </div>
+  <input type="hidden" name="session_id" value="{{.SessionID}}">
+</main>
+{{end}}
+{{define "right-panel"}}{{template "sidebar_right" .}}{{end}}

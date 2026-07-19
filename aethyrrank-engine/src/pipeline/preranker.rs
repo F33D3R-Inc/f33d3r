@@ -96,6 +96,9 @@ mod tests {
             creator_revenue_rate: 0.1,
             ltv_estimate: 0.1,
             adult_probability: 0.0,
+            posts_last_24h: 1,
+            self_reply_cadence: 0.0,
+            char_count: 0,
         }
     }
 

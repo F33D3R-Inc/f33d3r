@@ -1,5 +1,6 @@
 mod db;
 mod models;
+mod observ;
 
 use axum::{
     extract::{Path, Query, State},
@@ -14,7 +15,7 @@ use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use std::sync::Arc;
 use tracing::info;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use reqwest;
 use uuid::Uuid;
 
 use models::*;
@@ -32,10 +33,7 @@ fn err(status: StatusCode, msg: &str) -> (StatusCode, Json<Value>) {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::registry()
-        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
-        .with(tracing_subscriber::fmt::layer())
-        .init();
+    observ::init("aethyr_ledger")?;
 
     let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
     let port = std::env::var("PORT").unwrap_or_else(|_| "8096".into());
@@ -59,6 +57,7 @@ async fn main() -> anyhow::Result<()> {
     let state = Arc::new(AppState { pool });
 
     let app = Router::new()
+        .route("/metrics",                     get(observ::metrics_handler))
         .route("/health",                      get(health))
         // Account
         .route("/v1/accounts/:pial_id",       get(get_balance))
@@ -77,7 +76,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/supply",                   get(get_supply))
         .route("/v1/blocks",                   get(get_blocks))
         .route("/v1/blocks/:number",           get(get_block))
-        .with_state(state);
+        .with_state(state)
+        .layer(axum::middleware::from_fn(observ::http_middleware));
 
     let addr = format!("0.0.0.0:{port}");
     let listener = tokio::net::TcpListener::bind(&addr).await?;
@@ -528,7 +528,7 @@ async fn get_block(
 }
 
 // ── Block sealer (background task) ────────────────────────────────────────────
-// Groups unassigned events into a block every 2 seconds. Hash-chains them.
+// Groups unassigned events into a block every 2 seconds. Merkle-roots them.
 
 async fn seal_block(pool: &PgPool) -> anyhow::Result<()> {
     let count: i64 = sqlx::query_scalar(
@@ -543,7 +543,7 @@ async fn seal_block(pool: &PgPool) -> anyhow::Result<()> {
     let prev_hash   = db::prev_block_hash(pool).await;
     let block_id    = Uuid::new_v4();
 
-    // Assign block_id to pending events
+    // Assign block_id to pending events atomically
     sqlx::query(
         "UPDATE ledger_events SET block_id = $1
          WHERE block_id IS NULL AND status = 'confirmed'",
@@ -561,19 +561,24 @@ async fn seal_block(pool: &PgPool) -> anyhow::Result<()> {
     .fetch_one(pool)
     .await?;
 
-    // Events root: SHA-256(sorted event IDs concatenated) — lightweight commitment
-    // Verifiable: any auditor can fetch the event list and reproduce this hash.
+    // Fetch event IDs ordered deterministically — each leaf is SHA-256(event_id_bytes).
+    // Building a binary Merkle tree means any single event's inclusion can be proven
+    // with O(log n) sibling hashes without replaying all transactions.
     let event_ids: Vec<String> = sqlx::query_scalar(
-        "SELECT id::text FROM ledger_events WHERE block_id = $1 ORDER BY created_at ASC",
+        "SELECT id::text FROM ledger_events WHERE block_id = $1 ORDER BY created_at ASC, id ASC",
     )
     .bind(block_id)
     .fetch_all(pool)
     .await
     .unwrap_or_default();
 
-    let mut root_hasher = Sha256::new();
-    for eid in &event_ids { root_hasher.update(eid.as_bytes()); }
-    let events_root = hex::encode(root_hasher.finalize());
+    let leaves: Vec<Vec<u8>> = event_ids.iter().map(|eid| {
+        let mut h = Sha256::new();
+        h.update(eid.as_bytes());
+        h.finalize().to_vec()
+    }).collect();
+
+    let events_root = hex::encode(merkle_root(&leaves));
 
     // Block hash: SHA-256(block_num | prev_hash | events_root | count | volume | timestamp)
     let ts   = chrono::Utc::now().timestamp_millis().to_string();
@@ -581,6 +586,8 @@ async fn seal_block(pool: &PgPool) -> anyhow::Result<()> {
     let mut hasher = Sha256::new();
     hasher.update(data.as_bytes());
     let block_hash = hex::encode(hasher.finalize());
+
+    let sealed_at = chrono::Utc::now();
 
     sqlx::query(
         "INSERT INTO ledger_blocks
@@ -598,7 +605,79 @@ async fn seal_block(pool: &PgPool) -> anyhow::Result<()> {
     .execute(pool)
     .await?;
 
-    info!("sealed block #{block_num} — {count} events — hash {}", &block_hash[..16]);
+    info!("sealed block #{block_num} — {count} events — merkle root {} — hash {}", &events_root[..16], &block_hash[..16]);
+
+    // Sync checkpoint to Ain Soph for cross-brain settlement verification.
+    // Fire-and-forget: a missed sync is non-fatal — the local ledger is the source of truth.
+    let ain_soph_url = std::env::var("AIN_SOPH_URL")
+        .unwrap_or_else(|_| "http://ain-soph:8089".to_string());
+    tokio::spawn(async move {
+        if let Err(e) = post_checkpoint_to_ain_soph(
+            &ain_soph_url, block_num, &events_root, count, &sealed_at,
+        ).await {
+            tracing::warn!("ain-soph checkpoint sync failed for block #{block_num}: {e}");
+        }
+    });
+
+    Ok(())
+}
+
+/// Compute a binary Merkle root from a slice of 32-byte leaf hashes.
+/// - Empty set: all-zero 32-byte root.
+/// - Single leaf: the leaf itself.
+/// - Odd layer: last node duplicated (standard Bitcoin-style padding).
+fn merkle_root(leaves: &[Vec<u8>]) -> Vec<u8> {
+    if leaves.is_empty() {
+        return vec![0u8; 32];
+    }
+    if leaves.len() == 1 {
+        return leaves[0].clone();
+    }
+    let mut layer: Vec<Vec<u8>> = leaves.to_vec();
+    while layer.len() > 1 {
+        if layer.len() % 2 == 1 {
+            layer.push(layer.last().unwrap().clone());
+        }
+        layer = layer
+            .chunks(2)
+            .map(|pair| sha256_pair(&pair[0], &pair[1]))
+            .collect();
+    }
+    layer.into_iter().next().unwrap()
+}
+
+/// SHA-256(left || right).
+fn sha256_pair(left: &[u8], right: &[u8]) -> Vec<u8> {
+    let mut h = Sha256::new();
+    h.update(left);
+    h.update(right);
+    h.finalize().to_vec()
+}
+
+/// POST the sealed block's Merkle root to Ain Soph's checkpoint endpoint.
+async fn post_checkpoint_to_ain_soph(
+    ain_soph_url: &str,
+    block_id: i64,
+    events_root: &str,
+    tx_count: i64,
+    sealed_at: &chrono::DateTime<chrono::Utc>,
+) -> anyhow::Result<()> {
+    let payload = serde_json::json!({
+        "block_id":    block_id,
+        "events_root": events_root,
+        "tx_count":    tx_count,
+        "sealed_at":   sealed_at.to_rfc3339(),
+    });
+    let url = format!("{ain_soph_url}/v1/ledger/checkpoint");
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()?;
+    let resp = client.post(&url).json(&payload).send().await?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        anyhow::bail!("ain-soph returned {status}: {body}");
+    }
     Ok(())
 }
 

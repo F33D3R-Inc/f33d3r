@@ -1,0 +1,84 @@
+{{/*
+FACET admin_panel_treasury
+  version: 1.0 | status: stable | layer: 2
+
+  inputs:
+    FeeBalance      string   — formatted AET balance string
+    FeeBalanceUnits int64    — raw AET units
+    FeeTxs          []FeeTx  — recent platform fee transactions
+
+  states:
+    default
+
+  children: none
+
+  signals:
+    emits:    withdraw_fees (POST /events admin action)
+    receives: none
+
+  context:
+    admin → #admin-panel (hx-get /admin/treasury)
+*/}}
+{{define "admin_panel_treasury"}}
+<div class="admin-panel-inner">
+
+  <div class="admin-panel-section">
+    <div class="admin-section-head">
+      <span class="admin-section-head-title">Treasury</span>
+    </div>
+    <p style="font-size:12px;color:var(--text-muted);margin:0">
+      Platform fee vault — 1% collected on every tip and transfer. Sweep sends all fees to @tehanibentley.
+    </p>
+  </div>
+
+  <div class="admin-devtool-card" style="display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap">
+    <div>
+      <div class="admin-devtool-title" style="margin-bottom:4px">Fee vault balance</div>
+      <div style="font-size:28px;font-weight:700;color:var(--accent)">{{.FeeBalance}}</div>
+      <div style="font-size:11px;color:var(--text-muted);margin-top:2px">ain_soph_fees account</div>
+    </div>
+    {{if gt .FeeBalanceUnits 0}}
+    <form hx-post="/api/admin/sweep-fees" hx-target="#treasury-sweep-result" hx-swap="innerHTML"
+          onsubmit="return confirm('Sweep all fees to @tehanibentley?')">
+      <button type="submit" class="btn-primary" style="padding:10px 24px;font-size:13px">
+        Sweep all to @tehanibentley
+      </button>
+    </form>
+    {{else}}
+    <div style="font-size:12px;color:var(--text-muted)">Nothing to sweep.</div>
+    {{end}}
+  </div>
+  <div id="treasury-sweep-result" style="padding:0 4px"></div>
+
+  <div class="admin-panel-section" style="margin-top:8px">
+    <div class="admin-section-head">
+      <span class="admin-section-head-title">Recent fee collections</span>
+    </div>
+    {{if .FeeTxs}}
+    <table style="width:100%;border-collapse:collapse;font-size:12px">
+      <thead>
+        <tr style="color:var(--text-muted);text-align:left;border-bottom:1px solid var(--border)">
+          <th style="padding:6px 8px">From</th>
+          <th style="padding:6px 8px">Amount</th>
+          <th style="padding:6px 8px">Note</th>
+          <th style="padding:6px 8px">When</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .FeeTxs}}
+        <tr style="border-bottom:1px solid var(--border)">
+          <td style="padding:6px 8px;color:var(--text-secondary);font-family:monospace;font-size:11px">{{.FromUserID}}</td>
+          <td style="padding:6px 8px;font-weight:600;color:var(--accent)">{{.AmountAet}}</td>
+          <td style="padding:6px 8px;color:var(--text-muted)">{{.TxMeta}}</td>
+          <td style="padding:6px 8px;color:var(--text-muted)">{{.CreatedAt}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+    {{else}}
+    <p style="font-size:12px;color:var(--text-muted);margin:8px 0 0">No fee transactions recorded yet.</p>
+    {{end}}
+  </div>
+
+</div>
+{{end}}

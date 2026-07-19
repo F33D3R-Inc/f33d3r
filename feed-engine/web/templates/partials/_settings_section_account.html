@@ -1,0 +1,46 @@
+{{/*
+FACET settings_section_account
+  version: 1.0 | status: stable | layer: 2
+
+  inputs:
+    .User  User — .Handle .Email .CreatedAt
+
+  states:
+    default
+
+  children: none
+
+  signals:
+    emits:    logout (POST /logout), account_export, deactivate, delete (POST /events)
+    receives: none
+
+  context:
+    settings → #settings-panel (HTMX-swapped from settings_nav)
+*/}}
+{{define "settings_section_account"}}
+<div class="settings-panel-head">
+  <h2 class="settings-panel-title">Account</h2>
+  <p class="settings-panel-sub">Manage your account, export your data, or close your account.</p>
+</div>
+
+<div class="settings-block">
+  <div class="settings-block-title">Session</div>
+  <p class="settings-block-hint">You're signed in as <strong>@{{.User.Handle}}</strong>.</p>
+  <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px">
+    <a href="/logout" class="btn-ghost" style="font-size:13px">Log out</a>
+  </div>
+</div>
+
+<div class="settings-block">
+  <div class="settings-block-title">Your data</div>
+  <p class="settings-block-hint">Download a copy of all your posts, follows, media, and account data.</p>
+  <div style="margin-top:12px">
+    <button type="button" class="btn-ghost" style="font-size:13px" onclick="exportData()">Export my data</button>
+  </div>
+</div>
+
+<div class="settings-block">
+  <div class="settings-block-title">Danger zone</div>
+  <p class="settings-block-hint">To deactivate or permanently delete your account, go to <a href="/settings/danger" hx-get="/partials/settings/danger" hx-target="#settings-panel" hx-swap="innerHTML" hx-push-url="/settings/danger" style="color:var(--danger)">Danger Zone</a>.</p>
+</div>
+{{end}}

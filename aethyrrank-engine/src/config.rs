@@ -13,6 +13,7 @@ pub struct AppConfig {
     pub safety: SafetyConfig,
     pub bandit: BanditConfig,
     pub model_store: ModelStoreConfig,
+    pub network: NetworkConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -98,6 +99,13 @@ pub struct BanditConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct ModelStoreConfig {
     pub surfaces: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct NetworkConfig {
+    /// Score boost added to in-network content (creator is followed by the user).
+    /// Mirrors X's in-network pool priority — social graph content floats up.
+    pub network_boost: f64,
 }
 
 impl AppConfig {

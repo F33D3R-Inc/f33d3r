@@ -1,0 +1,87 @@
+{{/*
+FACET notif_item
+  version: 1.1 | status: stable | layer: 2
+
+  inputs:
+    ID           string — notification ID
+    Type         string — "like"|"follow"|"reply"|"mention"|"repost"|"tip"|"milestone"|"system"|"violation"|"moderation"
+    ActorName    string — actor display name
+    ActorHandle  string — actor handle
+    ActorAvatar  string — actor avatar URL
+    IsRead       bool   — unread renders .unread modifier
+    TimeAgo      string — pre-formatted relative time string
+    TargetID     string — post/profile ID for navigation on click
+
+  states:
+    default | unread
+
+  children: none
+
+  signals:
+    emits:    notif_read (POST /events on click — hx-trigger="click once")
+    receives: notify (SSE — new notif_item fragments prepended to list)
+
+  context:
+    notifications → notification list
+*/}}
+{{define "notif_item"}}
+<div class="notif-item{{if not .IsRead}} unread{{end}}" data-notif-type="{{.Type}}"
+     hx-post="/events"
+     hx-vals='{"event_type":"notif_read","notif_id":"{{.ID}}"}'
+     hx-swap="none" hx-trigger="click once">
+
+  {{/* Icon circle per type */}}
+  <div class="notif-icon {{.Type}}">
+    {{if eq .Type "like"}}
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+    {{else if eq .Type "follow"}}
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+    {{else if eq .Type "reply"}}
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+    {{else if eq .Type "mention"}}
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-3.92 7.94"/></svg>
+    {{else if eq .Type "repost"}}
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 1l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="M7 23l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
+    {{else if eq .Type "tip"}}
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1.41 16.09V20h-2.67v-1.93c-1.71-.36-3.16-1.46-3.27-3.4h1.96c.1 1.05.82 1.87 2.65 1.87 1.96 0 2.4-.98 2.4-1.59 0-.83-.44-1.61-2.67-2.14-2.48-.6-4.18-1.62-4.18-3.67 0-1.72 1.39-2.84 3.11-3.21V4h2.67v1.95c1.86.45 2.79 1.86 2.85 3.39H14.3c-.05-1.11-.64-1.87-2.22-1.87-1.5 0-2.4.68-2.4 1.64 0 .84.65 1.39 2.67 1.91s4.18 1.39 4.18 3.91c-.01 1.83-1.38 2.83-3.12 3.16z"/></svg>
+    {{else if eq .Type "milestone"}}
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="6"/><path d="M15.477 12.89L17 22l-5-3-5 3 1.523-9.11"/></svg>
+    {{else if eq .Type "violation"}}
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/></svg>
+    {{else if eq .Type "moderation"}}
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+    {{else}}
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+    {{end}}
+  </div>
+
+  {{/* Actor avatar */}}
+  {{if .ActorAvatar}}
+    <img src="{{.ActorAvatar}}" alt="@{{.ActorHandle}}" class="notif-avatar">
+  {{else if .ActorHandle}}
+    {{$c := avatarColors .ActorHandle}}
+    <div class="notif-avatar" style="background:linear-gradient(135deg,{{index $c 0}},{{index $c 1}})">{{firstChar .ActorName}}</div>
+  {{end}}
+
+  {{/* Body */}}
+  <div class="notif-body">
+    <p class="notif-text">
+      {{if .ActorHandle}}<a href="/{{.ActorHandle}}" class="notif-actor" onclick="event.stopPropagation()"><strong>@{{.ActorHandle}}</strong></a>{{end}}
+      {{if eq .Type "like"}} liked your post{{end}}
+      {{if eq .Type "follow"}} followed you{{end}}
+      {{if eq .Type "reply"}} replied to your post{{end}}
+      {{if eq .Type "mention"}} mentioned you{{end}}
+      {{if eq .Type "repost"}} reposted your post{{end}}
+      {{if eq .Type "tip"}} sent you a tip{{end}}
+      {{if eq .Type "milestone"}} Milestone reached{{end}}
+      {{if eq .Type "system"}} System notification{{end}}
+      {{if eq .Type "violation"}} Your post was removed for violating the <a href="/terms" class="notif-link" onclick="event.stopPropagation()">F33D3R Rules</a>.{{end}}
+      {{if eq .Type "moderation"}} A post needs moderation review — <a href="/admin" class="notif-link" onclick="event.stopPropagation()">open queue ↗</a>{{end}}
+    </p>
+    <time class="notif-time" data-ts="{{.CreatedAt.Unix}}">{{.TimeAgo}}</time>
+  </div>
+
+  {{/* Unread dot */}}
+  {{if not .IsRead}}<span class="notif-unread-dot"></span>{{end}}
+</div>
+{{end}}

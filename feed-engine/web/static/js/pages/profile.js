@@ -31,13 +31,6 @@ function setProfileView(v) {
     if(gb) { gb.style.background='transparent'; gb.style.border='1px solid var(--border)'; gb.style.color='var(--text-muted)'; }
   }
 }
-function switchProfileTab(btn, surface, userID, sessionID) {
-  document.querySelectorAll('.profile-tab').forEach(t => t.classList.remove('active'));
-  btn.classList.add('active');
-  htmx.ajax('GET', `/feed?surface=${surface}&user_id=${userID}&session_id=${sessionID}`, {
-    target: '#profile-feed', swap: 'innerHTML'
-  });
-}
 async function openUserList(url) {
   const modal = document.getElementById('user-list-modal');
   const content = document.getElementById('user-list-content');
@@ -45,6 +38,8 @@ async function openUserList(url) {
   modal.style.display = 'flex';
   const r = await fetch(url);
   content.innerHTML = await r.text();
+  // Re-process HTMX so hx-post buttons in injected HTML are wired up.
+  if (window.htmx) htmx.process(content);
 }
 function closeUserList() {
   document.getElementById('user-list-modal').style.display = 'none';
@@ -118,3 +113,21 @@ async function unsubscribeFrom(creatorId) {
   if (r.ok) { toast('Subscription cancelled'); setTimeout(() => location.reload(), 600); }
   else toast('Cancel failed', 'error');
 }
+
+// Facet(notify_btn) — toggle profile notifications
+async function toggleProfileNotify(btn, handle) {
+  const active = btn.dataset.active === '1';
+  const fd = new FormData();
+  fd.append('handle', handle);
+  fd.append('enabled', active ? '0' : '1');
+  const r = await fetch('/api/notify/profile', { method: 'POST', body: fd });
+  if (r.ok) {
+    btn.dataset.active = active ? '0' : '1';
+    btn.style.color = active ? '' : 'var(--accent)';
+    btn.style.borderColor = active ? '' : 'var(--accent)';
+    toast(active ? 'Notifications off' : 'You\'ll be notified', 'success');
+  } else {
+    toast('Could not update notifications', 'error');
+  }
+}
+

@@ -1,3 +1,4 @@
+pub mod observ;
 pub mod api;
 pub mod bandit;
 pub mod config;

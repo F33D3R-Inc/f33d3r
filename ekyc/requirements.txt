@@ -1,7 +1,9 @@
-flask==3.1.1
-insightface==0.7.3
-onnxruntime==1.17.3
-opencv-python-headless==4.10.0.84
-pytesseract==0.3.13
-Pillow==10.4.0
-numpy==1.26.4
+flask
+insightface
+onnxruntime
+opencv-python-headless
+pytesseract
+Pillow
+numpy
+prometheus_client
+passporteye

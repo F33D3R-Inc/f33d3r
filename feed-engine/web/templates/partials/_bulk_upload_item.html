@@ -1,0 +1,72 @@
+{{/*
+FACET bulk_upload_item
+  version: 1.0 | status: experimental | layer: 4
+
+  inputs:
+    UploadID   string  — TUS upload ID (used as DOM id suffix)
+    Filename   string  — original filename displayed to creator
+    FileSize   string  — human-readable file size (e.g. "420 MB")
+    Status     string  — queued | uploading | processing | ready | failed
+    MasterURL  string  — HLS master playlist URL (non-empty when status=ready)
+
+  states:
+    queued | uploading | processing | ready | failed
+
+  children:
+    none (progress bar is a poll_bar atom rendered by JS)
+
+  signals:
+    emits:    none
+    receives: bulk_upload_item_progress — JS patches progress bar and status chip
+
+  context:
+    bulk_upload_progress → item list
+*/}}
+{{define "bulk_upload_item"}}
+<div class="bulk-upload-item bulk-upload-item--{{.Status}}"
+     id="bulk-upload-item-{{.UploadID}}"
+     data-upload-id="{{.UploadID}}"
+     role="listitem">
+
+  {{/* Thumbnail preview — shown when ready */}}
+  <div class="bulk-upload-item__thumb" id="bulk-upload-thumb-{{.UploadID}}" aria-hidden="true">
+    {{if eq .Status "ready"}}
+    <video class="img-thumbnail" src="{{.MasterURL}}" muted preload="metadata" loop></video>
+    {{else}}
+    <div class="bulk-upload-item__thumb-placeholder">
+      <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+        <polygon points="23 7 16 12 23 17 23 7"/>
+        <rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
+      </svg>
+    </div>
+    {{end}}
+  </div>
+
+  {{/* File info */}}
+  <div class="bulk-upload-item__info">
+    <span class="bulk-upload-item__filename">{{.Filename}}</span>
+    {{if .FileSize}}
+    <span class="bulk-upload-item__filesize">{{.FileSize}}</span>
+    {{end}}
+
+    {{/* Progress bar — 0→100%, patched by JS */}}
+    <div class="bulk-upload-item__progress-track" id="bulk-upload-track-{{.UploadID}}"
+         role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+      <div class="poll-bar bulk-upload-item__progress-fill"
+           id="bulk-upload-bar-{{.UploadID}}" style="width:0%"></div>
+    </div>
+  </div>
+
+  {{/* Status chip */}}
+  <span class="bulk-upload-item__status-chip bulk-upload-item__status-chip--{{.Status}}"
+        id="bulk-upload-chip-{{.UploadID}}">
+    {{if eq .Status "queued"}}Queued
+    {{else if eq .Status "uploading"}}Uploading
+    {{else if eq .Status "processing"}}Processing
+    {{else if eq .Status "ready"}}Ready
+    {{else if eq .Status "failed"}}Failed
+    {{else}}{{.Status}}{{end}}
+  </span>
+
+</div>
+{{end}}

@@ -1,0 +1,30 @@
+{{/*
+FACET creator_earnings
+  version: 2.0 | status: stable | layer: 2
+
+  inputs:
+    Earnings        *CreatorEarnings — total_aet, subscriptions_aet, ppv_aet, tips_aet, tx_count
+    Wallet          *CreatorWallet   — balance_aet (string)
+    Transactions    []CreatorTx      — TxType, FromHandle, AmountAET, TimeAgo
+    EarningsOnline  bool             — whether Themis responded
+    WalletOnline    bool             — whether Ain Soph responded
+    User            *model.User      — session user
+
+  states:
+    default | service-offline | no-transactions
+
+  children:
+    revenue_dashboard
+
+  signals:
+    emits:    none
+    receives: none
+
+  context:
+    creator_dashboard → #creator-panel (hx-get /create/partials/earnings)
+*/}}
+{{define "creator_earnings"}}
+<div class="crt-earnings">
+  {{template "revenue_dashboard" .}}
+</div>
+{{end}}

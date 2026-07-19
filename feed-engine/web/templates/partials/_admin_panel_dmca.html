@@ -1,0 +1,76 @@
+{{/*
+FACET admin_panel_dmca
+  version: 1.0 | status: stable | layer: 2
+
+  inputs:
+    DMCARequests  []DMCARequest — pending takedown requests
+
+  states:
+    default | empty-queue
+
+  children: none
+
+  signals:
+    emits:    approve_dmca, reject_dmca (POST /events admin actions)
+    receives: none
+
+  context:
+    admin → #admin-panel (hx-get /admin/dmca)
+*/}}
+{{define "admin_panel_dmca"}}
+<div class="admin-panel-inner">
+
+  <div class="admin-panel-section">
+    <div class="admin-section-head">
+      <span class="admin-section-head-title">DMCA queue</span>
+      {{if .DMCARequests}}
+      <span class="admin-section-head-count">{{len .DMCARequests}}</span>
+      {{end}}
+    </div>
+
+    {{if .DMCARequests}}
+    <div class="admin-report-list">
+      {{range .DMCARequests}}
+      <div class="admin-report-card" id="dmca-{{.TicketID}}">
+        <div class="admin-report-head">
+          <span class="admin-report-reporter">{{.ClaimantName}}</span>
+          <span class="admin-report-meta">{{.TicketID}} · {{timeAgo .CreatedAt}}</span>
+        </div>
+        <div class="admin-report-reason">
+          <span class="admin-report-reason-label">{{.ClaimantEmail}}</span>
+        </div>
+        <div class="admin-report-body">
+          <strong>Infringing:</strong> {{.InfringingURL}}
+          {{if .OriginalURL}}<br><strong>Original:</strong> {{.OriginalURL}}{{end}}
+          {{if .Description}}<br>{{.Description}}{{end}}
+        </div>
+        <div class="admin-report-actions">
+          <form hx-post="/admin/dmca"
+                hx-target="#dmca-{{.TicketID}}"
+                hx-swap="outerHTML"
+                style="display:contents">
+            <input type="hidden" name="ticket_id" value="{{.TicketID}}">
+            <input type="hidden" name="status" value="actioned">
+            <button type="submit" class="admin-report-btn-resolve">Actioned</button>
+          </form>
+          <form hx-post="/admin/dmca"
+                hx-target="#dmca-{{.TicketID}}"
+                hx-swap="outerHTML"
+                style="display:contents">
+            <input type="hidden" name="ticket_id" value="{{.TicketID}}">
+            <input type="hidden" name="status" value="dismissed">
+            <button type="submit" class="admin-report-btn-dismiss">Dismiss</button>
+          </form>
+        </div>
+      </div>
+      {{end}}
+    </div>
+    {{else}}
+    <div class="admin-alert-strip admin-alert-strip--ok">
+      ✓ No pending DMCA requests.
+    </div>
+    {{end}}
+  </div>
+
+</div>
+{{end}}

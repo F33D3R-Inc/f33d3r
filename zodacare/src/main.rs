@@ -1,22 +1,19 @@
 mod db;
 mod handlers;
 mod models;
+mod observ;
 
 use axum::{
     routing::{get, post},
     Router,
 };
 use tracing::info;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 use handlers::AppState;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::registry()
-        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
-        .with(tracing_subscriber::fmt::layer())
-        .init();
+    observ::init("zodacare")?;
 
     let database_url = std::env::var("DATABASE_URL")
         .expect("DATABASE_URL must be set");
@@ -35,6 +32,7 @@ async fn main() -> anyhow::Result<()> {
     let state = AppState { pool, elohim_client, elohim_url };
 
     let app = Router::new()
+        .route("/metrics",                         get(observ::metrics_handler))
         // Health + stats
         .route("/health",                          get(handlers::health))
         .route("/v1/stats",                        get(handlers::stats))
@@ -48,7 +46,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/user/:pial_id/risk",           get(handlers::get_user_risk))
         .route("/v1/user/:pial_id/action",         post(handlers::apply_user_action))
         .layer(tower_http::cors::CorsLayer::permissive())
-        .with_state(state);
+        .with_state(state)
+        .layer(axum::middleware::from_fn(observ::http_middleware));
 
     let addr = format!("0.0.0.0:{}", port);
     info!("Zodacare safety brain listening on {}", addr);

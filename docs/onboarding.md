@@ -64,7 +64,7 @@ UUID**.
 | **Zior**                 | Music intelligence              | Rank posts, touch wallet           |
 | **Vovin**                | Encrypted message relay         | Read message content               |
 | **Ain Soph**             | AET token ledger                | Grant capabilities                 |
-| **Elohim Veni**          | PIAL capability enforcement     | Use psychology for decisions       |
+| **Elohim Veni**          | Moderation decision pipeline → writes PIAL | Use psychology for decisions       |
 | **Zodacare**             | Risk scoring, mod queue         | Directly revoke capabilities       |
 | **Schema Registry**      | Schema versioning               | Store business data                |
 

@@ -1,0 +1,33 @@
+{{/*
+FACET btn_more_dots
+  version: 1.0 | status: stable | layer: 5
+
+  inputs:
+    PostID  string — post UUID, passed to togglePostMenu for scoped targeting
+
+  states:
+    default | open (aria-expanded=true)
+
+  children: none
+
+  signals:
+    emits:    togglePostMenu (JS — opens post_menu_dropdown)
+    receives: none
+
+  context:
+    post_card → top-right corner trigger
+    post_detail_focus → top-right corner trigger
+*/}}
+{{define "btn_more_dots"}}
+<button class="btn-more-dots"
+        onclick="event.stopPropagation();togglePostMenu(this)"
+        data-post-id="{{.PostID}}"
+        aria-label="More options"
+        aria-haspopup="menu"
+        aria-expanded="false"
+        type="button">
+  <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+    <circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/>
+  </svg>
+</button>
+{{end}}

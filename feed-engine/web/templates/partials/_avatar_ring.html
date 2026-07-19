@@ -1,0 +1,23 @@
+{{/*
+FACET avatar_ring
+  version: 1.0 | status: stable | layer: 5
+
+  inputs:
+    Realm  int — realm level 1–5; controls ring colour/animation
+
+  states:
+    r1 (grey) | r2 (blue) | r3 (teal-green) | r4 (purple-pink) | r5 (accent-spin)
+
+  children: none
+
+  signals:
+    emits:    none
+    receives: none
+
+  context:
+    user_avatar  → wraps avatar-img (class applied to user-av-wrap)
+    profile_header → xl avatar ring
+*/}}
+{{define "avatar_ring"}}
+<div class="avatar-ring realm-ring realm-ring--r{{.Realm}}" aria-hidden="true"></div>
+{{end}}

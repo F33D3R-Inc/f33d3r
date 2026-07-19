@@ -8,6 +8,11 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use uuid::Uuid;
 
+#[derive(Deserialize)]
+pub struct DeleteRequest {
+    pub url: String,
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub media_dir: String,
@@ -194,6 +199,43 @@ fn store_video(state: &AppState, data: &[u8], ext: &str) -> Result<Json<UploadRe
         primary: url.clone(),
         urls: vec![Derivative { variant: "original".into(), url, width: 0, height: 0 }],
     }))
+}
+
+// ── DELETE /v1/media — remove duplicate/orphaned media files ─────────────────
+// Body: {"url": "/static/media/posts/{uuid}-feed.webp"}
+// For post images: deletes all 3 variants (thumb, feed, full) by UUID prefix.
+// For HLS video dirs: deletes the entire job directory under media-derived/posts/.
+
+pub async fn delete_media(
+    State(state): State<AppState>,
+    Json(req): Json<DeleteRequest>,
+) -> Json<serde_json::Value> {
+    let url = req.url.trim();
+
+    if url.starts_with("/static/media/posts/") {
+        let fname = url.strip_prefix("/static/media/posts/").unwrap_or("");
+        // UUID is everything before the first "-thumb", "-feed", or "-full" suffix.
+        let id = fname
+            .strip_suffix(".webp").unwrap_or(fname)
+            .rsplitn(2, '-').last().unwrap_or("");
+        if !id.is_empty() {
+            let dir = PathBuf::from(&state.media_dir).join("posts");
+            for variant in &["thumb", "feed", "full"] {
+                let _ = std::fs::remove_file(dir.join(format!("{id}-{variant}.webp")));
+            }
+        }
+    } else if url.starts_with("/static/media/media-derived/posts/") {
+        let rel = url.strip_prefix("/static/media/media-derived/posts/").unwrap_or("");
+        let job_dir = rel.split('/').next().unwrap_or("");
+        if !job_dir.is_empty() {
+            let dir = PathBuf::from(&state.media_dir)
+                .join("media-derived/posts")
+                .join(job_dir);
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
+    Json(serde_json::json!({"ok": true}))
 }
 
 // ── Image helpers ─────────────────────────────────────────────────────────────

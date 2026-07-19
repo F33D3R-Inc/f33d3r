@@ -1,0 +1,43 @@
+{{/*
+FACET wallet_send_card
+  version: 1.0 | status: stable | layer: 2
+
+  inputs: none (form data collected by JS; recipient auto-filled by openTipModal)
+
+  states:
+    default | sending | success | error
+
+  children: none
+
+  signals:
+    emits:    tip (POST /events via sendTip() in wallet.js)
+    receives: none
+
+  context:
+    wallet_panel_overview → quick-send inline form
+*/}}
+{{define "wallet_send_card"}}
+<div class="wallet-section-head">
+  <h2 class="wallet-section-title">Send AET</h2>
+</div>
+<div class="wallet-send-card-wrap">
+  <div class="wallet-send-card">
+    <div>
+      <label class="wallet-field-label" for="tip-recipient">Recipient</label>
+      <input id="tip-recipient" class="wallet-send-input" type="text"
+             placeholder="@handle" autocomplete="off" autocorrect="off" autocapitalize="off">
+    </div>
+    <div>
+      <label class="wallet-field-label" for="tip-amount">Amount (AET)</label>
+      <div class="wallet-send-row">
+        <input id="tip-amount" class="wallet-send-input" type="number"
+               step="0.01" min="0.01" placeholder="0.00" style="flex:1">
+        <button class="btn-primary" style="white-space:nowrap;padding:0 18px" onclick="sendTip()">Send</button>
+      </div>
+    </div>
+    <p class="wallet-send-note">Network fee: 0.001 AET per transfer · Transfers are final</p>
+    <p class="wallet-send-result" id="tip-result"></p>
+  </div>
+  <p class="wallet-footer-note">To receive AET, share your handle — anyone can tip you from their wallet or from a post.</p>
+</div>
+{{end}}

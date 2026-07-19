@@ -14,6 +14,7 @@ use handlers::{feedback_handler, health_handler, rank_handler, AppState};
 
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
+        .route("/metrics", get(crate::observ::metrics_handler))
         .route("/rank", post(rank_handler))
         .route("/feedback", post(feedback_handler))
         .route("/health", get(health_handler))
@@ -24,4 +25,5 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/brain/signal", post(receive_signal))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
+        .layer(axum::middleware::from_fn(crate::observ::http_middleware))
 }

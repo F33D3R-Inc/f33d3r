@@ -1,22 +1,19 @@
 mod api;
 mod config;
 mod db;
+mod observ;
 mod validator;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tracing::info;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 use api::handlers::AppState;
 use config::AppConfig;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::registry()
-        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
-        .with(tracing_subscriber::fmt::layer())
-        .init();
+    observ::init("schema_registry")?;
 
     let cfg = AppConfig::load()?;
 

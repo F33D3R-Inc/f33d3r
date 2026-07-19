@@ -80,6 +80,7 @@ button { font-family: inherit; }
 /* ── Toast ────────────────────────────────────────────────────────────────── */
 .toast {
   background: color-mix(in srgb,var(--panel) 96%,transparent);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
   backdrop-filter: saturate(180%) blur(20px);
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -205,6 +206,7 @@ button { font-family: inherit; }
 .post-menu-dropdown {
   position: absolute; right: 0; top: calc(100% + 4px);
   background: color-mix(in srgb,var(--panel) 94%,transparent);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
   backdrop-filter: saturate(180%) blur(20px);
   border: 1px solid var(--border);
   border-radius: 14px;
@@ -226,7 +228,7 @@ button { font-family: inherit; }
 .post-menu-trigger:hover { background: color-mix(in srgb,var(--accent) 10%,transparent); color: var(--accent); }
 
 /* ── Compose modal ────────────────────────────────────────────────────────── */
-.compose-overlay { position: fixed; inset: 0; z-index: 60; background: rgba(0,0,0,.65); backdrop-filter: blur(8px); display: flex; align-items: flex-start; justify-content: center; padding: 48px 16px 16px; }
+.compose-overlay { position: fixed; inset: 0; z-index: 60; background: rgba(0,0,0,.65); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); display: flex; align-items: flex-start; justify-content: center; padding: 48px 16px 16px; }
 @media (max-width: 600px) { .compose-overlay { padding: 0; align-items: flex-end; } }
 
 /* ── Explore grid ─────────────────────────────────────────────────────────── */

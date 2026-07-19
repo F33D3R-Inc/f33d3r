@@ -2,106 +2,18 @@
 {{define "nav-active-home"}}active{{end}}
 {{define "mob-active-home"}}active{{end}}
 {{define "body"}}
-  <main class="f33d3r-main focus-feed" id="main-col">
-    <header class="top-bar">
-      <div class="text-4xl font-display font-bold lg:hidden" style="color:var(--accent)">F</div>
-      <h1 class="hidden lg:block">Home</h1>
-      <div style="flex:1;display:flex;justify-content:center">
-        <div class="surface-tabs">
-          <button class="surface-tab active" data-surface="feed"      onclick="switchSurface(this,'feed')">For You</button>
-          <button class="surface-tab"         data-surface="trending"  onclick="switchSurface(this,'trending')">Trending</button>
-          <button class="surface-tab"         data-surface="following" onclick="switchSurface(this,'following')">Following</button>
-          <button class="surface-tab"         data-surface="saved"     onclick="location.href='/bookmarks'">Saved</button>
-        </div>
-      </div>
-      <div class="engine-dot {{if not .EngineOnline}}offline{{end}}" id="engine-dot"
-           title="{{if .EngineOnline}}AethyrRank connected{{else}}Fallback mode{{end}}"></div>
-    </header>
-
-    <div id="feed-container"
-         hx-get="/feed?surface={{.Surface}}&session_id={{.SessionID}}"
-         hx-trigger="load, postCreated from:body, postEdited from:body"
-         hx-swap="innerHTML"
-         hx-indicator="#feed-spinner"
-         hx-on::after-swap="window.scrollTo({top:0,behavior:'smooth'})">
-    </div>
-    <div id="feed-spinner" class="htmx-indicator py-12 flex justify-center">
-      <div class="spinner"></div>
-    </div>
-  </main>
-
-  <aside class="f33d3r-right">
-
-    <!-- AET wallet widget -->
-    {{if .User}}
-    <div class="panel-card" style="margin-bottom:16px">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-        <span style="font-size:11px;font-weight:600;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.06em">Your Balance</span>
-        <a href="/wallet" style="font-size:11px;color:var(--accent);text-decoration:none;font-weight:500">View wallet</a>
-      </div>
-      <p id="right-aet-bal" style="font-size:28px;font-weight:700;color:var(--text-primary);letter-spacing:-.03em;margin-bottom:2px">—</p>
-      <p style="font-size:11px;color:var(--text-muted);margin-bottom:14px">AET tokens</p>
-      <div style="display:flex;gap:8px">
-        <a href="/wallet" class="btn-secondary" style="flex:1;text-align:center;font-size:12px;padding:7px 0;border-radius:var(--radius-full);text-decoration:none">Send</a>
-        <a href="/wallet" class="btn-secondary" style="flex:1;text-align:center;font-size:12px;padding:7px 0;border-radius:var(--radius-full);text-decoration:none">Receive</a>
-        <a href="/wallet" class="btn-secondary" style="flex:1;text-align:center;font-size:12px;padding:7px 0;border-radius:var(--radius-full);text-decoration:none">Swap</a>
-      </div>
-    </div>
-    {{end}}
-
-    <!-- Suggested for you -->
-    {{if .SuggestedUsers}}
-    <div class="panel-card" style="margin-bottom:16px">
-      <h3 class="panel-title">Suggested for you</h3>
-      {{range .SuggestedUsers}}
-      <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border-soft)">
-        <a href="/u/{{.Handle}}" style="text-decoration:none;flex-shrink:0">
-          {{if .AvatarURL}}
-          <img src="{{.AvatarURL}}" alt="" style="width:36px;height:36px;border-radius:50%;object-fit:cover">
-          {{else}}
-          {{$c := avatarColors .Handle}}<span style="width:36px;height:36px;border-radius:50%;background:linear-gradient(135deg,{{index $c 0}},{{index $c 1}});display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#fff;flex-shrink:0">{{firstChar .DisplayName}}</span>
-          {{end}}
-        </a>
-        <div style="flex:1;min-width:0">
-          <a href="/u/{{.Handle}}" style="text-decoration:none">
-            <p style="font-size:13px;font-weight:500;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{.DisplayName}}</p>
-            <p style="font-size:11px;color:var(--text-muted)">@{{.Handle}}</p>
-          </a>
-        </div>
-        <button hx-post="/api/follow" hx-target="this" hx-swap="outerHTML"
-                hx-vals='{"target_id":"{{.ID}}","action":"follow"}'
-                style="font-size:12px;font-weight:600;color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,transparent);border:1px solid color-mix(in srgb,var(--accent) 30%,transparent);border-radius:var(--radius-full);padding:5px 14px;cursor:pointer;white-space:nowrap;font-family:'DM Sans',sans-serif">Follow</button>
-      </div>
-      {{end}}
-      <a href="/explore" style="display:block;text-align:center;font-size:12px;color:var(--accent);padding:10px 0 2px;text-decoration:none;font-weight:500">Show more</a>
-    </div>
-    {{end}}
-
-    <!-- Trending -->
-    <div class="panel-card" style="margin-bottom:16px">
-      <h3 class="panel-title">Trending</h3>
-      {{if .TrendingTags}}
-      {{range $i, $t := .TrendingTags}}
-      <div class="trending-item">
-        <a href="/search?q=%23{{$t.Tag}}" style="text-decoration:none;display:block">
-          <p class="trending-cat">{{add $i 1}} · Trending</p>
-          <p class="trending-tag">#{{$t.Tag}}</p>
-          <p class="trending-count">{{$t.Count}} posts</p>
-        </a>
-      </div>
-      {{end}}
-      {{else}}
-      <p style="font-size:12px;color:var(--text-muted);margin-bottom:4px">Trending topics appear as the community grows.</p>
-      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px">
-        <a href="/search?q=music" class="explore-category-chip" style="font-size:11px">Music</a>
-        <a href="/search?q=art" class="explore-category-chip" style="font-size:11px">Art</a>
-        <a href="/search?q=tech" class="explore-category-chip" style="font-size:11px">Tech</a>
-        <a href="/search?q=gaming" class="explore-category-chip" style="font-size:11px">Gaming</a>
-      </div>
-      {{end}}
-    </div>
-
-  </aside>
-
-<script src="/static/js/pages/index.js?v=20260426"></script>
+<main class="f33d3r-main{{if .User}}{{if eq .User.MobileFeedView "reels"}} reels-enabled{{end}}{{end}}" id="main-col">
+  {{template "home_feed_header" (dict "EngineOnline" .EngineOnline "User" .User "PinnedSurfaces" .PinnedSurfaces "SessionID" .SessionID)}}
+  {{template "new_post_banner" .}}
+  <div id="feed-container"
+       hx-get="/facets/works/feed?surface=following"
+       hx-trigger="load, refreshFeed"
+       hx-swap="innerHTML">
+    {{/* Skeleton cards shown until HTMX replaces with real posts */}}
+    {{template "feed_skeletons" (dict "Count" 5)}}
+  </div>
+  <script>window._sessionID = '{{.SessionID}}';</script>
+</main>
 {{end}}
+{{define "right-panel"}}{{template "sidebar_right" .}}{{end}}
+{{define "page-scripts"}}<script src="/static/js/pages/index.js?v=20260622b" defer></script>{{end}}

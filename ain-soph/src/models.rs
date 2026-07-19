@@ -91,6 +91,19 @@ pub struct VoteRequest {
     pub option:   String,
 }
 
+/// Checkpoint payload sent by Aethyr Ledger after sealing a block.
+#[derive(Debug, Deserialize)]
+pub struct LedgerCheckpointRequest {
+    /// The ledger's block_number (incrementing integer).
+    pub block_id:    i64,
+    /// SHA-256 Merkle root of all event IDs in this block (lowercase hex, 64 chars).
+    pub events_root: String,
+    /// Number of ledger events in this block.
+    pub tx_count:    i64,
+    /// When the ledger sealed this block (ISO-8601 / RFC-3339).
+    pub sealed_at:   DateTime<Utc>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct TxHistoryQuery {
     #[serde(default = "default_limit")]

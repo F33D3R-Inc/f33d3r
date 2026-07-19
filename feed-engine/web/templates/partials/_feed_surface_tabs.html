@@ -1,0 +1,30 @@
+{{/*
+FACET feed_surface_tabs
+  version: 1.0 | status: stable | layer: 2
+
+  inputs:
+    Surfaces   []model.FeedSurface — user's pinned interest surfaces
+    SessionID  string              — passed through to feed HTMX requests
+
+  states:
+    default (may be empty when no surfaces pinned)
+
+  children:
+    feed_tab (one per surface)
+
+  signals:
+    emits:    pin_surface, unpin_surface (POST /events — result swaps this Facet)
+    receives: none
+
+  context:
+    index → injected into span#feed-surface-tabs after the core tabs row
+*/}}
+{{define "feed_surface_tabs"}}
+{{$sid := .SessionID}}
+{{range .Surfaces}}
+<button class="feed-tab user-surface-tab"
+        data-surface="{{.ID}}"
+        onclick="switchSurface(this,'{{.ID}}')"
+        title="{{.Label}}">{{.Emoji}} {{.Label}}</button>
+{{end}}
+{{end}}

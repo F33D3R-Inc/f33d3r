@@ -7,6 +7,9 @@ use axum::{
 use chrono::Utc;
 use serde_json::json;
 use sqlx::PgPool;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -24,9 +27,58 @@ use crate::{db, decision};
 
 #[derive(Clone)]
 pub struct AppState {
-    pub pool:       PgPool,
-    pub verity_url: String,
-    pub http:       reqwest::Client,
+    pub pool:              PgPool,
+    pub verity_url:        String,
+    pub http:              reqwest::Client,
+    /// Shared secret for X-Internal-Key auth on PIAL key endpoints.
+    pub internal_api_key:  String,
+    /// In-memory nexus tier cache: pial_shard → (tier, cached_at). 5-minute TTL.
+    pub nexus_tier_cache:  Arc<Mutex<HashMap<String, (i16, Instant)>>>,
+}
+
+const NEXUS_TIER_TTL: Duration = Duration::from_secs(300);
+
+/// Derives pial_shard_id from a PIAL UUID string using the same formula as Nantar.
+fn pial_shard_id(pial_id: &str) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(format!("{}:nexus-pial-shard-v1", pial_id).as_bytes()))
+}
+
+/// Returns the NEXUS tier for a PIAL, or 0 if not linked to any NEXUS.
+/// Checks in-memory cache first (5 min TTL). Falls back to Verity on miss.
+async fn nexus_tier_for_pial(state: &AppState, pial_id: &str) -> i16 {
+    let shard = pial_shard_id(pial_id);
+
+    // Cache read
+    {
+        let cache = state.nexus_tier_cache.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((tier, cached_at)) = cache.get(&shard) {
+            if cached_at.elapsed() < NEXUS_TIER_TTL {
+                return *tier;
+            }
+        }
+    }
+
+    // Cache miss — call Verity
+    let url = format!("{}/v1/nexus/tier/{}", state.verity_url, shard);
+    let tier: i16 = match state.http.get(&url).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            resp.json::<serde_json::Value>().await
+                .ok()
+                .and_then(|v| v["tier"].as_i64())
+                .map(|t| t as i16)
+                .unwrap_or(0)
+        }
+        Ok(_) | Err(_) => 0,
+    };
+
+    // Cache write
+    {
+        let mut cache = state.nexus_tier_cache.lock().unwrap_or_else(|e| e.into_inner());
+        cache.insert(shard, (tier, Instant::now()));
+    }
+
+    tier
 }
 
 // ── Helper: extract trusted caller from X-Elohim-PIAL header ─────────────────
@@ -354,23 +406,34 @@ pub async fn make_decision(
         trust_row.unwrap_or((1.0, 0.0, 0));
 
     // Verity attestation gate — consult KYC brain for age/creator gated actions.
+    // Uses NEXUS tier (shared across all linked personas) when available,
+    // falling back to the PIAL-level attestation tier.
     // Runs async, non-blocking. A Verity outage degrades to "no attestation" (not a hard fail).
     let verity_tier: i32 = {
         const VERITY_GATED: &[&str] = &["monetize", "adult_content", "node_relay", "payout_activation", "creator_signup"];
         if VERITY_GATED.contains(&req.action.as_str()) {
-            let url = format!("{}/v1/profile/{}", state.verity_url, req.pial_id);
-            match state.http.get(&url).send().await {
-                Ok(resp) if resp.status().is_success() => {
-                    resp.json::<serde_json::Value>().await
-                        .ok()
-                        .and_then(|v| v["creator_tier"].as_i64())
-                        .unwrap_or(0) as i32
+            // 1. NEXUS tier (shared across personas — preferred when linked)
+            let nexus_tier = nexus_tier_for_pial(&state, &req.pial_id.to_string()).await as i32;
+
+            // 2. PIAL attestation tier (per-account fallback)
+            let pial_tier: i32 = {
+                let url = format!("{}/v1/profile/{}", state.verity_url, req.pial_id);
+                match state.http.get(&url).send().await {
+                    Ok(resp) if resp.status().is_success() => {
+                        resp.json::<serde_json::Value>().await
+                            .ok()
+                            .and_then(|v| v["creator_tier"].as_i64())
+                            .unwrap_or(0) as i32
+                    }
+                    Ok(_) | Err(_) => {
+                        warn!(pial_id = %req.pial_id, action = %req.action, "Verity unavailable — proceeding without attestation");
+                        0
+                    }
                 }
-                Ok(_) | Err(_) => {
-                    warn!(pial_id = %req.pial_id, action = %req.action, "Verity unavailable — proceeding without attestation");
-                    0
-                }
-            }
+            };
+
+            // Use the higher of nexus tier and pial tier.
+            nexus_tier.max(pial_tier)
         } else {
             -1 // sentinel: action is not verity-gated
         }
@@ -638,6 +701,141 @@ pub async fn decision_log(
         Err(e) => {
             warn!(error = %e, "decision_log query failed");
             (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": "db_error" }))).into_response()
+        }
+    }
+}
+
+// ── GET /v1/nexus/tier/:shard ─────────────────────────────────────────────────
+// Proxy to Verity's NEXUS tier endpoint. Elohim Veni is the single trusted
+// gateway from Nantar to NEXUS state — no other brain calls Verity directly.
+pub async fn nexus_tier(
+    State(state): State<AppState>,
+    Path(shard): Path<String>,
+) -> impl IntoResponse {
+    let url = format!("{}/v1/nexus/tier/{}", state.verity_url, shard);
+    match state.http.get(&url).send().await {
+        Ok(resp) => {
+            let status = resp.status();
+            match resp.json::<serde_json::Value>().await {
+                Ok(body) => (StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::OK), Json(body)).into_response(),
+                Err(_)   => (StatusCode::BAD_GATEWAY, Json(json!({ "error": "verity_parse_error" }))).into_response(),
+            }
+        }
+        Err(e) => {
+            warn!(error = %e, "verity nexus_tier request failed");
+            (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "tier": 0, "tier_source": "unavailable", "is_suspended": false }))).into_response()
+        }
+    }
+}
+
+// ── Internal key guard ────────────────────────────────────────────────────────
+
+fn internal_key_ok(headers: &HeaderMap, cfg_key: &str) -> bool {
+    headers.get("X-Internal-Key")
+        .and_then(|v| v.to_str().ok())
+        .map(|k| !cfg_key.is_empty() && k == cfg_key)
+        .unwrap_or(false)
+}
+
+// ── POST /v1/pial/signing-key/register ───────────────────────────────────────
+/// Register or update a PIAL's ECDSA-P256 signing public key.
+/// Body: {"pial_id": "<uuid>", "public_key_b64": "...", "algorithm": "ECDSA-P256"}
+/// Auth: X-Internal-Key
+pub async fn register_signing_key(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    if !internal_key_ok(&headers, &state.internal_api_key) {
+        return (StatusCode::FORBIDDEN, Json(json!({"error":"forbidden"}))).into_response();
+    }
+    let pial_id_str = body["pial_id"].as_str().unwrap_or_default();
+    let pial_id = match Uuid::parse_str(pial_id_str) {
+        Ok(id) => id,
+        Err(_) => return (StatusCode::BAD_REQUEST, Json(json!({"error":"invalid_pial_id"}))).into_response(),
+    };
+    let pub_key = body["public_key_b64"].as_str().unwrap_or_default();
+    let algorithm = body["algorithm"].as_str().unwrap_or("ECDSA-P256");
+    if pub_key.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error":"public_key_b64 required"}))).into_response();
+    }
+    match db::upsert_signing_key(&state.pool, pial_id, pub_key, algorithm).await {
+        Ok(_)  => Json(json!({"ok": true})).into_response(),
+        Err(e) => {
+            tracing::error!("register_signing_key: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error":"db_error"}))).into_response()
+        }
+    }
+}
+
+// ── GET /v1/pial/:pial_id/signing-pubkey ─────────────────────────────────────
+/// Fetch a PIAL's ECDSA-P256 signing public key.
+/// Auth: X-Internal-Key
+pub async fn get_signing_pubkey(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(pial_id): Path<Uuid>,
+) -> impl IntoResponse {
+    if !internal_key_ok(&headers, &state.internal_api_key) {
+        return (StatusCode::FORBIDDEN, Json(json!({"error":"forbidden"}))).into_response();
+    }
+    match db::get_signing_key(&state.pool, pial_id).await {
+        Ok(Some(key)) => Json(json!({"public_key_b64": key})).into_response(),
+        Ok(None)      => (StatusCode::NOT_FOUND, Json(json!({"error":"not_found"}))).into_response(),
+        Err(e) => {
+            tracing::error!("get_signing_pubkey: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error":"db_error"}))).into_response()
+        }
+    }
+}
+
+// ── POST /v1/pial/ecdh-key/register ──────────────────────────────────────────
+/// Register or update a PIAL's ECDH-P256 public key.
+/// Body: {"pial_id": "<uuid>", "public_key_b64": "..."}
+/// Auth: X-Internal-Key
+pub async fn register_ecdh_key(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    if !internal_key_ok(&headers, &state.internal_api_key) {
+        return (StatusCode::FORBIDDEN, Json(json!({"error":"forbidden"}))).into_response();
+    }
+    let pial_id_str = body["pial_id"].as_str().unwrap_or_default();
+    let pial_id = match Uuid::parse_str(pial_id_str) {
+        Ok(id) => id,
+        Err(_) => return (StatusCode::BAD_REQUEST, Json(json!({"error":"invalid_pial_id"}))).into_response(),
+    };
+    let pub_key = body["public_key_b64"].as_str().unwrap_or_default();
+    if pub_key.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error":"public_key_b64 required"}))).into_response();
+    }
+    match db::upsert_ecdh_key(&state.pool, pial_id, pub_key).await {
+        Ok(_)  => Json(json!({"ok": true})).into_response(),
+        Err(e) => {
+            tracing::error!("register_ecdh_key: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error":"db_error"}))).into_response()
+        }
+    }
+}
+
+// ── GET /v1/pial/:pial_id/ecdh-pubkey ────────────────────────────────────────
+/// Fetch a PIAL's ECDH-P256 public key.
+/// Auth: X-Internal-Key
+pub async fn get_ecdh_pubkey(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(pial_id): Path<Uuid>,
+) -> impl IntoResponse {
+    if !internal_key_ok(&headers, &state.internal_api_key) {
+        return (StatusCode::FORBIDDEN, Json(json!({"error":"forbidden"}))).into_response();
+    }
+    match db::get_ecdh_key(&state.pool, pial_id).await {
+        Ok(Some(key)) => Json(json!({"public_key_b64": key})).into_response(),
+        Ok(None)      => (StatusCode::NOT_FOUND, Json(json!({"error":"not_found"}))).into_response(),
+        Err(e) => {
+            tracing::error!("get_ecdh_pubkey: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error":"db_error"}))).into_response()
         }
     }
 }

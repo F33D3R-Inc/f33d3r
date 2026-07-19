@@ -307,6 +307,11 @@ spec:
                 secretKeyRef:
                   name: f33d3r-secrets
                   key: security-db-url
+            - name: INTERNAL_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: f33d3r-secrets
+                  key: internal-api-key
             - name: RUST_LOG
               value: "info"
           resources:
@@ -411,6 +416,96 @@ spec:
   ports:
     - port: 8090
       targetPort: 8090
+
+---
+# ── Themis — private Bitcoin marketplace brain ────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: themis
+  namespace: f33d3r
+  labels:
+    brain: themis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      brain: themis
+  template:
+    metadata:
+      labels:
+        brain: themis
+    spec:
+      containers:
+        - name: themis
+          image: registry.gitlab.com/f33d3r-core/platform/themis:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8100
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: f33d3r-secrets
+                  key: market-db-url
+            - name: INTERNAL_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: f33d3r-secrets
+                  key: internal-api-key
+            - name: THEMIS_ECDH_PRIVKEY_B64
+              valueFrom:
+                secretKeyRef:
+                  name: f33d3r-secrets
+                  key: themis-ecdh-privkey-b64
+            - name: NANTAR_URL
+              value: "http://nantar:8081"
+            - name: ELOHIM_VENI_URL
+              value: "http://elohim-veni:8093"
+            - name: MEMPOOL_WS_URL
+              value: "wss://mempool.space/api/v1/ws"
+            - name: CONF_THRESHOLD_LOW
+              value: "1"
+            - name: CONF_THRESHOLD_HIGH
+              value: "3"
+            - name: RUST_LOG
+              value: "info"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8100
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8100
+            initialDelaySeconds: 15
+            periodSeconds: 10
+      imagePullSecrets:
+        - name: gitlab-registry-secret
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: themis
+  namespace: f33d3r
+  labels:
+    brain: themis
+spec:
+  selector:
+    brain: themis
+  ports:
+    - port: 8100
+      targetPort: 8100
 
 ---
 # ── Schema Registry ───────────────────────────────────────────────────────────

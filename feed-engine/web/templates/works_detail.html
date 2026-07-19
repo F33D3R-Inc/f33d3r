@@ -1,0 +1,90 @@
+{{define "title"}}{{if .Title}}{{.Title}}{{else}}Work · F33D3R{{end}}{{end}}
+{{/* Open Graph / Twitter card — rich preview when a work link is shared to Instagram,
+     Snapchat, iMessage, X, etc. og:image is SFW-only (computed server-side): adult /
+     private / walled works fall back to the author avatar or platform default, so no
+     NSFW media ever leaks into a link preview. */}}
+{{define "head-extra"}}
+{{if .Work}}
+<meta property="og:type" content="article">
+<meta property="og:title" content="{{.OGTitle}}">
+<meta property="og:description" content="{{.OGDesc}}">
+<meta property="og:image" content="{{.OGImage}}">
+<meta property="og:url" content="{{.OGUrl}}">
+<meta property="og:site_name" content="f33d3r">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:site" content="@f33d3r">
+<meta name="twitter:title" content="{{.OGTitle}}">
+<meta name="twitter:description" content="{{.OGDesc}}">
+<meta name="twitter:image" content="{{.OGImage}}">
+{{end}}
+{{end}}
+{{define "body"}}
+<main class="f33d3r-main post-detail-main" id="main-col">
+  {{template "page_header" (dict "Title" "Post" "BackURL" "#back")}}
+  {{if .Work}}
+  {{$ctx := dict "CurrentUserHandle" .CurrentUserHandle "User" .User}}
+
+  {{if .PrivateWall}}
+  {{/* Private account — the work body/media are never rendered to the public. */}}
+  <div class="nsfw-gate pcd-gate" style="margin:24px 16px" onclick="event.stopPropagation()">
+    <div class="nsfw-gate-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+      </svg>
+    </div>
+    <p class="nsfw-gate-title">This account is private</p>
+    <p class="nsfw-gate-sub">Only approved followers can see <a href="/{{.Work.AuthorHandle}}" class="profile-website">@{{.Work.AuthorHandle}}</a>'s works.</p>
+    {{if .IsAnon}}<a href="/login" class="nsfw-gate-unlock">Log in</a>{{end}}
+  </div>
+
+  {{else if .WorkGate}}
+  {{/* Adult work — body/media walled. "auth" = logged-out sign-up/sign-in (no NSFW to public). */}}
+  <div class="nsfw-gate pcd-gate" style="margin:24px 16px" onclick="event.stopPropagation()">
+    <div class="nsfw-gate-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24"/>
+        <line x1="1" y1="1" x2="23" y2="23"/>
+      </svg>
+    </div>
+    <p class="nsfw-gate-title">18+ Content</p>
+    {{if eq .WorkGate "auth"}}
+    <p class="nsfw-gate-sub"><a href="/{{.Work.AuthorHandle}}" class="profile-website">@{{.Work.AuthorHandle}}</a> posted 18+ content. Sign up or log in to view it.</p>
+    <a href="/signup" class="nsfw-gate-unlock">Sign up</a>
+    <a href="/login" class="btn-ghost" style="margin-top:8px">Log in</a>
+    {{else}}
+    <p class="nsfw-gate-sub">This 18+ content can't be shown to your account.</p>
+    {{end}}
+  </div>
+
+  {{else}}
+  {{range .ParentChain}}
+  {{template "work_card" (dict "W" . "Ctx" $ctx)}}
+  {{end}}
+
+  {{/* Focal work — detail view */}}
+  {{template "work_detail_focus" (dict "W" .Work "User" .User "Ctx" $ctx)}}
+
+  {{/* Reply stream — microconversation containers + lone reply cards, merged by recency */}}
+  <div id="work-replies"
+       hx-get="/facets/works/replies/{{.Work.ID}}"
+       hx-trigger="refreshFeed"
+       hx-swap="innerHTML"
+       aria-live="polite">
+    {{if .ReplyStream}}
+    {{range .ReplyStream}}
+    {{if .IsMicroconversation}}
+    {{template "microconversation" (dict "MC" .Microconversation "Ctx" $ctx)}}
+    {{else}}
+    {{template "work_card" (dict "W" .Work "Ctx" $ctx)}}
+    {{end}}
+    {{end}}
+    {{else}}
+    {{template "stateEmpty" (dict "Title" "No replies yet" "Sub" "Be the first to reply")}}
+    {{end}}
+  </div>
+  {{end}}
+
+  {{end}}
+</main>
+{{end}}
+{{define "right-panel"}}{{template "sidebar_right" .}}{{end}}

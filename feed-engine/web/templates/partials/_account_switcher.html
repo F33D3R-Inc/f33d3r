@@ -1,0 +1,65 @@
+{{/*
+FACET account_switcher
+  version: 1.1 | status: stable | layer: 3
+
+  inputs:
+    .LinkedAccounts  []model.LinkedAccount  — all accounts bound to current PIAL
+    .User            User                   — currently active account
+
+  states:
+    default | single (only one account bound)
+
+  children:
+    user_avatar (inline)
+
+  signals:
+    emits:    switch_account (POST /events → HX-Redirect: /settings/personas)
+    receives: none
+
+  context:
+    settings/personas.html → accounts section
+*/}}
+{{define "account_switcher"}}
+<div class="account-switcher">
+
+  {{range .LinkedAccounts}}
+  <div class="account-switcher-row {{if .IsActive}}account-switcher-row--active{{end}}">
+    {{if .IsActive}}
+    <div class="account-switcher-row-inner">
+    {{else}}
+    <button class="account-switcher-row-inner"
+            hx-post="/events"
+            hx-vals='{"event_type":"switch_account","account_id":"{{.ID}}"}'
+            hx-swap="none"
+            aria-label="Switch to @{{.Handle}}">
+    {{end}}
+      {{template "user_avatar" (dict "Handle" .Handle "AvatarURL" .AvatarURL "DisplayName" .DisplayName "Realm" 1 "Size" "sm")}}
+      <div class="account-switcher-info">
+        <div class="account-switcher-name">{{if .DisplayName}}{{.DisplayName}}{{else}}@{{.Handle}}{{end}}</div>
+        <div class="account-switcher-handle">@{{.Handle}}{{if .IsPrimary}} &middot; primary{{end}}</div>
+      </div>
+      <div class="account-switcher-status">
+        {{if .IsActive}}
+          <svg class="account-switcher-check" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24" aria-label="Active account"><path d="M20 6 9 17l-5-5"/></svg>
+        {{else}}
+          <svg class="account-switcher-chevron" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+        {{end}}
+      </div>
+    {{if .IsActive}}
+    </div>
+    {{else}}
+    </button>
+    {{end}}
+  </div>
+  {{end}}
+
+  <button class="account-switcher-add"
+          hx-get="/facets/add_account_modal"
+          hx-target="#overlay-slot"
+          hx-swap="innerHTML">
+    <svg fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24" style="width:16px;height:16px;flex-shrink:0"><path d="M12 5v14M5 12h14"/></svg>
+    Add another account
+  </button>
+
+</div>
+{{end}}

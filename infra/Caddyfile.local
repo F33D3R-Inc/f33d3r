@@ -8,6 +8,13 @@
 https://localhost:8443 {
   tls internal
 
+  # Compress text responses (HTML/CSS/JS/JSON) — defense-in-depth alongside the
+  # feed-engine gzip middleware for clients that reach the app via Caddy.
+  # Exclude the SSE channel: compressing /api/events buffers the stream and
+  # facet/Gnosis frames never reach the client.
+  @compressible not path /api/events
+  encode @compressible zstd gzip
+
   reverse_proxy feed-engine:8081 {
     header_up Host {host}
     header_up X-Real-IP {remote_host}
@@ -21,6 +28,9 @@ https://localhost:8443 {
 # Access from other devices: https://XXXG-00W0.local:8443
 https://XXXG-00W0.local:8443 {
   tls internal
+
+  @compressible not path /api/events
+  encode @compressible zstd gzip
 
   reverse_proxy feed-engine:8081 {
     header_up Host {host}

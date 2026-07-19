@@ -7,12 +7,14 @@ The PIAL enforcement engine for F33D3R.
 **Database:** f33d3r_security (PostgreSQL 18)  
 **Language:** Rust 1.95.0 (axum, sqlx, tokio)
 
-Elohim Veni is the security and identity enforcement brain. It owns capability state for every PIAL root, makes
-deterministic enforcement decisions, and maintains an immutable audit log of every decision.
+Elohim Veni is the security moderation-decision brain. It does NOT own auth — the PIAL record (feed-engine) is the
+single system of record and sole authority for verification, role, and capabilities; only the user or an admin overrides
+it. Elohim Veni is a pipeline: it makes deterministic moderation decisions, writes capability changes to the PIAL
+record, and keeps an immutable audit log of every decision.
 
-**Architecture rule:** Elohim Veni enforces capabilities. It does NOT make ranking decisions, infer psychology, or
-understand content. It receives facts (this PIAL attempted action X) and returns decisions (allow / deny) based purely
-on capability state.
+**Architecture rule:** Elohim Veni decides and writes capability changes to PIAL. It does NOT make ranking decisions,
+infer psychology, or understand content. It receives facts (this PIAL attempted action X) and writes decisions (allow /
+deny) to the PIAL record.
 
 ---
 

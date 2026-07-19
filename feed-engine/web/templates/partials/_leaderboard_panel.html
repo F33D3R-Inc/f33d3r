@@ -1,0 +1,117 @@
+{{/*
+FACET leaderboard_panel
+  version: 2.0 | status: stable | layer: 2
+
+  inputs:
+    .User                User               — current viewer (nil = logged out)
+    .DailyGlobalBoard    []LeaderboardEntry — top 10 global, today
+    .DailyCountryBoard   []LeaderboardEntry — top 10 for viewer's country, today
+    .AllTimeGlobalBoard  []LeaderboardEntry — top 10 global, cumulative XP
+    .AllTimeCountryBoard []LeaderboardEntry — top 10 for viewer's country, cumulative XP
+    .CountryName         string             — display name e.g. "Japan" (empty if no country set)
+    .MyRank              int                — viewer's global rank today (0 = no XP yet)
+    .MyXPToday           int64              — viewer's XP earned today
+    .InTop10             bool               — true if viewer appears in DailyGlobalBoard
+
+  states:
+    default | period-alltime | period-daily | tab-global | tab-country
+
+  children:
+    leaderboard_row
+
+  signals:
+    emits:    none
+    receives: leaderboard_refresh (SSE) → JS calls htmx.trigger(panel, 'lbRefresh') → hx-get re-fetches
+
+  context:
+    achievements.html → below XP hero, above achievement tabs
+*/}}
+{{define "leaderboard_panel"}}
+<div id="leaderboard-panel" class="lb-panel"
+     hx-get="/facets/leaderboard_panel"
+     hx-trigger="lbRefresh"
+     hx-swap="outerHTML">
+
+  <div class="lb-header">
+    <span class="lb-title">Leaderboard</span>
+  </div>
+
+  {{/* Period selector — All-time / Daily */}}
+  <div class="lb-periods" role="tablist" aria-label="Period">
+    <button class="lb-tab lb-tab--active" id="lb-period-alltime"
+            onclick="lbPeriod('alltime')" role="tab" aria-selected="true">
+      All-time
+    </button>
+    <button class="lb-tab" id="lb-period-daily"
+            onclick="lbPeriod('daily')" role="tab" aria-selected="false">
+      Daily
+    </button>
+  </div>
+
+  {{/* Region selector — Global / Country */}}
+  <div class="lb-tabs" role="tablist" aria-label="Region">
+    <button class="lb-tab lb-tab--active" id="lb-tab-global"
+            onclick="lbTab('global')" role="tab" aria-selected="true" aria-controls="lb-board-alltime-global">
+      🌐 Global
+    </button>
+    <button class="lb-tab" id="lb-tab-country"
+            onclick="lbTab('country')" role="tab" aria-selected="false" aria-controls="lb-board-alltime-country">
+      {{if .CountryName}}{{.CountryName}}{{else}}My Country{{end}}
+    </button>
+  </div>
+
+  {{/* All-time Global (default visible) */}}
+  <div class="lb-board" id="lb-board-alltime-global" role="tabpanel" aria-labelledby="lb-period-alltime lb-tab-global">
+    {{if .AllTimeGlobalBoard}}
+      {{range .AllTimeGlobalBoard}}{{template "leaderboard_row" .}}{{end}}
+    {{else}}
+    <div class="lb-empty">No XP earned yet — be first on the board.</div>
+    {{end}}
+  </div>
+
+  {{/* All-time Country */}}
+  <div class="lb-board lb-board--hidden" id="lb-board-alltime-country" role="tabpanel" aria-labelledby="lb-period-alltime lb-tab-country">
+    {{if not .CountryName}}
+    <div class="lb-empty">
+      Add your location in <a href="/settings" class="lb-link">profile settings</a> to see your country leaderboard.
+    </div>
+    {{else if .AllTimeCountryBoard}}
+      {{range .AllTimeCountryBoard}}{{template "leaderboard_row" .}}{{end}}
+    {{else}}
+    <div class="lb-empty">No XP earned yet in {{.CountryName}}.</div>
+    {{end}}
+  </div>
+
+  {{/* Daily Global */}}
+  <div class="lb-board lb-board--hidden" id="lb-board-daily-global" role="tabpanel" aria-labelledby="lb-period-daily lb-tab-global">
+    {{if .DailyGlobalBoard}}
+      {{range .DailyGlobalBoard}}{{template "leaderboard_row" .}}{{end}}
+    {{else}}
+    <div class="lb-empty">No activity yet today — be first on the board.</div>
+    {{end}}
+  </div>
+
+  {{/* Daily Country */}}
+  <div class="lb-board lb-board--hidden" id="lb-board-daily-country" role="tabpanel" aria-labelledby="lb-period-daily lb-tab-country">
+    {{if not .CountryName}}
+    <div class="lb-empty">
+      Add your location in <a href="/settings" class="lb-link">profile settings</a> to see your country leaderboard.
+    </div>
+    {{else if .DailyCountryBoard}}
+      {{range .DailyCountryBoard}}{{template "leaderboard_row" .}}{{end}}
+    {{else}}
+    <div class="lb-empty">No activity yet today in {{.CountryName}}.</div>
+    {{end}}
+  </div>
+
+  {{/* Viewer's daily rank footer — hidden when all-time period is active */}}
+  {{if and .User (not .InTop10) (gt .MyXPToday 0)}}
+  <div class="lb-my-rank" id="lb-my-rank">
+    <span class="lb-my-rank-label">Your rank today</span>
+    <span class="lb-my-rank-num">#{{.MyRank}}</span>
+    <span class="lb-my-rank-xp">{{.MyXPToday}} XP</span>
+  </div>
+  {{end}}
+
+</div>
+{{end}}

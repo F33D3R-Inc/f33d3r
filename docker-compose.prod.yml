@@ -93,8 +93,10 @@ services:
 
   feed-engine:
     build:
-      context: ./feed-engine
-      dockerfile: Dockerfile
+      # Context is the repo root so the build can reach the gnosis-malkuth WASM core
+      # (sibling of feed-engine). A root .dockerignore keeps the context tight.
+      context: .
+      dockerfile: feed-engine/Dockerfile
     restart: unless-stopped
     environment:
       PORT: "8081"
@@ -103,14 +105,24 @@ services:
       AETHYRRANK_URL: "http://aethyrrank-engine:8080"
       ZIOR_URL: "http://zior-engine:8082"
       AIN_SOPH_URL: "http://ain-soph:8089"
-      VOVIN_URL: "http://aethyr-msg:8092"
       ZODACARE_URL: "http://zodacare:8090"
       ELOHIM_VENI_URL: "http://elohim-veni:8093"
       VERITY_URL: "http://verity:8095"
       EKYC_URL: "http://ekyc:8099"
       LEDGER_URL: "http://aethyr-ledger:8096"
       CAEOR_URL: "http://caeor:8086"
-      THESSALON_URL: "http://thessalon:8084"
+      TRANSCODING_URL: "http://transcoding:8085"
+      THEMIS_URL: "http://themis:8100"
+      ASTRAON_URL: "http://astraon:8088"
+      ALEXANDRIA_URL: "http://alexandria:8098"
+      HERALD_URL: "http://herald:8105"
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY}"
+      MEDIA_TOKEN_SECRET: "${MEDIA_TOKEN_SECRET}"
+      METRICS_TOKEN: "${METRICS_TOKEN:-}"
+      KAFKA_BROKERS: "sitra-achra:9092"
+      TIINGO_API_KEY: "${TIINGO_API_KEY:-}"
+      GIPHY_API: "${GIPHY_API:-}"
+      TRANSLATION_API_URL: "http://libretranslate:5000"
       REDIS_URL: "redis://redis:6379"
       SESSION_SECRET: "${SESSION_SECRET}"
       SHOW_SCORES: "${SHOW_SCORES:-false}"
@@ -126,7 +138,7 @@ services:
         condition: service_healthy
       caeor:
         condition: service_healthy
-      thessalon:
+      transcoding:
         condition: service_healthy
     healthcheck:
       test: [ "CMD", "wget", "-qO-", "http://localhost:8081/api/health" ]
@@ -145,34 +157,13 @@ services:
       PORT: "8089"
       DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD}@postgres:5432/f33d3r_wallet?sslmode=disable"
       AETHYRRANK_URL: "http://aethyrrank-engine:8080"
+      FEED_ENGINE_URL: "http://feed-engine:8081"
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY}"
     depends_on:
       postgres:
         condition: service_healthy
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:8089/health" ]
-      interval: 10s
-      timeout: 3s
-      retries: 5
-      start_period: 20s
-
-  aethyr-msg:
-    build:
-      context: ./aethyr-msg
-      dockerfile: docker/Dockerfile
-    restart: unless-stopped
-    environment:
-      RUST_LOG: "${RUST_LOG:-info}"
-      PORT: "8092"
-      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD}@postgres:5432/f33d3r_msg?sslmode=disable"
-      REGISTRY_URL: "http://aethyr-schema-registry:8079"
-      AETHYRRANK_URL: "http://aethyrrank-engine:8080"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      aethyr-schema-registry:
-        condition: service_healthy
-    healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:8092/health" ]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -188,6 +179,7 @@ services:
       PORT: "8093"
       DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD}@postgres:5432/f33d3r_security?sslmode=disable"
       VERITY_URL: "http://verity:8095"
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY}"
     depends_on:
       postgres:
         condition: service_healthy
@@ -297,30 +289,6 @@ services:
       retries: 5
       start_period: 60s
 
-  thessalon:
-    build:
-      context: ./thessalon
-      dockerfile: docker/Dockerfile
-    restart: unless-stopped
-    environment:
-      RUST_LOG: "${RUST_LOG:-info}"
-      PORT: "8084"
-      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD}@postgres:5432/f33d3r_commerce?sslmode=disable"
-      AIN_SOPH_URL: "http://ain-soph:8089"
-      VERITY_URL: "http://verity:8095"
-      EKYC_URL: "http://ekyc:8099"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      ain-soph:
-        condition: service_healthy
-    healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:8084/health" ]
-      interval: 10s
-      timeout: 3s
-      retries: 5
-      start_period: 60s
-
   # ── eKYC brain — face match, OCR, anti-spoof (Python, port 8099) ─────────
   ekyc:
     build:
@@ -336,29 +304,261 @@ services:
       retries: 3
       start_period: 60s
 
-  # ── Transcoding brain — ffmpeg video processing ────────────────────────────
-  # Dedicated service for video transcoding (H.264/AAC mp4, HLS segments, thumbnails).
-  # Runs on a separate server in production — set TRANSCODING_URL env var to that host.
   transcoding:
     build:
       context: ./transcoding
       dockerfile: Dockerfile
     restart: unless-stopped
     environment:
-      PORT: "8098"
-      MEDIA_DIR: "/data/media"
-      OUTPUT_DIR: "/data/transcoded"
-      MAX_CONCURRENT: "2"
       RUST_LOG: "${RUST_LOG:-info}"
+      PORT: "8085"
+      MEDIA_DIR: "/data/media"
     volumes:
       - f33d3r_media:/data/media
-      - f33d3r_transcoded:/data/transcoded
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8098/health"]
-      interval: 30s
-      timeout: 5s
+      test: ["CMD", "curl", "-f", "http://localhost:8085/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 60s
+
+  # ── Astraon — astral/discovery brain (Rust, port 8088) ──────────────────────
+  astraon:
+    build:
+      context: ./astraon
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+      PORT: "8088"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD}@postgres:5432/f33d3r_feed?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8088/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 60s
+
+  # ── Alexandria — library brain (Rust, port 8098) ────────────────────────────
+  alexandria:
+    build:
+      context: ./alexandria
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+      PORT: "8098"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD}@postgres:5432/f33d3r_library?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8098/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+
+  # ── Herald — web-push / notification brain (Rust, port 8105) ────────────────
+  herald:
+    build:
+      context: ./herald
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+      PORT: "8105"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD}@postgres:5432/f33d3r_herald?sslmode=disable"
+      VAPID_PUBLIC_KEY: "${VAPID_PUBLIC_KEY:-not-configured}"
+      VAPID_PRIVATE_KEY: "${VAPID_PRIVATE_KEY:-}"
+      VAPID_SUBJECT: "${VAPID_SUBJECT:-mailto:admin@f33d3r.com}"
+    mem_limit: 512m
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8105/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+
+  # ── Lore — notification fan-out / digest brain (Rust, port 8106) ────────────
+  lore:
+    build:
+      context: ./lore
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+      PORT: "8106"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD}@postgres:5432/f33d3r_lore?sslmode=disable"
+      HERALD_URL: "http://herald:8105"
+    mem_limit: 512m
+    depends_on:
+      postgres:
+        condition: service_healthy
+      herald:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8106/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+
+  # ── Nexus Sweep — periodic Verity reconciliation daemon (Rust, no HTTP) ─────
+  nexus-sweep:
+    build:
+      context: ./nexus-sweep
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD}@postgres:5432/f33d3r_verity?sslmode=disable"
+      SWEEP_INTERVAL_SECS: "900"
+    depends_on:
+      verity:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+  # ── Help Center — docs site served at help.f33d3r.com ──────────────────────
+  help-center:
+    build:
+      context: ./help-center
+      dockerfile: Dockerfile
+    image: f33d3r-help-center:latest
+    restart: unless-stopped
+    volumes:
+      - ./help-center/docs:/app/docs
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/"]
+      interval: 10s
+      timeout: 3s
       retries: 3
-      start_period: 10s
+      start_period: 15s
+
+  libretranslate:
+    image: libretranslate/libretranslate:latest
+    restart: unless-stopped
+    environment:
+      LT_LOAD_ONLY: "en,es,fr,de,pt,it,ja,ko,zh,ar,ru,hi,tr,nl,pl,sv,uk,he,id,vi"
+      LT_DISABLE_WEB_UI: "true"
+    volumes:
+      - libretranslate_data:/home/libretranslate/.local
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:5000/languages')\""]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+  # ── Sitra Achra — Redpanda/Kafka event backbone ───────────────────────────
+  sitra-achra:
+    image: redpandadata/redpanda:latest
+    command:
+      - redpanda
+      - start
+      - --smp 2
+      - --memory 1G
+      - --overprovisioned
+      - --kafka-addr PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr PLAINTEXT://sitra-achra:9092
+      - --pandaproxy-addr sitra-achra:8082
+      - --advertise-pandaproxy-addr sitra-achra:8082
+      - --set redpanda.auto_create_topics_enabled=true
+    restart: unless-stopped
+    volumes:
+      - sitra_achra_data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster info --brokers localhost:9092 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # ── Abraxas Shield — content safety pipeline (Rust, Kafka consumer) ────────
+  # Built with visual-nsfw feature: full ONNX image scanning on AVX2 CPUs (CCX33+).
+  abraxas-shield:
+    build:
+      context: ./abraxas-shield
+      dockerfile: Dockerfile
+      args:
+        FEATURES: "visual-nsfw"
+    restart: unless-stopped
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+      KAFKA_BROKERS: "sitra-achra:9092"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD}@postgres:5432/f33d3r_feed?sslmode=disable"
+      SCAN_VERSION: "3.0"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      sitra-achra:
+        condition: service_healthy
+
+  # ── Abraxas Core — ranking signal pipeline (Rust, Kafka consumer) ──────────
+  abraxas-core:
+    build:
+      context: ./abraxas-core
+    restart: unless-stopped
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+      KAFKA_BROKERS: "sitra-achra:9092"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD}@postgres:5432/f33d3r_feed?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      sitra-achra:
+        condition: service_healthy
+
+  # ── Themis — private Bitcoin marketplace brain (Rust, port 8100) ─────────────
+  themis:
+    build:
+      context: ./themis
+    restart: unless-stopped
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+      PORT: "8100"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD}@postgres:5432/f33d3r_market?sslmode=disable"
+      NANTAR_URL: "http://feed-engine:8081"
+      ELOHIM_VENI_URL: "http://elohim-veni:8093"
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY}"
+      MEMPOOL_WS_URL: "wss://mempool.space/api/v1/ws"
+      XRP_WS_URL: "${XRP_WS_URL:-wss://xrpl.ws}"
+      THEMIS_ECDH_PRIVKEY_B64: "${THEMIS_ECDH_PRIVKEY_B64}"
+      CONF_THRESHOLD_LOW: "1"
+      CONF_THRESHOLD_HIGH: "3"
+      AIN_SOPH_URL: "http://ain-soph:8089"
+      VERITY_URL: "http://verity:8095"
+      STRIPE_SECRET_KEY: "${STRIPE_SECRET_KEY:-}"
+      STRIPE_WEBHOOK_SECRET: "${STRIPE_WEBHOOK_SECRET:-}"
+      STRIPE_PUBLISHABLE_KEY: "${STRIPE_PUBLISHABLE_KEY:-}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      elohim-veni:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8100/health" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 120s
+
+  # Tor hidden service — mirrors f33d3r.com at the vanity .onion address
+  tor:
+    build:
+      context: ./infra/tor
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      feed-engine:
+        condition: service_healthy
 
   # HTTPS reverse proxy — Let's Encrypt certs for f33d3r.com
   caddy:
@@ -374,10 +574,13 @@ services:
     depends_on:
       feed-engine:
         condition: service_healthy
+      help-center:
+        condition: service_healthy
 
 volumes:
   postgres_data:
   caddy_data:
   caddy_config:
   f33d3r_media:
-  f33d3r_transcoded:
+  libretranslate_data:
+  sitra_achra_data:

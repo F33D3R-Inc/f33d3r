@@ -80,3 +80,9 @@ cold_start_explore_count = 4
 
 [model_store]
 surfaces = ["feed", "explore", "search", "notifications"]
+
+# ── In-network boost ───────────────────────────────────────────────────────────
+# Score bonus applied to content from creators the requesting user follows.
+# Mirrors X's in-network content pool priority without hard pool separation.
+[network]
+network_boost = 0.08

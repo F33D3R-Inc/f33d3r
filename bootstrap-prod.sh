@@ -29,7 +29,7 @@ info "Compose $(docker compose version --short 2>/dev/null || echo ok)"
 # ── 2. Check service dirs ─────────────────────────────────────────────────────
 section "Checking service directories"
 MISSING=""
-for d in feed-engine aethyrrank-engine zior-engine aethyr-schema-registry ain-soph aethyr-msg; do
+for d in feed-engine aethyrrank-engine zior-engine aethyr-schema-registry ain-soph gnosis-malkuth; do
   [ ! -d "$d" ] && MISSING="$MISSING $d"
 done
 if [ -n "$MISSING" ]; then
@@ -80,6 +80,24 @@ info "Subsequent deploys are fast (Docker layer cache)"
 echo ""
 
 docker compose -f docker-compose.prod.yml --env-file .env.prod up --build -d
+
+# ── 5b. Sync Gnosis Malkuth WASM core onto the host static dir ─────────────────
+# feed-engine bind-mounts ./feed-engine/web/static over /app/web/static, masking
+# the Malkuth crypto core (Pillar 2 E2EE) the image bakes in. messages.html imports
+# /static/js/malkuth/gnosis_malkuth.js, so copy the built core out of the image
+# onto the bind-mounted host dir or the E2EE pillar 404s. (deploy.sh does the same.)
+section "Syncing Gnosis Malkuth WASM core"
+FE_IMG=$(docker compose -f docker-compose.prod.yml --env-file .env.prod images -q feed-engine 2>/dev/null | head -n1)
+if [ -n "$FE_IMG" ]; then
+  mkdir -p feed-engine/web/static/js/malkuth
+  FE_CID=$(docker create "$FE_IMG")
+  docker cp "$FE_CID:/app/web/static/js/malkuth/gnosis_malkuth.js"      feed-engine/web/static/js/malkuth/gnosis_malkuth.js
+  docker cp "$FE_CID:/app/web/static/js/malkuth/gnosis_malkuth_bg.wasm" feed-engine/web/static/js/malkuth/gnosis_malkuth_bg.wasm
+  docker rm "$FE_CID" >/dev/null
+  info "Malkuth WASM core synced to feed-engine/web/static/js/malkuth/"
+else
+  err "feed-engine image not found — Malkuth WASM core not synced; E2EE messaging will 404."
+fi
 
 # ── 6. Wait and verify ────────────────────────────────────────────────────────
 section "Waiting for services (30s)"

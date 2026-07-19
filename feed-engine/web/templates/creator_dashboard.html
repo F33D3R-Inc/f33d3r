@@ -1,0 +1,25 @@
+{{define "title"}}Creator Dashboard · F33D3R{{end}}
+{{define "nav-active-create"}}active{{end}}
+{{define "body"}}
+<div class="settings-shell" id="main-col">
+  {{template "creator_nav" .}}
+  <div class="settings-content-panel" id="creator-panel" aria-live="polite">
+    {{template "creator_overview" .}}
+  </div>
+</div>
+{{end}}
+{{define "right-panel"}}{{template "sidebar_right" .}}{{end}}
+{{define "page-scripts"}}
+<script src="/static/js/pages/creator_dashboard.js?v=20260622b" defer></script>
+<script>
+function creatorNavActivate(el) {
+  document.querySelectorAll('#creator-nav-panel .settings-nav-item').forEach(function(i){ i.classList.remove('active'); });
+  el.classList.add('active');
+}
+document.addEventListener('DOMContentLoaded', function() {
+  document.querySelectorAll('#creator-nav-panel .settings-nav-item').forEach(function(el) {
+    el.addEventListener('click', function(){ creatorNavActivate(el); });
+  });
+});
+</script>
+{{end}}

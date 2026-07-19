@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>.fct — wireframe exploration</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Kalam:wght@300;400;700&family=Caveat:wght@400;700&family=Architects+Daughter&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper: #f6f2e8;
+    --paper-2: #efe9d8;
+    --ink: #1a1a1a;
+    --ink-2: #3a3a3a;
+    --muted: #7a7568;
+    --grid: #c9bfa5;
+    --accent: #c8431e;      /* red ballpoint */
+    --accent-2: #1d5fa0;    /* blue pen */
+    --accent-3: #b88a00;    /* yellow highlighter */
+    --hi: #ffe27a;
+  }
+  .dark {
+    --paper: #1c1d1f;
+    --paper-2: #232427;
+    --ink: #e8e4d6;
+    --ink-2: #c6c2b3;
+    --muted: #8a8576;
+    --grid: #2e2f33;
+    --accent: #ff7a52;
+    --accent-2: #6fb6ff;
+    --accent-3: #e8c46a;
+    --hi: #6a5a18;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: 'Kalam', 'Caveat', cursive;
+    color: var(--ink);
+    background: var(--paper);
+    background-image:
+      linear-gradient(var(--grid) 1px, transparent 1px),
+      linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+    background-size: 24px 24px;
+    background-position: -1px -1px;
+    min-height: 100vh;
+  }
+
+  .mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
+  .hand { font-family: 'Kalam', cursive; }
+  .scrawl { font-family: 'Caveat', cursive; }
+  .arch { font-family: 'Architects Daughter', cursive; }
+
+  /* sketchy box (default look — tweakable by roughness) */
+  .sbox {
+    position: relative;
+    border: 2px solid var(--ink);
+    background: var(--paper);
+    border-radius: 6px 4px 7px 5px / 5px 7px 4px 6px;
+  }
+  .sbox.thin { border-width: 1.5px; }
+  .sbox.dashed { border-style: dashed; }
+  .sbox.shadow {
+    box-shadow: 3px 3px 0 var(--ink);
+  }
+
+  /* roughness levels */
+  body[data-rough="1"] .sbox { border-radius: 4px; }
+  body[data-rough="2"] .sbox { border-radius: 6px 4px 7px 5px / 5px 7px 4px 6px; }
+  body[data-rough="3"] .sbox {
+    border-radius: 10px 4px 14px 6px / 6px 14px 4px 10px;
+    transform: rotate(-0.15deg);
+  }
+  body[data-rough="3"] .sbox.alt { transform: rotate(0.2deg); }
+
+  /* density */
+  body[data-dense="airy"] .surface { gap: 28px; padding: 28px; }
+  body[data-dense="normal"] .surface { gap: 18px; padding: 20px; }
+  body[data-dense="tight"] .surface { gap: 10px; padding: 12px; }
+
+  /* annotations */
+  body[data-anno="off"] .anno { display: none !important; }
+
+  .anno {
+    font-family: 'Caveat', cursive;
+    color: var(--accent);
+    font-size: 16px;
+    line-height: 1.05;
+  }
+  .anno-arrow {
+    position: absolute;
+    color: var(--accent);
+    font-family: 'Caveat', cursive;
+    font-size: 18px;
+    pointer-events: none;
+  }
+  .hi { background: var(--hi); padding: 0 3px; border-radius: 3px; }
+  .strike { text-decoration: line-through; text-decoration-color: var(--accent); }
+
+  /* top bar */
+  .topbar {
+    position: sticky; top: 0; z-index: 20;
+    background: var(--paper);
+    border-bottom: 2px solid var(--ink);
+    padding: 14px 22px 0;
+  }
+  .topbar h1 {
+    margin: 0 0 6px;
+    font-family: 'Caveat', cursive;
+    font-weight: 700;
+    font-size: 36px;
+    letter-spacing: 0.5px;
+    line-height: 1;
+  }
+  .topbar h1 .dot { color: var(--accent); }
+  .topbar .sub { color: var(--muted); font-size: 16px; margin-bottom: 10px; }
+  .tabs { display: flex; gap: 4px; flex-wrap: wrap; }
+  .tab {
+    font-family: 'Kalam', cursive;
+    font-size: 17px;
+    padding: 8px 14px 10px;
+    border: 2px solid var(--ink);
+    border-bottom: none;
+    background: var(--paper-2);
+    cursor: pointer;
+    border-radius: 8px 8px 0 0;
+    color: var(--ink-2);
+    position: relative;
+    top: 2px;
+  }
+  .tab .num {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--muted);
+    margin-right: 6px;
+  }
+  .tab.active {
+    background: var(--paper);
+    color: var(--ink);
+    border-bottom: 2px solid var(--paper);
+    top: 2px;
+    font-weight: 700;
+  }
+  .tab.active .num { color: var(--accent); }
+
+  .surface {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: stretch;
+    padding: 24px;
+    gap: 22px;
+  }
+
+  .variant {
+    flex: 1 1 460px;
+    min-width: 440px;
+    max-width: 720px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .variant-head {
+    display: flex; align-items: baseline; gap: 10px;
+  }
+  .variant-head .vnum {
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--accent);
+    font-weight: 700;
+    font-size: 14px;
+  }
+  .variant-head h3 {
+    margin: 0;
+    font-family: 'Caveat', cursive;
+    font-weight: 700;
+    font-size: 26px;
+    line-height: 1;
+  }
+  .variant-head .vtag {
+    margin-left: auto;
+    font-size: 13px;
+    color: var(--muted);
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .variant-sub {
+    font-size: 14px;
+    color: var(--muted);
+    margin: -4px 0 4px;
+  }
+
+  /* code block */
+  .code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11.5px;
+    line-height: 1.55;
+    color: var(--ink);
+    white-space: pre;
+    overflow: auto;
+  }
+  .code .k { color: var(--accent-2); font-weight: 700; }
+  .code .t { color: var(--accent); }
+  .code .s { color: var(--accent-3); }
+  .code .c { color: var(--muted); font-style: italic; }
+  .code .at { color: var(--accent-2); }
+
+  /* misc */
+  .row { display: flex; }
+  .col { display: flex; flex-direction: column; }
+  .grow { flex: 1; }
+
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    border: 1.5px solid var(--ink);
+    border-radius: 999px;
+    padding: 2px 10px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    background: var(--paper);
+  }
+  .chip.accent { border-color: var(--accent); color: var(--accent); }
+  .chip.blue { border-color: var(--accent-2); color: var(--accent-2); }
+  .chip.yellow { background: var(--hi); }
+
+  .dot {
+    display: inline-block;
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--accent);
+  }
+  .dot.green { background: #4a8a44; }
+  .dot.blue { background: var(--accent-2); }
+  .dot.muted { background: var(--muted); }
+
+  hr.sketch {
+    border: none;
+    border-top: 1.5px solid var(--ink);
+    margin: 6px 0;
+  }
+  hr.dashed { border-top: 1.5px dashed var(--ink); }
+
+  /* legend / footer note */
+  .legend {
+    padding: 12px 24px 32px;
+    color: var(--muted);
+    font-size: 14px;
+    display: flex; gap: 18px; flex-wrap: wrap;
+  }
+  .legend span b { color: var(--ink); }
+
+  /* tooltip-style note */
+  .pin {
+    position: absolute;
+    background: var(--hi);
+    border: 1.5px solid var(--ink);
+    padding: 3px 8px;
+    font-family: 'Caveat', cursive;
+    font-size: 15px;
+    border-radius: 4px;
+    transform: rotate(-2deg);
+    box-shadow: 2px 2px 0 rgba(0,0,0,0.15);
+  }
+
+  /* scrollbars */
+  .code::-webkit-scrollbar, .scroll::-webkit-scrollbar { height: 6px; width: 6px; }
+  .code::-webkit-scrollbar-thumb, .scroll::-webkit-scrollbar-thumb { background: var(--muted); border-radius: 3px; }
+
+  .squiggle {
+    background-image: linear-gradient(45deg, transparent 25%, var(--accent) 25%, var(--accent) 50%, transparent 50%, transparent 75%, var(--accent) 75%);
+    background-size: 4px 2px;
+    background-repeat: repeat-x;
+    background-position: 0 100%;
+    padding-bottom: 2px;
+  }
+
+  /* placeholder image */
+  .ph {
+    background:
+      repeating-linear-gradient(45deg, var(--paper-2) 0 8px, var(--paper) 8px 16px);
+    border: 1.5px dashed var(--ink);
+    color: var(--muted);
+    display: flex; align-items: center; justify-content: center;
+    font-family: 'JetBrains Mono', monospace; font-size: 11px;
+    text-align: center;
+  }
+
+  /* the “graph paper” gets a slight vignette for paper feel */
+  body::before {
+    content: '';
+    position: fixed; inset: 0;
+    pointer-events: none;
+    background: radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,0.08));
+    z-index: 0;
+  }
+  .topbar, .surface, .legend { position: relative; z-index: 1; }
+</style>
+</head>
+<body data-rough="2" data-dense="normal" data-anno="on">
+
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel" src="tweaks-panel.jsx"></script>
+<script type="text/babel" src="src/primitives.jsx"></script>
+<script type="text/babel" src="src/editor.jsx"></script>
+<script type="text/babel" src="src/playground.jsx"></script>
+<script type="text/babel" src="src/devtools.jsx"></script>
+<script type="text/babel" src="src/registry.jsx"></script>
+<script type="text/babel" src="src/diagnostics.jsx"></script>
+<script type="text/babel" src="src/app.jsx"></script>
+
+</body>
+</html>

@@ -2,6 +2,8 @@ mod db;
 mod error;
 mod handlers;
 mod models;
+mod nexus_aml;
+mod observ;
 
 use axum::{
     routing::{get, post},
@@ -9,14 +11,10 @@ use axum::{
 };
 use sqlx::PgPool;
 use tracing::info;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::registry()
-        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
-        .with(tracing_subscriber::fmt::layer())
-        .init();
+    observ::init("ain_soph")?;
 
     let database_url = std::env::var("DATABASE_URL")
         .expect("DATABASE_URL must be set for Ain Soph");
@@ -27,6 +25,7 @@ async fn main() -> anyhow::Result<()> {
     info!("Ain Soph (ETHRA/AET) schema up to date");
 
     let app = Router::new()
+        .route("/metrics",                   get(observ::metrics_handler))
         // Health
         .route("/health",                    get(handlers::health))
         // Legacy routes (backward compat)
@@ -42,12 +41,15 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/transfer",               post(handlers::transfer))
         .route("/v1/tip",                    post(handlers::tip))
         .route("/v1/withdraw",               post(handlers::withdraw))
+        // Ledger cross-brain checkpoint (called by Aethyr Ledger after each block seal)
+        .route("/v1/ledger/checkpoint",      post(handlers::ledger_checkpoint))
         // Governance
         .route("/v1/proposals",              get(handlers::list_proposals)
                                              .post(handlers::create_proposal))
         .route("/v1/proposals/:id",          get(handlers::get_proposal))
         .route("/v1/proposals/:id/vote",     post(handlers::cast_vote))
-        .with_state(pool);
+        .with_state(pool)
+        .layer(axum::middleware::from_fn(observ::http_middleware));
 
     let addr = format!("0.0.0.0:{}", port);
     info!("Ain Soph listening on {} — ETHRA/AET network active", addr);

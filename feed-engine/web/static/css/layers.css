@@ -1,0 +1,36 @@
+/* layers.css — Site-wide z-index scale.
+ * Every z-index value MUST reference a variable from this file.
+ * No hardcoded z-index numbers anywhere after this was introduced.
+ * Load this FIRST — all other CSS files depend on these variables.
+ *
+ * Facet layer contract:
+ *   base (0)       — static background, post card thread-link (catch dead zones)
+ *   card (1)       — post card base stacking context
+ *   card-media (2) — media within card
+ *   card-content (3) — text, avatars, author links
+ *   card-actions (4) — action bar, reply preview
+ *   card-overlay (5) — gates (NSFW, sensitive, subscriber)
+ *   sticky (10)    — sticky feed toolbar
+ *   nav (40)       — sidebar, mobile nav
+ *   sheet (50)     — bottom sheets, player bar
+ *   modal (60)     — compose overlay, mobile drawer
+ *   dropdown (300) — dropdowns, post menus, tooltips
+ *   toast (500)    — toast notifications
+ *   top (9999)     — nav progress bar, always-on-top
+ */
+
+:root {
+  --z-base:          0;
+  --z-card:          1;
+  --z-card-media:    2;
+  --z-card-content:  3;
+  --z-card-actions:  4;
+  --z-card-overlay:  5;
+  --z-sticky:        10;
+  --z-nav:           40;
+  --z-sheet:         50;
+  --z-modal:         60;
+  --z-dropdown:      300;
+  --z-toast:         500;
+  --z-top:           9999;
+}

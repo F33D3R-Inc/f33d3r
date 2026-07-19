@@ -1,89 +1,54 @@
 {{define "title"}}Welcome · F33D3R{{end}}
+{{define "shell-class"}}shell-auth{{end}}
 {{define "sidebar-hidden"}}sidebar-onboard-hidden{{end}}
 {{define "mobile-nav-hidden"}}mobile-nav-onboard-hidden{{end}}
 {{define "body"}}
 <main class="onboard-wrap">
   <div class="onboard-left">
-    <a href="/" class="sidebar-logo" style="margin-bottom:40px;text-decoration:none">
-      <div class="logo-mark" style="width:52px;height:52px;font-size:24px;border-radius:16px">F</div>
-      <span style="font-family:'DM Serif Display',serif;font-size:28px;color:var(--text-primary)">f33d3r</span>
+    <a href="/" class="onboard-logo" aria-label="F33D3R home">
+      <div class="logo-mark onboard-logo-mark">F</div>
+      <span class="onboard-logo-brand">f33d3r</span>
     </a>
-    <p style="font-size:17px;color:var(--text-secondary);line-height:1.65;max-width:360px;margin-bottom:40px">A feed that actually gets you.</p>
+    <p class="onboard-tagline">A feed that actually gets you.</p>
     <div class="onboard-features">
       <div class="onboard-feat">
-        <span class="onboard-feat-icon">◈</span>
-        <div><p class="onboard-feat-title">Your feed, your terms</p><p class="onboard-feat-desc">Ranked by what you actually care about — not what keeps you scrolling longest</p></div>
+        <span class="onboard-feat-icon" aria-hidden="true">◈</span>
+        <div>
+          <p class="onboard-feat-title">Your feed, your terms</p>
+          <p class="onboard-feat-desc">Ranked by what you actually care about — not what keeps you scrolling longest</p>
+        </div>
       </div>
       <div class="onboard-feat">
-        <span class="onboard-feat-icon">◉</span>
-        <div><p class="onboard-feat-title">Say what you actually mean</p><p class="onboard-feat-desc">Up to 25,000 characters. No compression, no thread gymnastics. Just write</p></div>
+        <span class="onboard-feat-icon" aria-hidden="true">◉</span>
+        <div>
+          <p class="onboard-feat-title">Say what you actually mean</p>
+          <p class="onboard-feat-desc">Up to 25,000 characters. No thread gymnastics. Just write</p>
+        </div>
       </div>
       <div class="onboard-feat">
-        <span class="onboard-feat-icon">◎</span>
-        <div><p class="onboard-feat-title">Music that finds its people</p><p class="onboard-feat-desc">Tracks surface to listeners who'll actually connect with them — not just the loudest rooms</p></div>
+        <span class="onboard-feat-icon" aria-hidden="true">◎</span>
+        <div>
+          <p class="onboard-feat-title">Music that finds its people</p>
+          <p class="onboard-feat-desc">Tracks surface to listeners who'll actually connect with them</p>
+        </div>
       </div>
       <div class="onboard-feat">
-        <span class="onboard-feat-icon">◐</span>
-        <div><p class="onboard-feat-title">No black boxes</p><p class="onboard-feat-desc">See exactly why something's in your feed. You stay in control</p></div>
+        <span class="onboard-feat-icon" aria-hidden="true">◐</span>
+        <div>
+          <p class="onboard-feat-title">No black boxes</p>
+          <p class="onboard-feat-desc">See exactly why something's in your feed. You stay in control</p>
+        </div>
       </div>
     </div>
   </div>
 
   <div class="onboard-right">
-    <div class="onboard-card">
-      <h2 class="onboard-card-title">Create your account</h2>
-      <p class="onboard-card-sub">Choose your identity. You can update it in settings later.</p>
-
-      {{if .Error}}
-      <div class="onboard-error">{{.Error}}</div>
-      {{end}}
-
-      <form action="/onboard" method="POST" class="onboard-form">
-        <div class="onboard-field">
-          <label class="onboard-label">Handle <span style="color:#EF4444">*</span></label>
-          <div style="position:relative">
-            <span style="position:absolute;left:14px;top:50%;transform:translateY(-50%);color:var(--text-secondary);font-size:15px;pointer-events:none">@</span>
-            <input type="text" name="handle" id="handle-input" required minlength="1" maxlength="30"
-                   pattern="[a-zA-Z0-9_\-]+"
-                   placeholder="yourhandle"
-                   class="onboard-input" style="padding-left:30px"
-                   autocomplete="username" autofocus
-                   oninput="this.value=this.value.toLowerCase().replace(/[^a-z0-9_\-]/g,'')">
-          </div>
-          <p class="onboard-hint">Letters, numbers, underscores only. Max 30 chars.</p>
-        </div>
-
-        <div class="onboard-field">
-          <label class="onboard-label">Display name <span style="color:#EF4444">*</span></label>
-          <input type="text" name="display_name" required minlength="1" maxlength="100"
-                 placeholder="Your full name or alias" class="onboard-input" autocomplete="name">
-          <p class="onboard-hint">This is how your name appears on posts.</p>
-        </div>
-
-        <div class="onboard-field">
-          <label class="onboard-label">Pick a theme</label>
-          <div class="theme-grid">
-            {{range .Themes}}
-            <label class="theme-option {{if .Active}}selected{{end}}"
-                   onclick="selectOnboardTheme(this,'{{.ID}}','{{.Surface}}','{{.Accent}}')">
-              <input type="radio" name="theme_id" value="{{.ID}}" {{if .Active}}checked{{end}} style="display:none">
-              <div class="theme-swatch" style="background:{{.Surface}};color:{{.Accent}}">{{.Name}}</div>
-              <div class="theme-name" style="background:color-mix(in srgb,{{.Surface}} 80%,#000);color:{{.Accent}}">{{.Vibe}}</div>
-            </label>
-            {{end}}
-          </div>
-        </div>
-
-        <button type="submit" class="btn-primary" style="width:100%;padding:13px;font-size:15px;margin-top:8px;border-radius:14px">
-          Join F33D3R →
-        </button>
-      </form>
-
-      <p style="font-size:11px;color:var(--text-muted);text-align:center;margin-top:20px">
-        By joining you agree to our Terms of Service and Privacy Policy
-      </p>
+    <div class="onboard-card onboard-card--single">
+      {{template "onboard_signup_form" .}}
     </div>
   </div>
 </main>
-<script src="/static/js/pages/onboard.js?v=20260426"></script>
+{{end}}
+{{define "page-scripts"}}
+<script src="/static/js/pages/onboard_single.js?v=20260622b" defer></script>
 {{end}}

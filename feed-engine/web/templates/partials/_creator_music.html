@@ -1,0 +1,106 @@
+{{/*
+FACET creator_music
+  version: 1.0 | status: stable | layer: 2
+
+  inputs:
+    MyTracks    []*model.Track — all creator tracks with full fields
+    ArtistStats ArtistStats    — .TotalTracks .TotalPlays .TotalLikes
+    User        *model.User    — .Handle .Name .ID
+
+  states:
+    default | empty (no tracks)
+
+  children:
+    creator_track_row
+
+  signals:
+    emits:    upload_track (POST /v1/media/upload then POST /events track_publish)
+              delete_track (POST /events)
+    receives: none
+
+  context:
+    creator_dashboard → #creator-panel (hx-get /creator/music)
+*/}}
+{{define "creator_music"}}
+
+<div class="crt-music">
+
+  {{/* ── Upload zone ── */}}
+  <div class="crt-section">
+    <div class="crt-section-head">
+      <h2 class="crt-section-title">Upload a track</h2>
+    </div>
+
+    <div class="crt-drop-zone" id="crt-drop-zone" role="button" tabindex="0" aria-label="Drop audio file here or click to browse">
+      <svg class="crt-drop-icon" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+      <p class="crt-drop-label">Drag &amp; drop an audio file here</p>
+      <p class="crt-drop-sub">MP3, WAV, FLAC, AAC, M4A — up to 200 MB</p>
+      <span class="crt-drop-btn">Browse files</span>
+    </div>
+
+    <div class="crt-upload-form-wrap" id="crt-upload-form-wrap" style="display:none">
+      <div class="crt-file-preview" id="crt-file-preview"></div>
+      <form class="crt-upload-form" id="crt-upload-form" enctype="multipart/form-data">
+        <input type="file" id="crt-audio-input" name="audio"
+               accept=".mp3,.wav,.flac,.ogg,.aac,.opus,.m4a,.mp4,.webm,.mov"
+               style="display:none">
+        <div class="crt-upload-fields">
+          <div class="crt-form-field">
+            <label class="crt-form-label" for="stu-title">Title</label>
+            <input id="crt-title" type="text" name="title" class="crt-form-input"
+                   placeholder="Track title" required maxlength="120">
+          </div>
+          <div class="crt-form-field">
+            <label class="crt-form-label" for="stu-genre">Genre</label>
+            <select id="crt-genre" name="genre" class="crt-form-input">
+              <option value="">Select genre</option>
+              <option>Hip-Hop</option><option>R&amp;B</option><option>Electronic</option>
+              <option>Pop</option><option>Rock</option><option>Jazz</option>
+              <option>Classical</option><option>Ambient</option><option>Afrobeats</option><option>Latin</option>
+            </select>
+          </div>
+          <div class="crt-form-field">
+            <label class="crt-form-label" for="stu-cover">Cover art <span class="crt-form-opt">optional</span></label>
+            <input id="crt-cover" type="file" name="cover" class="crt-form-input" accept="image/*">
+          </div>
+          <div class="crt-form-field stu-form-field--full">
+            <label class="crt-form-label" for="stu-desc">Description <span class="crt-form-opt">optional</span></label>
+            <textarea id="crt-desc" name="description" class="crt-form-input"
+                      rows="2" maxlength="2000" placeholder="About this track…"></textarea>
+          </div>
+        </div>
+        <div class="crt-upload-actions">
+          <button type="button" class="crt-btn-primary" id="crt-upload-btn">Upload track</button>
+          <button type="button" class="crt-btn-ghost" id="crt-upload-cancel">Cancel</button>
+          <div class="crt-upload-progress" id="crt-upload-progress" style="display:none">
+            <div class="crt-progress-bar-wrap"><div class="crt-progress-bar" id="crt-progress-bar"></div></div>
+            <span class="crt-progress-status" id="crt-progress-status"></span>
+          </div>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  {{/* ── Track list ── */}}
+  <div class="crt-section" id="crt-tracks-wrap">
+    <div class="crt-section-head">
+      <h2 class="crt-section-title">Your tracks</h2>
+      <span class="crt-section-count">{{.ArtistStats.TotalTracks}}</span>
+    </div>
+
+    {{if .MyTracks}}
+    <div class="crt-track-list" id="crt-track-list">
+      {{$user := .User}}
+      {{range .MyTracks}}
+      {{template "creator_track_row" (dict "Track" . "User" $user)}}
+      {{end}}
+    </div>
+    {{else}}
+    <div class="crt-empty">
+      <p class="crt-empty-text">No tracks yet. Upload your first track above.</p>
+    </div>
+    {{end}}
+  </div>
+
+</div>
+{{end}}
