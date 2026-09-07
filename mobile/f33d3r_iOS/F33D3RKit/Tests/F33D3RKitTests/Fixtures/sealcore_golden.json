@@ -1,0 +1,328 @@
+{
+  "note": "Vectors for SealCore.swift. The Argon2 rows marked source=go are computed here by golang.org/x/crypto/argon2, an implementation independent of both the Rust crate and the Swift port. The rows marked source=argon2-0.5.3-kat and source=rfc9106 are transcribed from tests/kat.rs of the exact crate version sealcore/Cargo.lock pins; they carry a secret and associated data, which x/crypto cannot express.",
+  "generated_by": "Tools/sealcore-golden (go1.26.2)",
+  "argon2": [
+    {
+      "name": "sealcore_default_params",
+      "source": "go",
+      "variant": "id",
+      "version": 19,
+      "t": 2,
+      "m_kib": 19456,
+      "p": 1,
+      "password_b64": "Y29ycmVjdCBob3JzZSBiYXR0ZXJ5IHN0YXBsZQ==",
+      "salt_b64": "e2i4plE6MhH4TP7hEqoZcmKxMZhjPrSpR+TB1Y8tlWs=",
+      "secret_b64": "",
+      "ad_b64": "",
+      "tag_hex": "4cfdfd5deb41da2ede7a5d98d2896aa03dabe0e14336f5de71e6299f58a19369"
+    },
+    {
+      "name": "sealcore_empty_password",
+      "source": "go",
+      "variant": "id",
+      "version": 19,
+      "t": 2,
+      "m_kib": 19456,
+      "p": 1,
+      "password_b64": "",
+      "salt_b64": "7yYOmqPGc68kDReiZgSANhqOCB0f/soqXtDjIZ/BhWc=",
+      "secret_b64": "",
+      "ad_b64": "",
+      "tag_hex": "b28f94552201593a57d189f7145dbd2654e1667f893efb745c317d066152e434"
+    },
+    {
+      "name": "sealcore_unicode_password",
+      "source": "go",
+      "variant": "id",
+      "version": 19,
+      "t": 2,
+      "m_kib": 19456,
+      "p": 1,
+      "password_b64": "0L/QsNGA0L7Qu9GM8J+UkuODkeOCueODr+ODvOODiQ==",
+      "salt_b64": "yC9yfi3g2X76Z0J+BuQ2s+tLk5AAgtQv+4ZeCWVk7f4=",
+      "secret_b64": "",
+      "ad_b64": "",
+      "tag_hex": "250c4fa15d8f0948141c5cdbb921258eb6e1e4816abd1c6b09cb6d816285481a"
+    },
+    {
+      "name": "cheap_t1_m8_p1",
+      "source": "go",
+      "variant": "id",
+      "version": 19,
+      "t": 1,
+      "m_kib": 8,
+      "p": 1,
+      "password_b64": "cGFzc3dvcmQ=",
+      "salt_b64": "c29tZXNhbHQ=",
+      "secret_b64": "",
+      "ad_b64": "",
+      "tag_hex": "f137f8e186a403a679ccd0606e5ab5dcdafe43c1640855ac8c6e33e9bd63eeb3"
+    },
+    {
+      "name": "cheap_t3_m64_p4",
+      "source": "go",
+      "variant": "id",
+      "version": 19,
+      "t": 3,
+      "m_kib": 64,
+      "p": 4,
+      "password_b64": "cGFzc3dvcmQ=",
+      "salt_b64": "c29tZXNhbHQ=",
+      "secret_b64": "",
+      "ad_b64": "",
+      "tag_hex": "4f87cd309b72ccf982e3a0be0c36a2e8517923ca3eeaf28c6efc676d092fb6d5"
+    },
+    {
+      "name": "reference_t2_m256_p2",
+      "source": "go",
+      "variant": "id",
+      "version": 19,
+      "t": 2,
+      "m_kib": 256,
+      "p": 2,
+      "password_b64": "cGFzc3dvcmQ=",
+      "salt_b64": "c29tZXNhbHQ=",
+      "secret_b64": "",
+      "ad_b64": "",
+      "tag_hex": "6d093c501fd5999645e0ea3bf620d7b8be7fd2db59c20d9fff9539da2bf57037"
+    },
+    {
+      "name": "rfc9106_argon2d_v13",
+      "source": "rfc9106",
+      "variant": "d",
+      "version": 19,
+      "t": 3,
+      "m_kib": 32,
+      "p": 4,
+      "password_b64": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+      "salt_b64": "AgICAgICAgICAgICAgICAg==",
+      "secret_b64": "AwMDAwMDAwM=",
+      "ad_b64": "BAQEBAQEBAQEBAQE",
+      "tag_hex": "512b391b6f1162975371d30919734294f868e3be3984f3c1a13a4db9fabe4acb"
+    },
+    {
+      "name": "rfc9106_argon2i_v13",
+      "source": "rfc9106",
+      "variant": "i",
+      "version": 19,
+      "t": 3,
+      "m_kib": 32,
+      "p": 4,
+      "password_b64": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+      "salt_b64": "AgICAgICAgICAgICAgICAg==",
+      "secret_b64": "AwMDAwMDAwM=",
+      "ad_b64": "BAQEBAQEBAQEBAQE",
+      "tag_hex": "c814d9d1dc7f37aa13f0d77f2494bda1c8de6b016dd388d29952a4c4672b6ce8"
+    },
+    {
+      "name": "rfc9106_argon2id_v13",
+      "source": "rfc9106",
+      "variant": "id",
+      "version": 19,
+      "t": 3,
+      "m_kib": 32,
+      "p": 4,
+      "password_b64": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+      "salt_b64": "AgICAgICAgICAgICAgICAg==",
+      "secret_b64": "AwMDAwMDAwM=",
+      "ad_b64": "BAQEBAQEBAQEBAQE",
+      "tag_hex": "0d640df58d78766c08c037a34a8b53c9d01ef0452d75b65eb52520e96b01e659"
+    },
+    {
+      "name": "kat_argon2id_v10",
+      "source": "argon2-0.5.3-kat",
+      "variant": "id",
+      "version": 16,
+      "t": 3,
+      "m_kib": 32,
+      "p": 4,
+      "password_b64": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+      "salt_b64": "AgICAgICAgICAgICAgICAg==",
+      "secret_b64": "AwMDAwMDAwM=",
+      "ad_b64": "BAQEBAQEBAQEBAQE",
+      "tag_hex": "b64615f07789b66b645b67ee9ed3b377ae350b6bfcbb0fc95141ea8f322613c0"
+    }
+  ],
+  "hkdf": [
+    {
+      "name": "absent_salt_as_32_zero_bytes",
+      "ikm_b64": "c2hhcmVkIHNlY3JldCBieXRlcywgZXhhY3RseSAzMi4=",
+      "salt_b64": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+      "info": "sealcore-v1-x25519-wrap",
+      "okm_b64": "mzXDRPKh4RgWC22LudN2xja2Fm72q1gz6xBl/dnNia8="
+    },
+    {
+      "name": "empty_salt",
+      "ikm_b64": "c2hhcmVkIHNlY3JldCBieXRlcywgZXhhY3RseSAzMi4=",
+      "salt_b64": "",
+      "info": "sealcore-v1-x25519-wrap",
+      "okm_b64": "mzXDRPKh4RgWC22LudN2xja2Fm72q1gz6xBl/dnNia8="
+    }
+  ],
+  "agreement": [
+    {
+      "name": "pair_0",
+      "priv_b64": "cAquHC81xVDFlllg7CEvM9e8h5pZ+CWGjz5NDihvSFM=",
+      "pub_b64": "6FGY8pq7OVT+l+xH/gpifBf8ULo5WjuWq1FL9SO6nWQ=",
+      "peer_pub_b64": "xp/s2t4HxlhZX8Oa4bivoiobM5Elh2r8tSs9X1dRV0Y=",
+      "shared_b64": "67quoaQsY/Opjl2ip2bjpUnDbGZuiC6kso+GzrpvGmw=",
+      "wrap_key_b64": "AsP6hgilI0NtNj7alwtJP3fnpwdH11zSQ2pHjbha5+A="
+    },
+    {
+      "name": "pair_1",
+      "priv_b64": "XEBZwPioqMP1aWcYfLkyCg0r/AXG4ttNKIiHQKNW2j8=",
+      "pub_b64": "2vmeMQckLVA0AU1K+rsxU0Jn/Opw1gliCiPWShEx0Ag=",
+      "peer_pub_b64": "zQqvZxg/fG5UcDUfCHfFFBA4edaLGa3ty//P3BkBTxE=",
+      "shared_b64": "7iTqWig1DeJ17d3NpWxTOGVaJKbwiQwd73W8xNOGd3M=",
+      "wrap_key_b64": "QNAfQzGAfGg3wmpmw6hhHIVYgryJYAy45UuQ9aC0M2A="
+    }
+  ],
+  "sealed": [
+    {
+      "name": "single_recipient",
+      "plaintext": "hello sealed",
+      "recipients": [
+        {
+          "account": "acct-single_recipient-0",
+          "priv_b64": "JMT2hL3D7lJX7Eytw39RPjYI97JhtXAbtUbt+XVSmAs=",
+          "pub_b64": "i1vfyjBufxrsKLQW7K4yHyg80ftKR+BBUjpGncnuRT0="
+        }
+      ],
+      "envelope": {
+        "body_ct_b64": "PaDGNqSUUgCBhPHUKcMsl3mfwg4mz8WaLA73RQ==",
+        "body_nonce_b64": "mxC0W1Ml9QClBRVU",
+        "sealed": [
+          {
+            "recipient_account": "acct-single_recipient-0",
+            "eph_pub_b64": "CE7QZRjQlmCANQ+uodJ/PmnMg94XlfGDio2fxo9sQmE=",
+            "sealed_b64": "kHQ8lMwq0ADIQyuNZQuL0namfukPVhw2UuAxLJGEF5dMb8ETa7qil9SxLuIrIEql",
+            "sealed_nonce_b64": "q9PE9U+gMuve770h"
+          }
+        ]
+      }
+    },
+    {
+      "name": "group_of_three",
+      "plaintext": "group msg — 三人 🔐",
+      "recipients": [
+        {
+          "account": "acct-group_of_three-0",
+          "priv_b64": "UFUo3Tuq7fFeW9Ap0WMxpQKfo6XliaPtIfPgeckOVSI=",
+          "pub_b64": "T81W76VzmDFRCjKI1x/VqknDNJZuM0y5m15/B53GuXc="
+        },
+        {
+          "account": "acct-group_of_three-1",
+          "priv_b64": "lWyp3rzAu0fTgXXjU8TgybbAlwT00ljqbHKy6A+m5hk=",
+          "pub_b64": "sxBEErvRXFSRE/X5N4WPAeIPeXQdsakcEw/Dy5CCs2c="
+        },
+        {
+          "account": "acct-group_of_three-2",
+          "priv_b64": "XoYTNFYSGHao2+z8OCs272z+vafRgRj1jBrxnPFtync=",
+          "pub_b64": "A3mu6RIjitnPIt87Hl4d05HYRdBFbIP/JbEKr9TNLkQ="
+        }
+      ],
+      "envelope": {
+        "body_ct_b64": "RSRkH+paZpGeW0roEjvJZlYu/2Epi1gjShFFTUbmbBpU7cehQqJzjZ4=",
+        "body_nonce_b64": "N0RSXLRemxokjIjj",
+        "sealed": [
+          {
+            "recipient_account": "acct-group_of_three-0",
+            "eph_pub_b64": "qY9H4HhlNZFa1y4pTAO6ZYHvrXCtH5ZHP8TAUhYgfno=",
+            "sealed_b64": "r3VMhEOQ0tIb+i9JfZrY2dI1s4MLBgoPp8dpMmlgguRttWGY/LQv99Wzx2R9weay",
+            "sealed_nonce_b64": "yYLeEUG2cvG9Mptk"
+          },
+          {
+            "recipient_account": "acct-group_of_three-1",
+            "eph_pub_b64": "xJLbCkDzJ29nYEUrvQ4QhqcnPe3Tr50/05r4iDTBEl4=",
+            "sealed_b64": "7QqdxHvR/XI0B9LX5mYBm44AG3t/+ZPSi2Ae2GPhCoAKOzIoA7QdR0QZDGZ2qBcz",
+            "sealed_nonce_b64": "gQOdsFUzvgOVzGxJ"
+          },
+          {
+            "recipient_account": "acct-group_of_three-2",
+            "eph_pub_b64": "p0yrp+YPRmcKdQcszuMUSRHulnB6hdmbbwUKdIVFPnQ=",
+            "sealed_b64": "+4Ufsgu5I/fDi7TyJilYQBZATKkQYqxDEar6cVsBJQPFUliB3IDNq3pc3tkrdK2o",
+            "sealed_nonce_b64": "dF6F+LfPnWlqNeLO"
+          }
+        ]
+      }
+    },
+    {
+      "name": "empty_body",
+      "plaintext": "",
+      "recipients": [
+        {
+          "account": "acct-empty_body-0",
+          "priv_b64": "GNdCunHhkP/a3J8I8ApbwF/MbC6IbDzEN6bQjNJPVoM=",
+          "pub_b64": "KCmI9k4izhWmLyP6wrsiYG/vEyDlgS57G/HrG5o8oyM="
+        }
+      ],
+      "envelope": {
+        "body_ct_b64": "xt5aecziQi9KS091S4GbdQ==",
+        "body_nonce_b64": "sBto3hhgxwvFL9t5",
+        "sealed": [
+          {
+            "recipient_account": "acct-empty_body-0",
+            "eph_pub_b64": "G9Tw8avXCadjeqJJW8id/Z/FqftFu6L7ECespgvV6iE=",
+            "sealed_b64": "SMVFIV7YHyV/0+w+KE6u+PdpepiCAvNpMufDvB2PDeOW7EptH3XJuPDGL7meH2/L",
+            "sealed_nonce_b64": "AlMXT/1ydcrPJkuI"
+          }
+        ]
+      }
+    }
+  ],
+  "vault": {
+    "note": "salt_b64 is SHA-256 of the lower-cased handle; Argon2 sees its 32 decoded bytes.",
+    "handle": "MiiYazuko",
+    "password": "f33d3rdev",
+    "salt_b64": "e2i4plE6MhH4TP7hEqoZcmKxMZhjPrSpR+TB1Y8tlWs=",
+    "derived_key_b64": "idQ5Kvj9uT2SYKwLZHHHbWZiEVEE+DE2xx7/H3Ai62A=",
+    "identity_priv_b64": "r3Kf9FQ1xUbOJcuczYacvkCpTohW4sE0BMLqkg3sHtM=",
+    "identity_pub_b64": "IPKrt2u/QjNzfop3r4zOBmfMF9AJqj2Ath4XdoP762c=",
+    "wrapped_ct_b64": "awbcRJRITlx7rePMmzG9gd7KFpZwNeOhkmBRNHI20A5e4+2iTdb+vDDJe8bJSJJa",
+    "wrapped_nonce_b64": "Oibf+43898gXfbo0"
+  },
+  "from_swift": {
+    "go_version": "go1.26.2",
+    "vault_note": "derived the same key and unwrapped the raw 32-byte identity scalar",
+    "vault_verified": true,
+    "verdicts": [
+      {
+        "name": "swift_single",
+        "should_open": true,
+        "opened_by_go": true,
+        "plaintext_go_read": "hello from swift"
+      },
+      {
+        "name": "swift_group_alice",
+        "should_open": true,
+        "opened_by_go": true,
+        "plaintext_go_read": "群 — sealed 🔐"
+      },
+      {
+        "name": "swift_group_bob",
+        "should_open": true,
+        "opened_by_go": true,
+        "plaintext_go_read": "群 — sealed 🔐"
+      },
+      {
+        "name": "swift_group_carol",
+        "should_open": true,
+        "opened_by_go": true,
+        "plaintext_go_read": "群 — sealed 🔐"
+      },
+      {
+        "name": "swift_empty_body",
+        "should_open": true,
+        "opened_by_go": true,
+        "plaintext_go_read": ""
+      },
+      {
+        "name": "swift_wrong_recipient_entry",
+        "should_open": false,
+        "opened_by_go": false,
+        "plaintext_go_read": "",
+        "error": "unwrap content key: cipher: message authentication failed"
+      }
+    ]
+  }
+}

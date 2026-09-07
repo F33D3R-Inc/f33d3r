@@ -1,0 +1,87 @@
+{{/*
+FACET gnosis_contact_requests
+  version: 1.0 | status: stable | layer: 2
+
+  inputs:
+    PIALID      string — the identity these requests landed on
+    Requests    []struct{ ID, Handle, Name, Note, When string }
+    Unavailable bool   — the contact authority could not be reached
+
+  states:
+    default | empty | unavailable
+
+  children: none
+
+  signals:
+    emits:    POST /identity/contact/requests/decide → the decision is recorded
+                by the one handler that owns it; this facet then re-reads itself
+    receives: GET /facets/messages_requests → replaces this facet
+
+  context:
+    messages → sidebar, above the conversation list
+
+  notes:
+    On F33D3R a contact IS a mutual follow. There is no contacts list, no address
+    book and no friend table behind this facet — these are knocks, not entries in
+    a set. Under a mutuals policy the three tiers read: a mutual follow goes
+    through freely, a Number passes that Number's gate, and anyone else knocks
+    and waits here.
+
+    The rendered copy stays policy-independent on purpose. Which door somebody
+    failed to come through depends on the policy on that Number, and this facet
+    does not read policy — so it says what is true under all six: nobody here got
+    through on their own, and answering is the recipient's to do.
+
+    A policy of followers, mutuals or a Number expected and not presented yields
+    that knock rather than a conversation. Somebody then has to answer it, and
+    the place they will be looking is Messages.
+
+    A requester with no account on this deployment renders as "Someone" rather
+    than being dropped: a request the recipient cannot see is a decision they
+    cannot make. Empty renders an empty root, so the sidebar stays quiet until
+    somebody is actually waiting.
+*/}}
+{{define "gnosis_contact_requests"}}
+<div class="gn-requests" data-facet-id="facet:f33d3r:identity:{{.PIALID}}:contact_requests">
+  {{if .Unavailable}}
+    <p class="gn-requests-hint">Contact requests are unavailable right now.</p>
+  {{else if .Requests}}
+    <div class="gn-requests-head">Asking to reach you</div>
+    <p class="gn-requests-hint">
+      Nobody here got through on their own. Accepting opens a conversation and
+      lets them reach you again; declining tells them nothing.
+    </p>
+    <ul class="gn-requests-list">
+      {{range .Requests}}
+      <li class="gn-request">
+        <div class="gn-request-who">
+          {{if .Handle}}
+            <span class="gn-request-name">{{if .Name}}{{.Name}}{{else}}@{{.Handle}}{{end}}</span>
+            <span class="gn-request-handle">@{{.Handle}}</span>
+          {{else}}
+            <span class="gn-request-name">Someone</span>
+          {{end}}
+        </div>
+        {{if .Note}}<p class="gn-request-note">{{.Note}}</p>{{end}}
+        <div class="gn-request-actions">
+          <form class="gn-request-decide"
+                method="post" action="/identity/contact/requests/decide"
+                hx-post="/identity/contact/requests/decide" hx-swap="none">
+            <input type="hidden" name="request_id" value="{{.ID}}">
+            <input type="hidden" name="accept" value="1">
+            <button type="submit" class="gn-request-accept">Accept</button>
+          </form>
+          <form class="gn-request-decide"
+                method="post" action="/identity/contact/requests/decide"
+                hx-post="/identity/contact/requests/decide" hx-swap="none">
+            <input type="hidden" name="request_id" value="{{.ID}}">
+            <input type="hidden" name="accept" value="0">
+            <button type="submit" class="gn-request-decline">Decline</button>
+          </form>
+        </div>
+      </li>
+      {{end}}
+    </ul>
+  {{end}}
+</div>
+{{end}}

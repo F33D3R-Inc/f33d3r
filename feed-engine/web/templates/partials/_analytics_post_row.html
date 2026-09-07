@@ -1,0 +1,63 @@
+{{/*
+FACET analytics_post_row
+  version: 1.0 | status: stable | layer: 2
+
+  inputs:
+    PostID         string  — post ID (for click navigation to /post/{ID})
+    BodyPreview    string  — truncated post text
+    ContentType    string  — "text"|"image"|"video"|"poll"|"voice"
+    TimeAgo        string  — pre-formatted relative time
+    Impressions    int64
+    Likes          int64
+    Reposts        int64
+    Replies        int64
+    Saves          int64
+    EngagementPct  float64 — engagement rate percentage
+    BarPct         float64 — relative width for the engagement bar (0–100)
+
+  states:
+    default
+
+  children: none
+
+  signals:
+    emits:    none (row click navigates to /post/{PostID})
+    receives: none
+
+  context:
+    analytics → top posts table
+    creator_analytics → top posts table
+*/}}
+{{define "analytics_post_row"}}
+<div class="anl-post-row" hx-get="/post/{{.PostID}}" hx-target="#playground" hx-swap="innerHTML show:window:top" hx-push-url="true">
+  <div class="anl-post-preview">
+    <span class="anl-post-type anl-type-{{.ContentType}}">{{.ContentType}}</span>
+    <p class="anl-post-body">{{.BodyPreview}}</p>
+    <span class="anl-post-age">{{.TimeAgo}}</span>
+  </div>
+  <div class="anl-post-metrics">
+    <div class="anl-post-bar-wrap">
+      <div class="anl-post-bar" style="width:{{printf "%.1f" .BarPct}}%"></div>
+    </div>
+    <div class="anl-post-nums">
+      <span class="anl-pnum" title="Impressions">
+        <svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" style="width:11px;height:11px"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+        {{fmtNum .Impressions}}
+      </span>
+      <span class="anl-pnum" title="Likes">
+        <svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" style="width:11px;height:11px"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+        {{fmtNum .Likes}}
+      </span>
+      <span class="anl-pnum" title="Reposts">
+        <svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" style="width:11px;height:11px"><path d="M17 1l4 4-4 4"/><path d="M3 11V9a4 4 0 014-4h14M7 23l-4-4 4-4"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg>
+        {{fmtNum .Reposts}}
+      </span>
+      <span class="anl-pnum" title="Replies">
+        <svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" style="width:11px;height:11px"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        {{fmtNum .Replies}}
+      </span>
+      <span class="anl-pnum anl-eng" title="Engagement rate">{{printf "%.1f" .EngagementPct}}%</span>
+    </div>
+  </div>
+</div>
+{{end}}

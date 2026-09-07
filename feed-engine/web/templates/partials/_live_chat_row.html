@@ -1,0 +1,43 @@
+{{/*
+FACET live_chat_row
+  version: 1.0 | status: stable | layer: 1
+
+  The single canonical render of one live-chat line. The same Fragment is written
+  into the sender's HTTP response and pushed to every other watcher over FA Live,
+  so a line is byte-identical wherever it lands. Chat is never a JSON delta and
+  the browser never orders, filters or de-duplicates it — the server appends.
+
+  inputs:
+    M  liveChatMessage — .ID .StreamID .Handle .Name .AvatarURL .Body .TimeLabel .IsBroadcaster
+
+  states:
+    default | broadcaster (author of the stream)
+
+  children:
+    avatar_img
+
+  signals:
+    emits:    none
+    receives: live_chat (SSE — appended to live_chat_panel's log)
+
+  context:
+    live_chat_panel → log (server range)
+    POST /live/{id}/chat → sender's own line
+    FA Live fanout → every other watcher
+*/}}
+{{define "live_chat_row"}}
+{{$m := .M}}
+<div class="live-chat__row{{if $m.IsBroadcaster}} live-chat__row--host{{end}}"
+     data-facet-id="facet:f33d3r:live:{{$m.StreamID}}:chat_msg_{{$m.ID}}"
+     data-stream-id="{{$m.StreamID}}">
+  <a class="live-chat__av" href="/{{$m.Handle}}" tabindex="-1" aria-hidden="true">
+    {{template "avatar_img" (dict "URL" $m.AvatarURL "Handle" $m.Handle "Size" "sm")}}
+  </a>
+  <p class="live-chat__line">
+    <a class="live-chat__who" href="/{{$m.Handle}}">{{$m.Name}}</a>
+    {{if $m.IsBroadcaster}}<span class="live-chat__host-tag">HOST</span>{{end}}
+    <span class="live-chat__text">{{$m.Body}}</span>
+    <time class="live-chat__time">{{$m.TimeLabel}}</time>
+  </p>
+</div>
+{{end}}

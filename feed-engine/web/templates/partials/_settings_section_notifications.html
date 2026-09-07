@@ -1,0 +1,107 @@
+{{/*
+FACET settings_section_notifications
+  version: 1.0 | status: stable | layer: 2
+
+  inputs:
+    .NotifPrefs  map[string]interface{} — preference map from Herald (nil = all defaults)
+
+  states:
+    default | loading (when NotifPrefs nil)
+
+  children: none
+
+  signals:
+    emits:    update_notif_prefs (POST /api/settings/notifications — not via /events; Herald endpoint)
+    receives: none
+
+  context:
+    settings → #settings-panel (HTMX-swapped from settings_nav)
+*/}}
+{{define "settings_section_notifications"}}
+<div class="settings-panel-head">
+  <h2 class="settings-panel-title">Notifications</h2>
+  <p class="settings-panel-sub">Choose which notifications you receive. Push notifications require browser permission.</p>
+</div>
+
+{{$p := .NotifPrefs}}
+
+<form id="notif-prefs-form"
+      hx-post="/api/settings/notifications"
+      hx-swap="none"
+      hx-on:htmx:after-request="if(event.detail.successful){window.toast&&toast('Notification preferences saved','success')}">
+
+  <div class="settings-block">
+    <div class="settings-block-title">Push notifications</div>
+    <div class="settings-toggle-row">
+      <div class="settings-toggle-info">
+        <div class="settings-option-label">Enable push notifications</div>
+        <div class="settings-option-sub">Receive notifications even when F33D3R isn't open</div>
+      </div>
+      <label class="settings-toggle">
+        <input type="checkbox" name="push_enabled" value="true"
+               {{if or (not $p) (index $p "push_enabled")}}checked{{end}}>
+        <span class="settings-toggle-track"></span>
+        <span class="settings-toggle-thumb"></span>
+      </label>
+    </div>
+    <div id="push-browser-status" style="margin-top:8px;font-size:12px;color:var(--text-muted)">
+      <span id="push-status-text">Checking browser permission…</span>
+      <button type="button" class="settings-link-btn" id="push-enable-btn" style="display:none"
+              onclick="PushPrompt&&PushPrompt.allow()">Enable now</button>
+    </div>
+  </div>
+
+  <div class="settings-block">
+    <div class="settings-block-title">Notify me about</div>
+    {{range $key, $label := (dict "likes_enabled" "Likes on your posts" "reposts_enabled" "Reposts of your posts" "replies_enabled" "Replies and mentions" "follows_enabled" "New followers" "messages_enabled" "Direct messages" "achievements_enabled" "Achievements &amp; milestones")}}
+    <div class="settings-toggle-row">
+      <div class="settings-toggle-info">
+        <div class="settings-option-label">{{$label}}</div>
+      </div>
+      <label class="settings-toggle">
+        <input type="checkbox" name="{{$key}}" value="true"
+               {{if or (not $p) (index $p $key)}}checked{{end}}>
+        <span class="settings-toggle-track"></span>
+        <span class="settings-toggle-thumb"></span>
+      </label>
+    </div>
+    {{end}}
+  </div>
+
+  <div class="settings-save-row">
+    <button type="submit" class="btn-primary">Save preferences</button>
+  </div>
+</form>
+
+<script>
+(function() {
+  var statusText = document.getElementById('push-status-text');
+  var enableBtn  = document.getElementById('push-enable-btn');
+  if (!('Notification' in window)) {
+    statusText.textContent = 'Push notifications are not supported in this browser.';
+    return;
+  }
+  var p = Notification.permission;
+  if (p === 'granted') {
+    statusText.textContent = '✓ Browser notifications are enabled.';
+    statusText.style.color = 'var(--success,#22c55e)';
+  } else if (p === 'denied') {
+    statusText.textContent = 'Browser notifications are blocked. Enable them in your browser settings.';
+    statusText.style.color = 'var(--danger,#ef4444)';
+  } else {
+    statusText.textContent = 'Browser notifications not yet enabled.';
+    if (enableBtn) enableBtn.style.display = 'inline-block';
+  }
+  // Wire form to send JSON
+  var form = document.getElementById('notif-prefs-form');
+  if (form) {
+    form.addEventListener('htmx:configRequest', function(e) {
+      e.detail.headers['Content-Type'] = 'application/json';
+      var data = {};
+      new FormData(form).forEach(function(v, k) { data[k] = v === 'true'; });
+      e.detail.parameters = data;
+    });
+  }
+})();
+</script>
+{{end}}

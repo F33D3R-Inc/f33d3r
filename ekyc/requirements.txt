@@ -1,0 +1,9 @@
+flask
+insightface
+onnxruntime
+opencv-python-headless
+pytesseract
+Pillow
+numpy
+prometheus_client
+passporteye

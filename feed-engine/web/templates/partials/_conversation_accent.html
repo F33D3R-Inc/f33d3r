@@ -1,0 +1,18 @@
+{{/*
+FACET conversation_accent
+  version: 1.0 | status: stable | layer: 1
+  inputs:
+    .   string — accent class: mc-cobalt | mc-violet | mc-rose | mc-amber | mc-emerald | mc-sky | mc-fuchsia | mc-teal
+  states:
+    default
+  children:
+    none
+  signals:
+    emits:    none
+    receives: none
+  context:
+    microconversation → left edge strip
+*/}}
+{{define "conversation_accent"}}
+<div class="conversation-accent {{.}}" aria-hidden="true"></div>
+{{end}}

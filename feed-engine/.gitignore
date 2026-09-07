@@ -1,0 +1,16 @@
+# Binaries
+feed-engine
+*.exe
+
+# Env
+config.env
+.env
+
+# Build artifacts
+dist/
+tmp/
+
+# Editor
+.vscode/
+.idea/
+*.swp

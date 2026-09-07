@@ -1,0 +1,221 @@
+# F33D3R Service Mesh Policy
+# Applied via Nginx Ingress annotations and Envoy sidecar configuration.
+# Enforces the brain dependency matrix at the network layer.
+#
+# In k3s production: apply with kubectl apply -f enforcement/runtime-guard/
+
+---
+# NetworkPolicy: restrict inter-brain communication to declared edges only
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: f33d3r-brain-isolation
+  namespace: f33d3r
+  labels:
+    managed-by: f33d3r-enforcement
+spec:
+  # Default: deny all ingress between pods in the f33d3r namespace
+  podSelector: { }
+  policyTypes:
+    - Ingress
+    - Egress
+
+---
+# Nantar: may receive traffic from ingress, may call approved brains
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: nantar-policy
+  namespace: f33d3r
+spec:
+  podSelector:
+    matchLabels:
+      brain: nantar
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+  egress:
+    # Approved calls: AethyrRank, Zior, Ain Soph, Vovin, Elohim Veni, Zodacare, Schema Registry
+    - to:
+        - podSelector:
+            matchLabels:
+              brain: aethyrrank
+      ports:
+        - protocol: TCP
+          port: 8080
+    - to:
+        - podSelector:
+            matchLabels:
+              brain: zior
+      ports:
+        - protocol: TCP
+          port: 8082
+    - to:
+        - podSelector:
+            matchLabels:
+              brain: ain-soph
+      ports:
+        - protocol: TCP
+          port: 8089
+    - to:
+        - podSelector:
+            matchLabels:
+              brain: vovin
+      ports:
+        - protocol: TCP
+          port: 8092
+    - to:
+        - podSelector:
+            matchLabels:
+              brain: elohim-veni
+      ports:
+        - protocol: TCP
+          port: 8093
+    - to:
+        - podSelector:
+            matchLabels:
+              brain: zodacare
+      ports:
+        - protocol: TCP
+          port: 8090
+    - to:
+        - podSelector:
+            matchLabels:
+              brain: schema-registry
+      ports:
+        - protocol: TCP
+          port: 8079
+    # Postgres and Redis
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - protocol: TCP
+          port: 6379
+    # External (DNS, NTP, Kafka)
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+
+---
+# AethyrRank: receives from Nantar only, no egress to other brains
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: aethyrrank-policy
+  namespace: f33d3r
+spec:
+  podSelector:
+    matchLabels:
+      brain: aethyrrank
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              brain: nantar
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              brain: schema-registry
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+
+---
+# Zodacare: may call Elohim Veni only
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: zodacare-policy
+  namespace: f33d3r
+spec:
+  podSelector:
+    matchLabels:
+      brain: zodacare
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              brain: nantar
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              brain: elohim-veni
+      ports:
+        - protocol: TCP
+          port: 8093
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+    - to:
+        - podSelector:
+            matchLabels:
+              brain: schema-registry
+
+---
+# Vovin: receives only via Nantar proxy, no egress to other brains
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: vovin-policy
+  namespace: f33d3r
+spec:
+  podSelector:
+    matchLabels:
+      brain: vovin
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              brain: nantar
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+    - to:
+        - podSelector:
+            matchLabels:
+              brain: schema-registry

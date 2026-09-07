@@ -1,0 +1,55 @@
+{{define "title"}}{{.List.Name}} · F33D3R{{end}}
+{{define "body"}}
+<main class="f33d3r-main" id="main-col">
+  <div class="main-head">
+    <button class="back-btn" onclick="history.back()" aria-label="Back">
+      <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="width:18px;height:18px"><path d="m15 18-6-6 6-6"/></svg>
+    </button>
+    <div class="main-head-content">
+      <div>
+        <div class="main-head-title">{{.List.Name}}</div>
+        <div style="font-size:12px;color:var(--text-muted)">@{{.List.OwnerHandle}} · {{.List.MemberCount}} members</div>
+      </div>
+      {{if eq .CurrentUserHandle .List.OwnerHandle}}
+      <div style="display:flex;gap:8px">
+        {{/* "Add member" asks for the list_add_member_modal Facet into #overlay-slot */}}
+        <button class="btn-ghost" style="font-size:13px;padding:6px 14px" type="button"
+                hx-get="/facets/list/{{.List.ID}}/add_member_modal"
+                hx-target="#overlay-slot"
+                hx-swap="innerHTML">Add member</button>
+        <button class="btn-ghost post-menu-item-danger" style="font-size:13px;padding:6px 14px"
+                hx-post="/events" hx-vals='{"event_type":"delete_list","list_id":"{{.List.ID}}"}'
+                hx-confirm="Delete list {{.List.Name}}? This cannot be undone.">Delete</button>
+      </div>
+      {{end}}
+    </div>
+  </div>
+
+  {{if .List.Description}}
+  <div style="padding:12px 16px;color:var(--text-secondary);font-size:14px;border-bottom:1px solid var(--border)">
+    {{.List.Description}}
+  </div>
+  {{end}}
+
+  {{template "list_members" (dict "ListID" .List.ID "Members" .Members)}}
+
+  <div id="list-feed" role="feed" aria-live="polite">
+    {{if .Works}}
+    {{$ctx := dict "CurrentUserHandle" .CurrentUserHandle "User" .User}}
+    {{range .Works}}
+    {{template "work_card" (dict "W" . "Ctx" $ctx)}}
+    {{end}}
+    {{if .Before}}
+    {{/* The next page comes from the list's works Facet — cards and the next
+         sentinel only, never this page again. */}}
+    {{template "feed_sentinel" (dict "URL" .NextURL "Cursor" .Before)}}
+    {{end}}
+    {{else}}
+    {{template "stateEmpty" (dict "Title" "No posts yet" "Sub" "Works from list members will appear here.")}}
+    {{end}}
+  </div>
+</main>
+
+<input type="hidden" name="session_id" value="{{.SessionID}}">
+{{end}}
+{{define "right-panel"}}{{template "sidebar_right" .}}{{end}}

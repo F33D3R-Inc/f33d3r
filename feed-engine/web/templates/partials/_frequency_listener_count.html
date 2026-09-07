@@ -1,0 +1,58 @@
+{{/*
+FACET frequency_listener_count
+  version: 1.0 | status: stable | layer: 5
+
+  Server-owned listener tally, and — for a participant — the presence beat.
+  The browser never counts anything: Auralis computes the count from its
+  presence sets and Nantar renders it here. A participant's tally re-posts
+  presence every 15 s (Auralis presence TTL is 45 s, so two beats may be lost
+  before someone is swept) and swaps itself for the fresh Fragment the server
+  answers with. The beat lives on this leaf and nowhere else: it has no
+  descendants, so htmx inheritance of its hx-vals can reach no form. The same
+  Frequency's card in the Playground must not beat, or reading the feed would
+  count you as a listener.
+
+  inputs:
+    ID        string — frequency UUID
+    Count     int    — raw count, for the aria label
+    Label     string — server-formatted ("327 listening", "1.2K listening")
+    Heartbeat bool   — true only for a participant of a live Frequency (stage header, Shell dock)
+
+  states:
+    default | heartbeat
+
+  children: none
+
+  signals:
+    emits:    frequency.heartbeat (POST /events)
+    receives: frequency_facet (SSE — this Fragment replaced)
+
+  ending the beat:
+    Only the server knows when a Frequency stops being live, or that this
+    person is no longer in it. It ends the beat by answering the beat with this
+    Facet rendered without one, and in the same answer swaps the Shell's dock
+    for the empty mount out-of-band. The browser holds no rule about when to
+    stop.
+
+  context:
+    frequency_stage     → header row (Heartbeat true for participants)
+    frequency_dock      → meta row   (Heartbeat true for participants)
+    frequency_dock_mini → bar        (Heartbeat true for participants)
+    frequency_card      → tile meta  (Heartbeat false)
+*/}}
+{{define "frequency_listener_count"}}
+<span class="freq-listeners"
+      data-facet-id="{{frequencyFacetID .ID "listener_count"}}"
+      {{- if .Heartbeat}}
+      hx-post="/events"
+      hx-vals='{"event_type":"frequency.heartbeat","frequency_id":"{{.ID}}"}'
+      hx-trigger="every 15s"
+      hx-swap="outerHTML"
+      {{- end}}
+      aria-label="{{.Count}} listening now" role="status">
+  <svg class="freq-listeners__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+    <path d="M3 18v-6a9 9 0 0 1 18 0v6"/><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/>
+  </svg>
+  <span class="freq-listeners__n">{{.Label}}</span>
+</span>
+{{end}}

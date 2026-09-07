@@ -1,0 +1,126 @@
+{{/*
+FACET sidebar_right
+  version: 1.0 | status: stable | layer: 2
+
+  Every list in this rail is sized by the rail's item budget (railManifest in
+  rail_budget.go), never by this facet and never by the surface that mounts it.
+  A cap is a ceiling, not a quota: a panel with fewer items renders fewer rows,
+  and a panel with none renders NOTHING — no head, no empty box. Two panels
+  depend on that below and it is load-bearing.
+
+  Where a cap hides something, the panel carries the way to see the rest, and
+  that destination also comes from the budget (railSeeAll) so a panel can never
+  link somewhere the server does not serve.
+
+  inputs:
+    RailContext        string              — "feed"|"explore"|"post"|"profile"|"music"|"search"|"default"
+    RailTrendingTags   []TrendingTag       — tag + count + rank; the RAIL's list.
+                                              Not TrendingTags: Explore renders a
+                                              full grid from that key, and while
+                                              the two shared a key they shared a
+                                              length
+    RailTrendingSeeAll string              — trending escape hatch href ("" = none)
+    SuggestedUsers     []SuggestedUser     — who-to-follow rows (may be empty)
+    RailPeopleSeeAll   string              — who-to-follow escape hatch href ("" = none)
+    SuggestedUsersResolved bool             — this surface resolved a suggestion set;
+                                              drives the panel's honest empty state
+    RailCreators       []SuggestedUser     — "Creators to follow": the same suggestion
+                                              set narrowed to creator accounts
+    RailScores         *SportsRailData     — right-rail scoreboard; nil when the lane is off
+    RailNewsItems      []RSSItem           — contextual news panel
+    RailNewsLabel      string              — news panel heading
+    PostAuthorHandle   string              — used in post context for "More from @author" prompt
+
+  states:
+    context-feed | context-explore | context-post | context-profile |
+    context-music | context-search | context-default
+
+  children:
+    trending_item, suggested_user_row, rail_trending_creators, rail_scorecards,
+    rail_news_section, rail_footer
+
+  signals:
+    emits:    none
+    receives: none
+
+  context:
+    base.html → right-panel slot (HTMX-swapped on navigation between surfaces)
+*/}}
+{{define "sidebar_right"}}
+<div class="sidebar-right-inner">
+
+  {{/* ── POST context: "More from @author" prompt ── */}}
+  {{if and (eq .RailContext "post") .PostAuthorHandle}}
+  <div class="sidebar-panel rail-more-from-panel">
+    <h3 class="sidebar-panel-title">More from @{{.PostAuthorHandle}}</h3>
+    <a href="/{{.PostAuthorHandle}}" class="rail-more-from-link">View profile →</a>
+  </div>
+  {{end}}
+
+  {{/* ── Trending tags ──
+       Absent entirely when nothing is trending: an empty "Trending" head is a
+       claim that the platform has no conversation on it. */}}
+  {{if .RailTrendingTags}}
+  <div class="sidebar-panel">
+    <div class="rail-panel-head">
+      <h3 class="sidebar-panel-title">Trending</h3>
+      {{if .RailTrendingSeeAll}}<a class="rail-panel-see-all" href="{{.RailTrendingSeeAll}}">See more</a>{{end}}
+    </div>
+    {{range $i, $t := .RailTrendingTags}}
+    {{template "trending_item" (dict "Tag" $t.Tag "Count" $t.Count "Rank" (add $i 1))}}
+    {{end}}
+  </div>
+  {{end}}
+
+  {{/* ── Creator intelligence: feed, explore, profile, music ── */}}
+  {{if .RailCreators}}
+  {{template "rail_trending_creators" .}}
+  {{end}}
+
+  {{/* ── Who to follow ──
+       Rendered whenever this surface actually resolved a suggestion set, empty
+       or not. A suggestion is a claim the platform makes on its own authority,
+       so when nobody clears the quality bar the panel says so rather than
+       reaching further down the table for a row to fill the space with. That
+       reach is what put empty automation accounts above real people.
+
+       SuggestedUsersResolved separates "nobody clears the bar" from "this
+       surface never asked", so a page that mounts the rail without the rail
+       dataset stays silent instead of lying. */}}
+  {{if .SuggestedUsersResolved}}
+  <div class="sidebar-panel">
+    <div class="rail-panel-head">
+      <h3 class="sidebar-panel-title">Who to follow</h3>
+      {{/* The way out is offered only when there are rows to be past. With
+           nobody clearing the bar there is no "more" to show, and a link to a
+           second empty surface is worse than the honest line below. */}}
+      {{if and .SuggestedUsers .RailPeopleSeeAll}}<a class="rail-panel-see-all" href="{{.RailPeopleSeeAll}}">Show more</a>{{end}}
+    </div>
+    {{if .SuggestedUsers}}
+    {{range .SuggestedUsers}}
+    {{template "suggested_user_row" .}}
+    {{end}}
+    {{else}}
+    <p class="sidebar-panel-empty">No one to suggest yet. Accounts appear here once they have a profile picture and something posted.</p>
+    {{end}}
+  </div>
+  {{end}}
+
+  {{/* ── Scoreboard — the persistent home of the slate ──
+       rail_scorecards owns its own dataset and its own facet id, so it is handed
+       RailScores, not the page. Handing it the page gave it the page's Cards and
+       an empty facet id, which is an address the stream can never deliver to. */}}
+  {{if .RailScores}}
+  {{template "rail_scorecards" .RailScores}}
+  {{end}}
+
+  {{/* ── Contextual news (RSS) ── */}}
+  {{if .RailNewsItems}}
+  {{template "rail_news_section" .}}
+  {{end}}
+
+  {{/* ── Legal footer — right rail only ── */}}
+  {{template "rail_footer" .}}
+
+</div>
+{{end}}

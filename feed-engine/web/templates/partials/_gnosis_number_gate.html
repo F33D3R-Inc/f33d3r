@@ -1,0 +1,69 @@
+{{/*
+FACET gnosis_number_gate
+  version: 1.0 | status: stable | layer: 2
+
+  inputs:
+    PIALID string — the viewer who tried to reach someone by Number
+    State  string — "malformed" | "request" | "refused" | "unavailable"
+
+  states:
+    malformed | request | refused | unavailable
+
+  children: none
+
+  signals:
+    receives: POST /messages/new-number → replaces the thread pane
+
+  context:
+    messages → thread pane
+
+  notes:
+    The counterpart of contact_gate on the Number path. An allow never renders
+    here: it renders the conversation itself.
+
+    "refused" is deliberately one state, not four. An unknown Number, a retired
+    Number, a closed policy and a capability_only policy with no link presented
+    are the same sentence, so this surface cannot be used to test whether a
+    Number belongs to anybody. Only "malformed" is named, because the shape of a
+    Number is arithmetic anyone can do offline and naming it reveals nothing
+    except that the caller mistyped.
+
+    "request" is NOT a refusal and must never read as one. On F33D3R a contact is
+    a mutual follow — there is no separate contacts list, no address book, no
+    friend table. Three tiers reach somebody: a mutual follow goes through
+    freely, a Number passes that Number's gate, and anyone else knocks. This
+    state is the knock. It says a request is waiting, and it names no policy:
+    the sender must not learn from it whether the wall they met was followers,
+    mutuals or a Number expected and not presented.
+*/}}
+{{define "gnosis_number_gate"}}
+<div class="gn-gate" data-facet-id="facet:f33d3r:contact:{{.PIALID}}:number_gate">
+  <div class="gn-gate-icon" aria-hidden="true">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+  </div>
+  {{if eq .State "malformed"}}
+    <h2 class="gn-gate-title">That is not a F33D3R Number</h2>
+    <p class="gn-gate-text">
+      A Number is twelve digits in three spoken groups, like
+      0412 8837 2919. Check what you were given and try again.
+    </p>
+  {{else if eq .State "request"}}
+    <h2 class="gn-gate-title">Your request is waiting</h2>
+    <p class="gn-gate-text">
+      This is not a refusal. The person this Number belongs to has been asked,
+      and it is theirs to answer. You will hear back here if they accept.
+    </p>
+  {{else if eq .State "unavailable"}}
+    <h2 class="gn-gate-title">Contact cannot be set up right now</h2>
+    <p class="gn-gate-text">
+      Nobody was contacted and nothing was sent. Please try again shortly.
+    </p>
+  {{else}}
+    <h2 class="gn-gate-title">That Number is not reachable</h2>
+    <p class="gn-gate-text">
+      Nothing was sent. If somebody gave you this Number, ask them for a current
+      one or for a contact link.
+    </p>
+  {{end}}
+</div>
+{{end}}

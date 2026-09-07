@@ -1,0 +1,401 @@
+{{define "title"}}Verification · F33D3R{{end}}
+{{define "body"}}
+<main class="f33d3r-main" id="main-col">
+  <div class="main-head">
+    <button class="back-btn" onclick="history.back()"><svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="width:18px;height:18px"><path d="m15 18-6-6 6-6"/></svg></button>
+    <div class="main-head-title">Verification</div>
+    {{if gt .VerityTier 0}}<span class="kyc-tier-badge">Tier {{.VerityTier}}</span>{{end}}
+  </div>
+
+  <div class="kyc-body">
+  {{if gt .VerityTier 0}}
+
+    <div class="kyc-verified-card">
+      <div class="kyc-verified-emoji">✓</div>
+      <div class="kyc-verified-title">Identity Verified</div>
+      <div class="kyc-verified-sub">Tier {{.VerityTier}}{{if .AgeBand}} · {{.AgeBand}}{{end}}</div>
+      <div class="kyc-verified-caps">
+        {{if .PayoutEnabled}}<span class="kyc-cap-badge kyc-cap-badge--payouts">Payouts Enabled</span>{{end}}
+        {{if .NSFWAccess}}<span class="kyc-cap-badge kyc-cap-badge--adult">Adult Creator</span>{{end}}
+        {{if .Has2257}}<span class="kyc-cap-badge kyc-cap-badge--2257">2257 Compliant</span>{{end}}
+      </div>
+    </div>
+
+    {{if not .NSFWAccess}}
+    <div class="kyc-adult-card">
+      <div class="kyc-adult-card-title">Enable Adult Creator Mode</div>
+      <div class="kyc-adult-card-sub">Unlock the ability to post and monetise adult content on F33D3R.</div>
+      <button class="kyc-adult-enable-btn"
+        hx-post="/kyc/adult/enable"
+        hx-target="#kyc-adult-result"
+        hx-swap="innerHTML">Enable Adult Creator Mode</button>
+      <div id="kyc-adult-result"></div>
+    </div>
+    {{end}}
+
+  {{else if eq .KYCMode "creator"}}
+
+    {{/* Creator KYC path — full biometric + 2257 agreement step */}}
+    <div class="kyc-flow" id="kyc-flow-root" data-kyc-mode="creator">
+
+      {{/* Step progress indicator — 5 dots for creator mode */}}
+      <div class="kyc-progress" id="kyc-progress">
+        <div class="kyc-progress-dots">
+          <div class="kyc-dot" id="kyc-dot-1">1</div>
+          <div class="kyc-bar"></div>
+          <div class="kyc-dot" id="kyc-dot-2">2</div>
+          <div class="kyc-bar"></div>
+          <div class="kyc-dot" id="kyc-dot-3">3</div>
+          <div class="kyc-bar"></div>
+          <div class="kyc-dot" id="kyc-dot-4">4</div>
+          <div class="kyc-bar"></div>
+          <div class="kyc-dot" id="kyc-dot-5">5</div>
+        </div>
+        <div class="kyc-progress-labels">
+          <div class="kyc-progress-label">ID</div>
+          <div class="kyc-progress-label">Check</div>
+          <div class="kyc-progress-label">Face</div>
+          <div class="kyc-progress-label">Agreement</div>
+          <div class="kyc-progress-label">Done</div>
+        </div>
+      </div>
+
+      {{/* Step: intro */}}
+      <div class="kyc-step" id="kyc-step-intro">
+        <h2 class="kyc-step-title">Adult Creator Verification</h2>
+        <p class="kyc-step-sub">To activate your adult creator account you must verify your identity and accept the 18 USC 2257 record-keeping agreement.</p>
+        <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:20px">
+          <div style="display:flex;align-items:center;gap:12px;padding:12px;background:var(--surface);border-radius:12px">
+            <span style="font-size:22px">🪪</span>
+            <div>
+              <p style="font-size:13px;font-weight:600;color:var(--text-primary);margin:0 0 2px">Government-issued ID</p>
+              <p style="font-size:12px;color:var(--text-secondary);margin:0">Passport, national ID card, or driver's licence</p>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:12px;padding:12px;background:var(--surface);border-radius:12px">
+            <span style="font-size:22px">🤳</span>
+            <div>
+              <p style="font-size:13px;font-weight:600;color:var(--text-primary);margin:0 0 2px">Face scan</p>
+              <p style="font-size:12px;color:var(--text-secondary);margin:0">A short liveness check — blink, look up, smile</p>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:12px;padding:12px;background:var(--surface);border-radius:12px">
+            <span style="font-size:22px">📋</span>
+            <div>
+              <p style="font-size:13px;font-weight:600;color:var(--text-primary);margin:0 0 2px">2257 Agreement</p>
+              <p style="font-size:12px;color:var(--text-secondary);margin:0">Read and accept the federal record-keeping statement</p>
+            </div>
+          </div>
+        </div>
+        <button class="kyc-capture-btn kyc-capture-btn--full" onclick="kycGo('doc_capture')">Start Verification</button>
+        <p class="kyc-privacy-note">You must be 18 or older. One verified account per person.</p>
+      </div>
+
+      {{/* Step: doc_capture */}}
+      <div class="kyc-step hidden" id="kyc-step-doc_capture">
+        <h2 class="kyc-step-title">Photograph Your ID</h2>
+        <p class="kyc-step-sub">Place your document flat in good light. All four corners must be visible with no glare or shadows.</p>
+        <div class="kyc-viewfinder kyc-viewfinder--id">
+          <video id="kyc-doc-video" autoplay playsinline muted></video>
+          <canvas id="kyc-doc-canvas"></canvas>
+          <div class="kyc-guide-rect-wrap">
+            <div class="kyc-guide-rect">
+              <div class="kyc-guide-rect-label">Align ID within frame</div>
+            </div>
+          </div>
+          <div class="kyc-corner kyc-corner--tl"></div>
+          <div class="kyc-corner kyc-corner--tr"></div>
+          <div class="kyc-corner kyc-corner--bl"></div>
+          <div class="kyc-corner kyc-corner--br"></div>
+          <div class="kyc-viewfinder-status" id="kyc-doc-cam-status">Starting camera…</div>
+        </div>
+        <div class="kyc-capture-row">
+          <button class="kyc-capture-btn" id="kyc-doc-capture-btn" onclick="kycCaptureDoc()" disabled>Capture</button>
+          <label class="kyc-capture-btn" style="text-align:center;cursor:pointer" for="kyc-doc-file">Upload File</label>
+          <input type="file" id="kyc-doc-file" accept="image/*" style="display:none" onchange="kycDocFromFile(this)">
+        </div>
+        <p class="kyc-privacy-note">Accepted: passport, national ID card, driver's licence</p>
+      </div>
+
+      {{/* Step: doc_confirm */}}
+      <div class="kyc-step hidden" id="kyc-step-doc_confirm">
+        <h2 class="kyc-step-title">Does This Look Clear?</h2>
+        <p class="kyc-step-sub">Check the image is sharp, fully in frame, and not obscured by glare. All text should be legible.</p>
+        <img id="kyc-doc-preview" src="" alt="ID document preview" style="width:100%;border-radius:12px;margin-bottom:14px;display:block;object-fit:contain;max-height:260px;background:#000">
+        <div class="kyc-capture-row">
+          <button class="kyc-capture-btn" style="background:var(--surface);color:var(--text-primary);border:1px solid var(--border)" onclick="kycGo('doc_capture')">Retake</button>
+          <button class="kyc-capture-btn" onclick="kycConfirmDoc()">Looks Good</button>
+        </div>
+      </div>
+
+      {{/* Step: liveness */}}
+      <div class="kyc-step hidden" id="kyc-step-liveness">
+        <h2 class="kyc-step-title">Face Scan</h2>
+        <p class="kyc-step-sub" id="kyc-live-sub">Follow the on-screen prompts. Keep your face centred and well-lit.</p>
+        <div class="kyc-challenge-pills" id="kyc-challenge-pills"></div>
+        <div class="kyc-viewfinder kyc-viewfinder--face">
+          <video id="kyc-face-video" class="camera-preview--front" autoplay playsinline muted></video>
+          <canvas id="kyc-face-canvas"></canvas>
+          <div class="kyc-face-label">Keep your face centred</div>
+          <div class="kyc-challenge-overlay" id="kyc-challenge-overlay" style="display:none">
+            <div class="kyc-challenge-icon" id="kyc-challenge-icon"></div>
+            <div class="kyc-challenge-text" id="kyc-challenge-text"></div>
+            <div class="kyc-challenge-sub" id="kyc-challenge-sub"></div>
+            <div class="kyc-challenge-timer-wrap"><div class="kyc-challenge-timer-bar" id="kyc-challenge-timer-bar"></div></div>
+          </div>
+          <div class="kyc-challenge-flash" id="kyc-challenge-flash"></div>
+          <div class="kyc-viewfinder-status" id="kyc-face-cam-status">Starting camera…</div>
+        </div>
+        <div class="kyc-challenge-status" id="kyc-challenge-status">Preparing your face scan…</div>
+      </div>
+
+      {{/* Step: processing */}}
+      <div class="kyc-step hidden" id="kyc-step-processing">
+        <div class="kyc-processing">
+          <div class="kyc-processing-spinner"></div>
+          <div class="kyc-processing-title">Verifying your identity…</div>
+          <div class="kyc-processing-sub">This takes 5–15 seconds. Do not close this page.</div>
+        </div>
+      </div>
+
+      {{/* Step: result */}}
+      <div class="kyc-step hidden" id="kyc-step-result">
+        <div id="kyc-result-content" style="text-align:center;padding:40px 0"></div>
+      </div>
+
+      {{/* Step: agreement — 2257 record-keeping statement + activation */}}
+      <div class="kyc-step hidden" id="kyc-step-agreement">
+        <h2 class="kyc-step-title">Adult Creator Agreement</h2>
+        <p class="kyc-step-sub">Read and accept the 18 USC 2257 record-keeping statement to activate your adult creator account.</p>
+        <div class="kyc-agreement-scroll" id="kyc-agreement-content">
+          <span style="color:var(--text-secondary);font-size:13px">Loading statement…</span>
+        </div>
+        <label class="kyc-agreement-check-row">
+          <input type="checkbox" id="kyc-agreement-check" onchange="kycAgreementToggle(this)">
+          <span style="font-size:13px">I confirm I am 18 or older and agree to comply with 18 USC 2257 record-keeping requirements</span>
+        </label>
+        <button class="kyc-capture-btn kyc-capture-btn--full" id="kyc-activate-btn" disabled
+          hx-post="/kyc/creator/accept"
+          hx-target="#kyc-result-content"
+          hx-swap="innerHTML"
+          onclick="kycGo('result')">Activate Adult Creator</button>
+        <div id="kyc-agreement-result"></div>
+      </div>
+
+    </div>
+
+  {{else if eq .KYCMode "age"}}
+
+    {{/* Lane 1 — age-only MRZ path. No face scan. No liveness. */}}
+    <div class="kyc-flow" id="kyc-flow-root">
+
+      {{/* Step: intro */}}
+      <div class="kyc-step" id="kyc-step-intro">
+        <h2 class="kyc-step-title">Age Verification</h2>
+        <p class="kyc-step-sub">Photograph your passport or national ID. We read only the age data from the barcode strip — your image is never stored.</p>
+        <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:20px">
+          <div style="display:flex;align-items:center;gap:12px;padding:12px;background:var(--surface);border-radius:12px">
+            <span style="font-size:22px">🪪</span>
+            <div>
+              <p style="font-size:13px;font-weight:600;color:var(--text-primary);margin:0 0 2px">Passport or national ID card</p>
+              <p style="font-size:12px;color:var(--text-secondary);margin:0">Must have a machine-readable zone (two or three lines of text at the bottom)</p>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:12px;padding:12px;background:var(--surface);border-radius:12px">
+            <span style="font-size:22px">🔒</span>
+            <div>
+              <p style="font-size:13px;font-weight:600;color:var(--text-primary);margin:0 0 2px">Image deleted immediately</p>
+              <p style="font-size:12px;color:var(--text-secondary);margin:0">Only a yes/no age result is stored. No biometric data.</p>
+            </div>
+          </div>
+        </div>
+        <button class="kyc-capture-btn kyc-capture-btn--full" onclick="kycGo('doc_capture')">Start Age Check</button>
+        <p class="kyc-privacy-note">You must be 18 or older. Library cards and gym memberships are not accepted.</p>
+      </div>
+
+      {{/* Step: doc_capture */}}
+      <div class="kyc-step hidden" id="kyc-step-doc_capture">
+        <h2 class="kyc-step-title">Photograph Your ID</h2>
+        <p class="kyc-step-sub">Ensure the full ID is visible including the bottom barcode strip. No glare or shadows.</p>
+        <div class="kyc-viewfinder kyc-viewfinder--id">
+          <video id="kyc-doc-video" autoplay playsinline muted></video>
+          <canvas id="kyc-doc-canvas"></canvas>
+          <div class="kyc-guide-rect-wrap">
+            <div class="kyc-guide-rect">
+              <div class="kyc-guide-rect-label">Align ID within frame</div>
+            </div>
+          </div>
+          <div class="kyc-corner kyc-corner--tl"></div>
+          <div class="kyc-corner kyc-corner--tr"></div>
+          <div class="kyc-corner kyc-corner--bl"></div>
+          <div class="kyc-corner kyc-corner--br"></div>
+          <div class="kyc-viewfinder-status" id="kyc-doc-cam-status">Starting camera…</div>
+        </div>
+        <div class="kyc-capture-row">
+          <button class="kyc-capture-btn" id="kyc-doc-capture-btn" onclick="kycCaptureDoc()" disabled>Capture</button>
+          <label class="kyc-capture-btn" style="text-align:center;cursor:pointer" for="kyc-doc-file">Upload File</label>
+          <input type="file" id="kyc-doc-file" accept="image/*" style="display:none" onchange="kycDocFromFile(this)">
+        </div>
+      </div>
+
+      {{/* Step: doc_confirm */}}
+      <div class="kyc-step hidden" id="kyc-step-doc_confirm">
+        <h2 class="kyc-step-title">Does This Look Clear?</h2>
+        <p class="kyc-step-sub">Confirm the barcode strip at the bottom of your ID is sharp and fully visible.</p>
+        <img id="kyc-doc-preview" src="" alt="ID document preview" style="width:100%;border-radius:12px;margin-bottom:14px;display:block;object-fit:contain;max-height:260px;background:#000">
+        <div class="kyc-capture-row">
+          <button class="kyc-capture-btn" style="background:var(--surface);color:var(--text-primary);border:1px solid var(--border)" onclick="kycGo('doc_capture')">Retake</button>
+          <button class="kyc-capture-btn" onclick="kycAgeSubmit()">Submit</button>
+        </div>
+      </div>
+
+      {{/* Step: processing */}}
+      <div class="kyc-step hidden" id="kyc-step-processing">
+        <div class="kyc-processing">
+          <div class="kyc-processing-spinner"></div>
+          <div class="kyc-processing-title">Checking your age…</div>
+          <div class="kyc-processing-sub">This takes 2–5 seconds. Do not close this page.</div>
+        </div>
+      </div>
+
+      {{/* Step: result */}}
+      <div class="kyc-step hidden" id="kyc-step-result">
+        <div id="kyc-result-content" style="text-align:center;padding:40px 0"></div>
+      </div>
+
+    </div>
+
+  {{else}}
+
+    <div class="kyc-flow" id="kyc-flow-root">
+
+      {{/* Step progress indicator */}}
+      <div class="kyc-progress" id="kyc-progress">
+        <div class="kyc-progress-dots">
+          <div class="kyc-dot" id="kyc-dot-1">1</div>
+          <div class="kyc-bar"></div>
+          <div class="kyc-dot" id="kyc-dot-2">2</div>
+          <div class="kyc-bar"></div>
+          <div class="kyc-dot" id="kyc-dot-3">3</div>
+          <div class="kyc-bar"></div>
+          <div class="kyc-dot" id="kyc-dot-4">4</div>
+        </div>
+        <div class="kyc-progress-labels">
+          <div class="kyc-progress-label">ID</div>
+          <div class="kyc-progress-label">Check</div>
+          <div class="kyc-progress-label">Face</div>
+          <div class="kyc-progress-label">Done</div>
+        </div>
+      </div>
+
+      {{/* Step: intro */}}
+      <div class="kyc-step" id="kyc-step-intro">
+        <h2 class="kyc-step-title">Verify Your Identity</h2>
+        <p class="kyc-step-sub">We use your government ID and a short face scan to confirm you are who you say you are. Images are processed securely and never stored after verification.</p>
+        <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:20px">
+          <div style="display:flex;align-items:center;gap:12px;padding:12px;background:var(--surface);border-radius:12px">
+            <span style="font-size:22px">🪪</span>
+            <div>
+              <p style="font-size:13px;font-weight:600;color:var(--text-primary);margin:0 0 2px">Government-issued ID</p>
+              <p style="font-size:12px;color:var(--text-secondary);margin:0">Passport, national ID card, or driver's licence</p>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:12px;padding:12px;background:var(--surface);border-radius:12px">
+            <span style="font-size:22px">🤳</span>
+            <div>
+              <p style="font-size:13px;font-weight:600;color:var(--text-primary);margin:0 0 2px">Face scan</p>
+              <p style="font-size:12px;color:var(--text-secondary);margin:0">A short liveness check — blink, look up, smile</p>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:12px;padding:12px;background:var(--surface);border-radius:12px">
+            <span style="font-size:22px">🔒</span>
+            <div>
+              <p style="font-size:13px;font-weight:600;color:var(--text-primary);margin:0 0 2px">Private by design</p>
+              <p style="font-size:12px;color:var(--text-secondary);margin:0">Images deleted after verification. Only the result is stored.</p>
+            </div>
+          </div>
+        </div>
+        <button class="kyc-capture-btn kyc-capture-btn--full" onclick="kycGo('doc_capture')">Start Verification</button>
+        <p class="kyc-privacy-note">You must be 18 or older. One verified account per person.</p>
+      </div>
+
+      {{/* Step: doc_capture */}}
+      <div class="kyc-step hidden" id="kyc-step-doc_capture">
+        <h2 class="kyc-step-title">Photograph Your ID</h2>
+        <p class="kyc-step-sub">Place your document flat in good light. All four corners must be visible with no glare or shadows.</p>
+        <div class="kyc-viewfinder kyc-viewfinder--id">
+          <video id="kyc-doc-video" autoplay playsinline muted></video>
+          <canvas id="kyc-doc-canvas"></canvas>
+          <div class="kyc-guide-rect-wrap">
+            <div class="kyc-guide-rect">
+              <div class="kyc-guide-rect-label">Align ID within frame</div>
+            </div>
+          </div>
+          <div class="kyc-corner kyc-corner--tl"></div>
+          <div class="kyc-corner kyc-corner--tr"></div>
+          <div class="kyc-corner kyc-corner--bl"></div>
+          <div class="kyc-corner kyc-corner--br"></div>
+          <div class="kyc-viewfinder-status" id="kyc-doc-cam-status">Starting camera…</div>
+        </div>
+        <div class="kyc-capture-row">
+          <button class="kyc-capture-btn" id="kyc-doc-capture-btn" onclick="kycCaptureDoc()" disabled>Capture</button>
+          <label class="kyc-capture-btn" style="text-align:center;cursor:pointer" for="kyc-doc-file">Upload File</label>
+          <input type="file" id="kyc-doc-file" accept="image/*" style="display:none" onchange="kycDocFromFile(this)">
+        </div>
+        <p class="kyc-privacy-note">Accepted: passport, national ID card, driver's licence</p>
+      </div>
+
+      {{/* Step: doc_confirm */}}
+      <div class="kyc-step hidden" id="kyc-step-doc_confirm">
+        <h2 class="kyc-step-title">Does This Look Clear?</h2>
+        <p class="kyc-step-sub">Check the image is sharp, fully in frame, and not obscured by glare. All text should be legible.</p>
+        <img id="kyc-doc-preview" src="" alt="ID document preview" style="width:100%;border-radius:12px;margin-bottom:14px;display:block;object-fit:contain;max-height:260px;background:#000">
+        <div class="kyc-capture-row">
+          <button class="kyc-capture-btn" style="background:var(--surface);color:var(--text-primary);border:1px solid var(--border)" onclick="kycGo('doc_capture')">Retake</button>
+          <button class="kyc-capture-btn" onclick="kycConfirmDoc()">Looks Good</button>
+        </div>
+      </div>
+
+      {{/* Step: liveness */}}
+      <div class="kyc-step hidden" id="kyc-step-liveness">
+        <h2 class="kyc-step-title">Face Scan</h2>
+        <p class="kyc-step-sub" id="kyc-live-sub">Follow the on-screen prompts. Keep your face centred and well-lit.</p>
+        <div class="kyc-challenge-pills" id="kyc-challenge-pills"></div>
+        <div class="kyc-viewfinder kyc-viewfinder--face">
+          <video id="kyc-face-video" class="camera-preview--front" autoplay playsinline muted></video>
+          <canvas id="kyc-face-canvas"></canvas>
+          <div class="kyc-face-label">Keep your face centred</div>
+          <div class="kyc-challenge-overlay" id="kyc-challenge-overlay" style="display:none">
+            <div class="kyc-challenge-icon" id="kyc-challenge-icon"></div>
+            <div class="kyc-challenge-text" id="kyc-challenge-text"></div>
+            <div class="kyc-challenge-sub" id="kyc-challenge-sub"></div>
+            <div class="kyc-challenge-timer-wrap"><div class="kyc-challenge-timer-bar" id="kyc-challenge-timer-bar"></div></div>
+          </div>
+          <div class="kyc-challenge-flash" id="kyc-challenge-flash"></div>
+          <div class="kyc-viewfinder-status" id="kyc-face-cam-status">Starting camera…</div>
+        </div>
+        <div class="kyc-challenge-status" id="kyc-challenge-status">Preparing your face scan…</div>
+      </div>
+
+      {{/* Step: processing */}}
+      <div class="kyc-step hidden" id="kyc-step-processing">
+        <div class="kyc-processing">
+          <div class="kyc-processing-spinner"></div>
+          <div class="kyc-processing-title">Verifying your identity…</div>
+          <div class="kyc-processing-sub">This takes 5–15 seconds. Do not close this page.</div>
+        </div>
+      </div>
+
+      {{/* Step: result */}}
+      <div class="kyc-step hidden" id="kyc-step-result">
+        <div id="kyc-result-content" style="text-align:center;padding:40px 0"></div>
+      </div>
+
+    </div>
+  {{end}}
+  </div>
+</main>
+{{end}}
+{{define "page-scripts"}}
+<script src="/static/js/pages/kyc.js?v={{assetVer}}" defer></script>
+{{end}}

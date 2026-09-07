@@ -1,0 +1,71 @@
+{{/*
+FACET frequency_go_form
+  version: 1.0 | status: stable | layer: 3
+
+  The audio mode of Go Live. The form is the whole flow: the server creates the
+  Frequency, starts it, seats the host, and answers with the stage. Nothing is
+  provisioned in the browser; the microphone is not opened here — the stage's
+  media runtime (Phase 3) asks for it only after the server says this person
+  is on the mic.
+
+  inputs:
+    Handle      string — host handle
+    CanNSFW     bool   — PIAL is cleared for 18+ content
+    Error       string — server-side rejection, rendered back into the form
+    Title       string — title already typed, on a rejection
+    Description string — description already typed, on a rejection
+
+  states:
+    default | error | nsfw-allowed
+
+  children: none
+
+  signals:
+    emits:    frequency.go_live (POST /events)
+    receives: none
+
+  context:
+    live_go_composer (FrequencyMode) → the form area
+*/}}
+{{define "frequency_go_form"}}
+<form class="live-go__form freq-go" hx-post="/events" hx-target="#main-col" hx-swap="innerHTML" hx-push-url="true">
+  <input type="hidden" name="event_type" value="frequency.go_live">
+
+  {{if .Error}}<p class="live-go__error" role="alert">{{.Error}}</p>{{end}}
+
+  <label class="live-go__label" for="freq-go-title">Frequency title</label>
+  <input class="live-go__input" id="freq-go-title" name="title" type="text" required
+         maxlength="120" autocomplete="off" placeholder="What are we talking about?"
+         value="{{.Title}}">
+
+  <label class="live-go__label" for="freq-go-desc">Description <span class="live-go__optional">optional</span></label>
+  <textarea class="live-go__textarea" id="freq-go-desc" name="description" rows="3"
+            maxlength="600" placeholder="What should people know before they tune in?">{{.Description}}</textarea>
+
+  <label class="live-go__label" for="freq-go-vis">Who can tune in</label>
+  <select class="live-go__input freq-go__select" id="freq-go-vis" name="visibility">
+    <option value="public" selected>Everyone</option>
+    <option value="followers">People who follow you</option>
+    <option value="subscribers">Subscribers</option>
+    <option value="private">Only people you invite</option>
+  </select>
+
+  <label class="live-go__check">
+    <input type="checkbox" name="recording_enabled" value="1">
+    <span>Record this Frequency for a replay. Everyone who tunes in is told it is being recorded.</span>
+  </label>
+
+  {{if .CanNSFW}}
+  <label class="live-go__check">
+    <input type="checkbox" name="adult_content" value="1">
+    <span>This Frequency is 18+</span>
+  </label>
+  {{end}}
+
+  <button class="live-go__submit freq-go__submit" type="submit">
+    <span class="freq-badge__wave freq-go__wave" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+    Start Frequency
+  </button>
+  <p class="live-go__note">Hosting as @{{.Handle}}. Your mic opens on the stage, not here. You can end the Frequency at any time.</p>
+</form>
+{{end}}

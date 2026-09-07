@@ -1,0 +1,189 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "graphTooltip": 1,
+  "id": null,
+  "title": "F33D3R · Frequencies (Auralis)",
+  "tags": ["f33d3r", "frequencies", "auralis"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "15s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+
+    { "type": "row", "title": "Live", "gridPos": {"h":1,"w":24,"x":0,"y":0}, "collapsed": false, "id": 1 },
+
+    {
+      "type": "stat", "id": 2, "title": "Frequencies live",
+      "gridPos": {"h":4,"w":4,"x":0,"y":1},
+      "datasource": {"type":"prometheus","uid":"prometheus"},
+      "targets": [{"expr":"sum(frequencies_active)","refId":"A","instant":true}],
+      "options": {"reduceOptions":{"calcs":["lastNotNull"]},"colorMode":"value","graphMode":"area"}
+    },
+    {
+      "type": "stat", "id": 3, "title": "Listening now",
+      "gridPos": {"h":4,"w":4,"x":4,"y":1},
+      "datasource": {"type":"prometheus","uid":"prometheus"},
+      "targets": [{"expr":"sum(frequency_listeners_current)","refId":"A","instant":true}],
+      "options": {"reduceOptions":{"calcs":["lastNotNull"]},"colorMode":"value","graphMode":"area"}
+    },
+    {
+      "type": "stat", "id": 4, "title": "Speaking now",
+      "gridPos": {"h":4,"w":4,"x":8,"y":1},
+      "datasource": {"type":"prometheus","uid":"prometheus"},
+      "targets": [{"expr":"sum(frequency_speakers_current)","refId":"A","instant":true}],
+      "options": {"reduceOptions":{"calcs":["lastNotNull"]},"colorMode":"value","graphMode":"area"}
+    },
+    {
+      "type": "stat", "id": 5, "title": "Events unpublished",
+      "gridPos": {"h":4,"w":4,"x":12,"y":1},
+      "datasource": {"type":"prometheus","uid":"prometheus"},
+      "targets": [{"expr":"max(frequency_events_unpublished)","refId":"A","instant":true}],
+      "options": {"reduceOptions":{"calcs":["lastNotNull"]},"colorMode":"background","graphMode":"none"},
+      "fieldConfig": {"defaults":{"thresholds":{"mode":"absolute","steps":[{"color":"green","value":null},{"color":"yellow","value":10},{"color":"red","value":100}]}}}
+    },
+    {
+      "type": "stat", "id": 6, "title": "Auralis up",
+      "gridPos": {"h":4,"w":4,"x":16,"y":1},
+      "datasource": {"type":"prometheus","uid":"prometheus"},
+      "targets": [{"expr":"up{job=\"auralis\"}","refId":"A","instant":true}],
+      "options": {"reduceOptions":{"calcs":["lastNotNull"]},"colorMode":"background","graphMode":"none"},
+      "fieldConfig": {"defaults":{"thresholds":{"mode":"absolute","steps":[{"color":"red","value":null},{"color":"green","value":1}]},"mappings":[{"type":"value","options":{"0":{"text":"DOWN"},"1":{"text":"UP"}}}]}}
+    },
+    {
+      "type": "stat", "id": 7, "title": "Leases held",
+      "gridPos": {"h":4,"w":4,"x":20,"y":1},
+      "datasource": {"type":"prometheus","uid":"prometheus"},
+      "targets": [{"expr":"sum(frequency_leases_held)","refId":"A","instant":true}],
+      "options": {"reduceOptions":{"calcs":["lastNotNull"]},"colorMode":"value","graphMode":"none"}
+    },
+
+    { "type": "row", "title": "Participation", "gridPos": {"h":1,"w":24,"x":0,"y":5}, "collapsed": false, "id": 10 },
+
+    {
+      "type": "timeseries", "id": 11, "title": "Tune In / Leave per minute",
+      "gridPos": {"h":8,"w":12,"x":0,"y":6},
+      "datasource": {"type":"prometheus","uid":"prometheus"},
+      "targets": [
+        {"expr":"sum(rate(frequency_join_total[1m])) * 60","legendFormat":"joins","refId":"A"},
+        {"expr":"sum by (cause) (rate(frequency_leave_total[1m])) * 60","legendFormat":"left · {{cause}}","refId":"B"},
+        {"expr":"sum by (reason) (rate(frequency_join_refused_total[1m])) * 60","legendFormat":"refused · {{reason}}","refId":"C"}
+      ]
+    },
+    {
+      "type": "timeseries", "id": 12, "title": "Request Mic outcomes per minute",
+      "gridPos": {"h":8,"w":12,"x":12,"y":6},
+      "datasource": {"type":"prometheus","uid":"prometheus"},
+      "targets": [
+        {"expr":"sum by (outcome) (rate(frequency_speaker_requests_total[1m])) * 60","legendFormat":"{{outcome}}","refId":"A"},
+        {"expr":"sum(rate(frequency_speaker_promotions_total[1m])) * 60","legendFormat":"promoted","refId":"B"}
+      ]
+    },
+    {
+      "type": "timeseries", "id": 13, "title": "Moderation actions per minute",
+      "gridPos": {"h":8,"w":12,"x":0,"y":14},
+      "datasource": {"type":"prometheus","uid":"prometheus"},
+      "targets": [
+        {"expr":"sum by (action) (rate(frequency_moderation_actions_total[1m])) * 60","legendFormat":"{{action}}","refId":"A"},
+        {"expr":"sum by (outcome) (rate(frequency_host_loss_total[1m])) * 60","legendFormat":"host loss · {{outcome}}","refId":"B"}
+      ]
+    },
+    {
+      "type": "timeseries", "id": 14, "title": "Presence swept · rate limited · CAS conflicts",
+      "gridPos": {"h":8,"w":12,"x":12,"y":14},
+      "datasource": {"type":"prometheus","uid":"prometheus"},
+      "targets": [
+        {"expr":"sum(rate(frequency_presence_swept_total[1m])) * 60","legendFormat":"presence swept","refId":"A"},
+        {"expr":"sum by (scope) (rate(frequency_rate_limited_total[1m])) * 60","legendFormat":"rate limited · {{scope}}","refId":"B"},
+        {"expr":"sum by (op) (rate(frequency_version_conflict_total[1m])) * 60","legendFormat":"cas conflict · {{op}}","refId":"C"},
+        {"expr":"sum(rate(frequency_idempotent_replay_total[1m])) * 60","legendFormat":"idempotent replay","refId":"D"}
+      ]
+    },
+
+    { "type": "row", "title": "Events & latency", "gridPos": {"h":1,"w":24,"x":0,"y":22}, "collapsed": false, "id": 20 },
+
+    {
+      "type": "timeseries", "id": 21, "title": "Events published per minute, by type",
+      "gridPos": {"h":8,"w":12,"x":0,"y":23},
+      "datasource": {"type":"prometheus","uid":"prometheus"},
+      "targets": [
+        {"expr":"sum by (type) (rate(frequency_events_published_total[1m])) * 60","legendFormat":"{{type}}","refId":"A"},
+        {"expr":"sum(rate(frequency_event_publish_failures_total[1m])) * 60","legendFormat":"publish failures","refId":"B"}
+      ]
+    },
+    {
+      "type": "timeseries", "id": 22, "title": "Event propagation p95 (created → broker ack)",
+      "gridPos": {"h":8,"w":12,"x":12,"y":23},
+      "datasource": {"type":"prometheus","uid":"prometheus"},
+      "targets": [
+        {"expr":"histogram_quantile(0.95, sum(rate(frequency_event_propagation_seconds_bucket[5m])) by (le))","legendFormat":"p95","refId":"A"},
+        {"expr":"histogram_quantile(0.50, sum(rate(frequency_event_propagation_seconds_bucket[5m])) by (le))","legendFormat":"p50","refId":"B"}
+      ],
+      "fieldConfig": {"defaults":{"unit":"s"}}
+    },
+    {
+      "type": "timeseries", "id": 23, "title": "Tune In authorization · speaker promotion p95",
+      "gridPos": {"h":8,"w":12,"x":0,"y":31},
+      "datasource": {"type":"prometheus","uid":"prometheus"},
+      "targets": [
+        {"expr":"histogram_quantile(0.95, sum(rate(frequency_join_authorization_seconds_bucket[5m])) by (le))","legendFormat":"tune in p95","refId":"A"},
+        {"expr":"histogram_quantile(0.95, sum(rate(frequency_speaker_promotion_seconds_bucket[5m])) by (le))","legendFormat":"approve p95","refId":"B"}
+      ],
+      "fieldConfig": {"defaults":{"unit":"s"}}
+    },
+    {
+      "type": "timeseries", "id": 24, "title": "PostgreSQL · Redis p95 by operation",
+      "gridPos": {"h":8,"w":12,"x":12,"y":31},
+      "datasource": {"type":"prometheus","uid":"prometheus"},
+      "targets": [
+        {"expr":"histogram_quantile(0.95, sum(rate(frequency_db_latency_seconds_bucket[5m])) by (le, op))","legendFormat":"pg · {{op}}","refId":"A"},
+        {"expr":"histogram_quantile(0.95, sum(rate(frequency_redis_latency_seconds_bucket[5m])) by (le, op))","legendFormat":"redis · {{op}}","refId":"B"}
+      ],
+      "fieldConfig": {"defaults":{"unit":"s"}}
+    },
+
+    { "type": "row", "title": "HTTP", "gridPos": {"h":1,"w":24,"x":0,"y":39}, "collapsed": false, "id": 30 },
+
+    {
+      "type": "timeseries", "id": 31, "title": "Requests per second by status",
+      "gridPos": {"h":8,"w":12,"x":0,"y":40},
+      "datasource": {"type":"prometheus","uid":"prometheus"},
+      "targets": [{"expr":"sum by (status) (rate(http_requests_total{brain=\"auralis\"}[1m]))","legendFormat":"{{status}}","refId":"A"}],
+      "fieldConfig": {"defaults":{"unit":"reqps"}}
+    },
+    {
+      "type": "timeseries", "id": 32, "title": "p95 latency by route",
+      "gridPos": {"h":8,"w":12,"x":12,"y":40},
+      "datasource": {"type":"prometheus","uid":"prometheus"},
+      "targets": [{"expr":"histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{brain=\"auralis\"}[5m])) by (le, path))","legendFormat":"{{path}}","refId":"A"}],
+      "fieldConfig": {"defaults":{"unit":"s"}}
+    },
+
+    { "type": "row", "title": "Media plane (Phase 3 — zero until the SFU exists)", "gridPos": {"h":1,"w":24,"x":0,"y":48}, "collapsed": true, "id": 40,
+      "panels": [
+        {
+          "type": "timeseries", "id": 41, "title": "WebRTC connections · TURN · ICE outcomes",
+          "gridPos": {"h":8,"w":12,"x":0,"y":49},
+          "datasource": {"type":"prometheus","uid":"prometheus"},
+          "targets": [
+            {"expr":"sum(frequency_webrtc_connections)","legendFormat":"peer connections","refId":"A"},
+            {"expr":"sum(frequency_turn_connections_current)","legendFormat":"via TURN","refId":"B"},
+            {"expr":"sum by (pair) (rate(frequency_ice_success_total[1m])) * 60","legendFormat":"ice ok · {{pair}}","refId":"C"},
+            {"expr":"sum(rate(frequency_ice_failure_total[1m])) * 60","legendFormat":"ice failed","refId":"D"}
+          ]
+        },
+        {
+          "type": "timeseries", "id": 42, "title": "RTP packets/s in · forwarded · dropped",
+          "gridPos": {"h":8,"w":12,"x":12,"y":49},
+          "datasource": {"type":"prometheus","uid":"prometheus"},
+          "targets": [
+            {"expr":"sum(rate(frequency_rtp_packets_received_total[1m]))","legendFormat":"received","refId":"A"},
+            {"expr":"sum(rate(frequency_rtp_packets_forwarded_total[1m]))","legendFormat":"forwarded","refId":"B"},
+            {"expr":"sum by (reason) (rate(frequency_rtp_packets_dropped_total[1m]))","legendFormat":"dropped · {{reason}}","refId":"C"}
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,482 @@
+{{/*
+FACET edit_profile_modal
+  version: 1.1 | status: stable | layer: 3
+
+  inputs:
+    User         User              — full user struct (all profile fields, incl. IsAdultCreator)
+    BirthdayStr  string            — "YYYY-MM-DD" formatted for date input, "" if unset
+    SocialLinks  map[string]string — platform → URL
+    Themes       []Theme           — available themes with .Active flag
+
+  states:
+    default | birthday-expanded
+
+  children:
+    none (crop modal inlined)
+
+  signals:
+    emits:    POST /profile/save (multipart — avatar, banner, profile fields, social, appearance,
+              is_adult_creator)
+    receives: none
+
+  context:
+    #overlay-slot → hx-get="/facets/edit_profile_modal" from profile_header button
+*/}}
+{{define "edit_profile_modal"}}
+<div class="epm-backdrop" id="edit-profile-modal" onclick="if(event.target===this)closeEditProfile()" role="dialog" aria-modal="true" aria-label="Edit profile">
+  <div class="epm-card">
+
+    {{/* ── Fixed header ── */}}
+    <div class="epm-header">
+      <button class="epm-close" type="button" onclick="closeEditProfile()" aria-label="Close">
+        <svg fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24" style="width:18px;height:18px"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+      <span class="epm-title">Edit profile</span>
+      <button class="epm-save-btn" type="submit" form="edit-profile-form">Save</button>
+    </div>
+
+    {{/* ── Scrollable body ── */}}
+    <div class="epm-body">
+      <form id="edit-profile-form" method="POST" action="/profile/save" enctype="multipart/form-data">
+        <input type="hidden" name="return_to" value="/{{.User.Handle}}">
+
+        {{/* ── Banner + Avatar ── */}}
+        <div class="epm-media-zone">
+          <div class="epm-banner" id="epm-banner-preview"
+               style="{{if .User.HeaderURL}}background:url('{{.User.HeaderURL}}') center/cover{{else}}background:var(--accent-muted){{end}}"
+               onclick="document.getElementById('epm-banner-input').click()"
+               title="Change banner">
+            <div class="epm-banner-btn">
+              <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="width:16px;height:16px"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+            </div>
+            <input type="file" id="epm-banner-input" name="header" accept="image/*" style="display:none" onchange="epmInitCrop(this,'banner')">
+          </div>
+          <div class="epm-avatar-wrap">
+            <div class="epm-avatar-ring" id="epm-avatar-preview"
+                 onclick="document.getElementById('epm-avatar-input').click()" title="Change photo">
+              {{if .User.AvatarURL}}
+                <img src="{{.User.AvatarURL}}" alt="" id="epm-avatar-img" style="width:100%;height:100%;object-fit:cover;border-radius:50%">
+              {{else}}
+                {{$c := avatarColors .User.Handle}}
+                <div id="epm-avatar-img" style="width:100%;height:100%;border-radius:50%;background:linear-gradient(135deg,{{index $c 0}},{{index $c 1}});display:flex;align-items:center;justify-content:center;font-size:26px;font-weight:700;color:#fff">{{firstChar .User.DisplayName}}</div>
+              {{end}}
+              <div class="epm-avatar-icon">
+                <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="width:20px;height:20px"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+              </div>
+              <input type="file" id="epm-avatar-input" name="avatar" accept="image/*" style="display:none" onchange="epmInitCrop(this,'avatar')">
+            </div>
+          </div>
+        </div>
+
+        {{/* ── Profile fields ── */}}
+        <div class="epm-fields">
+          <div class="epm-field">
+            <label class="epm-label">Name</label>
+            <input type="text" name="display_name" class="epm-input" value="{{.User.DisplayName}}" maxlength="60" placeholder="Your name">
+          </div>
+          <div class="epm-field">
+            <label class="epm-label">Bio <span class="epm-hint">160 characters</span></label>
+            <div class="epm-bio-wrap">
+              <textarea name="bio" class="epm-input epm-textarea" rows="3" maxlength="160" id="epm-bio" placeholder="Tell people about yourself">{{.User.Bio}}</textarea>
+              <span class="epm-bio-count" id="epm-bio-count">{{add 160 0}}</span>
+            </div>
+          </div>
+          <div class="epm-field">
+            <label class="epm-label">Pronouns</label>
+            <div class="epm-pronouns-row">
+              <select id="epm-pronouns-preset" class="epm-input" onchange="epmOnPronounsChange(this)">
+                <option value="">— Select —</option>
+                <option value="he/him">he/him</option>
+                <option value="she/her">she/her</option>
+                <option value="they/them">they/them</option>
+                <option value="he/they">he/they</option>
+                <option value="she/they">she/they</option>
+                <option value="it/its">it/its</option>
+                <option value="xe/xem">xe/xem</option>
+                <option value="ve/ver">ve/ver</option>
+                <option value="any">any/all</option>
+                <option value="_custom">Custom...</option>
+              </select>
+              <div class="epm-pronouns-custom" id="epm-pronouns-custom" style="display:none">
+                <input type="text" id="epm-pronouns-custom-input" class="epm-input" placeholder="e.g. fae/faer" maxlength="30"
+                       oninput="document.getElementById('epm-pronouns-hidden').value=this.value">
+              </div>
+              <input type="hidden" name="pronouns" id="epm-pronouns-hidden" value="{{.User.Pronouns}}">
+            </div>
+          </div>
+          <div class="epm-field">
+            <label class="epm-label">Location</label>
+            <div class="epm-location-row">
+              <input type="text" name="location" id="epm-location" class="epm-input" value="{{.User.Location}}" maxlength="100" placeholder="City, Country">
+              <input type="hidden" name="country_code" id="epm-country-code" value="{{.User.CountryCode}}">
+              <button type="button" class="epm-detect-btn" onclick="epmDetectLocation(this)">
+                <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="width:13px;height:13px"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M1 12h4M19 12h4"/></svg>
+                Detect
+              </button>
+            </div>
+          </div>
+          <div class="epm-field">
+            <label class="epm-label">Website</label>
+            <input type="text" name="website" class="epm-input" value="{{.User.Website}}" maxlength="200" placeholder="yoursite.com">
+          </div>
+
+          {{/* ── Adult Content Profile toggle ── */}}
+          <div class="epm-field epm-field--full">
+            <label class="admin-perm-toggle epm-adult-toggle">
+              <input type="hidden" name="is_adult_creator" value="0">
+              <input type="checkbox" name="is_adult_creator" value="1"{{if .User.IsAdultCreator}} checked{{end}}>
+              <span class="admin-perm-toggle-label">
+                <span class="admin-perm-name">Adult Content Profile</span>
+                <span class="admin-perm-desc">All posts will require age verification</span>
+              </span>
+            </label>
+          </div>
+
+          {{/* ── Birthday — read-only; date owned by PIAL (set at account creation) ── */}}
+          <div class="epm-field epm-field--full">
+            <div class="epm-birthday-row">
+              <div class="epm-birthday-info">
+                <span class="epm-label">Birth date</span>
+                {{if .BirthdayStr}}
+                  <span class="epm-birthday-current">{{.BirthdayStr}}</span>
+                {{else}}
+                  <span class="epm-birthday-current epm-birthday-unset">Not set</span>
+                {{end}}
+                <span class="epm-birthday-locked">Set at account creation · contact support to change</span>
+              </div>
+            </div>
+            <div class="epm-birthday-vis" style="margin-top:12px">
+              <div class="epm-birthday-vis-head">Who sees this?</div>
+              <p class="epm-birthday-vis-sub">You can control who sees your birthday on F33D3R.</p>
+              <div class="epm-field">
+                <label class="epm-label">Month and day</label>
+                <select name="birthday_md_visibility" class="epm-input">
+                  <option value="everyone"         {{if eq .User.BirthdayMdVisibility "everyone"}}selected{{end}}>Everyone</option>
+                  <option value="followers"        {{if eq .User.BirthdayMdVisibility "followers"}}selected{{end}}>Your followers</option>
+                  <option value="mutual_followers" {{if eq .User.BirthdayMdVisibility "mutual_followers"}}selected{{end}}>People you follow</option>
+                  <option value="only_me"          {{if eq .User.BirthdayMdVisibility "only_me"}}selected{{end}}>Only you</option>
+                </select>
+              </div>
+              <div class="epm-field">
+                <label class="epm-label">Year</label>
+                <select name="birthday_year_visibility" class="epm-input">
+                  <option value="everyone"         {{if eq .User.BirthdayYearVisibility "everyone"}}selected{{end}}>Everyone</option>
+                  <option value="followers"        {{if eq .User.BirthdayYearVisibility "followers"}}selected{{end}}>Your followers</option>
+                  <option value="mutual_followers" {{if eq .User.BirthdayYearVisibility "mutual_followers"}}selected{{end}}>People you follow</option>
+                  <option value="only_me"          {{if eq .User.BirthdayYearVisibility "only_me"}}selected{{end}}>Only you</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {{/* ── Social links section ── */}}
+        <div class="epm-section-head">Social links</div>
+        <div class="epm-fields">
+          {{range $platform, $label := (dict "youtube" "YouTube" "twitch" "Twitch" "spotify" "Spotify" "soundcloud" "SoundCloud" "kick" "Kick" "other" "Other link")}}
+          <div class="epm-field epm-field--full epm-social-row">
+            <label class="epm-label">{{$label}}</label>
+            <input type="text" name="social_{{$platform}}" class="epm-input"
+                   value="{{if $.SocialLinks}}{{index $.SocialLinks $platform}}{{end}}"
+                   placeholder="{{if eq $platform "other"}}any URL{{else}}{{$label}} URL or username{{end}}">
+          </div>
+          {{end}}
+        </div>
+
+        {{/* ── Payment links section ── */}}
+        <div class="epm-section-head">Payment links</div>
+        <p class="epm-payment-desc">Shown in the tip dialog when someone sends you a tip. Not displayed anywhere on your public profile.</p>
+        <div class="epm-fields">
+          <div class="epm-field epm-field--full epm-social-row">
+            <label class="epm-label">Cash App</label>
+            <div class="epm-tip-input-wrap">
+              <span class="epm-tip-prefix">$</span>
+              <input type="text" name="tip_cashapp" class="epm-input epm-tip-input"
+                     value="{{if .ExternalTipLinks}}{{index .ExternalTipLinks "cashapp"}}{{end}}"
+                     placeholder="username" maxlength="50" autocomplete="off" spellcheck="false">
+            </div>
+          </div>
+          <div class="epm-field epm-field--full epm-social-row">
+            <label class="epm-label">Venmo</label>
+            <div class="epm-tip-input-wrap">
+              <span class="epm-tip-prefix">@</span>
+              <input type="text" name="tip_venmo" class="epm-input epm-tip-input"
+                     value="{{if .ExternalTipLinks}}{{index .ExternalTipLinks "venmo"}}{{end}}"
+                     placeholder="username" maxlength="50" autocomplete="off" spellcheck="false">
+            </div>
+          </div>
+          <div class="epm-field epm-field--full epm-social-row">
+            <label class="epm-label">PayPal</label>
+            <div class="epm-tip-input-wrap">
+              <span class="epm-tip-prefix">paypal.me/</span>
+              <input type="text" name="tip_paypal" class="epm-input epm-tip-input"
+                     value="{{if .ExternalTipLinks}}{{index .ExternalTipLinks "paypal"}}{{end}}"
+                     placeholder="username" maxlength="50" autocomplete="off" spellcheck="false">
+            </div>
+          </div>
+          <div class="epm-field epm-field--full epm-social-row">
+            <label class="epm-label">Ko-fi</label>
+            <div class="epm-tip-input-wrap">
+              <span class="epm-tip-prefix">ko-fi.com/</span>
+              <input type="text" name="tip_kofi" class="epm-input epm-tip-input"
+                     value="{{if .ExternalTipLinks}}{{index .ExternalTipLinks "kofi"}}{{end}}"
+                     placeholder="username" maxlength="50" autocomplete="off" spellcheck="false">
+            </div>
+          </div>
+          <div class="epm-field epm-field--full epm-social-row">
+            <label class="epm-label">Buy Me a Coffee</label>
+            <div class="epm-tip-input-wrap">
+              <span class="epm-tip-prefix">buymeacoffee.com/</span>
+              <input type="text" name="tip_buymeacoffee" class="epm-input epm-tip-input"
+                     value="{{if .ExternalTipLinks}}{{index .ExternalTipLinks "buymeacoffee"}}{{end}}"
+                     placeholder="username" maxlength="50" autocomplete="off" spellcheck="false">
+            </div>
+          </div>
+          <div class="epm-field epm-field--full epm-social-row">
+            <label class="epm-label">Bitcoin (BTC)</label>
+            <input type="text" name="tip_bitcoin" class="epm-input"
+                   value="{{if .ExternalTipLinks}}{{index .ExternalTipLinks "bitcoin"}}{{end}}"
+                   placeholder="1A1zP1… or bc1q…" maxlength="100" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="epm-field epm-field--full epm-social-row">
+            <label class="epm-label">XRP</label>
+            <input type="text" name="tip_xrp" class="epm-input"
+                   value="{{if .ExternalTipLinks}}{{index .ExternalTipLinks "xrp"}}{{end}}"
+                   placeholder="rXXXX…" maxlength="50" autocomplete="off" spellcheck="false">
+          </div>
+        </div>
+
+        {{/* ── Appearance section ── */}}
+        <div class="epm-section-head">Appearance</div>
+        <div class="epm-appearance-block">
+          <div class="epm-mode-row">
+            <div>
+              <div class="epm-mode-label">Dark mode</div>
+              <div class="epm-mode-sub">Toggle between dark and light</div>
+            </div>
+            <label class="settings-toggle" id="epm-mode-toggle-label">
+              <input type="checkbox" id="epm-mode-toggle-checkbox">
+              <span class="settings-toggle-track"></span>
+              <span class="settings-toggle-thumb"></span>
+            </label>
+          </div>
+        </div>
+        <div class="epm-appearance-block">
+          <div class="epm-section-sub">Color theme</div>
+          <div class="epm-theme-grid">
+            {{range .Themes}}
+            <label class="epm-theme-card{{if .Active}} is-active{{end}}">
+              <input type="radio" name="theme_id" value="{{.ID}}" {{if .Active}}checked{{end}}
+                     onchange="applyThemePreview(this.value);document.querySelectorAll('.epm-theme-card').forEach(function(c){c.classList.remove('is-active')});this.closest('.epm-theme-card').classList.add('is-active')">
+              <div class="epm-theme-swatch" style="background:{{.Surface}};border:2px solid {{.Accent}}"></div>
+              <div class="epm-theme-text">
+                <div class="epm-theme-name">{{.Name}}</div>
+                <div class="epm-theme-vibe">{{.Vibe}}</div>
+              </div>
+            </label>
+            {{end}}
+          </div>
+        </div>
+        <div class="epm-appearance-block">
+          <div class="epm-mode-row">
+            <div>
+              <div class="epm-mode-label">Reels view on mobile</div>
+              <div class="epm-mode-sub">TikTok-style full-screen scroll instead of cards</div>
+            </div>
+            <label class="settings-toggle" id="epm-reels-toggle-label">
+              <input type="checkbox" id="epm-reels-toggle-checkbox"
+                     {{if .User}}{{if eq .User.MobileFeedView "reels"}}checked{{end}}{{end}}
+                     onchange="fetch('/events',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'event_type=set_mobile_feed_view&value='+(this.checked?'reels':'standard')})">
+              <span class="settings-toggle-track"></span>
+              <span class="settings-toggle-thumb"></span>
+            </label>
+          </div>
+        </div>
+
+      </form>
+    </div>{{/* /epm-body */}}
+  </div>{{/* /epm-card */}}
+</div>{{/* /epm-backdrop */}}
+
+{{/* ── Inline crop modal — reused from settings crop pattern ── */}}
+<div id="epm-crop-modal" class="settings-crop-modal" style="display:none" role="dialog" aria-modal="true" aria-label="Adjust photo">
+  <div class="settings-crop-backdrop" onclick="epmCloseCrop()"></div>
+  <div class="settings-crop-card">
+    <div class="settings-crop-head">
+      <span class="settings-crop-title" id="epm-crop-title">Adjust photo</span>
+      <button type="button" class="settings-crop-close" onclick="epmCloseCrop()" aria-label="Close">✕</button>
+    </div>
+    <div class="settings-crop-stage"><canvas id="epm-crop-canvas" width="300" height="300"></canvas></div>
+    <p class="settings-crop-hint">Drag to reposition · scroll or pinch to zoom</p>
+    <div class="settings-crop-zoom">
+      <button type="button" class="settings-crop-zoom-btn" onclick="epmCropZoom(-0.15)" aria-label="Zoom out">—</button>
+      <input type="range" id="epm-crop-slider" min="0.1" max="4" step="0.01" value="1" oninput="epmCropSetScale(parseFloat(this.value))" style="flex:1;accent-color:var(--accent)">
+      <button type="button" class="settings-crop-zoom-btn" onclick="epmCropZoom(0.15)" aria-label="Zoom in">+</button>
+    </div>
+    <div class="settings-crop-actions">
+      <button type="button" class="btn-ghost" onclick="epmCloseCrop()">Cancel</button>
+      <button type="button" class="btn-primary" onclick="epmApplyCrop()">Apply</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function() {
+  // Wire dark mode toggle to current document state
+  var modeEl = document.getElementById('epm-mode-toggle-checkbox');
+  if (modeEl) {
+    modeEl.checked = document.documentElement.classList.contains('light-mode') ? false : true;
+    modeEl.addEventListener('change', function() {
+      var label = document.getElementById('epm-mode-toggle-label');
+      if (label) label.click();
+    });
+  }
+
+  // Bio character counter
+  var bio = document.getElementById('epm-bio');
+  var cnt = document.getElementById('epm-bio-count');
+  if (bio && cnt) {
+    cnt.textContent = 160 - bio.value.length;
+    bio.addEventListener('input', function() { cnt.textContent = 160 - bio.value.length; });
+  }
+
+  // Pronouns preset
+  var preset = document.getElementById('epm-pronouns-preset');
+  var hidden = document.getElementById('epm-pronouns-hidden');
+  var custom = document.getElementById('epm-pronouns-custom');
+  if (preset && hidden) {
+    // Pre-select matching option
+    var cur = hidden.value;
+    var found = false;
+    for (var i = 0; i < preset.options.length; i++) {
+      if (preset.options[i].value === cur) { preset.selectedIndex = i; found = true; break; }
+    }
+    if (!found && cur) {
+      preset.value = '_custom';
+      if (custom) { custom.style.display = ''; document.getElementById('epm-pronouns-custom-input').value = cur; }
+    }
+  }
+
+})();
+
+window.epmOnPronounsChange = function(sel) {
+  var custom = document.getElementById('epm-pronouns-custom');
+  var hidden = document.getElementById('epm-pronouns-hidden');
+  if (sel.value === '_custom') {
+    if (custom) custom.style.display = '';
+  } else {
+    if (custom) custom.style.display = 'none';
+    if (hidden) hidden.value = sel.value;
+  }
+};
+
+window.epmDetectLocation = function(btn) {
+  if (!navigator.geolocation) return;
+  btn.disabled = true;
+  navigator.geolocation.getCurrentPosition(function(pos) {
+    fetch('https://nominatim.openstreetmap.org/reverse?lat=' + pos.coords.latitude + '&lon=' + pos.coords.longitude + '&format=json', { headers: { 'Accept-Language': 'en' } })
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        var addr = d.address || {};
+        var city = addr.city || addr.town || addr.village || addr.county || '';
+        var country = addr.country || '';
+        var el = document.getElementById('epm-location');
+        if (el) el.value = [city, country].filter(Boolean).join(', ');
+        var cc = document.getElementById('epm-country-code');
+        if (cc && addr.country_code) cc.value = addr.country_code.toUpperCase();
+      })
+      .catch(function() {})
+      .finally(function() { btn.disabled = false; });
+  }, function() { btn.disabled = false; });
+};
+
+// ── Crop helpers (namespaced epm*) ───────────────────────────────────────────
+var _epmCropState = { mode: 'avatar', canvas: null, img: null, scale: 1, ox: 0, oy: 0, dragging: false, lx: 0, ly: 0 };
+
+window.epmInitCrop = function(input, mode) {
+  var file = input.files && input.files[0];
+  if (!file) return;
+  _epmCropState.mode = mode;
+  var reader = new FileReader();
+  reader.onload = function(e) {
+    var canvas = document.getElementById('epm-crop-canvas');
+    _epmCropState.canvas = canvas;
+    var img = new Image();
+    img.onload = function() {
+      _epmCropState.img = img;
+      _epmCropState.scale = 1;
+      _epmCropState.ox = 0; _epmCropState.oy = 0;
+      document.getElementById('epm-crop-title').textContent = mode === 'banner' ? 'Adjust banner' : 'Adjust photo';
+      document.getElementById('epm-crop-modal').style.display = '';
+      _epmDrawCrop();
+    };
+    img.src = e.target.result;
+  };
+  reader.readAsDataURL(file);
+};
+
+function _epmDrawCrop() {
+  var s = _epmCropState;
+  if (!s.canvas || !s.img) return;
+  var ctx = s.canvas.getContext('2d');
+  var isBanner = s.mode === 'banner';
+  s.canvas.width  = isBanner ? 600 : 300;
+  s.canvas.height = isBanner ? 200 : 300;
+  ctx.clearRect(0, 0, s.canvas.width, s.canvas.height);
+  var sw = s.img.width * s.scale, sh = s.img.height * s.scale;
+  ctx.drawImage(s.img, s.ox, s.oy, sw, sh);
+}
+
+window.epmCropZoom = function(delta) {
+  _epmCropState.scale = Math.min(4, Math.max(0.1, _epmCropState.scale + delta));
+  var sl = document.getElementById('epm-crop-slider');
+  if (sl) sl.value = _epmCropState.scale;
+  _epmDrawCrop();
+};
+window.epmCropSetScale = function(v) { _epmCropState.scale = v; _epmDrawCrop(); };
+window.epmCloseCrop = function() { document.getElementById('epm-crop-modal').style.display = 'none'; };
+window.epmApplyCrop = function() {
+  var s = _epmCropState;
+  if (!s.canvas) return;
+  s.canvas.toBlob(function(blob) {
+    if (!blob) return;
+    var file = new File([blob], 'crop.' + (s.mode === 'banner' ? 'banner' : 'avatar') + '.jpg', { type: 'image/jpeg' });
+    var dt = new DataTransfer();
+    dt.items.add(file);
+    var inputId = s.mode === 'banner' ? 'epm-banner-input' : 'epm-avatar-input';
+    var input = document.getElementById(inputId);
+    if (input) input.files = dt.files;
+    var previewId = s.mode === 'banner' ? 'epm-banner-preview' : 'epm-avatar-img';
+    var prev = document.getElementById(previewId);
+    var url = URL.createObjectURL(blob);
+    if (prev) {
+      if (s.mode === 'banner') prev.style.background = "url('" + url + "') center/cover";
+      else { prev.style.background = ''; prev.innerHTML = '<img src="' + url + '" style="width:100%;height:100%;object-fit:cover;border-radius:50%">'; }
+    }
+    document.getElementById('epm-crop-modal').style.display = 'none';
+  }, 'image/jpeg', 0.92);
+};
+
+// Canvas drag
+(function() {
+  function el() { return document.getElementById('epm-crop-canvas'); }
+  document.addEventListener('mousedown', function(e) {
+    if (e.target !== el()) return;
+    _epmCropState.dragging = true; _epmCropState.lx = e.clientX; _epmCropState.ly = e.clientY;
+  });
+  document.addEventListener('mousemove', function(e) {
+    if (!_epmCropState.dragging) return;
+    _epmCropState.ox += e.clientX - _epmCropState.lx;
+    _epmCropState.oy += e.clientY - _epmCropState.ly;
+    _epmCropState.lx = e.clientX; _epmCropState.ly = e.clientY;
+    _epmDrawCrop();
+  });
+  document.addEventListener('mouseup', function() { _epmCropState.dragging = false; });
+  document.addEventListener('wheel', function(e) {
+    if (e.target !== el()) return;
+    e.preventDefault();
+    epmCropZoom(e.deltaY < 0 ? 0.1 : -0.1);
+  }, { passive: false });
+})();
+</script>
+{{end}}

@@ -1,0 +1,93 @@
+{{/*
+FACET frequency_preview
+  version: 1.0 | status: stable | layer: 3
+
+  The pre-join sheet. A card opens this instead of navigating, so a person sees
+  who is on the mic, what it is about, and — before any media connection —
+  whether it is being recorded (§25). One decision, one full-width Tune In.
+  The answer to Tune In is the dock (frequency_dock) landing in the Shell's
+  dock mount and the empty overlay fragment clearing this sheet; the server
+  sends both. Nothing is provisioned here; the mic stays off until the
+  server seats the person as a speaker.
+
+  inputs:
+    FrequencyStageData — .ID .Title .Description .State .Host .Speakers .Recording
+                         .IsNSFW .Viewer .Ctx
+    RequestCount int   — pending Request Mic count
+    PeopleCount  int   — present participants including the host
+
+  states:
+    live | scheduled | ended | nsfw | recording
+
+  children:
+    frequency_speaker_tile, frequency_recording_badge, frequency_live_badge
+
+  signals:
+    emits:    frequency.tune_in (POST /events → dock)
+    receives: none (a fresh GET each open)
+
+  context:
+    #overlay-slot → hx-get="/facets/frequency/{id}/preview" from frequency_card
+*/}}
+{{define "frequency_preview"}}
+{{$n := len .Speakers}}
+<div class="freq-preview" role="dialog" aria-modal="true" aria-labelledby="freq-preview-h-{{.ID}}"
+     data-facet-id="{{frequencyFacetID .ID "preview"}}">
+  <div class="freq-preview__backdrop" hx-get="/facets/overlay/close" hx-target="#overlay-slot" hx-swap="innerHTML" hx-trigger="click"></div>
+  <div class="freq-preview__card">
+    <div class="freq-preview__top">
+      {{template "frequency_live_badge" (dict "ID" .ID "State" .State "ScheduledLabel" "")}}
+      {{if .IsNSFW}}<span class="freq-card__nsfw" aria-label="18+ content">18+</span>{{end}}
+      <span class="freq-head__spacer"></span>
+      <button type="button" class="freq-preview__close" aria-label="Close"
+              hx-get="/facets/overlay/close" hx-target="#overlay-slot" hx-swap="innerHTML">
+        <svg fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+
+    <h2 class="freq-preview__title" id="freq-preview-h-{{.ID}}">{{.Title}}</h2>
+    {{if .Description}}<p class="freq-preview__topic">{{.Description}}</p>{{end}}
+
+    <ul class="freq-tiles freq-tiles--preview" role="list" aria-label="On the mic">
+      {{range $i, $s := .Speakers}}{{if lt $i 8}}
+        {{template "frequency_speaker_tile" (dict "Person" $s.Person "Role" $s.Role "Muted" $s.Muted "Present" $s.Present "Speaking" false "Size" "lg")}}
+      {{end}}{{end}}
+      {{if gt $n 8}}
+      <li class="freq-tile freq-tile--more" aria-label="{{add $n -8}} more speakers">
+        <span class="freq-tile__more">+{{add $n -8}}</span>
+        <span class="freq-tile__name">more</span>
+      </li>
+      {{end}}
+    </ul>
+
+    <ul class="freq-preview__facts" role="list">
+      <li>{{.PeopleCount}} {{if eq .PeopleCount 1}}person{{else}}people{{end}} here</li>
+      {{if gt .RequestCount 0}}<li>{{.RequestCount}} asking for the mic</li>{{end}}
+      <li>Your mic will be off to start</li>
+      {{if .Recording}}<li class="freq-preview__fact--rec">{{template "frequency_recording_badge" (dict "ID" .ID "Recording" true)}} — this Frequency is being recorded</li>{{end}}
+    </ul>
+
+    {{if eq .State "live"}}
+      {{if .Viewer.Blocked}}
+      <p class="freq-controls__note" role="status">You cannot join this Frequency.</p>
+      {{else if not .Ctx.User}}
+      <a class="freq-cta" href="/login">Sign in to Tune In</a>
+      {{else}}
+      <form hx-post="/events" hx-target="#frequency-dock" hx-swap="outerHTML">
+        <input type="hidden" name="event_type" value="frequency.tune_in">
+        <input type="hidden" name="frequency_id" value="{{.ID}}">
+        <button type="submit" class="freq-cta">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 18v-6a9 9 0 0 1 18 0v6"/><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/></svg>
+          Tune In
+        </button>
+      </form>
+      {{end}}
+    {{else if eq .State "scheduled"}}
+      <a class="freq-cta freq-cta--quiet" href="/frequencies/{{.ID}}">Open · starts {{.TimeLabel}}</a>
+    {{else}}
+      <a class="freq-cta freq-cta--quiet" href="/frequencies/{{.ID}}">Ended · Replay soon</a>
+    {{end}}
+    <a class="freq-preview__full" href="/frequencies/{{.ID}}">Open the full stage</a>
+  </div>
+</div>
+{{end}}

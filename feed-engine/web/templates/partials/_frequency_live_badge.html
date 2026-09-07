@@ -1,0 +1,42 @@
+{{/*
+FACET frequency_live_badge
+  version: 1.0 | status: stable | layer: 5
+
+  The state chip of a Frequency. Not a video LIVE badge: a Frequency is audio,
+  so the mark is a small waveform, and the word says what the object is.
+  State is the server's; a scheduled Frequency shows when, an ended one says so.
+
+  inputs:
+    ID             string — frequency UUID (facet id scope)
+    State          string — "live" | "scheduled" | "ended" | "draft" | "starting" | "ending" | "cancelled" | "failed" | "moderation_terminated" | "processing_replay" | "archived"
+    ScheduledLabel string — server-localised start time, when scheduled
+
+  states:
+    live | scheduled | ended | other
+
+  children: none
+
+  signals:
+    emits:    none
+    receives: frequency_facet (SSE — whole fragment replaced on state change)
+
+  context:
+    frequency_card    → tile corner
+    frequency_header  → title row
+*/}}
+{{define "frequency_live_badge"}}
+<span class="freq-badge freq-badge--{{.State}}"
+      data-facet-id="{{frequencyFacetID .ID "live_badge"}}"
+      aria-label="{{if eq .State "live"}}Live Frequency{{else if eq .State "scheduled"}}Scheduled Frequency{{else if eq .State "ended"}}Frequency ended{{else}}Frequency {{.State}}{{end}}">
+  <span class="freq-badge__wave" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+  {{- if eq .State "live"}}LIVE FREQUENCY
+  {{- else if eq .State "scheduled"}}SCHEDULED{{if .ScheduledLabel}} · {{.ScheduledLabel}}{{end}}
+  {{- else if eq .State "ended"}}ENDED
+  {{- else if eq .State "processing_replay"}}REPLAY SOON
+  {{- else if eq .State "archived"}}REPLAY
+  {{- else if eq .State "moderation_terminated"}}REMOVED
+  {{- else if eq .State "starting"}}STARTING
+  {{- else if eq .State "ending"}}ENDING
+  {{- else}}{{.State}}{{end}}
+</span>
+{{end}}

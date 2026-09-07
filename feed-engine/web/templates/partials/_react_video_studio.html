@@ -1,0 +1,86 @@
+{{/*
+FACET react_video_studio (template facet, layer 3)
+  version: 1.0 | status: stable
+
+  React-With-Video capture studio. Server-rendered with the ORIGINAL work
+  embedded (reusing the quote template — "paste like quotes, don't build a work").
+  The client (reactvideo/react-video.js) boots the camera substrate (CaptureKit.*)
+  into this overlay, plays the original, applies the chosen layout, records the
+  reaction, and posts it as kind='react_video' quoting the original.
+
+  inputs:
+    .Work model.Work — the original being reacted to (.ID .AuthorHandle .AuthorName
+            .AvatarURL .AuthorRealm .Body .VideoMasterURL .VideoPosterURL .MediaURLs)
+    .User model.User — the reactor (unused server-side; reserved)
+
+  states: data-status (idle|requesting_permission|loading_device|ready|recording|processing|error)
+          data-rv-layout (presenter|pip|split|card_over|media_only|green_screen)
+          data-recording (0|1)
+
+  children: react_video_layout_bar, camera_preview (reused), quoted_work (reused)
+  context: injected body-level by openReactWithVideo()
+*/}}
+{{define "react_video_studio"}}
+{{$o := .Work}}
+<div id="rv-studio" class="rvs" data-facet-id="facet:f33d3r:reactvideo:studio"
+     data-work-id="{{$o.ID}}" data-rv-layout="presenter"
+     data-status="idle" data-recording="0"
+     role="dialog" aria-modal="true" aria-label="React with Video" style="display:flex">
+
+  {{/* Phone-shaped stage — keeps a 9:16 column on every viewport (incl. desktop) */}}
+  <div class="rvs-stage">
+
+  {{/* Original work — the whole works facet, pasted by id (renders itself, any kind) */}}
+  <div class="rvs-post" data-facet-id="facet:f33d3r:reactvideo:post" data-rv-role="post">
+    {{template "quoted_work" $o}}
+  </div>
+
+  {{/* Live camera (the reaction) — substrate binds the preview + records this */}}
+  <div class="rvs-camera" data-rv-role="camera">
+    {{template "camera_preview"}}
+    <canvas class="rvs-gs-canvas" data-facet-id="facet:f33d3r:reactvideo:canvas" aria-hidden="true"></canvas>
+  </div>
+
+  {{/* Close (top-left) */}}
+  <button type="button" class="rvs-close" data-rv-action="close" aria-label="Close">
+    <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg>
+  </button>
+
+  {{/* Top-right rail: flip camera */}}
+  <div class="rvs-rail">
+    <button type="button" class="rvs-rail-btn" data-rv-action="flip" aria-label="Flip camera">
+      <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M1 4v6h6"/><path d="M23 20v-6h-6"/><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10M23 14l-4.64 4.36A9 9 0 0 1 3.51 15"/></svg>
+    </button>
+  </div>
+
+  {{/* Recording timer (shown only while recording) */}}
+  <div class="rvs-timer" data-facet-id="facet:f33d3r:reactvideo:timer" style="display:none" aria-live="polite">
+    <span class="rvs-rec-dot" aria-hidden="true"></span>
+    <span data-facet-id="facet:f33d3r:reactvideo:timer-text">0:00</span>
+  </div>
+
+  {{/* Transient lifecycle status + permission gate */}}
+  <div class="rvs-status" data-facet-id="facet:f33d3r:reactvideo:status" aria-live="polite"></div>
+  <div class="rvs-permission" data-facet-id="facet:f33d3r:reactvideo:permission" style="display:none">
+    <p>Camera access is blocked. Enable the camera for this site in your browser settings, then reopen.</p>
+  </div>
+
+  {{/* Layout selector */}}
+  {{template "react_video_layout_bar"}}
+
+  {{/* Caption + record */}}
+  <div class="rvs-bottom">
+    <input class="rvs-caption" data-facet-id="facet:f33d3r:reactvideo:caption" type="text"
+           placeholder="Add a comment…" maxlength="280" autocomplete="off">
+    <button type="button" class="rvs-record" data-rv-action="record"
+            data-facet-id="facet:f33d3r:reactvideo:record" aria-label="Record reaction"></button>
+  </div>
+
+  {{/* Posting overlay */}}
+  <div class="rvs-sending" data-facet-id="facet:f33d3r:reactvideo:sending" style="display:none">
+    <span class="rvs-sending-label">Posting…</span>
+  </div>
+
+  </div>{{/* /rvs-stage */}}
+</div>
+{{end}}

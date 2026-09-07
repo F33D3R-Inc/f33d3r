@@ -1,0 +1,22 @@
+{{/*
+FACET badge_nsfw
+  version: 1.0 | status: stable | layer: 5
+
+  inputs: none
+
+  states:
+    default
+
+  children: none
+
+  signals:
+    emits:    none
+    receives: none
+
+  context:
+    post_header    → tag row
+    compose_modal  → tag strip
+*/}}
+{{define "badge_nsfw"}}
+<span class="badge-nsfw" aria-label="NSFW content">NSFW</span>
+{{end}}

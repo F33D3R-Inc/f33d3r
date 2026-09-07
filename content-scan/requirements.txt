@@ -1,0 +1,19 @@
+flask
+gunicorn
+prometheus_client
+nudenet
+imagehash
+Pillow
+# numpy >= 2 for np.bitwise_count, which is what makes the chromaprint
+# bit-similarity scan cheap enough to run over the whole fingerprint store.
+numpy>=2.0
+lightgbm
+rapidfuzz
+psycopg2-binary
+easyocr
+requests
+faster-whisper
+# pyacoustid ships the chromaprint ctypes binding used to decode fpcalc's
+# compressed base64 fingerprints for comparison. It binds libchromaprint.so.1,
+# already present in the image via libchromaprint-tools (fpcalc).
+pyacoustid

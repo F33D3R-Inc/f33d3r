@@ -1,0 +1,39 @@
+{{/*
+FACET home_feed_header
+  version: 1.0 | status: stable | layer: 2
+
+  inputs:
+    EngineOnline   bool       — live/offline status dot
+    User           *User      — nil-safe; drives NSFW tab visibility
+    PinnedSurfaces []Surface  — user-pinned interest surfaces
+    SessionID      string     — forwarded to feed_surface_tabs
+    ActiveSurface  string     — the surface #feed-container opens on
+
+  states:
+    default
+
+  children:
+    home_feed_tabs
+
+  signals:
+    emits:    none (the tabs emit GET /facets/works/feed → #feed-container)
+    receives: none
+
+  context:
+    index.html → main-head sticky header
+*/}}
+{{define "home_feed_header"}}
+<div class="main-head">
+  <div class="main-head-row">
+    <div class="main-head-title">Home</div>
+    <div class="main-head-sub">
+      <span class="chip ok" id="engine-dot"><span class="dot"></span>{{if .EngineOnline}}Live{{else}}Offline{{end}}</span>
+      <span>AethyrRank</span>
+    </div>
+  </div>
+  <div class="feed-toolbar">
+    {{template "home_feed_tabs" (dict "User" .User "PinnedSurfaces" .PinnedSurfaces "SessionID" .SessionID "Active" .ActiveSurface "OOB" false)}}
+    <button class="feed-add-btn" id="feed-add-btn" onclick="openAddTopic()" title="Add a feed">Add+</button>
+  </div>
+</div>
+{{end}}

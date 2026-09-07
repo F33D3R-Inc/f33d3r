@@ -1,0 +1,123 @@
+{{/*
+FACET vision_viewer
+  version: 1.0 | status: stable | layer: 2 (overlay)
+
+  One frame of the sequential viewer — the Stories shape. An author's Visions play
+  in order, and when their run ends the sequence crosses into the next author.
+  Every step is a server round trip: this Facet holds one Vision, its place in the
+  run, and the addresses of the frames either side. The browser holds no
+  sequence, no index and no ring state; it swaps the Fragment the server sends.
+
+  Opening a frame is what records the view, on the server, on the way in.
+
+  The gone state is a rendered answer like any other: a Vision that expired, was
+  deleted, was blocked or is walled from this viewer returns this Facet saying so
+  rather than an error the browser would have to interpret.
+
+  Mobile first: the frame is one dynamic viewport tall, its chrome sits inside
+  the safe area, and the whole width either side of the still is a step target.
+
+  inputs:
+    Still     visionStillView — the Vision's content (absent when Gone)
+    Scope     string — following | for_you
+    Position  int
+    Total     int
+    Segments  []visionSegment
+    PrevURL   string — empty at the head of the sequence
+    NextURL   string — empty at the tail
+    CloseURL  string — where closing lands without a Fragment swapper
+    IsFirst   bool
+    IsLast    bool
+    ViewCount int
+    IsAuthor  bool — the viewer is the author; the viewer tally is shown
+    Gone      bool
+
+  states:
+    frame | first | last | gone
+
+  children:
+    vision_progress, vision_still, user_avatar
+
+  Closing is one signal, not one hard-wired target. The overlay is torn down and
+  every surface that draws ring state — the rail on the home timeline, the rail
+  on the Playground, the ring on a profile — refetches itself from the server, so
+  a ring that has just been seen is restated rather than restyled in place. The
+  close anchor stays a real address, so a browser running no script lands on the
+  Playground instead of nowhere.
+
+  signals:
+    emits:    vision.viewer (GET /facets/vision/viewer) — prev / next step
+              vision.closed (DOM: visionclosed on body) — ring surfaces restate
+    receives: vision.viewer (whole Fragment replaced)
+
+  context:
+    index.html   #vision-viewer-slot → the overlay above the home timeline
+    visions.html #vision-viewer-slot → the overlay above the Playground
+    profile.html #vision-viewer-slot → the overlay above the profile
+*/}}
+{{define "vision_viewer"}}
+{{if .Gone}}
+<div class="vision-viewer vision-viewer--gone" data-facet-id="facet:f33d3r:vision:gone:viewer"
+     data-vision-viewer tabindex="-1" role="dialog" aria-modal="true" aria-label="Vision unavailable">
+  <div class="vision-viewer__gone">
+    <p class="vision-viewer__gone-title">This Vision is gone</p>
+    <p class="vision-viewer__gone-sub">Visions last 24 hours.</p>
+    <a class="vision-viewer__gone-action" href="{{.CloseURL}}"
+       data-vision-close>Close</a>
+  </div>
+</div>
+{{else}}
+{{$v := .Still.V}}
+<div class="vision-viewer" data-facet-id="facet:f33d3r:vision:{{.Still.Ref}}:viewer"
+     data-vision-viewer
+     data-vision-return="{{.Still.RingElemID}}"
+     tabindex="-1" role="dialog" aria-modal="true"
+     aria-label="Visions by @{{$v.AuthorHandle}}, {{.Position}} of {{.Total}}">
+
+  <div class="vision-viewer__stage">
+    {{template "vision_still" .Still}}
+  </div>
+
+  <header class="vision-viewer__head">
+    {{template "vision_progress" (dict "VisionID" .Still.Ref "Position" .Position "Total" .Total "Segments" .Segments)}}
+    <div class="vision-viewer__ident">
+      <a class="vision-viewer__avatar" href="{{.Still.AuthorURL}}" aria-label="@{{$v.AuthorHandle}}'s profile">
+        {{template "user_avatar" (dict "Handle" $v.AuthorHandle "AvatarURL" $v.AvatarURL "DisplayName" $v.AuthorName "Size" "sm" "IsOnline" false)}}
+      </a>
+      <a class="vision-viewer__handle" href="{{.Still.AuthorURL}}">@{{$v.AuthorHandle}}</a>
+      <span class="vision-viewer__meta">{{.Still.TimeAgo}}</span>
+      {{if $v.IsNSFW}}<span class="vision-viewer__age">18+</span>{{end}}
+      <a class="vision-viewer__close" href="{{.CloseURL}}"
+         data-vision-close aria-label="Close Visions">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>
+      </a>
+    </div>
+  </header>
+
+  <nav class="vision-viewer__steps" aria-label="Vision navigation">
+    {{if .PrevURL}}
+    <a class="vision-viewer__step vision-viewer__step--prev" href="{{.PrevURL}}"
+       hx-get="{{.PrevURL}}" hx-target="#vision-viewer-slot" hx-swap="innerHTML"
+       data-vision-prev aria-label="Previous Vision"><span class="vision-viewer__step-glyph" aria-hidden="true">‹</span></a>
+    {{else}}
+    <span class="vision-viewer__step vision-viewer__step--prev is-off" aria-hidden="true"></span>
+    {{end}}
+    {{if .NextURL}}
+    <a class="vision-viewer__step vision-viewer__step--next" href="{{.NextURL}}"
+       hx-get="{{.NextURL}}" hx-target="#vision-viewer-slot" hx-swap="innerHTML"
+       data-vision-next aria-label="Next Vision"><span class="vision-viewer__step-glyph" aria-hidden="true">›</span></a>
+    {{else}}
+    <a class="vision-viewer__step vision-viewer__step--next" href="{{.CloseURL}}"
+       data-vision-close aria-label="That is the last Vision — close"><span class="vision-viewer__step-glyph" aria-hidden="true">›</span></a>
+    {{end}}
+  </nav>
+
+  <footer class="vision-viewer__foot">
+    <span class="vision-viewer__expiry">{{.Still.ExpiryLabel}}</span>
+    {{if .IsAuthor}}
+    <span class="vision-viewer__views">{{.ViewCount}} seen</span>
+    {{end}}
+  </footer>
+</div>
+{{end}}
+{{end}}

@@ -1,0 +1,150 @@
+{{/*
+FACET rail_scorecards
+  version: 4.0 | status: stable | layer: 2 (composite)
+
+  The right-rail scoreboard: what is being played right now and what is on
+  next, compact, across every league the platform polls, on every surface that
+  carries the rail.
+
+  ONE RANKED LIST, NOT A LIST PER LEAGUE. The panel answers a single question —
+  what is on, and what is next — and that question is not asked per sport. The
+  server orders it live-first and then by whatever starts soonest, so a game
+  being played always outranks a game that has not started, whichever sport it
+  is. Grouping by league would invert exactly that: a basketball game tipping
+  off in four hours would sit above a football game in its fourth quarter,
+  because its header sorted first. It would also cost a header per league and
+  leave an empty one behind every time a league went out of season.
+
+  LEAGUE IDENTITY RIDES ON THE ROW, AND ONLY WHEN IT HAS TO. With rows from two
+  leagues the reader must never have to guess which sport a row is, so each row
+  carries its league. With every row in one league — a football Sunday, or a
+  basketball night in July — the head names the league instead and the rows
+  stay clean, because six copies of "NFL" down a column tell the reader nothing
+  they cannot already see in the panel title.
+
+  Its rows are markup, not facets. A facet id is an address, and the same game
+  already owns an addressable card in the Playground strip — mounting that card
+  again here would put two elements on one page claiming to be the same
+  rendering surface, and a fragment replacement would hit whichever the browser
+  found first. So this panel is ONE facet that mutates as a whole, and it only
+  mutates when a game inside its six-game window actually changed. The clock,
+  which changes on almost every poll tick, mutates inside the strip's cards and
+  never re-sends this panel.
+
+  Nothing about a game's condition is decided here: every label comes from
+  sports.Game, the same server-side model the full card reads, so the rail and
+  the strip can never disagree about what a game is doing.
+
+  Row shape. The rail's job is a glance, so a row is two lines, not a second
+  copy of the strip's card:
+
+      [logo] NE  0-1                    14        ← identity left, number right
+      [logo] SEA 1-0                    21
+      ● NFL · 8:42 · 3rd                RZ        ← only a game with a score
+                                                     spends a third line
+
+  and, before a game starts, where there is no number to show, the condition
+  takes the number's column instead of a line of its own:
+
+      [logo] SF  0-0                        NFL
+      [logo] LAR 0-0             Thu 8:35 PM EDT
+
+  The league tag costs no row and no width. On a row with a score it is the
+  first thing on a line that already exists; on a row without one it sits on
+  the first of the two lines the right column already spans, above the time.
+  Both keep the single right edge intact.
+
+  One column, one right edge, every row, every state — so six scheduled games
+  read as a column of kickoff times rather than as twelve lines of stacked text.
+  A scoreless game is never given a placeholder score: the 2026 season opens on
+  9 September and until then the kickoff time IS the honest answer.
+
+  Read order for a screen reader is away club, away score, home club, home
+  score, condition — the same order the full card reads in. Every abbreviation
+  is aria-hidden with the full club name beside it, and the scoreboard
+  shorthand ("8:42 · 3rd") is aria-hidden with sports.Game.SpokenStatus
+  ("third quarter, 8:42 remaining") beside it. The red-zone chip is aria-hidden
+  because SpokenStatus already says "red zone".
+
+  inputs:
+    FacetID      string — always facet:f33d3r:sports:all:scorecards, so a
+                          fragment can never arrive addressed to a panel the
+                          page stopped mounting when the leading league changed
+    Title        string — "NFL" when every row is one league, "Scores" when mixed
+    Subtitle     string — that league's week, where the league has one
+    HubHref      string — the league's board, or the cross-league board
+    MixedLeagues bool   — turns on the per-row league tag
+    Cards        []SportsCardData — .Game .Href
+    Stale        bool
+    StaleLabel   string
+
+  states:
+    default | stale ; per row: scheduled | in_progress | halftime | end_period
+    | delayed | postponed | canceled | final | final/OT | unknown
+
+  children: none (rows are markup owned by this facet)
+
+  signals:
+    emits:    none
+    receives: sports_facet (SSE) — replacement fragment when the window changes
+
+  context:
+    sidebar_right → feed, explore, post and profile rails
+*/}}
+{{define "rail_scorecards"}}
+<div class="sidebar-panel rail-scores-panel{{if .Stale}} rail-scores-panel--stale{{end}}"
+     data-facet-id="{{.FacetID}}">
+  <div class="rail-scores-head">
+    <h3 class="sidebar-panel-title">{{.Title}}{{if .Subtitle}} <span class="rail-scores-sub">{{.Subtitle}}</span>{{end}}</h3>
+    <a class="rail-scores-all" href="{{.HubHref}}">All scores</a>
+  </div>
+
+  {{$mixed := .MixedLeagues}}
+  {{range .Cards}}
+  {{$g := .Game}}
+  <a class="scorecard{{if $g.Live}} scorecard--live{{end}}{{if $g.RedZone}} scorecard--redzone{{end}}"
+     href="{{.Href}}" data-state="{{$g.State}}">
+
+    <span class="scorecard-team scorecard-team--away{{if and $g.Final $g.HomeLeads}} scorecard-team--lost{{end}}">
+      {{if $g.Away.Team.LogoURL}}<img class="scorecard-logo" src="{{$g.Away.Team.LogoURL}}" alt="" loading="lazy" decoding="async" width="18" height="18">{{end}}
+      <span class="scorecard-abbr" aria-hidden="true">{{$g.Away.Team.Label}}</span>
+      <span class="sr-only">{{$g.Away.Team.Name}}</span>
+      {{if $g.Away.Team.Record}}<span class="scorecard-record">{{$g.Away.Team.Record}}</span>{{end}}
+      {{if $g.Away.HasBall}}<span class="scorecard-ball" aria-hidden="true">&bull;</span><span class="sr-only">has possession</span>{{end}}
+    </span>
+    {{if $g.HasScore}}
+    <span class="scorecard-score scorecard-score--away{{if $g.HomeLeads}} scorecard-score--trail{{end}}"><span class="sr-only">score </span>{{$g.Away.Score}}</span>
+    {{end}}
+
+    <span class="scorecard-team scorecard-team--home{{if and $g.Final $g.AwayLeads}} scorecard-team--lost{{end}}">
+      {{if $g.Home.Team.LogoURL}}<img class="scorecard-logo" src="{{$g.Home.Team.LogoURL}}" alt="" loading="lazy" decoding="async" width="18" height="18">{{end}}
+      <span class="scorecard-abbr" aria-hidden="true">{{$g.Home.Team.Label}}</span>
+      <span class="sr-only">{{$g.Home.Team.Name}}</span>
+      {{if $g.Home.Team.Record}}<span class="scorecard-record">{{$g.Home.Team.Record}}</span>{{end}}
+      {{if $g.Home.HasBall}}<span class="scorecard-ball" aria-hidden="true">&bull;</span><span class="sr-only">has possession</span>{{end}}
+    </span>
+    {{if $g.HasScore}}
+    <span class="scorecard-score scorecard-score--home{{if $g.AwayLeads}} scorecard-score--trail{{end}}"><span class="sr-only">score </span>{{$g.Home.Score}}</span>
+    {{end}}
+
+    {{/* The condition sits on its own line when the number column is taken by a
+         score, and inside the number column when it is not. Same content, same
+         spoken text, same place in the reading order either way. */}}
+    <span class="scorecard-status scorecard-status--{{if $g.HasScore}}line{{else}}aside{{end}}">
+      {{if $g.Live}}<span class="scorecard-live-dot" aria-hidden="true"></span>{{end}}
+      {{/* The league leads the condition, so the reader knows what sport a row
+           is before they read what it is doing. It is aria-hidden because the
+           spoken text below names the league in full. */}}
+      {{if $mixed}}<span class="scorecard-league" aria-hidden="true">{{$g.LeagueLabel}}</span>{{end}}
+      <span class="scorecard-status-label" aria-hidden="true">{{$g.StatusLabel}}</span>
+      <span class="sr-only">{{if $mixed}}{{$g.LeagueLabel}}. {{end}}{{$g.SpokenStatus}}</span>
+      {{if $g.RedZone}}<span class="scorecard-redzone" aria-hidden="true">RZ</span>{{end}}
+    </span>
+  </a>
+  {{end}}
+
+  {{if .Stale}}
+  <p class="rail-scores-notice" role="status">Feed delayed — {{.StaleLabel}}.</p>
+  {{end}}
+</div>
+{{end}}

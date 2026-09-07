@@ -1,0 +1,54 @@
+{{define "title"}}{{.Title}}{{end}}
+{{define "body"}}
+<main class="f33d3r-main" id="main-col">
+  <div class="main-head">
+    <button class="back-btn" onclick="history.back()" aria-label="Back">
+      <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="width:18px;height:18px"><path d="m15 18-6-6 6-6"/></svg>
+    </button>
+    <div class="main-head-content">
+      <div class="main-head-title">{{.HeadTitle}}</div>
+      {{if .WeekLabel}}<div class="main-head-sub">{{.WeekLabel}}</div>{{end}}
+    </div>
+  </div>
+
+  {{/* The board as a durable destination, one section per league. Every card
+       here is the same Facet the Playground strip mounts, so a score that
+       mutates on this page and a score that mutates in the timeline are the
+       same fragment from the same renderer — they cannot disagree.
+
+       A league with nothing on has no section: it is not playing, and an empty
+       header saying so is scaffolding, not information. When no league has
+       anything, the whole board is one empty state. */}}
+  {{if .Stale}}
+  <p class="sports-hub__notice" role="status">
+    Scores may be out of date — the score feed has not answered recently. {{.StaleLabel}}.
+  </p>
+  {{end}}
+
+  {{/* The section head names the league. It is only drawn on the cross-league
+       board: on /sports/{league} the page head already names the league, and
+       repeating it above the only section would be a heading that divides
+       nothing from nothing. */}}
+  {{$board := not $.LeagueSlug}}
+  {{range .Groups}}
+  <section class="sports-hub__league"{{if $board}} aria-labelledby="sports-board-{{.LeagueSlug}}"{{end}}>
+    {{if $board}}
+    <div class="sports-hub__league-head">
+      <h2 class="sports-hub__league-title" id="sports-board-{{.LeagueSlug}}">
+        {{.LeagueLabel}}{{if .WeekLabel}} <span class="sports-hub__league-week">{{.WeekLabel}}</span>{{end}}
+      </h2>
+      <a class="sports-hub__league-all" href="{{.HubHref}}">{{.LeagueLabel}} only</a>
+    </div>
+    {{end}}
+    <div class="sports-hub__grid">
+      {{range .Cards}}{{template "sports_game_card" .}}{{end}}
+    </div>
+  </section>
+  {{end}}
+
+  {{if not .Groups}}
+  {{template "stateEmpty" (dict "Title" "No games on the board" "Sub" "Nothing is being played and nothing is scheduled yet. The board fills as soon as a league schedules its next round.")}}
+  {{end}}
+</main>
+{{end}}
+{{define "right-panel"}}{{template "sidebar_right" .}}{{end}}

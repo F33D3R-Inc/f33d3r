@@ -1,0 +1,94 @@
+---
+# F33D3R Nginx Ingress
+# Routes all external traffic to the correct brain.
+# TLS terminates here — internal traffic is plain HTTP.
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: f33d3r-ingress
+  namespace: f33d3r
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-body-size: "120m"
+    nginx.ingress.kubernetes.io/limit-rps: "100"
+    nginx.ingress.kubernetes.io/limit-connections: "50"
+    # HTTP/1.1 with upgrade headers: the FA Live SSE stream (/api/events) and
+    # live-chat need a persistent, unbuffered connection through the ingress.
+    nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection "upgrade";
+    # Security headers
+    nginx.ingress.kubernetes.io/server-snippet: |
+      add_header X-Frame-Options DENY always;
+      add_header X-Content-Type-Options nosniff always;
+      add_header X-XSS-Protection "1; mode=block" always;
+      add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+      add_header Permissions-Policy "geolocation=(self)" always;
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - f33d3r.app
+        - www.f33d3r.app
+      secretName: f33d3r-tls
+  rules:
+    - host: f33d3r.app
+      http:
+        paths:
+          # All traffic goes to Nantar — it proxies internally to other brains
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: nantar
+                port:
+                  number: 8081
+
+---
+# Staging ingress
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: f33d3r-staging-ingress
+  namespace: f33d3r
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "120m"
+    cert-manager.io/cluster-issuer: letsencrypt-staging
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - staging.f33d3r.app
+      secretName: f33d3r-staging-tls
+  rules:
+    - host: staging.f33d3r.app
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: nantar
+                port:
+                  number: 8081
+
+---
+# Secrets template (fill in CI — never commit real values)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: f33d3r-secrets
+  namespace: f33d3r
+type: Opaque
+stringData:
+  feed-db-url: "postgres://f33d3r:CHANGEME@postgres:5432/f33d3r_feed"
+  msg-db-url: "postgres://f33d3r:CHANGEME@postgres:5432/f33d3r_msg"
+  wallet-db-url: "postgres://f33d3r:CHANGEME@postgres:5432/f33d3r_wallet"
+  security-db-url: "postgres://f33d3r:CHANGEME@postgres:5432/f33d3r_security"
+  safety-db-url: "postgres://f33d3r:CHANGEME@postgres:5432/f33d3r_safety"
+  registry-db-url: "postgres://f33d3r:CHANGEME@postgres:5432/f33d3r_registry"
+  session-secret: "CHANGEME_min_32_chars_random_string"

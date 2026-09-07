@@ -1,0 +1,54 @@
+{{/*
+FACET translate_result
+  version: 2.0 | status: stable | layer: 1
+
+  inputs:
+    PostID          string — work UUID
+    TranslatedText  string — the translation
+    DetectedLang    string — source language code, "" when unknown
+
+  states:
+    default (translate_result) | error (translate_error)
+
+  children:
+    none
+
+  signals:
+    emits:    hide — GET /facets/work/{id}/translate_slot → the empty slot back
+    receives: none
+
+  context:
+    translate_slot → replaced in place (outerHTML) by POST /api/post/{id}/translate
+*/}}
+{{define "translate_result"}}
+<div class="post-translate-wrap" id="translate-wrap-{{.PostID}}" data-facet-id="facet:f33d3r:work:{{.PostID}}:translation">
+  <div class="translate-result">
+    <div class="translate-result__label">
+      <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M3 5h12M9 3v2m1.048 9.5A18.022 18.022 0 016.412 9m6.088 9h7M11 21l5-10 5 10M12.751 5C11.783 10.77 8.07 15.61 3 18.129"/>
+      </svg>
+      {{if .DetectedLang}}Translated from {{.DetectedLang}}{{else}}Translated{{end}}
+    </div>
+    <p class="translate-result__body">{{.TranslatedText}}</p>
+    <button class="translate-result__hide" type="button" aria-label="Hide translation"
+            hx-get="/facets/work/{{.PostID}}/translate_slot"
+            hx-target="#translate-wrap-{{.PostID}}"
+            hx-swap="outerHTML">Hide</button>
+  </div>
+</div>
+{{end}}
+
+{{define "translate_error"}}
+<div class="post-translate-wrap" id="translate-wrap-{{.PostID}}" data-facet-id="facet:f33d3r:work:{{.PostID}}:translation">
+  <div class="translate-result translate-result--error">
+    <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="12" r="10"/><path d="M12 8v4m0 4h.01"/>
+    </svg>
+    {{.Reason}}
+    <button class="translate-result__hide" type="button"
+            hx-get="/facets/work/{{.PostID}}/translate_slot"
+            hx-target="#translate-wrap-{{.PostID}}"
+            hx-swap="outerHTML">Dismiss</button>
+  </div>
+</div>
+{{end}}

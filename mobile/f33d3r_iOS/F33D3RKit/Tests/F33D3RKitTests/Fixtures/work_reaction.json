@@ -1,0 +1,46 @@
+{
+  "id": "3f2b9c14-6a7d-4c2e-9b31-0d8e5a71c4f0",
+  "cid": "bafy2bzacedworkreactiongoldenfixture0001",
+  "kind": "work",
+  "author": {
+    "handle": "miiyazuko",
+    "display_name": "Miiyazuko",
+    "avatar_url": "/media/avatars/miiyazuko-feed.webp",
+    "is_verified": true,
+    "is_creator": true,
+    "role": "user",
+    "realm": 4
+  },
+  "body": "Shipped the counts row as its own Facet. The tally moves for everyone watching, not just whoever tapped.",
+  "created_at": "2026-09-05T18:42:10Z",
+  "is_edited": false,
+  "media_urls": [
+    "/media/works/3f2b9c14-counts-row.webp"
+  ],
+  "tags": [
+    "falive"
+  ],
+  "content_type": "text",
+  "is_nsfw": false,
+  "is_gore": false,
+  "is_sensitive": false,
+  "subscriber_only": false,
+  "is_pinned": false,
+  "comment_gating": "open",
+  "scan_state": "clean",
+  "score_band": "rising",
+  "like_count": 43,
+  "dislike_count": 2,
+  "repost_count": 7,
+  "quote_count": 3,
+  "reply_count": 11,
+  "bookmark_count": 5,
+  "view_count": 1902,
+  "liked_by_viewer": true,
+  "disliked_by_viewer": false,
+  "reposted_by_viewer": false,
+  "bookmarked_by_viewer": true,
+  "viewer_follows_author": true,
+  "tip_total_uaet": 2500000,
+  "work_purchased_by_viewer": false
+}

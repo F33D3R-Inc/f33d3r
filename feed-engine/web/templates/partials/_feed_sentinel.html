@@ -1,0 +1,30 @@
+{{/*
+FACET feed_sentinel
+  version: 2.0 | status: stable | layer: 1
+
+  inputs:
+    URL     string — address of the next page: a Facet endpoint that answers
+                     with ONLY the next items and the next sentinel
+    Cursor  string — the exact cursor URL carries (before= timestamp, after= id,
+                     offset= number …), written as data-next-after so a native
+                     Shell can page without parsing URL
+
+  states:
+    default (spinner visible until the next page replaces this element)
+
+  children:
+    none
+
+  signals:
+    emits:    next page load (hx-trigger="revealed" fires when scrolled into view)
+    receives: none
+
+  context:
+    every infinite-scroll surface → appended after the last item of a page:
+    works feeds, list works, article feeds, marketplace grid
+*/}}
+{{define "feed_sentinel"}}
+<div class="feed-sentinel" data-next-after="{{.Cursor}}" hx-get="{{.URL}}" hx-trigger="revealed" hx-swap="outerHTML" aria-hidden="true">
+  <div class="spinner"></div>
+</div>
+{{end}}

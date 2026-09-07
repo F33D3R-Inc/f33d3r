@@ -1,0 +1,1153 @@
+# F33D3R Local Docker Compose
+# Run from the directory containing all 5 unzipped service folders.
+# Usage: docker compose -f docker-compose.local.yml --env-file .env.local up --build
+# Only the 4 BUILT services are active. 9 stub brains commented out.
+
+services:
+
+  # ── Sitra Achra — Redpanda (Kafka-compatible) event backbone ─────────────
+  # Single-node, no Zookeeper. Topics auto-created on first publish.
+  # Kafka API: sitra-achra:9092 (internal) / localhost:9092 (host)
+  # Pandaproxy (HTTP): sitra-achra:8082 (internal) / localhost:8082 (host)
+  sitra-achra:
+    image: redpandadata/redpanda:latest
+    command:
+      - redpanda
+      - start
+      - --smp 2
+      - --memory 1G
+      - --overprovisioned
+      - --kafka-addr PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr PLAINTEXT://sitra-achra:9092
+      - --pandaproxy-addr sitra-achra:8082
+      - --advertise-pandaproxy-addr sitra-achra:8082
+      - --set redpanda.auto_create_topics_enabled=true
+    restart: unless-stopped
+    volumes:
+      - sitra_achra_data:/var/lib/redpanda/data
+    healthcheck:
+      test: [ "CMD-SHELL", "rpk cluster info --brokers localhost:9092 || exit 1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  postgres:
+    image: postgres:18-alpine
+    command: >
+      postgres
+      -c config_file=/etc/postgresql/postgresql.conf
+    environment:
+      POSTGRES_USER: "${POSTGRES_USER:-f33d3r}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-f33d3rdev}"
+      POSTGRES_DB: "${POSTGRES_DB:-f33d3r}"
+      PGDATA: "/var/lib/postgresql/data/18/docker"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+      - ./infra/postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-f33d3r}" ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  aethyr-schema-registry:
+    build:
+      context: ./aethyr-schema-registry
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8079:8079"
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:-f33d3rdev}@postgres:5432/f33d3r_registry?sslmode=disable"
+      PORT: "8079"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8079/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+
+  aethyrrank-engine:
+    build:
+      context: ./aethyrrank-engine
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+      APP__SERVER__PORT: "8080"
+      APP__SERVER__HOST: "0.0.0.0"
+      SCHEMA_REGISTRY_URL: "http://aethyr-schema-registry:8079"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:-f33d3rdev}@postgres:5432/f33d3r_feed?sslmode=disable"
+    depends_on:
+      aethyr-schema-registry:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8080/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+
+  zior-engine:
+    build:
+      context: ./zior-engine
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8082:8082"
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+      ZIOR__SERVER__PORT: "8082"
+      ZIOR__AETHYR__CONTENT_STORE_URL: "http://aethyrrank-engine:8080"
+      SCHEMA_REGISTRY_URL: "http://aethyr-schema-registry:8079"
+    depends_on:
+      aethyrrank-engine:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8082/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 25s
+
+  feed-engine:
+    build:
+      # Repo-root context so the build reaches the gnosis-malkuth WASM core
+      # (sibling of feed-engine). Matches docker-compose.prod.yml. A root
+      # .dockerignore keeps the context tight.
+      context: .
+      dockerfile: feed-engine/Dockerfile
+    env_file:
+      - .env.local
+    # No host port on purpose. The app is reached through Caddy on 8443 only,
+    # exactly as in docker-compose.prod.yml. Publishing 8081 created a second
+    # front door where live video could never play: playlist and segment paths
+    # are root-relative and only Caddy routes them to live-edge, so a browser
+    # on localhost:8081 got a Go 404 for every manifest, and its session
+    # cookie was for a different host than the LAN edge anyway. Internal
+    # services keep using http://feed-engine:8081 on the compose network.
+    environment:
+      PORT: "8081"
+      HOST: "0.0.0.0"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:-f33d3rdev}@postgres:5432/f33d3r_feed?sslmode=disable"
+      AETHYRRANK_URL: "http://aethyrrank-engine:8080"
+      ZIOR_URL: "http://zior-engine:8082"
+      AIN_SOPH_URL: "http://ain-soph:8089"
+      ZODACARE_URL: "http://zodacare:8090"
+      ELOHIM_VENI_URL: "http://elohim-veni:8093"
+      AURALIS_URL: "http://auralis:8108"
+      # NOTE — SPORTS_PROVIDER, BBS_API, SPORTS_BASE_URL and
+      # TIINGO_API_KEY are deliberately ABSENT from this block. They arrive
+      # through `env_file: .env.local` above, which is this service's single
+      # source for operator-supplied keys.
+      #
+      # They used to be listed here as "${SPORTS_PROVIDER:-}" and friends, and
+      # that is a second definition of a value that already had one. An
+      # `environment:` entry OUTRANKS `env_file:`, and `${VAR:-}` resolves
+      # against compose's OWN environment — the shell, or whatever `--env-file`
+      # the invocation named — NOT against the env_file listed above. So
+      # launching without `--env-file .env.local` resolved all four to the empty
+      # string and that empty string overwrote the real value from .env.local.
+      # The container booted with SPORTS_PROVIDER unset, logged "sports lane
+      # disabled", and the scoreboard strip, the game cards and the right-rail
+      # scorecards vanished from every surface while .env.local still plainly
+      # read SPORTS_PROVIDER=espn. TIINGO_API_KEY was blanked the same way, which
+      # is what silently turned off the cashtag price cards.
+      #
+      # Do not re-add them. A key that lives in .env.local reaches this service
+      # by being in .env.local, no matter how compose was invoked.
+      VERITY_URL: "http://verity:8095"
+      EKYC_URL: "http://ekyc:8099"
+      LEDGER_URL: "http://aethyr-ledger:8096"
+      CAEOR_URL: "http://caeor:8086"
+      TRANSCODING_URL: "http://transcoding:8085"
+      HERALD_URL: "http://herald:8105"
+      MANHATTAN_URL: "http://manhattan:8107"
+      REGISTRY_BRAIN_URL: "http://registry-brain:8094"
+      THEMIS_URL: "http://themis:8100"
+      REDIS_URL: "redis://redis:6379"
+      KAFKA_BROKERS: "sitra-achra:9092"
+      TRANSLATION_API_URL: "http://libretranslate:5000"
+      ASTRAON_URL: "http://astraon:8088"
+      ALEXANDRIA_URL: "http://alexandria:8098"
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY:-dev_internal_key_change_in_production}"
+      SESSION_SECRET: "${SESSION_SECRET:-dev_secret_change_in_production_32chars}"
+      MEDIA_TOKEN_SECRET: "${MEDIA_TOKEN_SECRET:-dev_media_token_secret_change_in_prod}"
+      SHOW_SCORES: "${SHOW_SCORES:-false}"
+      DEV_MODE: "${DEV_MODE:-false}"
+      # Live lane — control plane address, media server API, publish endpoints.
+      # The publish host is what a phone or OBS dials, not what containers use.
+      LIVE_CONTROL_ADDR: ":8110"
+      LIVE_MEDIA_API_URL: "http://mediamtx:9997"
+      # ── live capacity governor ───────────────────────────────────────────
+      # What this box will spend on encoding, and the ceiling it refuses at.
+      # The governor is in feed-engine because it is the only process that can
+      # see every broadcast at once; the ladders that spend the budget run in
+      # the mediamtx container and are told what they may have.
+      #
+      # The core budget is deliberately less than the box: forty other
+      # containers, the media server's ingest and the edge serving the segments
+      # all share it, and a live lane sized to the whole machine starves the
+      # ingest it is reading from and then starves itself.
+      LIVE_CPU_BUDGET_CORES: "${LIVE_CPU_BUDGET_CORES:-7.8}"
+      # Whether to plan for hardware encoding before any ladder has reported.
+      # It is a hint for the first admission decision only: the first ladder to
+      # start proves the answer by opening a session, and ground truth replaces
+      # this permanently.
+      LIVE_NVENC_ENABLED: "${LIVE_NVENC_ENABLED:-false}"
+      # Concurrent NVENC sessions the card will open. MEASURED at 8 on the
+      # GeForce GTX 1060 in this box with driver 580.178.04; the ninth fails
+      # outright rather than running slowly, so it is budgeted, never probed
+      # for at the moment a broadcast needs it.
+      LIVE_NVENC_SESSIONS: "${LIVE_NVENC_SESSIONS:-8}"
+      # Segment duration the governor plans for. Read here, by the governor —
+      # the ladder takes its duration from the plan it is issued, never from
+      # its own environment, so this is the only place the number is set.
+      LIVE_SEGMENT_SECONDS: "${LIVE_SEGMENT_SECONDS:-1}"
+      LIVE_SCAN_DIR: "/app/live-scan"
+      LIVE_RTMP_BASE: "rtmp://${LIVE_PUBLIC_HOST:-localhost}:1935"
+      LIVE_SRT_HOST: "${LIVE_PUBLIC_HOST:-localhost}:8890"
+      CONTENT_SCAN_URL: "${CONTENT_SCAN_URL:-http://content-scan:8097}"
+    volumes:
+      - ./feed-engine/web/static:/app/web/static    # live CSS/JS/brand — git pull = instant update
+      - ./feed-engine/web/templates:/app/web/templates:ro  # live templates — restart to pick up
+      - f33d3r_media:/app/web/static/media          # user media — named volume overlays bind mount
+      - f33d3r_live_scan:/app/live-scan             # sampled live keyframes — never served
+    depends_on:
+      postgres:
+        condition: service_healthy
+      aethyrrank-engine:
+        condition: service_healthy
+      caeor:
+        condition: service_healthy
+      transcoding:
+        condition: service_healthy
+      themis:
+        condition: service_healthy
+      astraon:
+        condition: service_healthy
+      sitra-achra:
+        condition: service_healthy
+      registry-brain:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "wget", "-qO-", "http://localhost:8081/api/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
+
+  astraon:
+    build:
+      context: .
+      dockerfile: astraon/docker/Dockerfile
+    ports:
+      - "8088:8088"
+    environment:
+      MANHATTAN_URL: "http://manhattan:8107"
+      # Authenticates every call to Manhattan; the brain refuses to boot without it.
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY:-dev_internal_key_change_in_production}"
+      RUST_LOG: "${RUST_LOG:-info}"
+      PORT: "8088"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:-f33d3rdev}@postgres:5432/f33d3r_feed?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8088/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 60s
+
+  ain-soph:
+    build:
+      context: .
+      dockerfile: ain-soph/docker/Dockerfile
+    ports:
+      # Loopback only. Prod publishes no port for this brain at all, and the
+      # only reason one is published locally is so a developer can curl it.
+      # "8089:8089" binds 0.0.0.0, which put the wallet — deposit, transfer,
+      # withdraw — on every interface of the host, reachable from any device on
+      # the LAN. Brain-to-brain traffic uses the compose network and is
+      # unaffected by this; only the host-side bind narrows.
+      - "127.0.0.1:8089:8089"
+    environment:
+      MANHATTAN_URL: "http://manhattan:8107"
+      RUST_LOG: "${RUST_LOG:-info}"
+      PORT: "8089"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:-f33d3rdev}@postgres:5432/f33d3r_wallet?sslmode=disable"
+      AETHYRRANK_URL: "http://aethyrrank-engine:8080"
+      FEED_ENGINE_URL: "http://feed-engine:8081"
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY:-dev_internal_key_change_in_production}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8089/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+
+  # aethyr-msg (Vovin messaging brain) RETIRED — replaced by the Gnosis E2EE
+  # pillar, which is compiled into feed-engine (Go handlers + gnosis-malkuth
+  # WASM crypto core). No separate messaging brain exists anymore.
+
+  elohim-veni:
+    build:
+      context: .
+      dockerfile: elohim-veni/docker/Dockerfile
+    ports:
+      - "8093:8093"
+    environment:
+      MANHATTAN_URL: "http://manhattan:8107"
+      RUST_LOG: "${RUST_LOG:-info}"
+      PORT: "8093"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:-f33d3rdev}@postgres:5432/f33d3r_security?sslmode=disable"
+      VERITY_URL: "http://verity:8095"
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY:-dev_internal_key_change_in_production}"
+      # Ed25519 seed (base64, 32 bytes) signing contact key bundles. Unset means
+      # bundles ship unsigned and report themselves as unsigned.
+      CONTACT_BUNDLE_SIGNING_SEED: "${CONTACT_BUNDLE_SIGNING_SEED:-}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      verity:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8093/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+
+  zodacare:
+    build:
+      context: .
+      dockerfile: zodacare/docker/Dockerfile
+    ports:
+      - "8090:8090"
+    environment:
+      MANHATTAN_URL: "http://manhattan:8107"
+      # Authenticates every call to Manhattan; the brain refuses to boot without it.
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY:-dev_internal_key_change_in_production}"
+      RUST_LOG: "${RUST_LOG:-info}"
+      PORT: "8090"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:-f33d3rdev}@postgres:5432/f33d3r_safety?sslmode=disable"
+      ELOHIM_VENI_URL: "http://elohim-veni:8093"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      elohim-veni:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8090/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+
+  herald:
+    build:
+      context: .
+      dockerfile: herald/docker/Dockerfile
+    ports:
+      - "8105:8105"
+    environment:
+      MANHATTAN_URL: "http://manhattan:8107"
+      # Authenticates every call to Manhattan; the brain refuses to boot without it.
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY:-dev_internal_key_change_in_production}"
+      RUST_LOG: "${RUST_LOG:-info}"
+      PORT: "8105"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:-f33d3rdev}@postgres:5432/f33d3r_herald?sslmode=disable"
+      VAPID_PUBLIC_KEY: "${VAPID_PUBLIC_KEY:-not-configured}"
+      VAPID_PRIVATE_KEY: "${VAPID_PRIVATE_KEY:-}"
+      VAPID_SUBJECT: "${VAPID_SUBJECT:-mailto:admin@f33d3r.com}"
+    mem_limit: 512m
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8105/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+
+  lore:
+    build:
+      context: .
+      dockerfile: lore/docker/Dockerfile
+    ports:
+      - "8106:8106"
+    environment:
+      MANHATTAN_URL: "http://manhattan:8107"
+      # Authenticates every call to Manhattan; the brain refuses to boot without it.
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY:-dev_internal_key_change_in_production}"
+      RUST_LOG: "${RUST_LOG:-info}"
+      PORT: "8106"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:-f33d3rdev}@postgres:5432/f33d3r_lore?sslmode=disable"
+      HERALD_URL: "http://herald:8105"
+    mem_limit: 512m
+    depends_on:
+      postgres:
+        condition: service_healthy
+      herald:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8106/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+
+  # ── Auralis — F33D3R Frequencies, live-audio social object brain (Rust, 8108) ─
+  # Control plane now; the audio SFU joins it in Phase 3 on AURALIS_MEDIA_UDP_PORT.
+  auralis:
+    build:
+      context: .
+      dockerfile: frequencies/docker/Dockerfile
+    ports:
+      - "8108:8108"
+    environment:
+      MANHATTAN_URL: "http://manhattan:8107"
+      # Authenticates every call to Manhattan and every call INTO this brain;
+      # it refuses to boot without it.
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY:-dev_internal_key_change_in_production}"
+      RUST_LOG: "${RUST_LOG:-info}"
+      PORT: "8108"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:-f33d3rdev}@postgres:5432/f33d3r_frequencies?sslmode=disable"
+      REDIS_URL: "redis://redis:6379"
+      KAFKA_BROKERS: "sitra-achra:9092"
+      HERALD_URL: "http://herald:8105"
+      # Signs the short-lived signaling tokens handed to browsers. Auralis's
+      # own secret, not the shared internal key: a peer brain cannot mint a
+      # media session. At least 32 characters; the brain refuses to boot otherwise.
+      AURALIS_SIGNAL_SECRET: "${AURALIS_SIGNAL_SECRET:-dev_auralis_signal_secret_change_in_production_0000}"
+      AURALIS_PUBLIC_HOST: "${LIVE_PUBLIC_HOST:-localhost}"
+      AURALIS_MEDIA_UDP_PORT: "40000"
+    mem_limit: 512m
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      sitra-achra:
+        condition: service_healthy
+      manhattan:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8108/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+
+  registry-brain:
+    build:
+      context: .
+      dockerfile: registry-brain/docker/Dockerfile
+    ports:
+      - "8094:8094"
+    environment:
+      MANHATTAN_URL: "http://manhattan:8107"
+      # Authenticates every call to Manhattan; the brain refuses to boot without it.
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY:-dev_internal_key_change_in_production}"
+      RUST_LOG: "${RUST_LOG:-info}"
+      PORT: "8094"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:-f33d3rdev}@postgres:5432/f33d3r_handles?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8094/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+
+  manhattan:
+    build:
+      context: ./manhattan
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8107:8107"
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+      PORT: "8107"
+      # Every call into the naming plane carries this shared secret; Manhattan
+      # refuses to boot without it. A brain name in a header is a claim anyone on
+      # the network could make — the key is what makes it a fact.
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY:-dev_internal_key_change_in_production}"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:-f33d3rdev}@postgres:5432/f33d3r_manhattan?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8107/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+
+  verity:
+    build:
+      context: .
+      dockerfile: verity/docker/Dockerfile
+    ports:
+      # Loopback only — matches prod, which publishes no port for this brain at
+      # all. Verity's mutating routes set money/age tiers; the host must not
+      # expose them to the LAN. Peer brains reach it as verity:8095 on the
+      # internal docker network regardless of this publish.
+      - "127.0.0.1:8095:8095"
+    environment:
+      MANHATTAN_URL: "http://manhattan:8107"
+      RUST_LOG: "${RUST_LOG:-info}"
+      PORT: "8095"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:-f33d3rdev}@postgres:5432/f33d3r_verity?sslmode=disable"
+      # Verity decides who may earn money. Every mutating route requires this
+      # shared secret and the service refuses to boot without it.
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY:-dev_internal_key_change_in_production}"
+      # NEXUS maintenance sweep (was the nexus-sweep container): expires stale
+      # link requests and session context, flags AML aggregates for EDD.
+      NEXUS_SWEEP_INTERVAL_SECS: "900"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8095/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+
+  aethyr-ledger:
+    build:
+      context: .
+      dockerfile: aethyr-ledger/docker/Dockerfile
+    ports:
+      - "8096:8096"
+    environment:
+      MANHATTAN_URL: "http://manhattan:8107"
+      RUST_LOG: "${RUST_LOG:-info}"
+      PORT: "8096"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:-f33d3rdev}@postgres:5432/f33d3r_ledger?sslmode=disable"
+      # Ain Soph authenticates the block checkpoint this brain posts after each
+      # seal. Without the shared secret that call is refused.
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY:-dev_internal_key_change_in_production}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8096/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+
+  alexandria:
+    build:
+      context: .
+      dockerfile: alexandria/docker/Dockerfile
+    ports:
+      - "8098:8098"
+    environment:
+      MANHATTAN_URL: "http://manhattan:8107"
+      # Authenticates every call to Manhattan; the brain refuses to boot without it.
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY:-dev_internal_key_change_in_production}"
+      RUST_LOG: "${RUST_LOG:-info}"
+      PORT: "8098"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:-f33d3rdev}@postgres:5432/f33d3r_library?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8098/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+
+  # HTTPS reverse proxy — required for WebCrypto on Safari/Firefox from non-localhost origins
+  # Serves f33d3r on https://localhost:8443 with a self-signed cert (trusted locally via mkcert or browser exception)
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      # The Caddyfile is the one place a listener is declared; the mapping only
+      # publishes what it declares. Both ports are identity mappings so the port
+      # in the site address, the container listener and the host port can never
+      # drift apart — 8443 is the HTTPS site, 8444 the HTTP→HTTPS redirect.
+      - "8443:8443"
+      - "8444:8444"
+    environment:
+      LIVE_PUBLIC_HOST: "${LIVE_PUBLIC_HOST:-127.0.0.1}"
+    volumes:
+      - ./infra/Caddyfile.local:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      feed-engine:
+        condition: service_healthy
+      live-edge:
+        condition: service_started
+
+  caeor:
+    build:
+      context: ./caeor
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8086:8086"
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+      PORT: "8086"
+      MEDIA_DIR: "/data/media"
+      DEV_MODE: "${DEV_MODE:-false}"
+    volumes:
+      - f33d3r_media:/data/media
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8086/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 60s
+
+  # ── Themis — unified commerce + Bitcoin marketplace brain (Rust, port 8100) ──
+  themis:
+    build:
+      context: .
+      dockerfile: themis/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      elohim-veni:
+        condition: service_healthy
+    ports:
+      - "8100:8100"
+    environment:
+      MANHATTAN_URL: "http://manhattan:8107"
+      RUST_LOG: "${RUST_LOG:-info}"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:-f33d3rdev}@postgres:5432/f33d3r_market?sslmode=disable"
+      PORT: "8100"
+      NANTAR_URL: "http://feed-engine:8081"
+      ELOHIM_VENI_URL: "http://elohim-veni:8093"
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY:-dev_internal_key_change_in_production}"
+      MEMPOOL_WS_URL: "wss://mempool.space/api/v1/ws"
+      XRP_WS_URL: "${XRP_WS_URL:-wss://xrpl.ws}"
+      THEMIS_ECDH_PRIVKEY_B64: "${THEMIS_ECDH_PRIVKEY_B64:-}"
+      CONF_THRESHOLD_LOW: "1"
+      CONF_THRESHOLD_HIGH: "3"
+      AIN_SOPH_URL: "http://ain-soph:8089"
+      VERITY_URL: "http://verity:8095"
+      STRIPE_SECRET_KEY: "${STRIPE_SECRET_KEY:-}"
+      STRIPE_WEBHOOK_SECRET: "${STRIPE_WEBHOOK_SECRET:-}"
+      STRIPE_PUBLISHABLE_KEY: "${STRIPE_PUBLISHABLE_KEY:-}"
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8100/health" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 120s
+    restart: unless-stopped
+
+  # ── eKYC brain — face match, OCR, anti-spoof (Python, port 8099) ──────────
+  ekyc:
+    build:
+      context: ./ekyc
+      dockerfile: Dockerfile
+    ports:
+      - "8099:8099"
+    environment:
+      PORT: "8099"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8099/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
+  # STUB BRAINS — not yet built:
+  # nantar-engine (8083), loxion (8087), astraon (8088)
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # SPRINT 0 — FOUNDATION LAYER
+  # Observability + storage + connection pooling. All new services below this
+  # line were added by Sprint 0 / S0.1. They do not modify any existing brain.
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # ── PgBouncer — Postgres transaction pooling ─────────────────────────────
+  # Brains will switch their DATABASE_URL host from "postgres" to "pgbouncer"
+  # in S0.3. Until then this runs alongside and is unused.
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    environment:
+      DB_USER: "${POSTGRES_USER:-f33d3r}"
+      DB_PASSWORD: "${POSTGRES_PASSWORD:-f33d3rdev}"
+      DB_HOST: "postgres"
+      DB_NAME: "*"
+      POOL_MODE: "transaction"
+      MAX_CLIENT_CONN: "200"
+      DEFAULT_POOL_SIZE: "20"
+      RESERVE_POOL_SIZE: "5"
+      ADMIN_USERS: "${POSTGRES_USER:-f33d3r}"
+      AUTH_TYPE: "scram-sha-256"
+    ports:
+      - "6432:5432"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -h localhost -p 5432 -U ${POSTGRES_USER:-f33d3r}" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  # ── MinIO — S3-compatible object storage ─────────────────────────────────
+  # Buckets created by minio-init on first boot:
+  #   media-raw       — original uploads
+  #   media-derived   — transcoded variants (HLS segments, WebP renditions)
+  #   backups         — pg_dump nightly backups
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: "${MINIO_ROOT_USER:-f33d3r_minio}"
+      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:-f33d3rdev_change_in_prod_32c}"
+      MINIO_BROWSER_REDIRECT_URL: "http://localhost:9001"
+      MINIO_PROMETHEUS_AUTH_TYPE: "public"
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # web console
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:9000/minio/health/live" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        set -e
+        mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"
+        mc mb -p local/media-raw     || true
+        mc mb -p local/media-derived || true
+        mc mb -p local/backups       || true
+        # Public read on media-derived only (CDN will front this in T2+)
+        mc anonymous set download local/media-derived || true
+        echo "[minio-init] buckets ready"
+    environment:
+      MINIO_ROOT_USER: "${MINIO_ROOT_USER:-f33d3r_minio}"
+      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:-f33d3rdev_change_in_prod_32c}"
+    restart: "no"
+
+  # ── MediaMTX — live ingest ───────────────────────────────────────────────
+  # Accepts video and nothing else. It does not decide who may publish (the
+  # feed-engine live control plane does, over an HTTP auth callback) and it does
+  # not deliver to viewers (live-edge serves the ABR ladder off disk).
+  #   1935      RTMP  — OBS and every desktop encoder
+  #   8890/udp  SRT   — hardware and mobile encoders, low latency over bad links
+  #   8889      WHIP  — WebRTC from a phone browser, sub-second ingest
+  # The ladder is started by the media server itself the moment a source becomes
+  # ready and killed when it stops (infra/live/scripts/live_ladder.sh).
+  mediamtx:
+    build:
+      context: ./infra/live
+      dockerfile: Dockerfile
+    # The ladder's encodes run in this container, so this is where the GPU has
+    # to be reachable. The NVIDIA container runtime is what injects the driver
+    # libraries an NVENC session needs; without it the ladder's probe fails and
+    # every plan the control plane issues is a software plan, which is correct
+    # behaviour on a box with no GPU rather than a failure.
+    #
+    # It is a variable and not a literal because a compose file naming a runtime
+    # that is not installed does not start the service at all — and a live
+    # ingest server that will not start because a box has no graphics card is a
+    # far worse outcome than one that encodes in software.
+    runtime: ${LIVE_GPU_RUNTIME:-runc}
+    # One ladder is the most expensive thing on this box and there are forty
+    # other containers on it, including the edge that serves these segments and
+    # the media server's own ingest threads, which are what the encoders read
+    # from. The governor in feed-engine sizes each broadcast against a budget;
+    # this is the wall that makes the budget real, so that a miscount there
+    # cannot take the platform down with it.
+    cpus: ${LIVE_CONTAINER_CPUS:-9.0}
+    # The WHIP HTTP port (8889) is deliberately not published. A browser
+    # broadcast posts its offer to feed-engine, same-origin, and feed-engine
+    # presents it to the media server over the container network with a ticket
+    # the browser never holds; the WebRTC media itself arrives on 8189/udp.
+    ports:
+      - "1935:1935"        # RTMP ingest
+      - "8890:8890/udp"    # SRT ingest
+      - "8189:8189/udp"    # WebRTC media
+    environment:
+      MTX_AUTHHTTPADDRESS: "http://feed-engine:8110/live/auth"
+      MTX_WEBRTCADDITIONALHOSTS: "${LIVE_PUBLIC_HOST:-localhost}"
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY:-dev_internal_key_change_in_production}"
+      LIVE_CONTROL_URL: "http://feed-engine:8110"
+      LIVE_MEDIA_ROOT: "/data/media/live"
+      LIVE_SCAN_ROOT: "/data/live-scan"
+      LIVE_DVR_SEGMENTS: "${LIVE_DVR_SEGMENTS:-12}"
+      LIVE_SAMPLE_SECONDS: "${LIVE_SAMPLE_SECONDS:-10}"
+      # The ladder proves the hardware encoder by opening a session and reports
+      # the answer to the control plane, which is what decides. Nothing here
+      # asserts a capability.
+      LIVE_PRESSURE_SPEED_FLOOR: "${LIVE_PRESSURE_SPEED_FLOOR:-0.94}"
+      LIVE_PRESSURE_SAMPLES: "${LIVE_PRESSURE_SAMPLES:-12}"
+    volumes:
+      - ./infra/live/mediamtx.yml:/mediamtx.yml:ro
+      - f33d3r_media:/data/media
+      - f33d3r_live_scan:/data/live-scan
+    depends_on:
+      feed-engine:
+        condition: service_healthy
+    healthcheck:
+      # 401 proves the API is up and authenticating; 200 proves it is up and the
+      # control plane answered. Either is alive; a refused connection is not.
+      test: [ "CMD-SHELL", "curl -s -o /dev/null -w '%{http_code}' http://localhost:9997/v3/paths/list | grep -qE '200|401'" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+
+  # ── live-edge — HLS delivery ─────────────────────────────────────────────
+  # Serves the ABR ladder as static files. Video delivery never passes through
+  # the application server: /live/* is routed here by Caddy.
+  live-edge:
+    image: nginx:1.27-alpine
+    ports:
+      - "8092:80"
+    volumes:
+      - ./infra/live/nginx.conf:/etc/nginx/nginx.conf:ro
+      - f33d3r_media:/srv:ro
+    healthcheck:
+      test: [ "CMD-SHELL", "wget -qO- http://localhost/healthz || exit 1" ]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  transcoding:
+    build:
+      context: ./transcoding
+      dockerfile: Dockerfile
+    ports:
+      - "8085:8085"
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+      PORT: "8085"
+      MEDIA_DIR: "/data/media"
+      DEV_MODE: "${DEV_MODE:-false}"
+      # Same contract as mediamtx and content-scan below: encode picks h264_nvenc
+      # only when this is true, and it defaults to false so a box with no NVIDIA
+      # card gets a working software encoder instead of a container that cannot
+      # start. Set both this and TRANSCODE_RUNTIME=nvidia together on a host with
+      # the NVIDIA container runtime installed.
+      NVENC_ENABLED: "${TRANSCODE_NVENC_ENABLED:-false}"
+      NVIDIA_VISIBLE_DEVICES: "${NVIDIA_VISIBLE_DEVICES:-all}"
+      NVIDIA_DRIVER_CAPABILITIES: "compute,utility,video"
+    volumes:
+      - f33d3r_media:/data/media
+    # runc is Docker's default runtime and needs no GPU present. A compose file
+    # naming a device reservation the host cannot satisfy refuses to schedule the
+    # container at all — the same failure mode mediamtx's runtime var avoids.
+    runtime: "${TRANSCODE_RUNTIME:-runc}"
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8085/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 60s
+
+  # ── Prometheus — metrics scraping ────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:latest
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=14d'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./infra/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/observability/prometheus-rules.yml:/etc/prometheus/prometheus-rules.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    healthcheck:
+      test: [ "CMD", "wget", "-qO-", "http://localhost:9090/-/healthy" ]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # ── Loki — structured log aggregation ────────────────────────────────────
+  loki:
+    build:
+      context: ./infra/observability
+      dockerfile: loki.Dockerfile
+    command: -config.file=/etc/loki/loki-config.yml
+    volumes:
+      - ./infra/observability/loki-config.yml:/etc/loki/loki-config.yml:ro
+      - loki_data:/loki
+    ports:
+      - "3100:3100"
+    healthcheck:
+      test: [ "CMD-SHELL", "wget -qO- http://localhost:3100/ready || exit 1" ]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  # ── Alertmanager — alert routing ─────────────────────────────────────────
+  alertmanager:
+    image: prom/alertmanager:latest
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+    volumes:
+      - ./infra/observability/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    ports:
+      - "9093:9093"
+    healthcheck:
+      test: [ "CMD", "wget", "-qO-", "http://localhost:9093/-/healthy" ]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # ── Backup — nightly pg_dump to MinIO (S0.4) ─────────────────────────────
+  # Runs once on container start then exits (restart: "no").
+  # To trigger manually: docker compose run --rm backup
+  # To run restore-test: docker compose run --rm backup restore-test.sh
+  backup:
+    build:
+      context: ./infra/backup
+      dockerfile: Dockerfile
+    environment:
+      POSTGRES_HOST: "postgres"
+      POSTGRES_USER: "${POSTGRES_USER:-f33d3r}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-f33d3rdev}"
+      MINIO_ENDPOINT: "minio:9000"
+      MINIO_ACCESS_KEY: "${MINIO_ROOT_USER:-f33d3r_minio}"
+      MINIO_SECRET_KEY: "${MINIO_ROOT_PASSWORD:-f33d3rdev_change_in_prod_32c}"
+      MINIO_BUCKET: "backups"
+      BACKUP_RETENTION_DAYS: "7"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    restart: "no"
+    profiles: ["backup"]   # only starts with: docker compose --profile backup up
+
+  # ── node-exporter — host-level CPU/RAM/disk/network metrics ─────────────
+  node-exporter:
+    image: prom/node-exporter:latest
+    pid: host
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--path.rootfs=/rootfs'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    ports:
+      - "9100:9100"
+    healthcheck:
+      test: [ "CMD", "wget", "-qO-", "http://localhost:9100/metrics" ]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # ── Promtail — ship container stdout/stderr logs to Loki ─────────────────
+  promtail:
+    image: grafana/promtail:latest
+    command: -config.file=/etc/promtail/config.yml
+    volumes:
+      - ./infra/observability/promtail-config.yml:/etc/promtail/config.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      loki:
+        condition: service_healthy
+
+  # ── Grafana — dashboards ─────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      GF_SECURITY_ADMIN_USER: "${GRAFANA_ADMIN_USER:-admin}"
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD:-f33d3rdev_change_in_prod}"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_INSTALL_PLUGINS: ""
+      GF_FEATURE_TOGGLES_ENABLE: "publicDashboards"
+    volumes:
+      - ./infra/observability/grafana/grafana.ini:/etc/grafana/grafana.ini:ro
+      - ./infra/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      prometheus:
+        condition: service_healthy
+      loki:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD-SHELL", "wget -qO- http://localhost:3000/api/health || exit 1" ]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  # ── Abraxas Shield — Kafka-native content safety (Rust, no HTTP server) ──────
+  abraxas-shield:
+    build:
+      context: ./abraxas-shield
+      dockerfile: Dockerfile
+      args:
+        FEATURES: ""   # text-only on local (avoids AVX2 SIGILL on older CPUs)
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+      KAFKA_BROKERS: "sitra-achra:9092"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:-f33d3rdev}@postgres:5432/f33d3r_feed?sslmode=disable"
+      SCAN_VERSION: "3.0"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      sitra-achra:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── content-scan — visual / audio / text classifier (Python, port 8097) ─────
+  # The live lane posts every sampled keyframe to /v1/scan/image and drives
+  # live_streams.scan_state from the answer.
+  #
+  # First boot: the NudeNet, EasyOCR and faster-whisper weights are baked into
+  # the image at build time, so start-up is a load from local disk (roughly a
+  # minute) and not a download. start_period covers that; /ready answers 503
+  # until the NSFW detector is actually loaded, so a broken model shows up as an
+  # unhealthy container rather than as silence.
+  #
+  # Nothing depends_on this service on purpose. A classifier that is still
+  # warming, or that failed to build, must not hold the rest of the stack down —
+  # feed-engine already fails closed while it is away: sampled frames are held
+  # unjudged at scan_state='pending_scan' and are never recorded clean.
+  content-scan:
+    build:
+      context: ./content-scan
+      dockerfile: Dockerfile
+      args:
+        # Set to onnxruntime-gpu to run NudeNet on an NVIDIA GPU as well.
+        ONNXRUNTIME_PACKAGE: "${CONTENT_SCAN_ONNXRUNTIME:-onnxruntime}"
+    restart: unless-stopped
+    ports:
+      - "8097:8097"
+    environment:
+      PORT: "8097"
+      DB_HOST: "postgres"
+      DB_PORT: "5432"
+      DB_NAME: "f33d3r_feed"
+      DB_USER: "${POSTGRES_USER:-f33d3r}"
+      DB_PASSWORD: "${POSTGRES_PASSWORD:-f33d3rdev}"
+      FEED_ENGINE_URL: "http://feed-engine:8081"
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY:-dev_internal_key_change_in_production}"
+      # cpu | cuda. cuda also needs CONTENT_SCAN_RUNTIME=nvidia below; a cuda
+      # request the host cannot honour logs a warning naming the reason and runs
+      # on CPU rather than refusing to start.
+      CONTENT_SCAN_DEVICE: "${CONTENT_SCAN_DEVICE:-cpu}"
+      NVIDIA_VISIBLE_DEVICES: "${NVIDIA_VISIBLE_DEVICES:-all}"
+      NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
+      # Keep the math libraries from claiming every core on a shared host.
+      OMP_NUM_THREADS: "${CONTENT_SCAN_THREADS:-4}"
+      OPENBLAS_NUM_THREADS: "${CONTENT_SCAN_THREADS:-4}"
+    # runc is Docker's default runtime. On a host with the nvidia container
+    # runtime configured, set CONTENT_SCAN_RUNTIME=nvidia together with
+    # CONTENT_SCAN_DEVICE=cuda. Left at runc, the service runs on CPU.
+    runtime: "${CONTENT_SCAN_RUNTIME:-runc}"
+    volumes:
+      # Read-only: /v1/scan/risk is handed a file_path under the media tree.
+      - f33d3r_media:/app/web/static/media:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-fsS", "http://localhost:8097/ready" ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+
+  # ── Help Center — docs site served at help.f33d3r.com ──────────────────────
+  help-center:
+    build:
+      context: ./help-center
+      dockerfile: Dockerfile
+    image: f33d3r-help-center:latest
+    restart: unless-stopped
+    volumes:
+      - ./help-center/docs:/app/docs   # drop .docx files here; no rebuild needed
+    healthcheck:
+      test: [ "CMD", "wget", "-qO-", "http://localhost:8080/" ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  libretranslate:
+    image: libretranslate/libretranslate:latest
+    restart: unless-stopped
+    environment:
+      LT_LOAD_ONLY: "en,es,fr,de,pt,it,ja,ko,zh,ar,ru,hi,tr,nl,pl,sv,uk,he,id,vi"
+      LT_DISABLE_WEB_UI: "true"
+    volumes:
+      - libretranslate_data:/home/libretranslate/.local
+    healthcheck:
+      test: [ "CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:5000/languages')\"" ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:
+  f33d3r_media:
+  f33d3r_live_scan:
+  minio_data:
+  prometheus_data:
+  loki_data:
+  alertmanager_data:
+  grafana_data:
+  libretranslate_data:
+  sitra_achra_data:

@@ -1,0 +1,154 @@
+{{/*
+FACET add_account_modal
+  version: 1.0 | status: stable | layer: 3
+
+  inputs:
+    .User  User — currently logged-in user (fork step only)
+
+  states:
+    fork | create | link | codes
+
+  children:
+    none
+
+  signals:
+    emits:    none (mutations via POST /partials/add-account-modal/create and POST /partials/link-account)
+    receives: none
+
+  context:
+    account_switcher → #overlay-slot via hx-get="/facets/add_account_modal"
+*/}}
+{{define "add_account_modal"}}
+<div class="aam-backdrop" id="add-account-modal"
+     onclick="if(event.target===this)closeAddAccountModal()"
+     role="dialog" aria-modal="true" aria-label="Add account">
+  <div class="aam-card">
+    <div class="aam-header">
+      <button class="aam-close" type="button" onclick="closeAddAccountModal()" aria-label="Close">
+        <svg fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24" style="width:18px;height:18px"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+      <span class="aam-title">Add account</span>
+    </div>
+    <div id="aam-body">
+      {{template "add_account_modal_fork" .}}
+    </div>
+  </div>
+</div>
+{{end}}
+
+{{define "add_account_modal_fork"}}
+<div class="aam-fork">
+  <p class="aam-fork-desc">Start fresh or bring in an account you already have.</p>
+  <button class="aam-fork-btn"
+          hx-get="/partials/add-account-modal/create"
+          hx-target="#aam-body"
+          hx-swap="innerHTML">
+    <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="width:20px;height:20px;flex-shrink:0"><path d="M12 5v14M5 12h14"/></svg>
+    <div>
+      <div class="aam-fork-btn-title">Create new account</div>
+      <div class="aam-fork-btn-desc">A fresh account linked to your identity</div>
+    </div>
+  </button>
+  <button class="aam-fork-btn"
+          hx-get="/partials/add-account-modal/link"
+          hx-target="#aam-body"
+          hx-swap="innerHTML">
+    <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="width:20px;height:20px;flex-shrink:0"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg>
+    <div>
+      <div class="aam-fork-btn-title">Link existing account</div>
+      <div class="aam-fork-btn-desc">Connect an account you already created</div>
+    </div>
+  </button>
+</div>
+{{end}}
+
+{{define "add_account_modal_create_step"}}
+<form class="aam-form"
+      hx-post="/partials/add-account-modal/create"
+      hx-target="#aam-body"
+      hx-swap="innerHTML">
+  <button type="button" class="aam-back"
+          hx-get="/partials/add-account-modal/fork"
+          hx-target="#aam-body"
+          hx-swap="innerHTML">
+    <svg fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24" style="width:14px;height:14px"><path d="m15 18-6-6 6-6"/></svg>
+    Back
+  </button>
+  {{if .Error}}
+  <div class="aam-error" role="alert">{{.Error}}</div>
+  {{end}}
+  <div class="form-field">
+    <label class="form-label" for="aam-handle">Handle</label>
+    <input type="text" id="aam-handle" name="handle" class="form-input"
+           maxlength="30" autocomplete="username" required placeholder="newhandle">
+  </div>
+  <div class="form-field">
+    <label class="form-label" for="aam-display">Display name <span class="form-hint">optional</span></label>
+    <input type="text" id="aam-display" name="display_name" class="form-input"
+           maxlength="100" placeholder="Display Name">
+  </div>
+  <div class="form-field">
+    <label class="form-label" for="aam-password">Password</label>
+    <input type="password" id="aam-password" name="password" class="form-input"
+           minlength="8" autocomplete="new-password" required>
+  </div>
+  <div class="form-field">
+    <label class="form-label" for="aam-confirm">Confirm password</label>
+    <input type="password" id="aam-confirm" name="confirm_password" class="form-input"
+           autocomplete="new-password" required>
+  </div>
+  <button type="submit" class="btn-primary aam-submit">Create account</button>
+</form>
+{{end}}
+
+{{define "add_account_modal_link_step"}}
+<form class="aam-form"
+      hx-post="/partials/link-account"
+      hx-target="#aam-body"
+      hx-swap="innerHTML">
+  <button type="button" class="aam-back"
+          hx-get="/partials/add-account-modal/fork"
+          hx-target="#aam-body"
+          hx-swap="innerHTML">
+    <svg fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24" style="width:14px;height:14px"><path d="m15 18-6-6 6-6"/></svg>
+    Back
+  </button>
+  <p class="aam-link-desc">Enter the handle and one backup code from the account you want to link.</p>
+  {{if .Error}}
+  <div class="aam-error" role="alert">{{.Error}}</div>
+  {{end}}
+  <div class="form-field">
+    <label class="form-label" for="aam-link-handle">Handle</label>
+    <input type="text" id="aam-link-handle" name="handle" class="form-input"
+           maxlength="30" autocomplete="off" required placeholder="theiraccount"
+           value="{{.Handle}}">
+  </div>
+  <div class="form-field">
+    <label class="form-label" for="aam-link-code">Backup code</label>
+    <input type="text" id="aam-link-code" name="backup_code" class="form-input aam-code-input"
+           autocomplete="off" required placeholder="XXXX-XXXX-XXXX"
+           autocapitalize="characters" spellcheck="false">
+  </div>
+  <button type="submit" class="btn-primary aam-submit">Link account</button>
+</form>
+{{end}}
+
+{{define "add_account_modal_codes_step"}}
+<div class="aam-codes">
+  <div class="aam-codes-head">
+    <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="width:22px;height:22px;color:var(--accent)"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+    <span>Save @{{.Handle}}'s new backup codes</span>
+  </div>
+  <p class="aam-codes-desc">The old codes were used to verify ownership and are now invalid. These replace them. Store them somewhere safe.</p>
+  <ul class="backup-codes-list" aria-label="New backup codes for @{{.Handle}}">
+    {{range .Codes}}
+    <li class="backup-code">{{.}}</li>
+    {{end}}
+  </ul>
+  {{/* A Playground navigation; the Shell runtime clears #overlay-slot on every
+       Playground swap, which closes this modal. */}}
+  <button class="btn-primary aam-submit" hx-get="/settings/personas" hx-target="#playground" hx-swap="innerHTML show:window:top" hx-push-url="true">
+    Done — I've saved these
+  </button>
+</div>
+{{end}}

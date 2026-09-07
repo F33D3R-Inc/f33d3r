@@ -1,0 +1,63 @@
+{{/*
+FACET frequency_dock_mini
+  version: 1.0 | status: stable | layer: 4
+
+  The collapsed dock: one bar — "@host +156 others · title" — with an expand
+  chevron and an X to leave. Same root id and facet id as the dock, so the two
+  swap places in the Shell mount and every mutation addressed to the dock
+  lands on whichever is showing. The tally rides here too and carries the
+  presence beat, so collapsing never stops presence. The root itself is
+  inert — see frequency_dock for why no beat may sit on a root that holds
+  forms.
+
+  inputs:
+    FrequencyStageData — .ID .Title .Host .State .Viewer .Session .Ctx
+                         .ListenerCount .ListenersLabel
+    PeopleCount int — present participants including the host
+
+  states:
+    collapsed ; live | ended
+
+  children: frequency_listener_count
+
+  signals:
+    emits:    frequency.leave; hx-get dock (expand); the tally inside emits frequency.heartbeat (every 15s)
+    receives: frequency_facet (SSE)
+
+  context:
+    base.html #frequency-dock
+*/}}
+{{define "frequency_dock_mini"}}
+{{$v := .Viewer}}
+<aside id="frequency-dock" class="freq-dock freq-dock--mini freq-dock--{{.State}}"
+       data-facet-id="{{frequencyFacetID .ID "dock"}}"
+       data-frequency-id="{{.ID}}" data-state="{{.State}}"
+       data-viewer-role="{{if $v.InFrequency}}{{$v.Role}}{{else}}none{{end}}"
+       {{- with .Session}}
+       data-frequency-signal-path="{{.SignalPath}}"
+       data-frequency-token="{{.Token}}"
+       data-frequency-token-expires="{{.ExpiresAt}}"
+       data-frequency-permissions="{{range $i, $p := .Permissions}}{{if $i}} {{end}}{{$p}}{{end}}"
+       {{- end}}
+       role="complementary" aria-label="Frequency you are in: {{.Title}}">
+  <button type="button" class="freq-dock__chev freq-dock__chev--up" aria-label="Expand"
+          hx-get="/facets/frequency/{{.ID}}/dock" hx-target="#frequency-dock" hx-swap="outerHTML">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="m18 15-6-6-6 6"/></svg>
+  </button>
+  <span class="freq-dock__mini-av">
+    {{template "user_avatar" (dict "Handle" .Host.Handle "AvatarURL" .Host.AvatarURL "DisplayName" .Host.DisplayName "Size" "sm" "IsOnline" (eq .State "live"))}}
+  </span>
+  <a class="freq-dock__mini-text" href="/frequencies/{{.ID}}">
+    <span class="freq-dock__mini-who">@{{.Host.Handle}}{{if gt .PeopleCount 1}} +{{add .PeopleCount -1}} other{{if ne .PeopleCount 2}}s{{end}}{{end}}</span>
+    <span class="freq-dock__mini-title">{{.Title}}</span>
+  </a>
+  {{template "frequency_listener_count" (dict "ID" .ID "Count" .ListenerCount "Label" .ListenersLabel "Heartbeat" (and $v.InFrequency (eq .State "live")))}}
+  <form hx-post="/events" hx-target="#frequency-dock" hx-swap="outerHTML">
+    <input type="hidden" name="event_type" value="frequency.leave">
+    <input type="hidden" name="frequency_id" value="{{.ID}}">
+    <button type="submit" class="freq-dock__x" aria-label="Leave Frequency">
+      <svg fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+    </button>
+  </form>
+</aside>
+{{end}}

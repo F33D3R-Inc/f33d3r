@@ -1,0 +1,82 @@
+{{/*
+FACET frequency_card
+  version: 1.0 | status: stable | layer: 2
+
+  A Frequency as it appears in the live strip, beside video broadcasts. Shaped
+  like a work card so it sits natively in the Playground. It is audio, so the
+  tile is not a picture of anything: it is the host, the title, who is on the
+  mic and how many are listening — the four facts a person decides on. The
+  whole tile opens the stage. State and tally arrive as replacement Fragments
+  over FA Live, so a card goes quiet at the same instant the stage does.
+
+  inputs:
+    ID             string
+    Title          string
+    State          string          — "live" | "scheduled" | "ended" | …
+    Host           FrequencyPerson — .Handle .DisplayName .AvatarURL .Realm .IsVerified .VerifiedType
+    SpeakerCount   int             — speakers other than the host
+    ListenerCount  int
+    ListenersLabel string          — server-formatted
+    TimeLabel      string          — "live for 42m" (live) / "ended 3m ago"
+    ScheduledLabel string          — localised start time (scheduled)
+    IsNSFW         bool
+    Ctx            PageCtx
+
+  states:
+    live | scheduled | ended | nsfw
+
+  children:
+    user_avatar, badge_verified, frequency_live_badge, frequency_listener_count
+
+  signals:
+    emits:    hx-get /facets/frequency/{id}/preview → #overlay-slot (frequency_preview); href /frequencies/{id} without JS
+    receives: frequency_facet (SSE — card, live_badge, listener_count)
+
+  context:
+    live strip (/facets/live/cards)  → after video live_cards
+    live_go_composer                 → "Frequencies live now" row
+    frequency_lanes                  → every lane
+*/}}
+{{define "frequency_card"}}
+<article class="post-card freq-card freq-card--{{.State}}{{if .IsNSFW}} freq-card--nsfw{{end}}"
+         data-facet-id="{{frequencyFacetID .ID "card"}}" data-frequency-id="{{.ID}}" data-state="{{.State}}" role="article">
+  <div class="pcd">
+    <div class="pcd-row">
+      <div class="thread-avatar-col">
+        <a href="/{{.Host.Handle}}">
+          {{template "user_avatar" (dict "Handle" .Host.Handle "AvatarURL" .Host.AvatarURL "DisplayName" .Host.DisplayName "Size" "post" "IsOnline" (eq .State "live"))}}
+        </a>
+      </div>
+      <div class="pcd-right">
+        <div class="pcd-author-row">
+          <a href="/{{.Host.Handle}}" class="pcd-author-name">{{if .Host.DisplayName}}{{.Host.DisplayName}}{{else}}@{{.Host.Handle}}{{end}}</a>
+          {{if .Host.IsVerified}}{{template "badge_verified" (dict "Type" .Host.VerifiedType)}}{{end}}
+          <a href="/{{.Host.Handle}}" class="post-handle">@{{.Host.Handle}}</a>
+          {{if .TimeLabel}}<span class="post-time">{{.TimeLabel}}</span>{{end}}
+        </div>
+
+        <a class="freq-card__tile" href="/frequencies/{{.ID}}"
+           hx-get="/facets/frequency/{{.ID}}/preview" hx-target="#overlay-slot" hx-swap="innerHTML" hx-push-url="false"
+           aria-label="{{if eq .State "live"}}Tune in to{{else}}Open{{end}} {{.Title}}, hosted by @{{.Host.Handle}}">
+          <span class="freq-card__corner">
+            {{template "frequency_live_badge" (dict "ID" .ID "State" .State "ScheduledLabel" .ScheduledLabel)}}
+            {{if .IsNSFW}}<span class="freq-card__nsfw" aria-label="18+">18+</span>{{end}}
+          </span>
+          <span class="freq-card__title">{{.Title}}</span>
+          <span class="freq-card__meta">
+            <span class="freq-card__who">@{{.Host.Handle}}{{if gt .SpeakerCount 0}} + {{.SpeakerCount}} speaker{{if ne .SpeakerCount 1}}s{{end}}{{end}}</span>
+            {{if eq .State "live"}}
+            {{template "frequency_listener_count" (dict "ID" .ID "Count" .ListenerCount "Label" .ListenersLabel "Heartbeat" false)}}
+            {{else if eq .State "scheduled"}}
+            <span class="freq-card__when">Starts {{.ScheduledLabel}}</span>
+            {{else}}
+            <span class="freq-card__when">Ended · Replay soon</span>
+            {{end}}
+          </span>
+          <span class="freq-card__cta">{{if eq .State "live"}}Tune In{{else if eq .State "scheduled"}}Remind me{{else}}Open{{end}}</span>
+        </a>
+      </div>
+    </div>
+  </div>
+</article>
+{{end}}

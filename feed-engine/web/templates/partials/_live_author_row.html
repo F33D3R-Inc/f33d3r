@@ -1,0 +1,55 @@
+{{/*
+FACET live_author_row
+  version: 1.0 | status: stable | layer: 2
+
+  Attribution block under the player: avatar, display name, verified badge,
+  handle, follow control, then the stream description.
+
+  inputs:
+    S            *model.LiveStream — .ID .Title
+    AuthorHandle string
+    AuthorName   string
+    AvatarURL    string
+    AuthorRealm  int
+    IsVerified   bool
+    VerifiedType string — "blue" | "gold"
+    Description  string — stream description text (plain, server-escaped)
+    AuthorPIAL   string — follow target address
+    IsFollowing  bool   — viewer already follows the broadcaster
+    IsOwner      bool   — viewer is the broadcaster (no follow control)
+    IsAnon       bool   — logged-out viewer
+
+  states:
+    default | owner | anonymous
+
+  children:
+    post_avatar, badge_verified, btn_follow
+
+  signals:
+    emits:    none
+    receives: none
+
+  context:
+    live.html → directly below live_player
+*/}}
+{{define "live_author_row"}}
+<div class="live-author" data-facet-id="facet:f33d3r:live:{{.S.ID}}:author">
+  <div class="live-author__row">
+    <a href="/{{.AuthorHandle}}" class="live-author__avatar" aria-label="@{{.AuthorHandle}}">
+      {{template "post_avatar" (dict "Handle" .AuthorHandle "AvatarURL" .AvatarURL "AuthorName" .AuthorName "Realm" .AuthorRealm "IsOnline" false)}}
+    </a>
+    <div class="live-author__meta">
+      <a href="/{{.AuthorHandle}}" class="live-author__name">{{.AuthorName}}{{if .IsVerified}}{{template "badge_verified" (dict "Type" .VerifiedType)}}{{end}}</a>
+      <a href="/{{.AuthorHandle}}" class="live-author__handle">@{{.AuthorHandle}}</a>
+    </div>
+    {{if and (not .IsOwner) (not .IsAnon)}}
+    <div class="live-author__follow">
+      {{template "btn_follow" (dict "TargetPIAL" .AuthorPIAL "TargetHandle" .AuthorHandle "IsFollowing" .IsFollowing "Surface" "compact")}}
+    </div>
+    {{end}}
+  </div>
+  {{if .Description}}
+  <p class="live-author__desc">{{.Description}}</p>
+  {{end}}
+</div>
+{{end}}

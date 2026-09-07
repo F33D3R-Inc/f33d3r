@@ -1,0 +1,5 @@
+data/
+devserver
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm

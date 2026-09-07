@@ -1,0 +1,54 @@
+{{/*
+FACET live_badge
+  version: 1.2 | status: stable | layer: 5
+
+  inputs:
+    StreamID string — stream UUID (facet id scope)
+    Slot     string — sub_id: "badge" | "title_badge" | "card_badge" | "bcast_badge".
+                      One stream can be on screen more than once; each placement
+                      is its own Facet so an id is never ambiguous.
+    Status   string — "idle" | "live" | "ended"
+    OOB      bool   — delivery shape, not appearance. False is the Facet as it is
+                      written into a surface. True marks the Fragment as a
+                      standalone mutation riding alongside another Facet in one
+                      HTTP answer, addressed by this Facet's own data-facet-id.
+                      Every call site states it, exactly as live_viewer_count's
+                      Heartbeat is stated, so the shape is never inherited by
+                      accident.
+
+  states:
+    live (red pulsing dot) | idle | ended
+
+  children: none
+
+  signals:
+    emits:    none
+    receives: live_status (SSE — whole fragment replaced on status change)
+
+  out-of-band delivery:
+    A logged-out watcher holds no FA Live session, so the only channel that can
+    correct this badge is the answer to their presence beat — and that answer's
+    primary Fragment is the player, which this badge sits outside of. The server
+    therefore names this Facet's own target in the Fragment it hands over. It is
+    addressed by data-facet-id, never by id: htmx's plain hx-swap-oob="true"
+    matches the id ATTRIBUTE and would silently swap nothing here, so the
+    selector form carries the address. The browser still decides nothing — it is
+    handed finished HTML and a server-written target.
+
+  context:
+    live_player     → player bottom-left overlay (Slot=badge)
+    live_title_bar  → title row                  (Slot=title_badge)
+    live_card       → thumbnail overlay          (Slot=card_badge)
+    live_broadcast_stage → broadcaster top bar   (Slot=bcast_badge)
+*/}}
+{{define "live_badge"}}
+<span class="live-badge live-badge--{{.Status}}"
+      data-facet-id="facet:f33d3r:live:{{.StreamID}}:{{.Slot}}"
+      {{- if .OOB}}
+      hx-swap-oob="outerHTML:[data-facet-id='facet:f33d3r:live:{{.StreamID}}:{{.Slot}}']"
+      {{- end}}
+      aria-label="{{if eq .Status "live"}}Live now{{else if eq .Status "ended"}}Stream ended{{else}}Not live{{end}}">
+  <span class="live-badge__dot" aria-hidden="true"></span>
+  {{if eq .Status "ended"}}ENDED{{else if eq .Status "live"}}LIVE{{else}}OFFLINE{{end}}
+</span>
+{{end}}

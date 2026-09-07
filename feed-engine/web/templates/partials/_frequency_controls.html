@@ -1,0 +1,107 @@
+{{/*
+FACET frequency_controls
+  version: 1.0 | status: stable | layer: 3
+
+  What THIS viewer may do, as the server decided it (Viewer.* are Auralis's
+  answers from the role matrix, rendered by Nantar). Hiding a control is a
+  courtesy, not security: every press is authorised again on the server.
+  Answered with the re-rendered stage, so the whole surface follows a role
+  change at once.
+
+  inputs:
+    ID           string
+    State        string — "live" | …
+    Viewer       FrequencyViewer — .Role .InFrequency .Muted .Blocked .CanRequestMic .CanModerate .CanEnd .CanSpeak .Request
+    RequestsOpen bool
+    Locked       bool
+    Ctx          PageCtx — .User (nil → sign-in prompt)
+    InDock       bool    — rendered inside frequency_dock: answers target #frequency-dock
+
+  states:
+    signed-out | not-in | listener | speaker | moderator | host | ended | blocked
+
+  children:
+    frequency_request_button
+
+  signals:
+    emits:    frequency.tune_in / leave / mute / unmute / end / lock / requests_open (POST /events)
+    receives: frequency_facet (SSE)
+
+  context:
+    frequency_stage → sticky bottom bar (mobile) / under header (desktop)
+*/}}
+{{define "frequency_controls"}}
+{{$v := .Viewer}}
+{{$tgt := "closest .freq-stage"}}{{if .InDock}}{{$tgt = "#frequency-dock"}}{{end}}
+<div class="freq-controls{{if .InDock}} freq-controls--dock{{end}}" data-facet-id="{{frequencyFacetID .ID "controls"}}" role="toolbar" aria-label="Frequency controls">
+  {{- if ne .State "live"}}
+    {{- if .InDock}}
+    <form hx-post="/events" hx-target="#frequency-dock" hx-swap="outerHTML">
+      <input type="hidden" name="event_type" value="frequency.leave">
+      <input type="hidden" name="frequency_id" value="{{.ID}}">
+      <button type="submit" class="freq-btn freq-btn--ghost">Close</button>
+    </form>
+    {{- else}}
+    <a class="freq-btn freq-btn--ghost" href="/golive">Back to Go Live</a>
+    {{- end}}
+  {{- else if $v.Blocked}}
+    <p class="freq-controls__note" role="status">You were removed from this Frequency and cannot rejoin.</p>
+  {{- else if not .Ctx.User}}
+    <a class="freq-btn freq-btn--primary" href="/login">Sign in to Tune In</a>
+  {{- else if not $v.InFrequency}}
+    <form hx-post="/events" hx-target="{{$tgt}}" hx-swap="outerHTML">
+      <input type="hidden" name="event_type" value="frequency.tune_in">
+      <input type="hidden" name="frequency_id" value="{{.ID}}">
+      <button type="submit" class="freq-btn freq-btn--primary freq-btn--big"{{if .Locked}} disabled aria-disabled="true"{{end}}>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 18v-6a9 9 0 0 1 18 0v6"/><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/></svg>
+        {{if .Locked}}Locked{{else}}Tune In{{end}}
+      </button>
+    </form>
+  {{- else}}
+    {{/* in the Frequency */}}
+    {{if $v.CanSpeak}}
+    <form hx-post="/events" hx-target="{{$tgt}}" hx-swap="outerHTML">
+      <input type="hidden" name="event_type" value="{{if $v.Muted}}frequency.unmute{{else}}frequency.mute{{end}}">
+      <input type="hidden" name="frequency_id" value="{{.ID}}">
+      <input type="hidden" name="target_handle" value="{{.Ctx.CurrentUserHandle}}">
+      <button type="submit" class="freq-btn {{if $v.Muted}}freq-btn--muted{{else}}freq-btn--live{{end}}" aria-pressed="{{if $v.Muted}}true{{else}}false{{end}}">
+        {{if $v.Muted}}Unmute · you are muted{{else}}Mute · your mic is on{{end}}
+      </button>
+    </form>
+    {{end}}
+
+    {{template "frequency_request_button" (dict "ID" .ID "CanRequestMic" $v.CanRequestMic "Request" $v.Request "RequestsOpen" .RequestsOpen "Live" true)}}
+
+    {{if $v.CanEnd}}
+    <details class="freq-host">
+      <summary class="freq-btn freq-btn--ghost">Host controls</summary>
+      <div class="freq-host__panel">
+        <form hx-post="/events" hx-target="{{$tgt}}" hx-swap="outerHTML">
+          <input type="hidden" name="event_type" value="frequency.requests_open">
+          <input type="hidden" name="frequency_id" value="{{.ID}}">
+          <input type="hidden" name="open" value="{{if .RequestsOpen}}false{{else}}true{{end}}">
+          <button type="submit" class="freq-btn freq-btn--ghost">{{if .RequestsOpen}}Close mic requests{{else}}Open mic requests{{end}}</button>
+        </form>
+        <form hx-post="/events" hx-target="{{$tgt}}" hx-swap="outerHTML">
+          <input type="hidden" name="event_type" value="frequency.lock">
+          <input type="hidden" name="frequency_id" value="{{.ID}}">
+          <input type="hidden" name="locked" value="{{if .Locked}}false{{else}}true{{end}}">
+          <button type="submit" class="freq-btn freq-btn--ghost">{{if .Locked}}Unlock — allow new listeners{{else}}Lock — no new listeners{{end}}</button>
+        </form>
+        <form hx-post="/events" hx-target="{{$tgt}}" hx-swap="outerHTML" hx-confirm="End this Frequency for everyone?">
+          <input type="hidden" name="event_type" value="frequency.end">
+          <input type="hidden" name="frequency_id" value="{{.ID}}">
+          <button type="submit" class="freq-btn freq-btn--danger">End Frequency</button>
+        </form>
+      </div>
+    </details>
+    {{else}}
+    <form hx-post="/events" hx-target="{{$tgt}}" hx-swap="outerHTML">
+      <input type="hidden" name="event_type" value="frequency.leave">
+      <input type="hidden" name="frequency_id" value="{{.ID}}">
+      <button type="submit" class="freq-btn freq-btn--ghost">Leave</button>
+    </form>
+    {{end}}
+  {{- end}}
+</div>
+{{end}}

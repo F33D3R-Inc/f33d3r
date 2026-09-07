@@ -1,0 +1,41 @@
+{{/*
+FACET home_feed_tabs
+  version: 1.0 | status: stable | layer: 2
+
+  inputs:
+    User            *User      — nil-safe; drives NSFW tab visibility
+    PinnedSurfaces  []Surface  — user-pinned interest surfaces
+    SessionID       string     — forwarded to feed_surface_tabs
+    Active          string     — the surface shown in #feed-container
+    OOB             bool       — true when appended out of band to a works feed
+                                 answer (a tab change), so the strip restates
+                                 which tab is active from the server's side
+
+  states:
+    default
+
+  children:
+    feed_tab, feed_surface_tabs
+
+  signals:
+    emits:    none (its tabs emit GET /facets/works/feed)
+    receives: none
+
+  context:
+    home_feed_header → toolbar (page render)
+    facetWorksFeed  → appended out of band when HX-Target is feed-container
+*/}}
+{{define "home_feed_tabs"}}
+{{$a := .Active}}
+<div class="feed-tabs-scroll" id="feed-tabs-scroll" data-facet-id="facet:f33d3r:feed:home:tabs"{{if .OOB}} hx-swap-oob="true"{{end}}>
+  {{template "feed_tab" (dict "Surface" "following" "Label" "Following" "Active" (eq $a "following") "HasTopicFilter" false)}}
+  {{template "feed_tab" (dict "Surface" "trending"  "Label" "Trending"  "Active" (eq $a "trending")  "HasTopicFilter" false)}}
+  {{template "feed_tab" (dict "Surface" "feed"      "Label" "For You"   "Active" (eq $a "feed")      "HasTopicFilter" false)}}
+  {{if .User}}{{if .User.IsAdult}}{{if eq .User.ContentSetting "adult_enabled"}}
+    {{template "feed_tab" (dict "Surface" "nsfw" "Label" "NSFW" "Active" (eq $a "nsfw") "HasTopicFilter" false)}}
+  {{end}}{{end}}{{end}}
+  <span id="feed-surface-tabs" style="display:contents">
+    {{template "feed_surface_tabs" (dict "Surfaces" .PinnedSurfaces "SessionID" .SessionID "Active" $a)}}
+  </span>
+</div>
+{{end}}

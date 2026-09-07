@@ -1,0 +1,119 @@
+{
+  "frequency": {
+    "id": "b3f5c1e0-7a41-4a1e-9f0d-2c8e6d5b4a10",
+    "host": {
+      "handle": "miiyazuko",
+      "display_name": "Mii Yazuko",
+      "avatar_url": "/media/avatars/miiyazuko.webp",
+      "is_verified": true,
+      "is_creator": true,
+      "role": "creator",
+      "realm": 4
+    },
+    "title": "Late night in the Deep Space lane",
+    "description": "Three hours of nothing urgent. Hands up if you want in.",
+    "state": "live",
+    "visibility": "public",
+    "language": "en",
+    "is_nsfw": false,
+    "scheduled_at": null,
+    "started_at": "2026-09-06T21:04:11.204Z",
+    "ended_at": null,
+    "end_reason": null,
+    "recording_enabled": true,
+    "replay_status": "none",
+    "max_speakers": 10,
+    "max_listeners": 1000,
+    "requests_open": true,
+    "locked": false,
+    "listener_count": 312,
+    "speaker_count": 3,
+    "participant_count": 315,
+    "audio_unavailable": "Audio is not flowing yet. The room, the stage and the queue are real; sound arrives with the next release."
+  },
+  "speakers": [
+    {
+      "author": {
+        "handle": "miiyazuko",
+        "display_name": "Mii Yazuko",
+        "avatar_url": "/media/avatars/miiyazuko.webp",
+        "is_verified": true,
+        "is_creator": true,
+        "role": "creator",
+        "realm": 4
+      },
+      "role": "host",
+      "muted": false,
+      "present": true,
+      "joined_at": "2026-09-06T21:04:11.204Z"
+    },
+    {
+      "author": {
+        "handle": "tehanibentley",
+        "display_name": "Tehani Bentley",
+        "avatar_url": "/media/avatars/tehanibentley.webp",
+        "is_verified": true,
+        "is_creator": true,
+        "role": "founder",
+        "realm": 5
+      },
+      "role": "cohost",
+      "muted": false,
+      "present": true,
+      "joined_at": "2026-09-06T21:06:02Z"
+    },
+    {
+      "author": {
+        "handle": "dev",
+        "display_name": "Dev Account",
+        "is_verified": false,
+        "is_creator": false,
+        "role": "user",
+        "realm": 2
+      },
+      "role": "speaker",
+      "muted": true,
+      "present": true,
+      "joined_at": "2026-09-06T21:31:47.517Z"
+    }
+  ],
+  "cohosts": [
+    {
+      "handle": "tehanibentley",
+      "display_name": "Tehani Bentley",
+      "avatar_url": "/media/avatars/tehanibentley.webp",
+      "is_verified": true,
+      "is_creator": true,
+      "role": "founder",
+      "realm": 5
+    }
+  ],
+  "requests": [
+    {
+      "id": "1d9c4b77-2f30-4a8c-b6de-9f0a1c2b3d4e",
+      "author": {
+        "handle": "guest",
+        "display_name": "Guest",
+        "is_verified": false,
+        "is_creator": false,
+        "role": "user",
+        "realm": 1
+      },
+      "reason": "I ran the numbers on this last week and they do not agree with you.",
+      "upvotes": 4,
+      "created_at": "2026-09-06T21:40:09.117Z"
+    }
+  ],
+  "viewer": {
+    "role": "listener",
+    "muted": false,
+    "present": true,
+    "blocked": false,
+    "request": null,
+    "can_request_mic": true,
+    "can_moderate": false,
+    "can_end": false,
+    "can_speak": false,
+    "can_listen": true
+  }
+}

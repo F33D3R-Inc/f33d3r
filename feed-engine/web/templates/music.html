@@ -1,0 +1,32 @@
+{{define "title"}}Music · F33D3R{{end}}
+{{define "nav-active-music"}}active{{end}}
+{{define "right-panel"}}{{template "sidebar_right" .}}{{end}}
+{{define "body"}}
+<main class="f33d3r-main music-main" id="main-col">
+  <div class="music-shell">
+    <div class="music-body">
+
+      {{/* Facet(music_nav) — Apple Music style library sidebar */}}
+      {{template "music_nav" .}}
+
+      {{/* Facet(music_content_panel) — HTMX swap target for track list */}}
+      <div class="music-content-panel"
+           id="music-content"
+           hx-get="/music/tracks"
+           hx-trigger="load"
+           hx-swap="innerHTML"
+           aria-live="polite">
+        {{template "stateLoading" .}}
+      </div>
+
+    </div>
+
+    {{/* Facet(music_player_bar) — persistent player, keep exactly as-is */}}
+    {{template "music_player_bar" .}}
+
+  </div>
+</main>
+{{end}}
+{{define "page-scripts"}}
+<script src="/static/js/pages/music.js?v={{assetVer}}" defer></script>
+{{end}}

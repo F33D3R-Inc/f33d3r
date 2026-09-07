@@ -1,0 +1,18 @@
+{{define "title"}}Explore · F33D3R{{end}}
+{{define "nav-active-explore"}}active{{end}}
+{{define "mob-active-explore"}}active{{end}}
+{{define "body"}}
+<main class="f33d3r-main" id="main-col">
+
+  {{template "search_bar" (dict "Query" .SearchQuery "Action" "/search")}}
+
+  {{/* The Explore canvas — tab strip, sections and results — is one Facet:
+       a tab click asks for the canvas drawn for that tab. */}}
+  <div id="explore-canvas">
+    {{template "explore_canvas" (dict "Surf" .Surf "FeedSurface" .FeedSurface "TrendingTags" .TrendingTags)}}
+  </div>
+
+</main>
+{{end}}
+{{define "right-panel"}}{{template "sidebar_right" .}}{{end}}
+{{define "page-scripts"}}<script src="/static/js/pages/explore.js?v={{assetVer}}" defer></script>{{end}}

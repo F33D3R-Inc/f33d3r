@@ -1,0 +1,136 @@
+{{/*
+FACET live_broadcast_stage
+  version: 1.1 | status: stable | layer: 3
+
+  The broadcaster's surface. It carries the server's own LIVE state and viewer
+  tally, the control that ends the broadcast, and exactly one of the two ways to
+  publish into it:
+
+    source=browser  full-viewport camera preview; the Capture Substrate opens
+                    the camera and the WebRTC leg carries it to the media server
+    source=encoder  no camera is opened at all, and the encoder panel offers the
+                    server URL and stream key for OBS
+
+  The two are mutually exclusive on purpose: opening this device's camera under
+  a broadcaster who is publishing from OBS would start a second publisher into
+  the same stream. The choice is a server decision carried in the URL, not a
+  browser mode, so a reload lands on the same surface.
+
+  The stream's ingest key is not in this Facet. It appears only inside
+  live_encoder_setup, and only in the answer to the owner's own POST.
+
+  inputs:
+    S            *model.LiveStream — .ID .Title .Status .Description
+    AuthorHandle string
+    Facing       string — "user" | "environment", the camera the composer chose
+    Source       string — "browser" | "encoder"
+    Viewers      string — server-formatted tally
+    ViewerCount  int
+    ShareURL     string — public watch path
+    Encoder      map    — live_encoder_setup inputs (source=encoder only)
+
+  states:
+    idle | live ; source-browser | source-encoder ;
+    facing-user | facing-environment ; ended (terminal — no capture, no publish)
+
+  The ended state is a re-render of this same Facet under the same facet id, not
+  a different Facet swapped in over it. That is what lets the server push the end
+  of a broadcast onto a stage that is already open, however the broadcast ended.
+
+  children:
+    live_badge, live_viewer_count, live_heart_burst, live_encoder_setup
+
+  signals:
+    emits:    live.end (POST /live/{id}/end)
+    receives: live_viewers, live_status (SSE)
+
+  context:
+    live.html (mode=broadcast) → full-viewport stage
+*/}}
+{{define "live_broadcast_stage"}}
+{{$s := .S}}
+{{$ended := eq $s.Status "ended"}}
+{{$encoder := and (not $ended) (eq .Source "encoder")}}
+{{/* An ended broadcast carries no publish source at all. data-source is the
+     server's instruction to this device about whether to capture, and the one
+     answer that is always wrong for a finished broadcast is "open the camera and
+     publish" — the media server would refuse the offer and the broadcaster would
+     be shown a bare error for a stream that simply ended. */}}
+{{/* The stage's shape is the server's answer, not a measurement the browser
+     takes: --live-ar is the source geometry the media server reported for this
+     stream, the same value live_player is shaped by, so the broadcaster's own
+     preview and the audience's stage are the same picture. A stream with no
+     keyframe yet reports nothing and the stylesheet falls back to 16/9. */}}
+<div class="live-bcast{{if $encoder}} live-bcast--encoder{{end}}{{if $ended}} live-bcast--ended{{end}}"
+     data-facet-id="facet:f33d3r:live:{{$s.ID}}:broadcast"
+     data-stream-id="{{$s.ID}}" data-status="{{$s.Status}}" data-facing="{{.Facing}}"
+     data-source="{{if $ended}}{{else}}{{.Source}}{{end}}"
+     {{if and (gt $s.SourceWidth 0) (gt $s.SourceHeight 0)}}style="--live-ar:{{$s.SourceWidth}} / {{$s.SourceHeight}}"{{end}}
+     role="region" aria-label="Your broadcast">
+
+{{if $ended}}
+  <div class="live-bcast__top">
+    {{template "live_badge" (dict "StreamID" $s.ID "Slot" "bcast_badge" "Status" $s.Status "OOB" false)}}
+    <span class="live-bcast__title">{{$s.Title}}</span>
+  </div>
+  {{template "live_ended" (dict "S" $s "AuthorHandle" .AuthorHandle)}}
+  <div class="live-bcast__controls">
+    <a class="live-bcast__alt" href="/golive">Start a new broadcast</a>
+    <a class="live-bcast__alt" href="/{{.AuthorHandle}}">Back to your profile</a>
+  </div>
+{{else}}
+
+  {{/* The status strip leads the document in both sources. Over the camera it is
+       an absolutely positioned overlay, so its place in the flow costs nothing;
+       in the encoder surface, which scrolls, it has to come first to stay first. */}}
+  <div class="live-bcast__top">
+    {{template "live_badge" (dict "StreamID" $s.ID "Slot" "bcast_badge" "Status" $s.Status "OOB" false)}}
+    {{template "live_viewer_count" (dict "StreamID" $s.ID "Slot" "bcast_viewers" "Display" .Viewers "Count" .ViewerCount "Heartbeat" false "Token" "")}}
+    {{template "live_heart_burst" (dict "StreamID" $s.ID "Slot" "bcast_hearts" "Count" $s.HeartCount)}}
+    <span class="live-bcast__title">{{$s.Title}}</span>
+  </div>
+
+  <p class="live-bcast__status" data-live-bcast-status role="status" aria-live="polite">
+    {{if $encoder}}Waiting for your encoder. This broadcast goes live the moment frames arrive.{{end}}
+  </p>
+
+  {{if $encoder}}
+  <div class="live-bcast__panel">
+    {{template "live_encoder_setup" .Encoder}}
+    <p class="live-bcast__switch">
+      Publishing from this phone instead?
+      <a href="/live/{{$s.ID}}/broadcast?source=browser">Use this device's camera</a>
+    </p>
+  </div>
+  {{else}}
+  <video class="live-bcast__preview camera-preview--front" data-live-preview
+         autoplay muted playsinline aria-label="Camera preview"></video>
+  {{end}}
+
+  <div class="live-bcast__controls">
+    {{if not $encoder}}
+    <button class="live-bcast__btn" type="button" data-live-action="bcast-flip" aria-label="Flip camera">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M15 4h3a2 2 0 0 1 2 2v3"/><path d="M20 15v3a2 2 0 0 1-2 2h-3"/><path d="M9 20H6a2 2 0 0 1-2-2v-3"/><path d="M4 9V6a2 2 0 0 1 2-2h3"/><circle cx="12" cy="12" r="3"/></svg>
+    </button>
+    <button class="live-bcast__btn" type="button" data-live-action="bcast-mic" aria-label="Mute microphone" aria-pressed="false">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v4"/></svg>
+    </button>
+    {{end}}
+    <button class="live-bcast__end" type="button"
+            hx-post="/live/{{$s.ID}}/end"
+            hx-target="closest .live-bcast"
+            hx-swap="outerHTML"
+            hx-confirm="End this broadcast for everyone?">
+      End broadcast
+    </button>
+    <button class="live-bcast__btn" type="button" data-live-action="copy-link"
+            data-live-url="{{.ShareURL}}" aria-label="Copy stream link">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>
+    </button>
+    {{if not $encoder}}
+    <a class="live-bcast__alt" href="/live/{{$s.ID}}/broadcast?source=encoder">Stream from OBS</a>
+    {{end}}
+  </div>
+{{end}}
+</div>
+{{end}}

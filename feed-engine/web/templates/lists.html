@@ -1,0 +1,35 @@
+{{define "title"}}Lists · F33D3R{{end}}
+{{define "nav-active-lists"}}active{{end}}
+{{define "body"}}
+<main class="f33d3r-main" id="main-col">
+  <div class="main-head">
+    <button class="back-btn" onclick="history.back()" aria-label="Back">
+      <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="width:18px;height:18px"><path d="m15 18-6-6 6-6"/></svg>
+    </button>
+    <div class="main-head-content">
+      <div class="main-head-title">Lists</div>
+      {{/* "New list" asks for the list_create_modal Facet into #overlay-slot */}}
+      <button class="btn-primary" style="font-size:13px;padding:6px 14px" type="button"
+              hx-get="/facets/list/create_modal"
+              hx-target="#overlay-slot"
+              hx-swap="innerHTML">New list</button>
+    </div>
+  </div>
+
+  <div id="lists-container" data-facet-id="facet:f33d3r:list:{{.CurrentUserHandle}}:container">
+    {{if .Lists}}
+    {{range .Lists}}
+    {{template "list_row" .}}
+    {{end}}
+    {{else}}
+    {{/* #lists-empty is removed out of band by the create_list answer */}}
+    <div id="lists-empty">
+    {{template "stateEmpty" (dict "Title" "No lists yet" "Sub" "Create a list to curate your own timeline of people.")}}
+    </div>
+    {{end}}
+  </div>
+</main>
+
+<input type="hidden" name="session_id" value="{{.SessionID}}">
+{{end}}
+{{define "right-panel"}}{{template "sidebar_right" .}}{{end}}

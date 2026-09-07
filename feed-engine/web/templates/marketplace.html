@@ -1,0 +1,22 @@
+{{define "title"}}Marketplace &middot; F33D3R{{end}}
+{{define "nav-active-marketplace"}}active{{end}}
+{{define "body"}}
+<main class="f33d3r-main" id="main-col">
+  <header class="marketplace-header">
+    <h1 class="marketplace-header__title">Marketplace</h1>
+  </header>
+  <div id="marketplace-feed"
+       class="marketplace-listings-grid"
+       hx-get="/facets/marketplace/feed"
+       hx-trigger="load"
+       hx-swap="innerHTML"
+       aria-live="polite">
+    <div class="marketplace-empty-state">
+      <p class="marketplace-empty-state__body">Loading…</p>
+    </div>
+  </div>
+</main>
+{{block "page-scripts" .}}
+<script src="/static/js/pages/marketplace.js?v={{assetVer}}" defer></script>
+{{end}}
+{{end}}

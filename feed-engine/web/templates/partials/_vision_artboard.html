@@ -1,0 +1,44 @@
+{{/*
+FACET vision_artboard
+  version: 1.0 | status: stable | layer: 5 (atomic)
+
+  The text Vision itself: a full-bleed artboard rendered entirely on the server.
+  Every visual choice arrives here as a resolved preset KEY and leaves as a class
+  name. There is no style attribute and no browser-supplied CSS anywhere in this
+  Facet — a Vision looks the same to every viewer because the server decided how
+  it looks.
+
+  inputs:
+    EntityID   string — the `<author_pial>.<seq>` address, or "new" while composing (facet id scope)
+    Body       string — the words, already rune-capped by the server
+    Background string — resolved key: void|ember|tide|bloom|pulp|signal
+    Typeface   string — resolved key: grotesk|serif|mono|display
+    Scale      string — CONCRETE rung: s|m|l|xl ("auto" is resolved server-side)
+    Align      string — left|center|right
+    IsEmpty    bool   — no body yet; the composer shows its prompt instead
+
+  states:
+    filled | empty
+
+  children: none
+
+  signals:
+    emits:    none
+    receives: vision.artboard (POST /facets/vision/artboard — whole Fragment swapped)
+
+  context:
+    vision_text_composer → live preview (EntityID="new")
+    vision_created       → confirmation still (EntityID=<vision address>)
+*/}}
+{{define "vision_artboard"}}
+<div class="vision-artboard vision-artboard--bg-{{.Background}} vision-artboard--face-{{.Typeface}} vision-artboard--scale-{{.Scale}} vision-artboard--align-{{.Align}}"
+     data-facet-id="facet:f33d3r:vision:{{.EntityID}}:artboard"
+     role="img"
+     aria-label="{{if .IsEmpty}}Empty text Vision{{else}}Text Vision: {{.Body}}{{end}}">
+  {{if .IsEmpty}}
+  <p class="vision-artboard__body vision-artboard__body--empty">Say something.</p>
+  {{else}}
+  <p class="vision-artboard__body">{{.Body}}</p>
+  {{end}}
+</div>
+{{end}}

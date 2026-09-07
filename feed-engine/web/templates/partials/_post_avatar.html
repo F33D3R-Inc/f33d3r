@@ -1,0 +1,27 @@
+{{/*
+FACET post_avatar
+  version: 1.0 | status: stable | layer: 1
+
+  inputs:
+    Handle      string  — author handle (used for avatar gradient fallback)
+    AvatarURL   string  — image src; empty renders gradient initials
+    AuthorName  string  — display name for alt text
+    (no Realm — the ring is resolved by user_avatar from Handle)
+    IsOnline    bool    — online presence dot
+
+  states:
+    default | online
+
+  children:
+    user_avatar (size=post)
+
+  signals:
+    emits:    none
+    receives: none
+
+  context:
+    post_card → avatar column
+*/}}
+{{define "post_avatar"}}
+{{template "user_avatar" (dict "Handle" .Handle "AvatarURL" .AvatarURL "DisplayName" .AuthorName "Size" "post" "IsOnline" .IsOnline)}}
+{{end}}

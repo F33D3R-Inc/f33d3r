@@ -1,0 +1,52 @@
+{{/*
+FACET marketplace_purchase_modal
+  version: 2.0 | status: stable | layer: 3
+  inputs:
+    PurchaseID  string  — purchase UUID
+    BtcAddress  string  — BTC address to pay (BTC path)
+    AmountSats  int64   — exact amount in satoshis (BTC path)
+    XrpAddress  string  — XRP address to pay (XRP path)
+    AmountXRP   string  — amount in XRP display form e.g. "1.5" (XRP path)
+    Currency    string  — "btc" | "xrp"
+    ExpiresAt   string  — RFC3339 expiry timestamp
+    Status      string  — "pending" | "confirmed" | "delivered" | "expired"
+  states:
+    pending | confirmed | delivered | expired
+  children:
+    marketplace_purchase_status (polls the purchase until it is final)
+  signals:
+    receives: marketplace_purchase_delivered
+  close:
+    backdrop or Close asks /facets/overlay/close — the empty fragment clears #overlay-slot
+  context:
+    overlay-slot → modal
+*/}}
+{{define "marketplace_purchase_modal"}}
+<div class="marketplace-purchase-modal" role="dialog" aria-modal="true" aria-label="Complete purchase" data-purchase-id="{{.PurchaseID}}">
+  <div class="marketplace-purchase-modal__backdrop" hx-get="/facets/overlay/close" hx-target="#overlay-slot" hx-swap="innerHTML" hx-trigger="click"></div>
+  <div class="marketplace-purchase-modal__panel">
+    <button class="marketplace-purchase-modal__close" type="button" aria-label="Close" hx-get="/facets/overlay/close" hx-target="#overlay-slot" hx-swap="innerHTML">&#x2715;</button>
+
+    {{if eq .Status "pending"}}
+    {{if eq .Currency "xrp"}}
+    <h2 class="marketplace-purchase-modal__title">Pay with XRP</h2>
+    <p class="marketplace-purchase-modal__amount">{{.AmountXRP}} XRP</p>
+    <code class="marketplace-purchase-modal__address" onclick="navigator.clipboard.writeText(this.textContent)" aria-label="XRP address (click to copy)">{{.XrpAddress}}</code>
+    <p class="marketplace-purchase-modal__hint">Send exactly this amount to the address above. XRP payments confirm in ~4 seconds. Payment window: <time class="market-timer" data-expires="{{.ExpiresAt}}"></time></p>
+    {{template "marketplace_purchase_status" (dict "PurchaseID" .PurchaseID "Status" "pending" "Polling" true)}}
+    {{else}}
+    <h2 class="marketplace-purchase-modal__title">Pay with Bitcoin</h2>
+    <p class="marketplace-purchase-modal__amount">{{.AmountSats}} sats</p>
+    <div class="marketplace-purchase-modal__qr" id="qr-{{.PurchaseID}}">
+      <img src="/themis/v1/qr/{{.PurchaseID}}" alt="Bitcoin payment QR code" width="220" height="220" loading="lazy">
+    </div>
+    <code class="marketplace-purchase-modal__address" onclick="navigator.clipboard.writeText(this.textContent)" aria-label="Bitcoin address (click to copy)">{{.BtcAddress}}</code>
+    <p class="marketplace-purchase-modal__hint">Scan with any Bitcoin wallet. Payment window: <time class="market-timer" data-expires="{{.ExpiresAt}}"></time></p>
+    {{template "marketplace_purchase_status" (dict "PurchaseID" .PurchaseID "Status" "pending" "Polling" true)}}
+    {{end}}
+    {{else}}
+    {{template "marketplace_purchase_status" (dict "PurchaseID" .PurchaseID "Status" .Status "Polling" (eq .Status "confirmed"))}}
+    {{end}}
+  </div>
+</div>
+{{end}}

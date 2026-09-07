@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  Everything else in this app's Info.plist is generated from the
+	  INFOPLIST_KEY_* build settings. App Transport Security is here because it
+	  is a nested dictionary and has no INFOPLIST_KEY_ equivalent; Xcode merges
+	  the generated keys into this file.
+
+	  NSAllowsLocalNetworking permits cleartext HTTP to local destinations only:
+	  link-local addresses, .local names, and the private ranges. It changes
+	  nothing about connections to the internet, which stay under the full ATS
+	  rules, and it is the key Apple documents for exactly this case.
+
+	  It exists because development happens against a server on the LAN. That
+	  server is fronted by Caddy over TLS from a private CA, and reaching it that
+	  way means installing that CA on every device AND enabling it under
+	  Settings › General › About › Certificate Trust Settings — a second step
+	  that is easy to miss and whose failure looks like "the certificate is
+	  invalid" rather than like a missing switch. feed-engine also listens on
+	  8081 without TLS, so a development build can point straight at it and skip
+	  the certificate entirely. Nothing ships pointing there: the base URL is
+	  https://f33d3r.com in release, and only DEBUG reads F33D3R_BASE_URL.
+
+	  The trade is that on a development LAN the session token travels in the
+	  clear. That is a development network, and the alternative is a device that
+	  cannot be developed against at all.
+	-->
+	<!--
+	  Background audio. `INFOPLIST_KEY_UIBackgroundModes = audio` is set in the
+	  build settings and produces no key in the built Info.plist, so the mode was
+	  never actually declared: MusicPlayer asks for `.longFormAudio` and puts a
+	  track on the lock screen, and iOS then stopped it the moment the app left
+	  the foreground. Declared here, where it takes effect.
+	-->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+	</array>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+</dict>
+</plist>

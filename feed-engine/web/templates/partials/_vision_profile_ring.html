@@ -1,0 +1,69 @@
+{{/*
+FACET vision_profile_ring
+  version: 1.0 | status: stable | layer: 3 (composite)
+
+  The author's avatar at the head of their profile. When they have a live Vision
+  the avatar carries the ring and becomes the entry point to the sequential
+  viewer instead of a link back to the profile the viewer is already on; when
+  they have none it is the plain avatar and nothing about the head changes.
+
+  The ring state, the unseen tally and the resume point are the same server
+  answer the rail carries — this Facet renders a decision, never the inputs to
+  one. Nothing here reads a timestamp or counts anything.
+
+  inputs:
+    Ring      visionRingView — the server's ring answer (present when HasRing)
+    HasRing   bool
+    AuthorID  string
+    Handle    string
+    Name      string
+    AvatarURL string
+    IsOnline  bool
+    IsLive    bool   — a broadcast in progress; takes the ring over from any Vision
+    LiveURL   string — set when IsLive
+
+  states:
+    ring | plain
+
+  children:
+    user_avatar
+
+  signals:
+    emits:    vision.viewer (GET /facets/vision/viewer) — opens the sequence
+    receives: vision.ring (GET /facets/vision/ring — whole Fragment replaced)
+
+  context:
+    profile_header → the avatar slot overlapping the banner
+*/}}
+{{define "vision_profile_ring"}}
+<div class="vision-profile-ring{{if or .HasRing .IsLive}} vision-profile-ring--on{{end}}"
+     data-facet-id="facet:f33d3r:vision:{{.AuthorID}}:profile_ring">
+  {{if .IsLive}}
+  <a class="vision-ring vision-ring--profile vision-ring--live"
+     href="{{.LiveURL}}"
+     aria-label="@{{.Handle}} is live now">
+    <span class="vision-ring__frame">
+      {{template "user_avatar" (dict "Handle" .Handle "AvatarURL" .AvatarURL "DisplayName" .Name "Size" "xl" "IsOnline" .IsOnline)}}
+    </span>
+  </a>
+  {{else if .HasRing}}
+  <a class="vision-ring vision-ring--profile vision-ring--{{.Ring.R.State}}"
+     id="{{.Ring.ElemID}}"
+     href="{{.Ring.OpenURL}}"
+     hx-get="{{.Ring.OpenURL}}"
+     hx-target="#vision-viewer-slot"
+     hx-swap="innerHTML"
+     data-vision-open
+     aria-label="{{.Ring.Label}}">
+    <span class="vision-ring__frame">
+      {{template "user_avatar" (dict "Handle" .Handle "AvatarURL" .AvatarURL "DisplayName" .Name "Size" "xl" "IsOnline" .IsOnline)}}
+      {{if gt .Ring.R.UnseenCount 0}}
+      <span class="vision-ring__count" aria-hidden="true">{{.Ring.R.UnseenCount}}</span>
+      {{end}}
+    </span>
+  </a>
+  {{else}}
+  {{template "user_avatar" (dict "Handle" .Handle "AvatarURL" .AvatarURL "DisplayName" .Name "Size" "xl" "IsOnline" .IsOnline)}}
+  {{end}}
+</div>
+{{end}}

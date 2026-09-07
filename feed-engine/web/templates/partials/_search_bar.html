@@ -1,0 +1,34 @@
+{{/*
+FACET search_bar
+  version: 1.0 | status: stable | layer: 1
+
+  inputs:
+    Query        string  — current search value (pre-fills the input)
+    Action       string  — form action URL (defaults to /search)
+    Placeholder  string  — input placeholder text (defaults to "Search F33D3R")
+    Autofocus    bool    — whether to autofocus the input on render
+    TypeValue    string  — optional hidden "type" field value (search.html tab state)
+
+  states:
+    default | focused
+
+  children:
+    none
+
+  signals:
+    emits:    none (form GET, not a POST /events mutation)
+    receives: none
+
+  context:
+    explore.html → default (no autofocus, no TypeValue)
+    search.html  → focused (Autofocus=true, TypeValue=.SearchType)
+*/}}
+{{define "search_bar"}}
+<form class="explore-search-form" action="{{if .Action}}{{.Action}}{{else}}/search{{end}}" method="GET">
+  <input type="search" name="q" class="explore-search-input"
+         placeholder="{{if .Placeholder}}{{.Placeholder}}{{else}}Search F33D3R{{end}}"
+         {{if .Autofocus}}autofocus{{end}}
+         value="{{.Query}}">
+  {{if .TypeValue}}<input type="hidden" name="type" value="{{.TypeValue}}">{{end}}
+</form>
+{{end}}

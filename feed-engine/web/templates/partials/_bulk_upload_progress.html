@@ -1,0 +1,51 @@
+{{/*
+FACET bulk_upload_progress
+  version: 1.0 | status: experimental | layer: 3
+
+  inputs:
+    BatchID    string — UUID used in the poll URL
+    Total      int    — total slot count
+    Ready      int    — completed slot count
+
+  states:
+    uploading  — at least one slot not ready/failed
+    complete   — all slots are ready or failed
+
+  children:
+    bulk_upload_item (one per slot, rendered by JS into #bulk-upload-item-list)
+
+  signals:
+    emits:    none
+    receives: bulk_upload_progress_tick — JS polls GET /api/upload/bulk-status/{batch_id}
+              every 3 s while any item is not ready/failed, then patches each item row.
+
+  context:
+    creator_bulk_upload → replaces bulk_upload_drop on upload start
+*/}}
+{{define "bulk_upload_progress"}}
+<div class="bulk-upload-progress" id="bulk-upload-progress" role="region" aria-label="Bulk upload progress">
+
+  {{/* Summary bar */}}
+  <div class="bulk-upload-progress__header">
+    <div class="bulk-upload-progress__summary">
+      <span class="count-display" id="bulk-upload-ready-count">{{.Ready}}</span>
+      <span class="bulk-upload-progress__of"> of </span>
+      <span class="count-display" id="bulk-upload-total-count">{{.Total}}</span>
+      <span class="bulk-upload-progress__label"> ready</span>
+    </div>
+    <button class="bulk-upload-progress__cancel-btn"
+            type="button"
+            id="bulk-upload-cancel-all"
+            onclick="bulkUploadCancelAll()">
+      Cancel all
+    </button>
+  </div>
+
+  {{/* Item list — populated by JS from bulk-init response */}}
+  <div class="bulk-upload-progress__list" id="bulk-upload-item-list" role="list"
+       aria-label="Upload queue">
+    {{/* JS inserts bulk_upload_item rows here */}}
+  </div>
+
+</div>
+{{end}}

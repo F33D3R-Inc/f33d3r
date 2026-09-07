@@ -1,0 +1,50 @@
+version: "3.9"
+
+services:
+  feed-engine:
+    build:
+      # Context is the repo root (parent) so the build can reach shared assets.
+      context: ..
+      dockerfile: feed-engine/Dockerfile
+    ports:
+      - "8081:8081"
+    environment:
+      PORT: "8081"
+      HOST: "0.0.0.0"
+      AETHYRRANK_URL: "http://aethyrrank-engine:8080"
+      AETHYRRANK_TIMEOUT_MS: "200"
+      FEED_PAGE_SIZE: "20"
+      FEED_MAX_CANDIDATES: "200"
+      DEFAULT_SURFACE: "feed"
+      DEV_MODE: "false"
+      SHOW_SCORES: "false"
+    depends_on:
+      aethyrrank-engine:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - f33d3r
+
+  aethyrrank-engine:
+    # Point this at your built aethyrrank-engine image.
+    # Build it first: cd ../aethyrrank-engine && docker build -f docker/Dockerfile -t aethyrrank-engine:latest .
+    image: aethyrrank-engine:latest
+    ports:
+      - "8080:8080"
+    environment:
+      RUST_LOG: "info"
+      APP__SERVER__HOST: "0.0.0.0"
+      APP__SERVER__PORT: "8080"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    networks:
+      - f33d3r
+
+networks:
+  f33d3r:
+    driver: bridge

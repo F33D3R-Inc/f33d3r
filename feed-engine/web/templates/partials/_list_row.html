@@ -1,0 +1,38 @@
+{{/*
+FACET list_row
+  version: 1.0 | status: stable | layer: 2
+
+  inputs:
+    List (db.List) — .ID .Name .Description .OwnerHandle .MemberCount .IsPublic
+
+  states:
+    default | private
+
+  children:
+    none
+
+  signals:
+    emits:    none (the row is a link to the list page)
+    receives: none
+
+  context:
+    lists.html → #lists-container (one row per list)
+    create_list event → the new list's row, placed at the head of #lists-container
+*/}}
+{{define "list_row"}}
+<a class="list-row" href="/lists/{{.ID}}" data-facet-id="facet:f33d3r:list:{{.ID}}:row">
+  <div class="list-row-icon">
+    <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="width:20px;height:20px">
+      <line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/>
+      <line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/>
+      <line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>
+    </svg>
+  </div>
+  <div class="list-row-body">
+    <span class="list-row-name">{{.Name}}</span>
+    <span class="list-row-meta">@{{.OwnerHandle}} · {{.MemberCount}} members{{if not .IsPublic}} · Private{{end}}</span>
+    {{if .Description}}<span class="list-row-desc">{{.Description}}</span>{{end}}
+  </div>
+  <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="width:16px;height:16px;color:var(--text-muted);flex-shrink:0"><path d="m9 18 6-6-6-6"/></svg>
+</a>
+{{end}}

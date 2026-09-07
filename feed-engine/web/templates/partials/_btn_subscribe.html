@@ -1,0 +1,44 @@
+{{/*
+FACET btn_subscribe
+  version: 1.0 | status: stable | layer: 5
+
+  inputs:
+    CreatorID      string — user UUID for the creator
+    CreatorHandle  string — handle (for modal context)
+    IsSubscribed   bool   — current subscription state
+
+  states:
+    default | subscribed (is-on)
+
+  children: none
+
+  signals:
+    emits:    openSubscribeModal (JS — opens subscribe modal) when not subscribed
+              unsubscribeFrom (JS) when already subscribed
+    receives: none
+
+  context:
+    profile_header → action row, creators only
+    work_focus_sidebar → creator CTA
+*/}}
+{{define "btn_subscribe"}}
+{{if .IsSubscribed}}
+<button class="btn-subscribe is-on"
+        onclick="event.stopPropagation();unsubscribeFrom('{{.CreatorID}}')"
+        aria-label="Unsubscribe from @{{.CreatorHandle}}"
+        aria-pressed="true">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+    <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+    <polyline points="22 4 12 14.01 9 11.01"/>
+  </svg>
+  Subscribed
+</button>
+{{else}}
+<button class="btn-subscribe"
+        onclick="event.stopPropagation();openSubscribeModal('{{.CreatorID}}','{{.CreatorHandle}}')"
+        aria-label="Subscribe to @{{.CreatorHandle}}"
+        aria-pressed="false">
+  Subscribe
+</button>
+{{end}}
+{{end}}

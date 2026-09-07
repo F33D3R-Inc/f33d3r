@@ -1,0 +1,103 @@
+{{/*
+FACET vision_ring_rail
+  version: 2.0 | status: stable | layer: 3 (composite)
+
+  The rail of avatar rings across the top of the home timeline and of the reels
+  Playground, and the Vision lane's compose entry point. Ring order is the
+  server's — authors with unseen Visions first, then by recency — and arrives
+  already sorted.
+
+  The viewer's own entry is always the first item and is never repeated among the
+  ordered rings: the server pulls it out of the same answer. It carries a ring of
+  its own once the viewer has a live Vision, and an add affordance beside it in
+  every state, so the lane is discoverable before anyone has posted.
+
+  The rail is refetched whole after the sequential viewer closes, so a ring that
+  has just been seen is restated by the server rather than restyled in place.
+
+  inputs:
+    Rings      []visionRingView — one per other author, already ordered and gated
+    Own        visionRingView   — the viewer's own ring, when they have one
+    HasOwn     bool
+    Scope      string — following | for_you
+    Handle     string — the viewer's handle
+    AvatarURL  string — the viewer's avatar
+    ComposeURL string — GET /facets/vision/composer?mode=text
+    CameraURL  string — the capture surface
+    IsEmpty    bool   — nobody in scope, the viewer included, has a live Vision
+
+  states:
+    default | empty
+
+  children:
+    vision_ring, user_avatar
+
+  signals:
+    emits:    vision.compose (GET /facets/vision/composer) — mounts the composer
+              vision.viewer  (GET /facets/vision/viewer)   — via vision_ring
+    receives: vision.rings (GET /facets/vision/rings — whole Fragment replaced)
+
+  context:
+    index.html   → top of the home timeline, the primary surface
+    visions.html → top of the Playground
+*/}}
+{{define "vision_ring_rail"}}
+<nav class="vision-rail" data-facet-id="facet:f33d3r:vision:rail:rings"
+     aria-label="Visions">
+  <ul class="vision-rail__list">
+    <li class="vision-rail__item vision-rail__item--own">
+      {{if .HasOwn}}
+      {{$own := .Own}}
+      <a class="vision-ring vision-ring--{{$own.R.State}}"
+         id="{{$own.ElemID}}"
+         href="{{$own.OpenURL}}"
+         hx-get="{{$own.OpenURL}}"
+         hx-target="#vision-viewer-slot"
+         hx-swap="innerHTML"
+         data-vision-open
+         aria-label="{{$own.Label}}">
+        <span class="vision-ring__frame">
+          {{template "user_avatar" (dict "Handle" .Handle "AvatarURL" .AvatarURL "DisplayName" .Handle "Size" "md" "IsOnline" false)}}
+        </span>
+        <span class="vision-ring__handle">Your Vision</span>
+      </a>
+      {{/* With a Vision live, opening it and composing another are two different
+           acts, so they are two controls: the avatar opens, the plus composes. */}}
+      <a class="vision-rail__add" href="{{.ComposeURL}}"
+         hx-get="{{.ComposeURL}}"
+         hx-target="#vision-composer-slot"
+         hx-swap="innerHTML"
+         data-vision-compose
+         aria-label="Post another Vision">
+        <span class="vision-rail__add-glyph" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        </span>
+      </a>
+      {{else}}
+      {{/* Nothing live: the whole entry is the one act available, so the plus on
+           it is a marking, not a second target for a screen reader to land on. */}}
+      <a class="vision-ring vision-ring--compose" href="{{.ComposeURL}}"
+         hx-get="{{.ComposeURL}}"
+         hx-target="#vision-composer-slot"
+         hx-swap="innerHTML"
+         data-vision-compose
+         aria-label="Post a Vision">
+        <span class="vision-ring__frame">
+          {{template "user_avatar" (dict "Handle" .Handle "AvatarURL" .AvatarURL "DisplayName" .Handle "Size" "md" "IsOnline" false)}}
+          <span class="vision-ring__plus" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          </span>
+        </span>
+        <span class="vision-ring__handle">Your Vision</span>
+      </a>
+      {{end}}
+    </li>
+    {{range .Rings}}
+    <li class="vision-rail__item">{{template "vision_ring" .}}</li>
+    {{end}}
+  </ul>
+  {{if .IsEmpty}}
+  <p class="vision-rail__empty">No live Visions yet. Post one — it is gone in 24 hours.</p>
+  {{end}}
+</nav>
+{{end}}

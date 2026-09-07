@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- A local nantar is on the local network — 10.0.2.2 from the emulator — and
+         Android 16+ walls the local network behind a permission of its own. Debug
+         builds only: the release app talks to f33d3r.com, which is local to no one,
+         so the release manifest never asks for this. -->
+    <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
+
+</manifest>

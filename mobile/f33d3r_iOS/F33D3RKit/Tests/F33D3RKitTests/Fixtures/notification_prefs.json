@@ -1,0 +1,14 @@
+{
+  "push_enabled": true,
+  "messages_enabled": true,
+  "likes_enabled": false,
+  "reposts_enabled": true,
+  "replies_enabled": true,
+  "follows_enabled": false,
+  "achievements_enabled": true,
+  "mentions_enabled": true,
+  "frequencies_enabled": false,
+  "quiet_hours_enabled": true,
+  "quiet_hours_start": "23:00",
+  "quiet_hours_end": "07:30"
+}

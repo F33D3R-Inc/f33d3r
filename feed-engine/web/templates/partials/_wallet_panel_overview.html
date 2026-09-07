@@ -1,0 +1,27 @@
+{{/*
+FACET wallet_panel_overview
+  version: 1.0 | status: stable | layer: 2
+
+  inputs:
+    .Wallet  WalletData — balance, address, recent txs
+    .User    User       — .Handle
+
+  states:
+    default
+
+  children:
+    wallet_hero, wallet_send_card
+
+  signals:
+    emits:    none (children handle mutations)
+    receives: balance (SSE — propagated to wallet_hero)
+
+  context:
+    wallet → #wallet-panel (default section)
+*/}}
+{{define "wallet_panel_overview"}}
+<div class="admin-panel-inner">
+  {{template "wallet_hero" .}}
+  {{template "wallet_send_card" .}}
+</div>
+{{end}}

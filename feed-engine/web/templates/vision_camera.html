@@ -1,0 +1,9 @@
+{{define "title"}}Visions · F33D3R{{end}}
+{{define "body"}}
+<main class="vision-main">
+  {{template "vision_camera_overlay" .}}
+</main>
+{{end}}
+{{define "page-scripts"}}
+<script src="/static/js/pages/vision-camera.js?v={{assetVer}}" defer></script>
+{{end}}

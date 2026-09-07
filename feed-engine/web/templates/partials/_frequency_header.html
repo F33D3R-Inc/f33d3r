@@ -1,0 +1,53 @@
+{{/*
+FACET frequency_header
+  version: 1.0 | status: stable | layer: 3
+
+  Title, host, state chip, listener tally, recording indicator. The top of the
+  stage. The tally beats presence when the viewer is a participant of a live
+  Frequency (see frequency_listener_count); the header itself is replaced over
+  FA Live when the title, state or recording flag changes.
+
+  inputs:
+    ID             string
+    Title          string
+    Description    string
+    State          string
+    Host           FrequencyPerson
+    ListenerCount  int
+    ListenersLabel string
+    Recording      bool
+    IsNSFW         bool
+    Heartbeat      bool — viewer is a participant of a live Frequency
+    Ctx            PageCtx
+
+  states:
+    live | scheduled | ended | nsfw
+
+  children:
+    frequency_live_badge, frequency_listener_count, frequency_recording_badge, user_avatar, badge_verified
+
+  signals:
+    emits:    none
+    receives: frequency_facet (SSE)
+
+  context:
+    frequency_stage → top
+*/}}
+{{define "frequency_header"}}
+<header class="freq-head" data-facet-id="{{frequencyFacetID .ID "header"}}">
+  <div class="freq-head__row">
+    {{template "frequency_live_badge" (dict "ID" .ID "State" .State "ScheduledLabel" "")}}
+    {{template "frequency_recording_badge" (dict "ID" .ID "Recording" .Recording)}}
+    {{if .IsNSFW}}<span class="freq-card__nsfw" aria-label="18+ content">18+</span>{{end}}
+    <span class="freq-head__spacer"></span>
+    {{template "frequency_listener_count" (dict "ID" .ID "Count" .ListenerCount "Label" .ListenersLabel "Heartbeat" (and .Heartbeat (eq .State "live")))}}
+  </div>
+  <h1 class="freq-head__title">{{.Title}}</h1>
+  {{if .Description}}<p class="freq-head__desc">{{.Description}}</p>{{end}}
+  <a class="freq-head__host" href="/{{.Host.Handle}}">
+    {{template "user_avatar" (dict "Handle" .Host.Handle "AvatarURL" .Host.AvatarURL "DisplayName" .Host.DisplayName "Size" "sm" "IsOnline" (eq .State "live"))}}
+    <span class="freq-head__host-name">Hosted by <strong>@{{.Host.Handle}}</strong></span>
+    {{if .Host.IsVerified}}{{template "badge_verified" (dict "Type" .Host.VerifiedType)}}{{end}}
+  </a>
+</header>
+{{end}}

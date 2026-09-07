@@ -1,0 +1,61 @@
+{{/*
+FACET list_create_modal
+  version: 1.0 | status: stable | layer: 3
+
+  inputs:
+    none
+
+  states:
+    default
+
+  children:
+    none
+
+  signals:
+    emits:    create_list (POST /events — the answer is the new list_row placed
+              at the head of #lists-container, plus an out-of-band clear of
+              #overlay-slot)
+    receives: none
+
+  close:
+    backdrop or Close asks /facets/overlay/close — the empty fragment clears #overlay-slot
+
+  context:
+    #overlay-slot → hx-get="/facets/list/create_modal" from the lists page "New list" control
+*/}}
+{{define "list_create_modal"}}
+<div id="create-list-modal" class="compose-overlay" role="dialog" aria-modal="true" aria-label="New list"
+     data-facet-id="facet:f33d3r:list:new:create_modal">
+  <div class="compose-overlay-backdrop" hx-get="/facets/overlay/close" hx-target="#overlay-slot" hx-swap="innerHTML" hx-trigger="click"
+       style="position:absolute;inset:0"></div>
+  <form class="compose-card" style="max-width:420px;position:relative"
+        hx-post="/events"
+        hx-vals='{"event_type":"create_list"}'
+        hx-target="#lists-container"
+        hx-swap="afterbegin">
+    <div class="compose-header">
+      <button class="compose-close" type="button" aria-label="Close"
+              hx-get="/facets/overlay/close" hx-target="#overlay-slot" hx-swap="innerHTML">
+        <svg fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+      <span class="compose-title">New list</span>
+      <button class="btn-primary compose-post-btn" type="submit">Create</button>
+    </div>
+    <div style="padding:16px;display:flex;flex-direction:column;gap:12px">
+      <div class="form-field">
+        <label class="form-label" for="list-name-input">Name <span style="color:var(--text-muted);font-weight:400">(required)</span></label>
+        <input id="list-name-input" name="name" class="form-input" type="text" maxlength="100" required autofocus placeholder="e.g. Tech founders">
+      </div>
+      <div class="form-field">
+        <label class="form-label" for="list-desc-input">Description <span style="color:var(--text-muted);font-weight:400">(optional)</span></label>
+        <textarea id="list-desc-input" name="description" class="form-input" rows="2" maxlength="300" style="resize:none"></textarea>
+      </div>
+      <label class="form-field" style="flex-direction:row;align-items:center;justify-content:space-between;cursor:pointer">
+        <span class="form-label" style="margin-bottom:0">Make private</span>
+        {{/* is_private=true is what the create_list event reads as "not public" */}}
+        <input type="checkbox" name="is_private" value="true" style="width:18px;height:18px;cursor:pointer">
+      </label>
+    </div>
+  </form>
+</div>
+{{end}}

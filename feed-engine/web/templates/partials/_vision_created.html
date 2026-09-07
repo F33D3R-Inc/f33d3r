@@ -1,0 +1,63 @@
+{{/*
+FACET vision_created
+  version: 1.0 | status: stable | layer: 3 (composite)
+
+  The confirmation the author is handed the instant a Vision exists. It is the
+  HTTP response to POST /visions, so the surface that composed the Vision shows
+  the Vision itself — the same server-rendered artboard, not a copy the browser
+  drew from the values it happened to hold.
+
+  inputs:
+    VisionID     string            — the new Vision's `<author_pial>.<seq>` address (facet id scope)
+    Handle      string            — author handle
+    ContentType string            — text|image|video|share
+    ExpiryLabel string            — how long it has left, decided on the server
+    Artboard    visionArtboardView — the rendered text artboard
+    HasArtboard bool              — this Vision is a text artboard
+    PreviewURL  string            — stored object backing an image or video Vision
+    IsVideo     bool              — the preview is a video master
+
+  states:
+    artboard | media | share
+
+  children: vision_artboard
+
+  signals:
+    emits:    vision.compose (GET /facets/vision/composer) — post another
+    receives: none
+
+  note: "Done" lands on /visions, the Vision lane's Playground. The rail there is
+        rendered by the server on that request, so the new Vision's ring is
+        already correct — nothing restyles a ring in place after a post.
+
+  context:
+    POST /visions response → replaces the composer, or the camera preview
+*/}}
+{{define "vision_created"}}
+<section class="vision-created" data-facet-id="facet:f33d3r:vision:{{.VisionID}}:created"
+         aria-labelledby="vision-created-h">
+  <div class="vision-created__still">
+    {{if .HasArtboard}}
+      {{template "vision_artboard" .Artboard}}
+    {{else if .PreviewURL}}
+      {{if .IsVideo}}
+      <video class="vision-created__media" src="{{.PreviewURL}}" playsinline muted loop autoplay></video>
+      {{else}}
+      <img class="vision-created__media" src="{{.PreviewURL}}" alt="Your Vision">
+      {{end}}
+    {{else}}
+      <p class="vision-created__shared">Shared to your Vision.</p>
+    {{end}}
+  </div>
+
+  <h2 class="vision-created__title" id="vision-created-h">Vision posted</h2>
+  <p class="vision-created__meta">@{{.Handle}} · {{.ExpiryLabel}}</p>
+
+  <div class="vision-created__actions">
+    <a class="vision-created__action vision-created__action--again" href="/facets/vision/composer?mode=text"
+       hx-get="/facets/vision/composer?mode=text"
+       hx-target="closest .vision-created" hx-swap="outerHTML">Post another</a>
+    <a class="vision-created__action" href="/visions">Done</a>
+  </div>
+</section>
+{{end}}

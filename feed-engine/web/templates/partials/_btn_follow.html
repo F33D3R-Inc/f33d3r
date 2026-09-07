@@ -1,0 +1,45 @@
+{{/*
+FACET btn_follow
+  version: 2.0 | status: stable | layer: 5
+
+  inputs:
+    TargetPIAL    string — PIAL ID of the user to follow/unfollow (primary address)
+    TargetHandle  string — handle; aria-label, and the fallback address when TargetPIAL is empty
+    IsFollowing   bool   — current follow state
+    Surface       string — where this instance is drawn: profile | compact | card | dot
+
+  states:
+    default | following (is-on) | compact | card | dot
+
+  children: none
+
+  signals:
+    emits:    follow (POST /events) | unfollow (POST /events)
+    receives: follow_state (SSE — server pushes the re-rendered fragment)
+
+  context:
+    profile_header      → action row (Surface=profile)
+    follow_list_row     → trailing slot (Surface=compact)
+    suggested_user_row  → trailing slot (Surface=compact)
+    user_list_sheet     → row action (Surface=compact)
+    work_card           → author row inline pill (Surface=card)
+    work_detail_focus   → header action (Surface=profile)
+    work_focus_sidebar  → avatar overlay dot (Surface=dot)
+*/}}
+{{define "btn_follow"}}
+{{- $surface := .Surface -}}
+{{- if not $surface}}{{$surface = "profile"}}{{end -}}
+{{- $entity := .TargetPIAL -}}
+{{- if not $entity}}{{$entity = .TargetHandle}}{{end -}}
+<button data-facet-id="facet:f33d3r:identity:{{$entity}}:btn_follow"
+        data-pial="{{.TargetPIAL}}"
+        data-surface="{{$surface}}"
+        type="button"
+        class="btn-follow{{if ne $surface "profile"}} btn-follow--{{$surface}}{{end}}{{if .IsFollowing}} is-on{{end}}"
+        hx-post="/events"
+        hx-vals='{"event_type":"{{if .IsFollowing}}unfollow{{else}}follow{{end}}","target_pial":"{{.TargetPIAL}}","target_handle":"{{.TargetHandle}}","source":"{{$surface}}"}'
+        hx-target="this" hx-swap="outerHTML"
+        onclick="event.stopPropagation()"
+        aria-label="{{if .IsFollowing}}Unfollow @{{.TargetHandle}}{{else}}Follow @{{.TargetHandle}}{{end}}"
+        aria-pressed="{{if .IsFollowing}}true{{else}}false{{end}}">{{if eq $surface "dot"}}{{if .IsFollowing}}✓{{else}}+{{end}}{{else}}{{if .IsFollowing}}Following{{else}}Follow{{end}}{{end}}</button>
+{{end}}

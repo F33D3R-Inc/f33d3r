@@ -1,0 +1,41 @@
+{{define "title"}}{{.Title}}{{end}}
+{{define "body"}}
+<main class="f33d3r-main" id="main-col">
+  <div class="main-head">
+    <button class="back-btn" onclick="history.back()" aria-label="Back">
+      <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="width:18px;height:18px"><path d="m15 18-6-6 6-6"/></svg>
+    </button>
+    <div class="main-head-content">
+      <div class="main-head-title">{{.Game.Matchup}}</div>
+      <div class="main-head-sub">{{.Game.LeagueLabel}}{{if .Game.WeekLabel}} · {{.Game.WeekLabel}}{{end}}{{if .Game.Venue}} · {{.Game.Venue}}{{end}}</div>
+    </div>
+  </div>
+
+  {{/* The focal card. It is the identical Facet the strip and the hub mount, so
+       this address always shows the same truth they do — and it mutates here
+       over the same stream, without this page ever polling. */}}
+  <div class="sports-game__focus">
+    {{template "sports_game_card" .Card}}
+  </div>
+
+  {{if .Game.LastPlay}}
+  <p class="sports-game__lastplay"><span class="sports-game__lastplay-label">Last play</span> {{.Game.LastPlay}}</p>
+  {{end}}
+
+  <div class="feed-tabs" style="border-bottom:1px solid var(--border);padding:0 16px">
+    <span class="feed-tab feed-tab--active">Conversation</span>
+  </div>
+
+  <div id="sports-game-feed" role="feed" aria-live="polite">
+    {{if .Works}}
+    {{$ctx := dict "CurrentUserHandle" .CurrentUserHandle "User" .User}}
+    {{range .Works}}
+    {{template "work_card" (dict "W" . "Ctx" $ctx)}}
+    {{end}}
+    {{else}}
+    {{template "stateEmpty" (dict "Title" "Nothing posted about this game yet" "Sub" "Be the first to say something about it")}}
+    {{end}}
+  </div>
+</main>
+{{end}}
+{{define "right-panel"}}{{template "sidebar_right" .}}{{end}}

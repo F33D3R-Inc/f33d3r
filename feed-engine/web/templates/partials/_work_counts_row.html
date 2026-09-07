@@ -1,0 +1,43 @@
+{{/*
+FACET work_counts_row
+  version: 1.0 | status: stable | layer: 2
+
+  inputs:
+    Work — .ID .RepostCount .QuoteCount .LikeCount
+
+  states:
+    default (counts) | empty (every count zero — wrapper only)
+
+  children: none
+
+  signals:
+    emits:    none
+    receives: post_engagement — the server re-renders this Facet after every
+              reaction, reply and quote on the work and pushes it to the post's
+              watchers; f33d3r.js swaps the element carrying this id.
+
+  context:
+    work_detail_focus → counts row above the action bar.
+
+  why the wrapper is unconditional:
+    the counts row itself only draws when something has been counted, but the
+    element the stream swaps must exist from first paint — a work that gathers
+    its first like while being read has nothing to replace otherwise.
+
+  why counts only:
+    this Fragment is fanned out to every watcher of the work, so it must hold
+    nothing that is true of one viewer and false for another. Liked/reposted
+    state stays in work_action_bar, which is rendered per viewer and never
+    broadcast.
+*/}}
+{{define "work_counts_row"}}
+<div id="work-counts-{{.ID}}" data-facet-id="facet:f33d3r:work:{{.ID}}:counts">
+  {{if or (gt .RepostCount 0) (gt .QuoteCount 0) (gt .LikeCount 0)}}
+  <div class="pdf-counts">
+    {{if gt .RepostCount 0}}<span class="pdf-count"><strong>{{.RepostCount}}</strong> Reposts</span>{{end}}
+    {{if gt .QuoteCount 0}}<span class="pdf-count"><strong>{{.QuoteCount}}</strong> Quotes</span>{{end}}
+    {{if gt .LikeCount 0}}<span class="pdf-count"><strong>{{.LikeCount}}</strong> Likes</span>{{end}}
+  </div>
+  {{end}}
+</div>
+{{end}}

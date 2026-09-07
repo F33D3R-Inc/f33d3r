@@ -1,0 +1,74 @@
+{{/*
+FACET music_player_bar
+  version: 1.0 | status: stable | layer: 3
+
+  inputs: none (track data injected by playTrack() from music.js)
+
+  states:
+    hidden (default) | playing | paused
+
+  children: none
+
+  signals:
+    emits:    none (play/pause/close are JS-only)
+    receives: none
+
+  context:
+    music → sticky bottom bar (rendered once at page load, JS shows/hides)
+*/}}
+{{define "music_player_bar"}}
+<audio id="player-audio" preload="none"></audio>
+<div id="player-bar" class="player-bar hidden">
+
+  {{/* Cover thumbnail */}}
+  <div class="player-cover-wrap">
+    <div class="player-cover" id="player-cover-img"></div>
+  </div>
+
+  {{/* Track info */}}
+  <div class="player-track-info">
+    <span class="player-title" id="player-title">--</span>
+    <span class="player-artist" id="player-artist">--</span>
+  </div>
+
+  {{/* Controls */}}
+  <div class="player-controls">
+    <button class="player-btn" onclick="seekRelative(-10)" aria-label="Back 10s">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-3.5"/><text x="8" y="15" font-size="6" fill="currentColor" stroke="none">10</text></svg>
+    </button>
+    <button class="player-btn player-play-btn" onclick="togglePlayerPlay()" aria-label="Play/Pause">
+      <svg id="player-play-icon" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+      <svg id="player-pause-icon" class="hidden" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+    </button>
+    <button class="player-btn" onclick="seekRelative(10)" aria-label="Forward 10s">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-.49-3.5"/><text x="8" y="15" font-size="6" fill="currentColor" stroke="none">10</text></svg>
+    </button>
+  </div>
+
+  {{/* Progress */}}
+  <div class="player-progress-wrap" onclick="seekToClick(event)" aria-label="Seek">
+    <div class="player-progress-bg">
+      <div class="player-progress-fill" id="player-progress-fill"></div>
+    </div>
+  </div>
+
+  {{/* Time */}}
+  <div class="player-time">
+    <span id="player-current">0:00</span>
+    <span>/</span>
+    <span id="player-total">0:00</span>
+  </div>
+
+  {{/* Volume (desktop only) */}}
+  <div class="player-volume-wrap">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;color:var(--text-muted)"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+    <input class="player-volume-slider" type="range" min="0" max="100" value="80" oninput="setVolume(this.value)" aria-label="Volume">
+  </div>
+
+  {{/* Close */}}
+  <button class="player-close-btn" onclick="closePlayer()" aria-label="Close player">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+  </button>
+
+</div>
+{{end}}

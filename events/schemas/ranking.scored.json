@@ -1,0 +1,19 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ranking.scored",
+  "description": "Emitted by AethyrRank when a content item is scored for a feed surface.",
+  "type": "object",
+  "required": ["event_id", "event_type", "schema_version", "pial_id", "timestamp", "post_id", "score"],
+  "properties": {
+    "event_id":       { "type": "string", "format": "uuid" },
+    "event_type":     { "type": "string", "const": "ranking.scored" },
+    "schema_version": { "type": "string", "const": "1.0" },
+    "pial_id":        { "type": ["string", "null"], "format": "uuid", "description": "Viewer PIAL, null for anonymous" },
+    "timestamp":      { "type": "string", "format": "date-time" },
+    "post_id":        { "type": "string", "format": "uuid" },
+    "score":          { "type": "number", "minimum": 0, "maximum": 1 },
+    "surface":        { "type": "string", "enum": ["feed", "trending", "following", "nearby", "saved"] },
+    "signal_weights": { "type": "object", "additionalProperties": { "type": "number" } }
+  },
+  "additionalProperties": false
+}

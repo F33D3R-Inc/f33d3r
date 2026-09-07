@@ -1,0 +1,78 @@
+{{/*
+FACET work_action_bar
+  version: 2.0 | status: stable | layer: 2
+
+  inputs:
+    W    Work    — .ID .LikedByUser .LikeCount .RepostedByUser .RepostCount
+                   .BookmarkedByUser .DislikedByUser .DislikeCount
+                   .ReplyCount .ViewCount .IsVerified .AuthorHandle .AuthorName .Body
+    Ctx  PageCtx — optional .CurrentUserHandle (nil renders without tip button)
+
+  states:
+    default | liked | reposted | bookmarked | disliked
+
+  children:
+    work_reply_btn, work_repost_sheet, like_btn, dislike_btn, bookmark_btn
+
+  signals:
+    emits:    work_like, work_unlike, work_repost, work_unrepost,
+              work_bookmark, work_unbookmark, work_dislike, work_undislike
+    receives: none (optimistic — DOM flips before server confirms)
+
+  context:
+    work_card → pcd footer row
+*/}}
+{{define "work_action_bar"}}
+{{$w := .W}}{{$ctx := .Ctx}}
+<div class="post-actions action-btn-row">
+
+  {{template "work_reply_btn" (dict "WorkID" $w.ID "AuthorHandle" $w.AuthorHandle "AuthorName" $w.AuthorName "ReplyCount" $w.ReplyCount)}}
+
+  {{template "work_repost_sheet" (dict "WorkID" $w.ID "AuthorHandle" $w.AuthorHandle "Body" $w.Body "RepostCount" $w.RepostCount "RepostedByUser" $w.RepostedByUser)}}
+
+  {{template "like_btn" (dict "WorkID" $w.ID "LikedByUser" $w.LikedByUser "LikeCount" $w.LikeCount)}}
+
+  {{template "dislike_btn" (dict "WorkID" $w.ID "DislikedByUser" $w.DislikedByUser "DislikeCount" $w.DislikeCount)}}
+
+  {{template "bookmark_btn" (dict "WorkID" $w.ID "BookmarkedByUser" $w.BookmarkedByUser "BookmarkCount" 0)}}
+
+  {{/* Share — opens the share_sheet overlay facet (copy link + native Web Share) */}}
+  <button class="wab-btn wab-share"
+          hx-get="/facets/share_sheet?work_id={{$w.ID}}"
+          hx-target="#overlay-slot"
+          hx-swap="innerHTML"
+          onclick="event.stopPropagation()"
+          title="Share"
+          aria-label="Share">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+      <path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/>
+      <polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/>
+    </svg>
+  </button>
+
+  {{/* Tip — verified creators only, not own post */}}
+  {{if and $w.IsVerified $ctx (ne $w.AuthorHandle $ctx.CurrentUserHandle)}}
+  <button class="wab-btn wab-tip" type="button"
+          hx-get="/facets/tip_modal?handle={{$w.AuthorHandle}}"
+          hx-target="#overlay-slot" hx-swap="innerHTML"
+          onclick="event.stopPropagation()"
+          title="Tip @{{$w.AuthorHandle}}"
+          aria-label="Tip @{{$w.AuthorHandle}}">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+      <path d="M12 2v20M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/>
+    </svg>
+  </button>
+  {{end}}
+
+  <span class="action spacer"></span>
+
+  {{/* Views counter — non-interactive */}}
+  <button class="wab-btn wab-views" onclick="event.stopPropagation()" title="Views" aria-label="{{$w.ViewCount}} views">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
+    </svg>
+    <span>{{$w.ViewCount}}</span>
+  </button>
+
+</div>
+{{end}}

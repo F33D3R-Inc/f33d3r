@@ -1,0 +1,34 @@
+[package]
+name = "transcoding"
+version = "1.0.0"
+edition = "2021"
+description = "Transcoding brain — HLS video ladder via ffmpeg, filesystem output"
+
+[[bin]]
+name = "transcoding"
+path = "src/main.rs"
+
+[dependencies]
+axum = { version = "0.7", features = ["multipart"] }
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["trace"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+anyhow = "1"
+tempfile = "3"
+once_cell = "1"
+metrics = "0.23"
+metrics-exporter-prometheus = "0.15"
+dashmap = "6"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+
+[profile.dev]
+opt-level = 1

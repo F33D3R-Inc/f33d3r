@@ -1,0 +1,67 @@
+{{define "title"}}Home · F33D3R{{end}}
+{{define "nav-active-home"}}active{{end}}
+{{define "mob-active-home"}}active{{end}}
+{{define "body"}}
+<main class="f33d3r-main{{if .User}}{{if eq .User.MobileFeedView "reels"}} reels-enabled{{end}}{{end}}" id="main-col">
+  {{template "home_feed_header" (dict "EngineOnline" .EngineOnline "User" .User "PinnedSurfaces" .PinnedSurfaces "SessionID" .SessionID "ActiveSurface" .ActiveSurface)}}
+  {{/* Vision rail — the ring row across the top of the timeline, the primary
+       surface for the ephemeral lane. The server renders the whole rail, ring
+       state and all; this slot only asks for it and restates it once the
+       sequential viewer closes. Empty markup for a viewer with no account. */}}
+  {{if .User}}
+  <div class="vision-rail-mount" id="vision-rail-slot"
+       hx-get="/facets/vision/rings?scope=following"
+       hx-trigger="load, visionclosed from:body"
+       hx-swap="innerHTML"></div>
+  <div class="vision-main__composer" id="vision-composer-slot"></div>
+  {{end}}
+  {{template "new_post_banner" .}}
+  {{/* Live lane — running broadcasts render as live_card Facets, shaped like
+       works so they sit natively in the Playground.
+
+       Ordering: live is a head lane. It is resolved once, at the head of the
+       Playground, newest broadcast first, and it is bounded — a broadcast is
+       time-critical and worth nothing an hour late, so it goes above the works
+       rather than being ranked among them, and a bounded head cannot push the
+       works stream off the surface.
+
+       It is deliberately NOT part of works pagination: the works sentinel pages
+       with `before=<created_at>` against /facets/works/feed alone, so no
+       broadcast can reappear on page 2, 3, 4 … of an infinite scroll. One
+       broadcast, one card, once.
+
+       Empty markup when nobody is live, so no scaffolding and no layout shift. */}}
+  <div id="live-strip"
+       hx-get="/facets/live/cards"
+       hx-trigger="load, refreshFeed"
+       hx-swap="innerHTML"></div>
+  {{/* Sports lane — deliberately NOT mounted here.
+
+       The slate has two homes and they do not overlap. Its persistent home is
+       Facet(rail_scorecards) in sidebar_right, which is on every surface the
+       rail is on and survives every navigation between them. Its full-card home
+       is Facet(sports_strip), written as the head lane of the sports surface's
+       Playground by facetWorksFeed — so it arrives when a viewer chooses that
+       feed and leaves with the container when they choose another.
+
+       Mounting it here as well would put the same four games on the Home screen
+       twice at desktop width, once in the centre and once in the rail. */}}
+  <div id="feed-container"
+       hx-get="/facets/works/feed?surface={{.ActiveSurface}}"
+       hx-trigger="load, refreshFeed"
+       hx-swap="innerHTML">
+    {{/* Skeleton cards shown until HTMX replaces with real posts */}}
+    {{template "feed_skeletons" (dict "Count" 5)}}
+  </div>
+  <script>window._sessionID = '{{.SessionID}}';</script>
+</main>
+{{/* Overlay slot — the sequential viewer replaces its contents on every step. */}}
+{{if .User}}<div class="vision-viewer-slot" id="vision-viewer-slot"></div>{{end}}
+{{end}}
+{{define "right-panel"}}{{template "sidebar_right" .}}{{end}}
+{{define "page-scripts"}}<script src="/static/js/pages/index.js?v={{assetVer}}" defer></script>
+{{/* Live cards in the Playground receive tally and status Fragments too. */}}
+<script src="/static/js/live-player.js?v={{assetVer}}" defer></script>
+<script src="/static/js/live-chat.js?v={{assetVer}}" defer></script>
+{{/* The Vision rail opens the sequential viewer from this surface too. */}}
+<script src="/static/js/vision-viewer.js?v={{assetVer}}" defer></script>{{end}}

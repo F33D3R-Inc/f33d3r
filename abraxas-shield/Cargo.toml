@@ -1,0 +1,36 @@
+[package]
+name = "abraxas-shield"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "abraxas-shield"
+path = "src/main.rs"
+
+[features]
+# visual-nsfw: enable ONNX-based image scanning via the ort crate.
+# Disabled by default — requires AVX2-capable CPU and a model file at MODEL_PATH.
+# Enable with: cargo build --features visual-nsfw
+visual-nsfw = ["ort", "image", "ndarray", "reqwest"]
+
+[dependencies]
+rdkafka = { version = "*", features = ["cmake-build", "ssl"] }
+tokio = { version = "*", features = ["full"] }
+tokio-postgres = { version = "*", features = ["with-uuid-1", "with-serde_json-1", "with-chrono-0_4"] }
+deadpool-postgres = "*"
+serde = { version = "*", features = ["derive"] }
+serde_json = "*"
+uuid = { version = "*", features = ["v4"] }
+tracing = "*"
+tracing-subscriber = { version = "*", features = ["json", "env-filter"] }
+regex = "*"
+chrono = { version = "*", features = ["serde"] }
+ort     = { version = "2.0.0-rc.12", features = ["download-binaries"], optional = true }
+image   = { version = "0", default-features = false, features = ["jpeg", "png", "webp"], optional = true }
+reqwest = { version = "0", default-features = false, features = ["blocking", "rustls-tls"], optional = true }
+ndarray = { version = "*", optional = true }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

@@ -1,0 +1,199 @@
+{{/*
+FACET admin_panel_abraxas
+  version: 1.1 | status: stable | layer: 2
+
+  inputs:
+    Cfg            *db.AbraxasConfig   — current Abraxas Shield thresholds and keyword lists
+    SignalAccuracy []db.SignalAccuracy  — per-signal FP stats from scan_feedback (may be nil)
+
+  states:
+    default
+
+  children: none
+
+  signals:
+    emits:    POST /api/admin/abraxas-config (save thresholds and keywords)
+    receives: none
+
+  context:
+    admin → #admin-content (hx-get /admin/partials/abraxas)
+*/}}
+{{define "admin_panel_abraxas"}}
+{{$c := .Cfg}}
+<div class="admin-panel-inner" id="abraxas-panel">
+
+  <div class="admin-panel-section">
+    <div class="admin-section-head">
+      <span class="admin-section-head-title">Abraxas Shield — Detection Config</span>
+    </div>
+    <p style="font-size:12px;color:var(--text-muted);margin:0 0 16px">
+      Thresholds control when content is auto-blocked, age-gated, or sent to human review.
+      Keywords supplement the built-in toxicity lists. Changes take effect on the next scan cycle (≤5 min).
+    </p>
+
+    <form hx-post="/api/admin/abraxas-config"
+          hx-target="#abraxas-save-result"
+          hx-swap="innerHTML">
+
+      {{/* ── NSFW / Nudity ── */}}
+      <div class="admin-devtool-card">
+        <div class="admin-devtool-title">NSFW / Nudity thresholds</div>
+        <div class="abraxas-slider-row">
+          <label class="abraxas-slider-label">Block (auto age-gate) ≥</label>
+          <input type="range" name="nudity_block" min="0" max="1" step="0.01"
+                 value="{{printf "%.2f" $c.NudityBlockThreshold}}"
+                 class="abraxas-slider"
+                 oninput="document.getElementById('nudity_block_val').textContent=parseFloat(this.value).toFixed(2)">
+          <span class="abraxas-slider-value" id="nudity_block_val">{{printf "%.2f" $c.NudityBlockThreshold}}</span>
+        </div>
+        <div class="abraxas-slider-row">
+          <label class="abraxas-slider-label">Human review ≥</label>
+          <input type="range" name="nudity_review" min="0" max="1" step="0.01"
+                 value="{{printf "%.2f" $c.NudityReviewThreshold}}"
+                 class="abraxas-slider"
+                 oninput="document.getElementById('nudity_review_val').textContent=parseFloat(this.value).toFixed(2)">
+          <span class="abraxas-slider-value" id="nudity_review_val">{{printf "%.2f" $c.NudityReviewThreshold}}</span>
+        </div>
+      </div>
+
+      {{/* ── Gore ── */}}
+      <div class="admin-devtool-card">
+        <div class="admin-devtool-title">Gore thresholds</div>
+        <div class="abraxas-slider-row">
+          <label class="abraxas-slider-label">Auto-block ≥</label>
+          <input type="range" name="gore_block" min="0" max="1" step="0.01"
+                 value="{{printf "%.2f" $c.GoreBlockThreshold}}"
+                 class="abraxas-slider"
+                 oninput="document.getElementById('gore_block_val').textContent=parseFloat(this.value).toFixed(2)">
+          <span class="abraxas-slider-value" id="gore_block_val">{{printf "%.2f" $c.GoreBlockThreshold}}</span>
+        </div>
+        <div class="abraxas-slider-row">
+          <label class="abraxas-slider-label">Human review ≥</label>
+          <input type="range" name="gore_review" min="0" max="1" step="0.01"
+                 value="{{printf "%.2f" $c.GoreReviewThreshold}}"
+                 class="abraxas-slider"
+                 oninput="document.getElementById('gore_review_val').textContent=parseFloat(this.value).toFixed(2)">
+          <span class="abraxas-slider-value" id="gore_review_val">{{printf "%.2f" $c.GoreReviewThreshold}}</span>
+        </div>
+      </div>
+
+      {{/* ── Clickbait ── */}}
+      <div class="admin-devtool-card">
+        <div class="admin-devtool-title">Clickbait thresholds</div>
+        <div class="abraxas-slider-row">
+          <label class="abraxas-slider-label">Auto-block ≥</label>
+          <input type="range" name="clickbait_block" min="0" max="1" step="0.01"
+                 value="{{printf "%.2f" $c.ClickbaitBlockThreshold}}"
+                 class="abraxas-slider"
+                 oninput="document.getElementById('clickbait_block_val').textContent=parseFloat(this.value).toFixed(2)">
+          <span class="abraxas-slider-value" id="clickbait_block_val">{{printf "%.2f" $c.ClickbaitBlockThreshold}}</span>
+        </div>
+        <div class="abraxas-slider-row">
+          <label class="abraxas-slider-label">Human review ≥</label>
+          <input type="range" name="clickbait_review" min="0" max="1" step="0.01"
+                 value="{{printf "%.2f" $c.ClickbaitReviewThreshold}}"
+                 class="abraxas-slider"
+                 oninput="document.getElementById('clickbait_review_val').textContent=parseFloat(this.value).toFixed(2)">
+          <span class="abraxas-slider-value" id="clickbait_review_val">{{printf "%.2f" $c.ClickbaitReviewThreshold}}</span>
+        </div>
+      </div>
+
+      {{/* ── Keywords ── */}}
+      <div class="admin-devtool-card">
+        <div class="admin-devtool-title">Custom keyword lists (comma-separated, lowercase)</div>
+        <div class="abraxas-kw-row">
+          <label class="abraxas-kw-label">Hate keywords</label>
+          <textarea name="hate_keywords" class="form-input abraxas-kw-input" rows="2"
+                    placeholder="e.g. slur1, slur2">{{range $i, $kw := $c.CustomHateKeywords}}{{if $i}}, {{end}}{{$kw}}{{end}}</textarea>
+        </div>
+        <div class="abraxas-kw-row">
+          <label class="abraxas-kw-label">Violence keywords</label>
+          <textarea name="violence_keywords" class="form-input abraxas-kw-input" rows="2"
+                    placeholder="e.g. keyword1, keyword2">{{range $i, $kw := $c.CustomViolenceKeywords}}{{if $i}}, {{end}}{{$kw}}{{end}}</textarea>
+        </div>
+        <div class="abraxas-kw-row">
+          <label class="abraxas-kw-label">Spam keywords</label>
+          <textarea name="spam_keywords" class="form-input abraxas-kw-input" rows="2"
+                    placeholder="e.g. buy now, click here">{{range $i, $kw := $c.CustomSpamKeywords}}{{if $i}}, {{end}}{{$kw}}{{end}}</textarea>
+        </div>
+      </div>
+
+      {{/* ── Feature flags ── */}}
+      <div class="admin-devtool-card">
+        <div class="admin-devtool-title">Detection modules</div>
+        <div class="abraxas-toggle-row">
+          <input type="hidden" name="enable_bot_detection" value="0">
+          <input type="checkbox" name="enable_bot_detection" id="enable_bot" value="1"
+                 {{if $c.EnableBotDetection}}checked{{end}} class="abraxas-toggle-check">
+          <label for="enable_bot" class="abraxas-toggle-label">Bot detection</label>
+        </div>
+        <div class="abraxas-toggle-row">
+          <input type="hidden" name="enable_spam_detection" value="0">
+          <input type="checkbox" name="enable_spam_detection" id="enable_spam" value="1"
+                 {{if $c.EnableSpamDetection}}checked{{end}} class="abraxas-toggle-check">
+          <label for="enable_spam" class="abraxas-toggle-label">Spam detection</label>
+        </div>
+        <div class="abraxas-toggle-row">
+          <input type="hidden" name="auto_approve_unknown" value="0">
+          <input type="checkbox" name="auto_approve_unknown" id="auto_approve" value="1"
+                 {{if $c.AutoApproveUnknown}}checked{{end}} class="abraxas-toggle-check">
+          <label for="auto_approve" class="abraxas-toggle-label">Auto-approve unknown signals (bypass human review for low-confidence results)</label>
+        </div>
+      </div>
+
+      <div style="display:flex;align-items:center;gap:12px;margin-top:8px">
+        <button type="submit" class="admin-action-btn admin-action-btn--ok">Save config</button>
+        <div id="abraxas-save-result" style="font-size:13px"></div>
+      </div>
+
+      {{/* Signal accuracy — populated from scan_feedback */}}
+      {{if .SignalAccuracy}}
+      <div class="abraxas-section-head" style="margin-top:24px">Signal accuracy</div>
+      <p style="font-size:12px;color:var(--text-muted);margin:0 0 12px">Based on admin decisions. Signals with ≥70% false-positive rate and ≥3 decisions are auto-suppressed by Abraxas.</p>
+      <table class="abraxas-signal-table">
+        <thead><tr><th>Signal</th><th>Blocked</th><th>Approved</th><th>FP rate</th><th>Status</th></tr></thead>
+        <tbody>
+        {{range .SignalAccuracy}}
+        <tr>
+          <td class="abraxas-signal-name">{{.Signal}}</td>
+          <td>{{.TruePositives}}</td>
+          <td>{{.FalsePositives}}</td>
+          <td>{{printf "%.0f%%" (pct .FPRate)}}</td>
+          <td>{{if ge .FPRate 0.70}}<span style="color:var(--accent-warn)">suppressed</span>{{else}}<span style="color:var(--accent-ok)">active</span>{{end}}</td>
+        </tr>
+        {{end}}
+        </tbody>
+      </table>
+      {{end}}
+
+    </form>
+
+    {{if $c.UpdatedBy}}
+    <p style="font-size:11px;color:var(--text-muted);margin-top:12px">
+      Last saved by @{{$c.UpdatedBy}} · {{timeAgo $c.UpdatedAt}}
+    </p>
+    {{end}}
+  </div>
+
+  {{/* ── Live pipeline status ── */}}
+  <div class="admin-panel-section">
+    <div class="admin-section-head">
+      <span class="admin-section-head-title">Pipeline status</span>
+    </div>
+    <div class="admin-devtool-card">
+      <div class="admin-devtool-title">Manual sweep</div>
+      <p style="font-size:12px;color:var(--text-muted);margin:0 0 8px">
+        Force-clear all posts stuck in pending_scan for &gt;0 min. Use if Abraxas Shield was briefly down.
+      </p>
+      <button class="admin-action-btn admin-action-btn--warn"
+              hx-post="/api/admin/scan-sweep"
+              hx-target="#abraxas-sweep-result"
+              hx-swap="innerHTML">
+        Run sweep now
+      </button>
+      <div id="abraxas-sweep-result" style="margin-top:8px;font-size:13px"></div>
+    </div>
+  </div>
+
+</div>
+{{end}}

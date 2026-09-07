@@ -1,0 +1,43 @@
+{{/*
+FACET marketplace_seller_listings
+  version: 1.0 | status: stable | layer: 2
+
+  inputs:
+    FacetID   string          — facet:f33d3r:shop:<pial>:listings
+    Listings  []PublicListing — the seller's own listings, active and inactive
+    Count     int             — number of listings held
+    Limit     int             — listings one shop may hold
+    Error     string          — non-empty when Themis could not answer
+
+  states:
+    default | empty | error
+
+  children:
+    marketplace_listing_card (IsSeller=true)
+
+  signals:
+    emits:    none
+    receives: refresh (the dashboard re-requests this Facet after a listing mutation)
+
+  context:
+    seller_dashboard_market.html → #seller-listings (hx-get on load / refresh);
+    the count line under the shop heading is re-rendered out of band
+*/}}
+{{define "marketplace_seller_listings"}}
+<div id="seller-listings" data-facet-id="{{.FacetID}}" aria-live="polite">
+  {{if .Error}}
+  <div class="marketplace-empty-state"><p class="marketplace-empty-state__body">{{.Error}}</p></div>
+  {{else if .Listings}}
+  {{range .Listings}}
+  {{template "marketplace_listing_card" (dict "ID" .ID "Title" .Title "Description" .Description "PriceSats" .PriceSats "PriceXrpDrops" .PriceXrpDrops "PaymentCurrency" .PaymentCurrency "Visibility" .Visibility "IsActive" .IsActive "IsSeller" true "ShopPial" .ShopPial)}}
+  {{end}}
+  {{else}}
+  <div class="marketplace-empty-state">
+    <svg class="marketplace-empty-state__icon" width="40" height="40" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>
+    <h3 class="marketplace-empty-state__title">No listings yet</h3>
+    <p class="marketplace-empty-state__body">Click "+ New Listing" above to create your first listing.</p>
+  </div>
+  {{end}}
+</div>
+<div class="marketplace-listing-count" id="listing-count-display" hx-swap-oob="true"><strong>{{.Count}}</strong> of {{.Limit}} listings used</div>
+{{end}}

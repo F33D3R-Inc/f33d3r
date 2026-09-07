@@ -1,0 +1,93 @@
+{{/*
+FACET report_flow_sheet
+  version: 2.0 | status: stable | layer: 3
+
+  inputs:
+    PostID  string — work UUID being reported
+
+  states:
+    default (reason picker + details) | submitted (#report-flow-form holds the server's answer)
+
+  children:
+    none
+
+  signals:
+    emits:    POST /api/report {content_id, content_type:post, reason, detail} → #report-flow-form
+    receives: none
+
+  close:
+    backdrop, Close and Cancel ask /facets/overlay/close — the empty fragment clears #overlay-slot
+
+  context:
+    #overlay-slot → hx-get="/facets/report_sheet?post_id=<id>" from btn_report and the work menu
+*/}}
+{{define "report_flow_sheet"}}
+<div id="report-flow-sheet"
+     class="report-flow-sheet"
+     role="dialog"
+     aria-modal="true"
+     aria-label="Report content"
+     data-facet-id="facet:f33d3r:work:{{.PostID}}:report_sheet">
+  <div class="report-flow-backdrop" style="position:absolute;inset:0"
+       hx-get="/facets/overlay/close" hx-target="#overlay-slot" hx-swap="innerHTML" hx-trigger="click"></div>
+  <div class="report-flow-card" style="position:relative">
+
+    {{/* ── Facet(report_flow_header) ── */}}
+    <div class="report-flow-header">
+      <span class="report-flow-title">Report</span>
+      <button type="button"
+              class="report-flow-close"
+              aria-label="Close"
+              hx-get="/facets/overlay/close" hx-target="#overlay-slot" hx-swap="innerHTML">
+        <svg fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24" style="width:18px;height:18px"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+
+    {{/* ── Facet(report_flow_body) — the form; the server's answer replaces its contents ── */}}
+    <form id="report-flow-form" class="report-flow-body"
+          hx-post="/api/report"
+          hx-vals='{"content_id":"{{.PostID}}","content_type":"post"}'
+          hx-target="#report-flow-form"
+          hx-swap="innerHTML">
+      <p class="report-flow-hint">Why are you reporting this post?</p>
+
+      <div class="report-flow-reasons">
+        <label class="report-flow-reason-row">
+          <input type="radio" name="reason" value="spam" class="report-flow-radio" required> Spam
+        </label>
+        <label class="report-flow-reason-row">
+          <input type="radio" name="reason" value="harassment" class="report-flow-radio"> Harassment or bullying
+        </label>
+        <label class="report-flow-reason-row">
+          <input type="radio" name="reason" value="nsfw" class="report-flow-radio"> Explicit or adult content
+        </label>
+        <label class="report-flow-reason-row">
+          <input type="radio" name="reason" value="misinformation" class="report-flow-radio"> Misinformation
+        </label>
+        <label class="report-flow-reason-row">
+          <input type="radio" name="reason" value="other" class="report-flow-radio"> Something else
+        </label>
+      </div>
+
+      <textarea id="report-flow-details"
+                name="detail"
+                class="report-flow-details"
+                rows="3"
+                maxlength="500"
+                placeholder="Additional details (optional)"></textarea>
+
+      <div class="report-flow-footer">
+        <button type="button"
+                class="btn-secondary"
+                hx-get="/facets/overlay/close" hx-target="#overlay-slot" hx-swap="innerHTML">
+          Cancel
+        </button>
+        <button type="submit"
+                class="btn-primary report-flow-submit">
+          Submit report
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+{{end}}

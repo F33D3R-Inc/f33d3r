@@ -1,0 +1,30 @@
+{{/*
+FACET tip_result
+  version: 1.0 | status: stable | layer: 1
+
+  inputs:
+    OK       bool   — the tip went through
+    Handle   string — the creator tipped
+    Amount   string — AET sent, "12.00" (success only)
+    Message  string — what went wrong (error only)
+
+  states:
+    success | error
+
+  children:
+    none
+
+  signals:
+    emits:    none
+    receives: none
+
+  context:
+    tip_modal → #tip-result (the tip event's answer to a Shell)
+*/}}
+{{define "tip_result"}}
+{{if .OK}}
+<p class="tip-result tip-result--ok" role="status">Sent {{.Amount}} AET to @{{.Handle}} ✓</p>
+{{else}}
+<p class="tip-result tip-result--error" role="alert">{{.Message}}</p>
+{{end}}
+{{end}}

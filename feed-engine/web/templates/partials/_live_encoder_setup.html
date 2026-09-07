@@ -1,0 +1,124 @@
+{{/*
+FACET live_encoder_setup
+  version: 1.0 | status: stable | layer: 3
+
+  The desktop-encoder half of the broadcast surface: the OBS "Server" and
+  "Stream Key" fields, and the single-field SRT caller URL for a hardware or
+  mobile encoder.
+
+  SECURITY — this is the ONLY Facet in the live lane that carries a publish
+  credential, and it carries one only in its revealed state. The handler that
+  renders that state proves the session owns the stream first, answers a POST
+  only, and writes the Fragment straight to that one request. It is never pushed
+  over FA Live, never rendered into a card, a watch page or any surface another
+  account can reach, and the key is never placed in a URL, so it cannot land in
+  an access log, a Referer header or a shared link.
+
+  The stored key is a one-way hash: it cannot be read back. Revealing therefore
+  mints a fresh key and retires the previous one, which the copy below states
+  plainly rather than letting a broadcaster discover it when their encoder
+  reconnects.
+
+  inputs:
+    StreamID      string — the stream these credentials publish into
+    Revealed      bool   — true only in the answer to the owner's own POST
+    RTMPServer    string — OBS "Server"          (revealed only)
+    RTMPStreamKey string — OBS "Stream Key"      (revealed only, secret)
+    SRTURL        string — single-field SRT URL  (revealed only, secret)
+    PublicHost    string — host the publish URLs point at
+    HostIsLocal   bool   — that host only resolves on this machine
+
+  states:
+    sealed | revealed ; host-routable | host-local
+
+  children: none
+
+  signals:
+    emits:    live.encoder.reveal (POST /live/{id}/encoder)
+    receives: none
+
+  context:
+    live_broadcast_stage (source=encoder) → encoder panel
+*/}}
+{{define "live_encoder_setup"}}
+<section class="live-obs" data-facet-id="facet:f33d3r:live:{{.StreamID}}:encoder_setup"
+         aria-labelledby="live-obs-h-{{.StreamID}}">
+  <h2 class="live-obs__title" id="live-obs-h-{{.StreamID}}">Publish from OBS or another encoder</h2>
+
+  {{if .Revealed}}
+  <p class="live-obs__lede">
+    Paste these into OBS under <strong>Settings → Stream → Service: Custom…</strong>, then press
+    <strong>Start Streaming</strong>. Your broadcast turns live the moment frames arrive.
+  </p>
+
+  <div class="live-obs__field">
+    <label class="live-obs__label" for="live-obs-server-{{.StreamID}}">Server</label>
+    <div class="live-obs__row">
+      <input class="live-obs__input" id="live-obs-server-{{.StreamID}}" type="text" readonly
+             spellcheck="false" value="{{.RTMPServer}}">
+      <button class="live-obs__copy" type="button" data-live-action="copy-field"
+              data-live-copy-target="live-obs-server-{{.StreamID}}"
+              aria-label="Copy server URL">Copy</button>
+    </div>
+  </div>
+
+  <div class="live-obs__field">
+    <label class="live-obs__label" for="live-obs-key-{{.StreamID}}">Stream key</label>
+    <div class="live-obs__row">
+      <input class="live-obs__input live-obs__input--secret" id="live-obs-key-{{.StreamID}}"
+             type="text" readonly spellcheck="false" value="{{.RTMPStreamKey}}">
+      <button class="live-obs__copy" type="button" data-live-action="copy-field"
+              data-live-copy-target="live-obs-key-{{.StreamID}}"
+              aria-label="Copy stream key">Copy</button>
+    </div>
+  </div>
+
+  <div class="live-obs__field">
+    <label class="live-obs__label" for="live-obs-srt-{{.StreamID}}">SRT URL <span class="live-obs__hint">one field, for a hardware or mobile encoder</span></label>
+    <div class="live-obs__row">
+      <input class="live-obs__input live-obs__input--secret" id="live-obs-srt-{{.StreamID}}"
+             type="text" readonly spellcheck="false" value="{{.SRTURL}}">
+      <button class="live-obs__copy" type="button" data-live-action="copy-field"
+              data-live-copy-target="live-obs-srt-{{.StreamID}}"
+              aria-label="Copy SRT URL">Copy</button>
+    </div>
+  </div>
+
+  <p class="live-obs__warn" role="note">
+    This key is shown once and is not stored anywhere it can be read back. Copy it now.
+    Anyone holding it can broadcast as you until you reveal a new one.
+  </p>
+
+  {{if .HostIsLocal}}
+  <p class="live-obs__warn live-obs__warn--host" role="note">
+    These URLs point at <code>{{.PublicHost}}</code>, which only resolves on the machine
+    running f33d3r. An encoder on a phone or a second computer cannot reach it. To publish
+    from another device, set <code>LIVE_PUBLIC_HOST</code> to this machine's LAN address and
+    restart the stack, then reveal the key again.
+  </p>
+  {{else}}
+  <p class="live-obs__note">Your encoder must be able to reach <code>{{.PublicHost}}</code> on TCP 1935 (RTMP) or UDP 8890 (SRT).</p>
+  {{end}}
+
+  <p class="live-obs__status" data-live-copy-status role="status" aria-live="polite"></p>
+
+  {{else}}
+  <p class="live-obs__lede">
+    OBS, a hardware encoder or a phone encoder app publishes into this broadcast with a
+    server URL and a stream key. The key is a publish credential, so it is shown only to
+    you, only here, and only when you ask for it.
+  </p>
+  <p class="live-obs__warn" role="note">
+    Revealing mints a new key and retires the previous one immediately. If an encoder is
+    already configured for this broadcast, it will need the new key to reconnect.
+  </p>
+  <button class="live-obs__reveal" type="button"
+          hx-post="/live/{{.StreamID}}/encoder"
+          hx-target="closest .live-obs"
+          hx-swap="outerHTML"
+          hx-disabled-elt="this">
+    Show server URL and stream key
+  </button>
+  {{end}}
+</section>
+{{end}}

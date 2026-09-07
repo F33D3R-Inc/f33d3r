@@ -1,0 +1,72 @@
+{{/*
+FACET sports_strip
+  version: 1.0 | status: stable | layer: 2 (composite)
+
+  ONE LEAGUE's Playground head lane. Same argument as the live strip above it:
+  a score is time-critical and worth little an hour late, so it is resolved once
+  at the head of the Playground rather than ranked among the works — and it is
+  BOUNDED (eight cards, one horizontally-scrolling row, fixed height) so it can
+  never push the works stream off the surface. The rest of that league's slate
+  lives on its hub, one tap away.
+
+  The surface mounts one of these per league that has games, ordered so that a
+  league with something being played sits above one that does not. It is per
+  league rather than one mixed strip because the week label, the slate and the
+  "All games" link are all league facts, and because a fourteen-game football
+  Sunday must not be able to crowd a basketball night out of the surface. Each
+  strip owns its own facet id, so one league's slate changing re-renders that
+  league's strip and touches nothing else.
+
+  The strip is only re-rendered when ITS OWN membership or order changes — a
+  game starting, a game finishing, a new day's slate. A score inside an
+  unchanged slate mutates one card, not this facet.
+
+  Renders nothing at all when the lane is off or this league has no games: no
+  scaffolding, no empty panel, no layout shift, and nothing at all for a league
+  between seasons.
+
+  inputs:
+    FacetID     string
+    LeagueLabel string — "NFL"
+    LeagueSlug  string — "nfl"
+    WeekLabel   string — "Week 1", empty in a league that has no weeks
+    HubHref     string — "/sports/nfl"
+    Cards       []SportsCardData
+    Stale       bool
+    StaleLabel  string — "Last update 4m ago"
+
+  states:
+    default | stale
+
+  children:
+    sports_game_card
+
+  signals:
+    emits:    none
+    receives: sports_facet (SSE) — replacement fragment on a slate change
+
+  context:
+    playground (index) → head lane above the works feed
+*/}}
+{{define "sports_strip"}}
+<section class="sports-strip{{if .Stale}} sports-strip--stale{{end}}"
+         data-facet-id="{{.FacetID}}"
+         aria-labelledby="sports-strip-title-{{.LeagueSlug}}">
+  <div class="sports-strip__head">
+    <h2 class="sports-strip__title" id="sports-strip-title-{{.LeagueSlug}}">
+      {{.LeagueLabel}}{{if .WeekLabel}} <span class="sports-strip__week">{{.WeekLabel}}</span>{{end}}
+    </h2>
+    <a class="sports-strip__all" href="{{.HubHref}}">All games</a>
+  </div>
+
+  <div class="sports-strip__rail">
+    {{range .Cards}}{{template "sports_game_card" .}}{{end}}
+  </div>
+
+  {{if .Stale}}
+  <p class="sports-strip__notice" role="status">
+    Scores may be out of date — the score feed has not answered recently. {{.StaleLabel}}.
+  </p>
+  {{end}}
+</section>
+{{end}}

@@ -1,0 +1,25 @@
+{{/*
+FACET translate_slot
+  version: 1.0 | status: stable | layer: 1
+
+  inputs:
+    PostID  string — work UUID
+
+  states:
+    empty (the slot as the card is first drawn; nothing visible)
+
+  children:
+    none
+
+  signals:
+    emits:    none
+    receives: translate (POST /api/post/{id}/translate replaces this slot with
+              translate_result or translate_error); hide asks
+              GET /facets/work/{id}/translate_slot for this empty slot back
+
+  context:
+    work_card, work_detail_focus → below the body
+*/}}
+{{define "translate_slot"}}
+<div class="post-translate-wrap" id="translate-wrap-{{.PostID}}" data-facet-id="facet:f33d3r:work:{{.PostID}}:translation" hidden></div>
+{{end}}

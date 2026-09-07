@@ -1,0 +1,36 @@
+{{/*
+FACET vision_progress
+  version: 1.0 | status: stable | layer: 4 (atomic)
+
+  Position in one author's run, as a row of ticks. Every tick's state — done,
+  current, still to come — is decided on the server from the sequence itself.
+  The browser does not count Visions and does not advance a tick on a timer; a
+  step is a new frame, and a new frame brings a new progress Fragment.
+
+  inputs:
+    VisionID  string — the frame this progress belongs to (facet id scope)
+    Position int    — 1-based place in the author's run
+    Total    int    — Visions by this author in the sequence
+    Segments []visionSegment — .State: done | current | todo
+
+  states:
+    default
+
+  children: none
+
+  signals:
+    emits:    none
+    receives: none (replaced wholesale with its parent frame)
+
+  context:
+    vision_viewer → top of the sequential viewer
+*/}}
+{{define "vision_progress"}}
+<div class="vision-progress" data-facet-id="facet:f33d3r:vision:{{.VisionID}}:progress"
+     role="progressbar" aria-valuemin="1" aria-valuenow="{{.Position}}" aria-valuemax="{{.Total}}"
+     aria-label="Vision {{.Position}} of {{.Total}}">
+  {{range .Segments}}
+  <span class="vision-progress__tick vision-progress__tick--{{.State}}"></span>
+  {{end}}
+</div>
+{{end}}

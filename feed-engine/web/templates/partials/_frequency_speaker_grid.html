@@ -1,0 +1,36 @@
+{{/*
+FACET frequency_speaker_grid
+  version: 1.0 | status: stable | layer: 3
+
+  Everyone on the mic, host first, then co-hosts, then speakers, in the order
+  the server gives them. Replaced whole when anyone joins, leaves, is promoted,
+  demoted, muted or drops — one Fragment, one address, so a grid on the stage
+  never disagrees with the server about who is speaking.
+
+  inputs:
+    ID       string
+    Speakers []FrequencySpeakerData — .ID .Person .Role .Muted .Present .IsHost .ViewerCanModerate .ViewerIsHost .Ctx
+    Ctx      PageCtx
+
+  states:
+    default | host-only
+
+  children:
+    frequency_speaker
+
+  signals:
+    emits:    none
+    receives: frequency_facet (SSE — this Fragment replaced)
+
+  context:
+    frequency_stage → main area
+*/}}
+{{define "frequency_speaker_grid"}}
+<section class="freq-grid" data-facet-id="{{frequencyFacetID .ID "speakers"}}" aria-label="On the mic">
+  <h2 class="freq-grid__h">On the mic</h2>
+  <ul class="freq-grid__list" role="list">
+    {{range .Speakers}}{{template "frequency_speaker" .}}{{end}}
+  </ul>
+  {{if le (len .Speakers) 1}}<p class="freq-grid__hint">Only the host so far. Listeners can ask for the mic.</p>{{end}}
+</section>
+{{end}}

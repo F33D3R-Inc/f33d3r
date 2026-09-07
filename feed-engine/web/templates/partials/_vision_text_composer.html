@@ -1,0 +1,144 @@
+{{/*
+FACET vision_text_composer
+  version: 1.0 | status: stable | layer: 3 (composite)
+
+  The text-Vision composer. Text-only Visions are first class here: the artboard is
+  the Vision, not decoration around it.
+
+  Every picker below names a server-side preset KEY. Changing one posts the form
+  to /facets/vision/artboard and the server hands back the re-rendered artboard
+  Fragment — the browser swaps it in and styles nothing. "Auto" size is resolved
+  on the server from the length of the words, so the browser never measures text.
+
+  inputs:
+    Handle      string        — author handle
+    CanNSFW     bool          — account cleared to post 18+
+    IsNSFW      bool          — 18+ toggle state carried back on a rejection
+    Error       string        — server-side rejection, rendered back into the form
+    Body        string        — current words
+    Background  string        — selected key
+    Typeface    string        — selected key
+    TypeScale   string        — selected key (may be "auto")
+    Align       string        — selected key
+    Backgrounds []visionPreset — the closed background set
+    Typefaces   []visionPreset — the closed typeface set
+    TypeScales  []visionPreset — the closed scale set
+    Aligns      []visionPreset — the closed alignment set
+    Artboard    visionArtboardView — the server-rendered preview
+
+  states:
+    default | error | nsfw-allowed
+
+  children: vision_artboard
+
+  signals:
+    emits:    vision.artboard (POST /facets/vision/artboard) — preview re-render
+              vision.create   (POST /visions)                — writes the Vision
+    receives: none
+
+  context:
+    any surface that mounts GET /facets/vision/composer?mode=text
+*/}}
+{{define "vision_text_composer"}}
+<section class="vision-compose vision-compose--text" data-facet-id="facet:f33d3r:vision:new:text_composer"
+         aria-labelledby="vision-compose-h">
+  <header class="vision-compose__head">
+    <h2 class="vision-compose__title" id="vision-compose-h">New Vision</h2>
+    <p class="vision-compose__sub">Gone in 24 hours. Posting as @{{.Handle}}.</p>
+  </header>
+
+  {{if .Error}}
+  <p class="vision-compose__error" role="alert">{{.Error}}</p>
+  {{end}}
+
+  <nav class="vision-compose__modes" aria-label="Vision type">
+    <span class="vision-compose__mode vision-compose__mode--on" aria-current="true">Text</span>
+    <a class="vision-compose__mode" href="/facets/vision/composer?mode=media"
+       hx-get="/facets/vision/composer?mode=media"
+       hx-target="closest .vision-compose" hx-swap="outerHTML">Photo, video or share</a>
+  </nav>
+
+  <form class="vision-compose__form" method="post" action="/visions"
+        hx-post="/visions" hx-target="closest .vision-compose" hx-swap="outerHTML">
+    <input type="hidden" name="content_type" value="text">
+    <input type="hidden" name="source" value="composer">
+
+    {{template "vision_artboard" .Artboard}}
+
+    <div class="vision-compose__controls"
+         hx-post="/facets/vision/artboard"
+         hx-trigger="change, keyup changed delay:300ms"
+         hx-include="closest form"
+         hx-target="[data-facet-id='facet:f33d3r:vision:new:artboard']"
+         hx-swap="outerHTML">
+
+      <label class="vision-compose__label" for="vision-body">Words</label>
+      <textarea class="vision-compose__textarea" id="vision-body" name="body" rows="3"
+                maxlength="280" required
+                placeholder="Say something.">{{.Body}}</textarea>
+
+      <fieldset class="vision-compose__set">
+        <legend class="vision-compose__legend">Background</legend>
+        <div class="vision-compose__swatches">
+          {{range .Backgrounds}}
+          <label class="vision-swatch vision-swatch--{{.Key}}">
+            <input class="vision-compose__radio" type="radio" name="artboard_background"
+                   value="{{.Key}}"{{if eq $.Background .Key}} checked{{end}}>
+            <span class="vision-swatch__face" aria-hidden="true"></span>
+            <span class="vision-swatch__label">{{.Label}}</span>
+          </label>
+          {{end}}
+        </div>
+      </fieldset>
+
+      <fieldset class="vision-compose__set">
+        <legend class="vision-compose__legend">Typeface</legend>
+        <div class="vision-compose__chips">
+          {{range .Typefaces}}
+          <label class="vision-chip vision-chip--face-{{.Key}}">
+            <input class="vision-compose__radio" type="radio" name="artboard_typeface"
+                   value="{{.Key}}"{{if eq $.Typeface .Key}} checked{{end}}>
+            <span class="vision-chip__label">{{.Label}}</span>
+          </label>
+          {{end}}
+        </div>
+      </fieldset>
+
+      <fieldset class="vision-compose__set">
+        <legend class="vision-compose__legend">Size</legend>
+        <div class="vision-compose__chips">
+          {{range .TypeScales}}
+          <label class="vision-chip">
+            <input class="vision-compose__radio" type="radio" name="artboard_type_scale"
+                   value="{{.Key}}"{{if eq $.TypeScale .Key}} checked{{end}}>
+            <span class="vision-chip__label">{{.Label}}</span>
+          </label>
+          {{end}}
+        </div>
+      </fieldset>
+
+      <fieldset class="vision-compose__set">
+        <legend class="vision-compose__legend">Alignment</legend>
+        <div class="vision-compose__chips">
+          {{range .Aligns}}
+          <label class="vision-chip">
+            <input class="vision-compose__radio" type="radio" name="artboard_align"
+                   value="{{.Key}}"{{if eq $.Align .Key}} checked{{end}}>
+            <span class="vision-chip__label">{{.Label}}</span>
+          </label>
+          {{end}}
+        </div>
+      </fieldset>
+    </div>
+
+    {{if .CanNSFW}}
+    <label class="vision-compose__check">
+      <input type="checkbox" name="nsfw" value="1"{{if .IsNSFW}} checked{{end}}>
+      <span>This Vision is 18+</span>
+    </label>
+    {{end}}
+
+    <button class="vision-compose__submit" type="submit">Post Vision</button>
+  </form>
+</section>
+{{end}}

@@ -1,0 +1,119 @@
+{{/*
+FACET creator_analytics
+  version: 1.0 | status: stable | layer: 2
+
+  inputs:
+    Summary      *AstraonSummary      — nil = analytics unavailable; has Impressions, Likes, Reposts,
+                                        Replies, Saves, EngagementRate, CurrentFollowers, FollowersGained
+    Posts        *AstraonCreatorPosts — nil = no post data; has Posts []AstraonPostRow
+    AstraonOnline bool                — shows "analytics unavailable" banner when false
+    Period       int                  — days (7|30|90|0=all)
+    SortBy       string               — "impressions"|"engagement"|"likes"
+    User         *model.User          — .Handle
+
+  states:
+    default | unavailable (AstraonOnline false)
+
+  children:
+    analytics_stat_card, analytics_post_row
+
+  signals:
+    emits:    none (period/sort links are GET hx-get)
+    receives: none
+
+  context:
+    creator_dashboard → #creator-panel (hx-get /creator/analytics)
+*/}}
+{{define "creator_analytics"}}
+
+<div class="crt-analytics">
+
+  {{/* ── Period sort bar ── */}}
+  <div class="crt-anl-bar">
+    <div class="crt-anl-period">Last {{.Period}} days</div>
+    <div class="crt-anl-sort">
+      Sort:
+      <a class="crt-anl-sort-link {{if eq .SortBy "impressions"}}is-active{{end}}"
+         hx-get="/create/partials/analytics?sort=impressions"
+         hx-target="#creator-panel" hx-swap="innerHTML">Impressions</a>
+      <a class="crt-anl-sort-link {{if eq .SortBy "likes"}}is-active{{end}}"
+         hx-get="/create/partials/analytics?sort=likes"
+         hx-target="#creator-panel" hx-swap="innerHTML">Likes</a>
+      <a class="crt-anl-sort-link {{if eq .SortBy "reposts"}}is-active{{end}}"
+         hx-get="/create/partials/analytics?sort=reposts"
+         hx-target="#creator-panel" hx-swap="innerHTML">Reposts</a>
+      <a class="crt-anl-sort-link {{if eq .SortBy "engagement"}}is-active{{end}}"
+         hx-get="/create/partials/analytics?sort=engagement"
+         hx-target="#creator-panel" hx-swap="innerHTML">Engagement</a>
+    </div>
+  </div>
+
+  {{/* ── Summary grid ── */}}
+  {{if .Summary}}
+  {{$s := .Summary}}
+  <div class="crt-section">
+    <div class="crt-section-head">
+      <h2 class="crt-section-title">Performance overview</h2>
+    </div>
+    <div class="crt-anl-grid">
+      <div class="crt-anl-card">
+        <div class="crt-anl-val">{{fmtNum $s.Impressions}}</div>
+        <div class="crt-anl-label">Impressions</div>
+      </div>
+      <div class="crt-anl-card">
+        <div class="crt-anl-val">{{fmtNum $s.Likes}}</div>
+        <div class="crt-anl-label">Likes</div>
+      </div>
+      <div class="crt-anl-card">
+        <div class="crt-anl-val">{{fmtNum $s.Reposts}}</div>
+        <div class="crt-anl-label">Reposts</div>
+      </div>
+      <div class="crt-anl-card">
+        <div class="crt-anl-val">{{fmtNum $s.Replies}}</div>
+        <div class="crt-anl-label">Replies</div>
+      </div>
+      <div class="crt-anl-card">
+        <div class="crt-anl-val">{{fmtNum $s.Saves}}</div>
+        <div class="crt-anl-label">Saves</div>
+      </div>
+      <div class="crt-anl-card crt-anl-card--accent">
+        <div class="crt-anl-val">{{printf "%.2f" $s.EngagementRate}}%</div>
+        <div class="crt-anl-label">Engagement rate</div>
+      </div>
+      <div class="crt-anl-card">
+        <div class="crt-anl-val">{{fmtNum $s.CurrentFollowers}}</div>
+        <div class="crt-anl-label">Followers</div>
+      </div>
+      <div class="crt-anl-card">
+        <div class="crt-anl-val">+{{fmtNum $s.FollowersGained}}</div>
+        <div class="crt-anl-label">Gained this period</div>
+      </div>
+    </div>
+  </div>
+  {{else}}
+  <div class="crt-empty">
+    <p class="crt-empty-text">No analytics data yet. Post some content to start seeing insights.</p>
+  </div>
+  {{end}}
+
+  {{/* ── Top posts ── */}}
+  {{if .Posts}}
+  <div class="crt-section">
+    <div class="crt-section-head">
+      <h2 class="crt-section-title">Top posts</h2>
+    </div>
+    <div class="anl-posts-table">
+      {{range .Posts.Posts}}
+      {{template "analytics_post_row" .}}
+      {{end}}
+    </div>
+  </div>
+  {{end}}
+
+  {{/* ── Full analytics link ── */}}
+  <div class="crt-anl-footer">
+    <a href="/analytics" class="crt-btn-outline">Full analytics with charts &rarr;</a>
+  </div>
+
+</div>
+{{end}}

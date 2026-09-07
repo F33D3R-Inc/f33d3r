@@ -1,0 +1,135 @@
+{{/*
+FACET contact_gate
+  version: 2.0 | status: stable | layer: 2
+
+  The gate for a message written to a person you already know the name of, and
+  it renders INSIDE the conversation, directly under the message that did not
+  land. That placement is the whole feature. Somebody who has never heard of a
+  F33D3R Number will never find one in Settings; they will find it here, at the
+  only moment they have a reason to care — they wrote something, it did not get
+  through, and the explanation and the way forward are under their own words.
+
+  inputs:
+    Handle     string — the account the viewer wrote to
+    Decision   string — "request" | "deny" | "unavailable" | "malformed"
+    PendingID  string — the id of the message the SERVER is still holding for
+                        this pair. Present, the Number affordance is offered and
+                        submitting a Number sends THAT message. Absent, the gate
+                        explains and offers nothing, because there is nothing to
+                        send.
+
+  states:
+    request | deny | unavailable | malformed
+
+  children: none
+
+  signals:
+    receives: POST /messages/send  (a message that could not be delivered)
+              POST /messages/new-number (a Number that did not open the door)
+    emits:    POST /messages/new-number → replaces the whole thread pane with
+              whatever the server decides: the conversation, or this gate again.
+
+  context:
+    messages → thread pane, inside gnosis_prospect_thread
+
+  notes:
+    WHAT MAY BE NAMED AND WHAT MAY NOT. The handle may be named: the viewer
+    typed it, and it is on a public profile. The recipient's POLICY may never be
+    named. Whether the wall was followers, mutuals, a Number expected and not
+    presented, a contact link not held, or a door closed to everybody is the
+    recipient's business, and a sender who could read it off this fragment would
+    be reading how somebody has locked their door.
+
+    "deny" IS ONE STATE AND MUST STAY ONE STATE. It is what a policy refusal, an
+    unknown Number, a revoked Number, an expired Number, an exhausted Number and
+    a Number belonging to somebody other than this person all render as —
+    identical words, identical markup. The authority already collapses them to a
+    single `deny` with a single reason; collapsing them again here is what stops
+    this surface being the enumeration oracle the rest of the lane refuses to
+    be. The handler holds every one of them to the same floor on the clock, so
+    they are also indistinguishable by timing. Do not add a helpful sentence
+    naming which it was.
+
+    "malformed" MAY be named, and only it. Whether what somebody typed is
+    shaped like a Number at all is arithmetic they can do offline without this
+    service, so saying so discloses nothing — and it is the difference between a
+    person fixing a typo and a person concluding they were turned away.
+
+    "request" IS NOT A REFUSAL and must never read as one. On F33D3R a contact
+    IS a mutual follow; there is no contacts list and no address book. Three
+    tiers reach somebody: a mutual follow goes through freely, a Number passes
+    that Number's gate, and anyone else knocks. This state is the knock, and the
+    message is still here waiting on the answer.
+
+    The Number field carries no format. Length, alphabet and grouping belong to
+    canonicalNumber and to the brain that mints Numbers, so nothing here can
+    drift out of step with them: no pattern, no maxlength, no example. It is
+    inputmode="numeric" rather than type="number" so a phone offers the keypad
+    while a Number that is not purely digits can still be typed.
+
+    The contact link is here because capability_only is otherwise an unreachable
+    policy: somebody holding a link and no other route needs a field to put it
+    in.
+
+    The note is here, and it is NOT the message. The message stays undelivered
+    until the recipient agrees to receive it; a knock that carried its own
+    payload would have delivered itself and "accept" would be a formality after
+    the fact. The note is the short, optional thing a sender writes to say why
+    they are asking, and it is the only thing about them that crosses before the
+    recipient decides.
+*/}}
+{{define "contact_gate"}}
+<div class="contact-gate gn-gate gn-gate--inline"
+     data-facet-id="facet:f33d3r:contact:{{.Handle}}:gate">
+  {{if eq .Decision "request"}}
+    <p class="gn-gate-title">Your message is waiting on @{{.Handle}}.</p>
+    <p class="gn-gate-text">
+      This is not a refusal. The person you wrote to has been asked, and it is
+      theirs to answer. Nothing here was delivered yet; if they accept, this
+      message goes with it.
+    </p>
+  {{else if eq .Decision "unavailable"}}
+    <p class="gn-gate-title">Contact cannot be set up right now.</p>
+    <p class="gn-gate-text">
+      Nobody was contacted and nothing was delivered. Your message is still
+      here. Please try again shortly.
+    </p>
+  {{else if eq .Decision "malformed"}}
+    <p class="gn-gate-title">That is not a F33D3R Number.</p>
+    <p class="gn-gate-text">
+      Nothing was sent. Check what you were given and try it again.
+    </p>
+  {{else}}
+    <p class="gn-gate-title">This message did not reach @{{.Handle}}.</p>
+    <p class="gn-gate-text">
+      Nothing was delivered. Your message is still here. If you know their
+      F33D3R Number, it will go with it.
+    </p>
+  {{end}}
+
+  {{if .PendingID}}
+  <details class="gn-gate-number">
+    <summary class="gn-gate-number-btn">Enter their F33D3R Number</summary>
+    <form class="gn-gate-number-form"
+          method="post" action="/messages/new-number"
+          hx-post="/messages/new-number"
+          hx-target="#gnosis-thread" hx-swap="innerHTML">
+      <input type="hidden" name="p" value="{{.PendingID}}">
+      <label class="gn-gate-number-label" for="gn-gate-number">Their F33D3R Number</label>
+      <input class="gn-gate-number-input" type="text" id="gn-gate-number" name="number"
+             inputmode="numeric" autocomplete="off" autocapitalize="off" spellcheck="false"
+             required aria-describedby="gn-gate-number-help">
+      <p class="gn-gate-number-help" id="gn-gate-number-help">
+        The message you wrote is sent with it. You do not type it again.
+      </p>
+      <label class="gn-gate-number-label" for="gn-gate-capability">Contact link, if they sent you one</label>
+      <input class="gn-gate-number-input" type="text" id="gn-gate-capability" name="capability"
+             autocomplete="off" autocapitalize="off" spellcheck="false">
+      <label class="gn-gate-number-label" for="gn-gate-note">A note, if they review requests</label>
+      <input class="gn-gate-number-input" type="text" id="gn-gate-note" name="note" maxlength="280">
+      <button class="gn-gate-number-send" type="submit">Send with this Number</button>
+    </form>
+  </details>
+  {{end}}
+</div>
+{{end}}

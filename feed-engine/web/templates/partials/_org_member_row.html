@@ -1,0 +1,61 @@
+{{/*
+FACET org_member_row
+  version: 1.0 | status: stable | layer: 2
+
+  inputs:
+    Row      OrgApplicationRow — membership record with user info
+    OrgID    string            — org user_id (for ownership check in handlers)
+    Mode     string            — "pending_employee" | "pending_org" | "approved"
+
+  states:
+    default | pending | approved
+
+  children: none
+
+  signals:
+    emits: org_approve | org_reject | org_revoke (POST /events)
+    receives: none
+
+  context:
+    org_panel → member list sections
+*/}}
+{{define "org_member_row"}}
+{{$r := .Row}}
+<div class="omr" data-membership-id="{{$r.MembershipID}}">
+  <a href="/{{$r.Handle}}" class="omr-avatar-link" onclick="event.stopPropagation()">
+    {{template "user_avatar" (dict "Handle" $r.Handle "AvatarURL" $r.AvatarURL "DisplayName" $r.DisplayName "Size" "md")}}
+  </a>
+  <div class="omr-body">
+    <a href="/{{$r.Handle}}" class="omr-name" onclick="event.stopPropagation()">{{$r.DisplayName}}</a>
+    <span class="omr-handle">@{{$r.Handle}}</span>
+  </div>
+  <div class="omr-actions">
+    {{if eq .Mode "pending_employee"}}
+    <button class="btn-primary omr-btn"
+            hx-post="/events"
+            hx-vals='{"event_type":"org_approve","membership_id":"{{$r.MembershipID}}"}'
+            hx-target="closest .omr"
+            hx-swap="outerHTML">Approve</button>
+    <button class="btn-ghost omr-btn"
+            hx-post="/events"
+            hx-vals='{"event_type":"org_reject","membership_id":"{{$r.MembershipID}}"}'
+            hx-target="closest .omr"
+            hx-swap="outerHTML">Decline</button>
+    {{else if eq .Mode "pending_org"}}
+    <span class="omr-status">Invited — awaiting response</span>
+    <button class="btn-ghost omr-btn"
+            hx-post="/events"
+            hx-vals='{"event_type":"org_revoke","membership_id":"{{$r.MembershipID}}"}'
+            hx-target="closest .omr"
+            hx-swap="outerHTML">Cancel</button>
+    {{else if eq .Mode "approved"}}
+    <button class="btn-ghost omr-btn omr-btn--danger"
+            hx-post="/events"
+            hx-vals='{"event_type":"org_revoke","membership_id":"{{$r.MembershipID}}"}'
+            hx-target="closest .omr"
+            hx-swap="outerHTML"
+            hx-confirm="Remove @{{$r.Handle}} from your organization?">Remove</button>
+    {{end}}
+  </div>
+</div>
+{{end}}

@@ -1,0 +1,52 @@
+{{/*
+FACET follow_list_modal
+  version: 1.0 | status: stable | layer: 3
+
+  inputs:
+    Users     []FollowListEntry — list of follow rows
+    Title     string            — modal header text ("Followers" | "Following")
+    ListType  string            — "followers" | "following" | "subscribers"
+
+  states:
+    default | empty
+
+  children:
+    follow_list_row
+
+  signals:
+    emits:    none (rows emit follow/unfollow individually)
+    receives: none
+
+  close:
+    backdrop or Close asks /facets/overlay/close — the empty fragment clears #overlay-slot
+
+  context:
+    profile → overlay (hx-get /partials/follow-list?handle=&type= into #overlay-slot on stats click)
+*/}}
+{{define "follow_list_modal"}}
+<div class="modal-scrim" data-facet-id="facet:f33d3r:follow_list:{{.ListType}}:modal">
+  <div class="modal-scrim-backdrop" style="position:absolute;inset:0" hx-get="/facets/overlay/close" hx-target="#overlay-slot" hx-swap="innerHTML" hx-trigger="click"></div>
+  <div class="modal-card" style="max-width:480px;max-height:78dvh;position:relative">
+    <div class="modal-head">
+      <span style="font-size:16px;font-weight:700;color:var(--ink)">{{.Title}}</span>
+      <button type="button" hx-get="/facets/overlay/close" hx-target="#overlay-slot" hx-swap="innerHTML"
+              style="width:32px;height:32px;border:none;background:var(--bg-sunk);border-radius:50%;cursor:pointer;color:var(--ink-3);display:flex;align-items:center;justify-content:center"
+              aria-label="Close">
+        <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="width:16px;height:16px"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div style="overflow-y:auto;flex:1;overscroll-behavior:contain">
+      {{if .Users}}
+        {{$vh := .ViewerHandle}}
+        {{range .Users}}
+          {{template "follow_list_row" (dict "Handle" .Handle "DisplayName" .DisplayName "AvatarURL" .AvatarURL "PIALID" .PIALID "ViewerFollows" .ViewerFollows "ViewerHandle" $vh)}}
+        {{end}}
+      {{else}}
+        <div class="follow-list-empty">
+          <p>{{if eq .ListType "followers"}}No followers yet.{{else if eq .ListType "subscribers"}}No subscribers yet.{{else}}Not following anyone yet.{{end}}</p>
+        </div>
+      {{end}}
+    </div>
+  </div>
+</div>
+{{end}}

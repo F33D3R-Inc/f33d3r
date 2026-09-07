@@ -1,0 +1,25 @@
+{{/*
+FACET feed_skeletons
+  version: 1.0 | status: stable | layer: 1
+
+  inputs:
+    .Count  int — number of skeleton cards to render (default 5)
+
+  states:
+    default
+
+  children: none
+
+  signals:
+    emits:    none
+    receives: none
+
+  context:
+    index.html → feed-container (replaced by real posts on HTMX load)
+*/}}
+{{define "feed_skeletons"}}
+{{$n := .Count}}{{if not $n}}{{$n = 5}}{{end}}
+{{range mkRange 0 $n}}
+{{template "skeleton_post" .}}
+{{end}}
+{{end}}

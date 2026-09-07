@@ -1,0 +1,27 @@
+{{define "title"}}Followers · @{{.ProfileHandle}} · F33D3R{{end}}
+{{define "body"}}
+<main class="f33d3r-main" id="main-col">
+  <div class="page-header-bar">
+    <a href="/{{.ProfileHandle}}" class="back-btn" aria-label="Back to profile">
+      <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="width:18px;height:18px"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+    </a>
+    <div>
+      <h1 class="page-header-title">@{{.ProfileHandle}}</h1>
+      <p class="page-header-sub">Followers</p>
+    </div>
+  </div>
+
+  <div class="follow-list">
+    {{if .Users}}
+      {{$viewer := .User}}
+      {{range .Users}}
+        {{template "follow_list_row" (dict "Handle" .Handle "DisplayName" .DisplayName "AvatarURL" .AvatarURL "PIALID" .PIALID "ViewerFollows" .ViewerFollows "ViewerHandle" $viewer.Handle)}}
+      {{end}}
+    {{else}}
+      <div class="follow-list-empty">
+        <p>No followers yet.</p>
+      </div>
+    {{end}}
+  </div>
+</main>
+{{end}}

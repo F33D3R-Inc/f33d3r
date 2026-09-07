@@ -1,0 +1,35 @@
+{{/*
+FACET reply_preview
+  version: 1.0 | status: stable | layer: 2
+
+  inputs:
+    ID                    string   — parent post ID (for link href)
+    LatestReplierHandles  []string — up to 3 replier handles (for gradient fallback)
+    LatestReplierAvatars  []string — up to 3 replier avatar URLs (may be empty per item)
+    Comments              int      — total reply count
+
+  states:
+    default | empty (hidden when LatestReplierHandles is nil)
+
+  children:
+    user_avatar
+
+  signals:
+    emits:    none (link navigates to /post/{ID})
+    receives: none
+
+  context:
+    post_card → below body text, above action_bar
+*/}}
+{{define "reply_preview"}}
+{{if .LatestReplierHandles}}
+<a href="/post/{{.ID}}" class="reply-preview" onclick="event.stopPropagation()">
+  <div class="reply-preview-avatars">
+    {{range $i, $h := .LatestReplierHandles}}
+    {{template "user_avatar" (dict "Handle" $h "AvatarURL" (index $.LatestReplierAvatars $i) "DisplayName" $h "Size" "xs")}}
+    {{end}}
+  </div>
+  <span class="reply-preview-label">{{replyPreviewLabel .LatestReplierHandles .Comments}}</span>
+</a>
+{{end}}
+{{end}}

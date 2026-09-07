@@ -1,0 +1,46 @@
+[package]
+name = "themis"
+version = "0.1.0"
+edition = "2021"
+description = "Themis — Private Bitcoin Marketplace Brain for F33D3R"
+
+[[bin]]
+name = "themis"
+path = "src/main.rs"
+
+[dependencies]
+manhattan-client = { path = "../libs/manhattan-client" }
+manhattan-outbox = { path = "../libs/manhattan-outbox" }
+axum = { version = "0.7", features = ["json"] }
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "macros"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
+anyhow = "1"
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+rustls = { version = "0.23", features = ["aws-lc-rs"] }
+metrics = "0.23"
+metrics-exporter-prometheus = "0.15"
+once_cell = "1"
+base64 = "0.22"
+hex = "0.4"
+sha2 = "0.10"
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+futures-util = "0.3"
+aes-gcm = "0.10"
+p256 = { version = "0.13", features = ["ecdh", "pkcs8", "ecdsa"] }
+hkdf = "0.12"
+rand = "0.8"
+zeroize = "1"
+qrcode = "0.14"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

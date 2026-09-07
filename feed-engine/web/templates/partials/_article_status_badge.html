@@ -1,0 +1,22 @@
+{{/*
+FACET article_status_badge
+  version: 1.0 | status: stable | layer: 1
+  inputs:
+    Status    string    — "draft" | "published"
+  states:
+    draft | published
+  children:
+    none
+  signals:
+    emits:    none
+    receives: none
+  context:
+    article_row → meta row
+*/}}
+{{define "article_status_badge"}}
+{{if eq .Status "published"}}
+<span class="article-status article-status--published">Published</span>
+{{else}}
+<span class="article-status article-status--draft">Draft</span>
+{{end}}
+{{end}}

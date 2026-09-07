@@ -1,0 +1,49 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "description": "Emitted by Auralis (F33D3R Frequencies) on frequency.moderation_terminated.",
+  "properties": {
+    "correlation_id": {
+      "type": "string"
+    },
+    "event_id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "event_type": {
+      "const": "frequency.moderation_terminated",
+      "type": "string"
+    },
+    "frequency_id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "payload": {
+      "type": "object"
+    },
+    "pial_id": {
+      "description": "Actor PIAL UUID, or \"service\" when the platform acted",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "1.0",
+      "type": "string"
+    },
+    "timestamp": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "required": [
+    "event_id",
+    "event_type",
+    "schema_version",
+    "pial_id",
+    "timestamp",
+    "frequency_id",
+    "correlation_id",
+    "payload"
+  ],
+  "title": "frequency.moderation_terminated",
+  "type": "object"
+}

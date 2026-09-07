@@ -1,0 +1,102 @@
+{{/*
+FACET sports_game_card
+  version: 1.0 | status: stable | layer: 2 (composite)
+
+  One game. The composite the whole sports lane is built around: it holds the
+  two atomic score facets, the atomic clock facet and — while the game is being
+  played — the atomic situation facet, and it is itself the unit that is
+  re-rendered when anything structural changes (a state transition, a possession
+  flip, a corrected record).
+
+  The card is correct in every state a sport actually has:
+    scheduled   kickoff time in the league's own zone, no score, no clock
+    in_progress quarter, clock, down and distance, red zone, possession
+    halftime    "Halftime", scores stand, no clock
+    end_period  "End 3rd"
+    delayed     "Delayed", scores stand, no clock, no situation
+    postponed   "Postponed", no score at all
+    canceled    "Canceled", no score at all
+    final       "Final", winner emphasised
+    final/OT    "Final/OT" — overtime is read from the period, not from a string
+    unknown     "Status unavailable" — the card never guesses
+    stale       every state above, plus an explicit "delayed feed" marker when
+                the poller has not heard from the upstream recently. A frozen
+                score presented as current is the one thing a scoreboard may
+                never do.
+
+  Read order for a screen reader is away team, away score, home team, home
+  score, status — each piece carrying its own spoken text inside its own facet,
+  so a replacement of one atomic can never leave a stale summary sentence behind
+  on the card.
+
+  inputs:
+    Game  sports.Game
+    Href  string — the game's durable destination
+    Stale bool
+
+  states:
+    see above
+
+  children:
+    sports_game_score (×2), sports_game_clock, sports_game_situation
+
+  signals:
+    emits:    none
+    receives: sports_facet (SSE) — replacement fragment on any structural change
+
+  context:
+    sports_strip     → the Playground head lane
+    sports_hub       → the full slate
+    sports_game page → the focal card
+*/}}
+{{define "sports_game_card"}}
+{{$g := .Game}}
+<a class="sports-card sports-card--{{$g.State}}{{if $g.RedZone}} sports-card--redzone{{end}}"
+   data-facet-id="{{sportsCardFacetID $g.ID}}"
+   data-state="{{$g.State}}"
+   href="{{.Href}}">
+
+  <div class="sports-card__meta">
+    <span class="sports-card__league">{{$g.LeagueLabel}}</span>
+    {{if $g.WeekLabel}}<span class="sports-card__week">{{$g.WeekLabel}}</span>{{end}}
+    {{if $g.Broadcast}}<span class="sports-card__tv">{{$g.Broadcast}}</span>{{end}}
+  </div>
+
+  <div class="sports-card__teams">
+    {{/* Away first — the away team is named first in every scoreboard
+         convention, and a screen reader reads the rows in this order. */}}
+    <div class="sports-card__team{{if and $g.Final $g.HomeLeads}} sports-card__team--lost{{end}}">
+      <span class="sports-card__side">
+        {{if $g.Away.Team.LogoURL}}
+        <img class="sports-card__logo" src="{{$g.Away.Team.LogoURL}}" alt="" loading="lazy" decoding="async" width="22" height="22">
+        {{end}}
+        <span class="sports-card__abbr" aria-hidden="true">{{$g.Away.Team.Label}}</span>
+        <span class="sr-only">{{$g.Away.Team.Name}}</span>
+        {{if $g.Away.HasBall}}<span class="sports-card__ball" title="Possession"><span class="sr-only">has possession</span><span aria-hidden="true">•</span></span>{{end}}
+        {{if $g.Away.Team.Record}}<span class="sports-card__record">{{$g.Away.Team.Record}}</span>{{end}}
+      </span>
+      {{template "sports_game_score" (sportsScoreData $g "away")}}
+    </div>
+
+    <div class="sports-card__team{{if and $g.Final $g.AwayLeads}} sports-card__team--lost{{end}}">
+      <span class="sports-card__side">
+        {{if $g.Home.Team.LogoURL}}
+        <img class="sports-card__logo" src="{{$g.Home.Team.LogoURL}}" alt="" loading="lazy" decoding="async" width="22" height="22">
+        {{end}}
+        <span class="sports-card__abbr" aria-hidden="true">{{$g.Home.Team.Label}}</span>
+        <span class="sr-only">{{$g.Home.Team.Name}}</span>
+        {{if $g.Home.HasBall}}<span class="sports-card__ball" title="Possession"><span class="sr-only">has possession</span><span aria-hidden="true">•</span></span>{{end}}
+        {{if $g.Home.Team.Record}}<span class="sports-card__record">{{$g.Home.Team.Record}}</span>{{end}}
+      </span>
+      {{template "sports_game_score" (sportsScoreData $g "home")}}
+    </div>
+  </div>
+
+  {{template "sports_game_clock" .}}
+
+  {{if $g.HasSituation}}
+  {{template "sports_game_situation" .}}
+  {{end}}
+
+</a>
+{{end}}

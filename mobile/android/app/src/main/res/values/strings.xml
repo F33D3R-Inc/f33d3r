@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">F33D3R</string>
+    <string name="live_service_title">F33D3R is live</string>
+    <string name="live_service_text">Holding the connection so messages arrive.</string>
+</resources>

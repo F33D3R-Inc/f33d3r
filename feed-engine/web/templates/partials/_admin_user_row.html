@@ -1,0 +1,45 @@
+{{/*
+FACET admin_user_row
+  version: 1.0 | status: stable | layer: 2
+
+  inputs:
+    ID           string — user ID
+    Handle       string — handle (@username link)
+    DisplayName  string — display name
+    Role         string — "admin"|"user"|"creator"
+    IsVerified   bool
+    IsCreator    bool
+    CreatedAt    time.Time — signup timestamp
+
+  states:
+    default
+
+  children: none
+
+  signals:
+    emits:    none (row click links to admin lookup)
+    receives: none
+
+  context:
+    admin_panel_overview → recent signups table
+    admin_panel_users    → search results table
+*/}}
+{{define "admin_user_row"}}
+<tr class="admin-users-table-row">
+  <td><a href="/{{.Handle}}">@{{.Handle}}</a></td>
+  <td>{{.DisplayName}}</td>
+  <td>
+    <span class="admin-role-badge admin-role-badge--{{.Role}}">{{.Role}}</span>
+    {{if .IsVerified}}<span class="admin-cap-badge admin-cap-badge--granted" style="margin-left:4px">Verified</span>{{end}}
+    {{if .IsCreator}}<span class="admin-cap-badge admin-cap-badge--granted" style="margin-left:4px">Creator</span>{{end}}
+  </td>
+  <td>{{timeAgo .CreatedAt}}</td>
+  <td>
+    <a hx-get="/admin/partials/users?handle={{.Handle}}"
+       hx-target="#admin-content"
+       hx-swap="innerHTML"
+       
+       style="cursor:pointer">Manage →</a>
+  </td>
+</tr>
+{{end}}

@@ -1,0 +1,66 @@
+{{/*
+FACET settings_section_contact
+  version: 1.0 | status: stable | layer: 2
+
+  inputs:
+    .Numbers (see f33d3r_numbers)   — the viewer's Numbers surface data
+    .Addresses (see contact_addresses)
+
+  states:
+    default
+
+  children:
+    f33d3r_numbers
+    contact_addresses
+    number_resolve
+
+  signals:
+    emits: POST /contact/resolve → replaces the number_resolve facet
+
+  context:
+    settings → #settings-panel
+*/}}
+{{define "settings_section_contact"}}
+<div class="settings-section-contact"
+     data-facet-id="facet:f33d3r:identity:{{if .User}}{{.User.PIALID}}{{end}}:contact_section">
+
+  <div class="settings-panel-head">
+    <h2 class="settings-panel-title">Contact</h2>
+    <p class="settings-panel-sub">
+      How people reach you, and on whose terms. No phone number, no email
+      address, nothing you cannot take back.
+    </p>
+  </div>
+
+  {{if not .NumbersData}}
+  <p class="settings-block-hint">
+    Your identity is still being set up. Contact settings appear once it is ready.
+  </p>
+  {{else}}
+
+  {{template "f33d3r_numbers" .NumbersData}}
+
+  <div class="settings-block">
+    <div class="settings-block-title">Reach someone by their Number</div>
+    <form method="post" action="/contact/resolve"
+          hx-post="/contact/resolve"
+          hx-target="#number-resolve-result"
+          hx-swap="innerHTML">
+      <label class="settings-option-label" for="lookup-number">Their F33D3R Number</label>
+      <input type="text" id="lookup-number" name="number" maxlength="32"
+             class="settings-input" inputmode="numeric" placeholder="0412 8837 2919" autocomplete="off">
+      <label class="settings-option-label" for="lookup-capability">Contact link, if they sent you one</label>
+      <input type="text" id="lookup-capability" name="capability" maxlength="64"
+             class="settings-input" autocomplete="off">
+      <label class="settings-option-label" for="lookup-note">A note, if they review requests</label>
+      <input type="text" id="lookup-note" name="note" maxlength="280" class="settings-input">
+      <button type="submit" class="f33d3r-numbers__mint">Look up</button>
+    </form>
+    <div id="number-resolve-result"></div>
+  </div>
+
+  {{if .AddressesData}}{{template "contact_addresses" .AddressesData}}{{end}}
+
+  {{end}}
+</div>
+{{end}}

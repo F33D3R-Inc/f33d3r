@@ -1,0 +1,63 @@
+{{/*
+FACET microconversation
+  version: 1.1 | status: wip | layer: 2
+  inputs:
+    MC.ConversationID   string                         — seed reply ID (used as DOM id)
+    MC.AccentClass      string                         — mc-cobalt | mc-violet | ... (assigned sequentially by handler)
+    MC.SeedWork         *Work                          — the depth-1 reply that seeded this exchange
+    MC.Participants     []MicroconversationParticipant — distinct authors (handle + avatar)
+    MC.ReplyCount       int                            — total sub-replies in this subtree
+    MC.MoreCount        int                            — replies not shown; > 0 triggers expand button
+    MC.Exchanges        []*Work                        — top N direct exchanges (collapsed: 3)
+    MC.IsExpanded       bool                           — true when fully expanded via HTMX
+    Ctx                 map                            — CurrentUserHandle, User (passed through to work_card)
+  states:
+    collapsed (default) | expanded
+  children:
+    conversation_accent
+    work_card
+  signals:
+    emits:    none
+    receives: none
+  context:
+    works_detail → #work-replies reply stream
+*/}}
+{{define "microconversation"}}
+{{$mc := .MC}}
+{{$ctx := .Ctx}}
+<div class="microconversation"
+     id="mc-{{$mc.ConversationID}}"
+     data-facet="microconversation"
+     role="region"
+     aria-label="Conversation with {{range $i, $p := $mc.Participants}}{{if $i}} and {{end}}@{{$p.Handle}}{{end}}">
+  {{template "conversation_accent" $mc.AccentClass}}
+  <div class="microconversation__inner">
+    <div class="microconversation__header">
+      <div class="microconversation__avatars" aria-hidden="true">
+        {{range $mc.Participants}}
+        {{template "user_avatar" (dict "Handle" .Handle "AvatarURL" .AvatarURL "DisplayName" .Handle "Size" "xs")}}
+        {{end}}
+      </div>
+      <span class="microconversation__participants">
+        {{range $i, $p := $mc.Participants}}{{if $i}} + {{end}}@{{$p.Handle}}{{end}}
+      </span>
+      <span class="microconversation__count">· {{$mc.ReplyCount}} {{if eq $mc.ReplyCount 1}}exchange{{else}}exchanges{{end}}</span>
+    </div>
+    <div class="microconversation__body">
+      {{template "work_card" (dict "W" $mc.SeedWork "Ctx" $ctx)}}
+      {{range $mc.Exchanges}}
+      {{template "work_card" (dict "W" . "Ctx" $ctx)}}
+      {{end}}
+    </div>
+    {{if gt $mc.MoreCount 0}}
+    <button class="microconversation__more"
+            hx-get="/facets/works/conversation/{{$mc.ConversationID}}?accent={{$mc.AccentClass}}"
+            hx-target="#mc-{{$mc.ConversationID}}"
+            hx-swap="outerHTML"
+            aria-label="View {{$mc.MoreCount}} more {{if eq $mc.MoreCount 1}}reply{{else}}replies{{end}} in this conversation">
+      View {{$mc.MoreCount}} more {{if eq $mc.MoreCount 1}}reply{{else}}replies{{end}}
+    </button>
+    {{end}}
+  </div>
+</div>
+{{end}}

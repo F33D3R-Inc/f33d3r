@@ -1,0 +1,39 @@
+{{/*
+FACET btn_follow_back
+  version: 2.0 | status: stable | layer: 4
+
+  inputs:
+    TargetPIAL      string — PIAL ID of the user
+    TargetHandle    string — handle (for aria-label and display)
+    IsFollowing     bool   — whether the viewer already follows back
+    FollowsYouBack  bool   — whether the target follows the viewer (drives "Follows you" badge)
+
+  states:
+    default | follows-you
+
+  children:
+    btn_follow (Surface=profile)
+
+  signals:
+    emits:    follow (POST /events) | unfollow (POST /events) — emitted by btn_follow
+    receives: none
+
+  context:
+    profile_header → action row, secondary follow-back indicator
+    notification_item → follower notification CTA
+
+  note:
+    This composes the one btn_follow control rather than restating its markup.
+    It used to hand-write a second .btn-follow button, which meant a click here
+    was answered with a fragment this facet had never rendered. The trade is the
+    "Follow back" wording: the control now reads "Follow", and the reciprocity is
+    carried by the "Follows you" badge beside it.
+*/}}
+{{define "btn_follow_back"}}
+<span class="btn-follow-back-wrap">
+  {{if .FollowsYouBack}}
+  <span class="btn-follows-you-badge">Follows you</span>
+  {{end}}
+  {{template "btn_follow" (dict "TargetPIAL" .TargetPIAL "TargetHandle" .TargetHandle "IsFollowing" .IsFollowing "Surface" "profile")}}
+</span>
+{{end}}

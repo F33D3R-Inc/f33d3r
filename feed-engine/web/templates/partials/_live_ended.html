@@ -1,0 +1,33 @@
+{{/*
+FACET live_ended
+  version: 1.0 | status: stable | layer: 3
+
+  Terminal state for a finished broadcast. Pushed over FA Live as the replacement
+  Fragment for the player when the server ends the stream, so every open watch
+  page falls back together without a reload.
+
+  inputs:
+    S            *model.LiveStream — .ID .Title .PeakViewers
+    AuthorHandle string
+
+  states:
+    default
+
+  children: none
+
+  signals:
+    emits:    none
+    receives: live_status (SSE)
+
+  context:
+    live_player → replaces the video stage
+*/}}
+{{define "live_ended"}}
+<div class="live-ended" data-facet-id="facet:f33d3r:live:{{.S.ID}}:ended" role="status">
+  <svg class="live-ended__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+    <rect x="2" y="6" width="14" height="12" rx="2"/><path d="m22 8-6 4 6 4z"/><path d="M2 2l20 20"/>
+  </svg>
+  <p class="live-ended__title">This stream has ended</p>
+  <p class="live-ended__sub">Peak audience {{.S.PeakViewers}} · <a href="/{{.AuthorHandle}}">@{{.AuthorHandle}}</a></p>
+</div>
+{{end}}

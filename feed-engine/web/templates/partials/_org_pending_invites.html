@@ -1,0 +1,34 @@
+{{/*
+FACET org_pending_invites
+  version: 1.0 | status: stable | layer: 2
+
+  inputs:
+    PendingInvites  []model.OrgApplicationRow — invites this org has sent that
+                                                are still unanswered
+
+  states:
+    default | empty
+
+  children:
+    org_member_row (Mode=pending_org)
+
+  signals:
+    emits:    none (rows emit org_revoke individually)
+    receives: none (re-rendered whole by the org_invite answer)
+
+  context:
+    org_panel.html → "Sent invites" section; the section root is the target of
+    the invite form
+*/}}
+{{define "org_pending_invites"}}
+<div class="org-panel-section" id="org-pending-invites" data-facet-id="facet:f33d3r:org:panel:pending_invites">
+  <div class="org-panel-section-title">Sent invites <span class="org-panel-count">{{len .PendingInvites}}</span></div>
+  {{if .PendingInvites}}
+  {{range .PendingInvites}}
+  {{template "org_member_row" (dict "Row" . "Mode" "pending_org")}}
+  {{end}}
+  {{else}}
+  <p class="org-panel-empty">No invites waiting on an answer.</p>
+  {{end}}
+</div>
+{{end}}

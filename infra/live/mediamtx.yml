@@ -1,0 +1,82 @@
+# F33D3R live ingest — MediaMTX.
+#
+# This server accepts video and nothing else. It does not decide who may
+# publish (feed-engine's live control plane does, over authHTTPAddress) and it
+# does not deliver to viewers (the live edge serves the ABR ladder off disk).
+#
+# Ingest:  RTMP 1935 (OBS / desktop), SRT 8890 (hardware + mobile encoders),
+#          WebRTC-WHIP 8889 (phone browser, sub-second glass-to-glass).
+# Egress:  RTSP 8554 on the container only — the ladder pulls the source back
+#          out over loopback. MediaMTX's own HLS and WebRTC playback are off.
+
+logLevel: info
+logDestinations: [stdout]
+
+readTimeout: 15s
+writeTimeout: 15s
+writeQueueSize: 4096
+# 4K keyframes are large; the default 1472-byte UDP payload fragments them badly.
+udpMaxPayloadSize: 1472
+
+# ── control API ──────────────────────────────────────────────────────────────
+api: yes
+apiAddress: :9997
+
+metrics: yes
+metricsAddress: :9998
+
+# ── authentication ───────────────────────────────────────────────────────────
+# Every action is referred to feed-engine. Publishing requires the stream's
+# ingest key; reading is permitted only from inside the container network,
+# because viewers never reach this server at all.
+authMethod: http
+authHTTPAddress: http://feed-engine:8110/live/auth
+
+# ── ingest protocols ─────────────────────────────────────────────────────────
+rtsp: yes
+rtspAddress: :8554
+rtspTransports: [tcp]
+rtspAuthMethods: [basic]
+
+rtmp: yes
+rtmpAddress: :1935
+rtmpEncryption: "no"
+
+srt: yes
+srtAddress: :8890
+
+webrtc: yes
+webrtcAddress: :8889
+webrtcLocalUDPAddress: :8189
+# Filled in by the compose environment with the host's reachable address so a
+# phone on the LAN or the internet can complete ICE.
+webrtcAdditionalHosts: []
+
+# ── egress ───────────────────────────────────────────────────────────────────
+# Off deliberately. Delivery is the live edge's job: an ABR ladder off disk
+# behind a cache, not a per-viewer mux in the ingest process.
+hls: no
+moq: no
+
+# ── paths ────────────────────────────────────────────────────────────────────
+pathDefaults:
+  source: publisher
+  # The transcoder is started by the media server the moment a source becomes
+  # ready and killed when it stops, so a ladder exists exactly as long as there
+  # is something to encode.
+  #
+  # Restart is on because the two lifetimes must match. A transcoder that dies
+  # while the publisher is still connected — a transient read off the loopback
+  # RTSP, an encoder that gives up — would otherwise leave a stream marked live
+  # with nothing being written for the rest of the broadcast, and the reconcile
+  # loop cannot see it because the publisher is still there. The media server
+  # paces restarts at five seconds and logs every exit, so a source that cannot
+  # be encoded at all is loud rather than silent.
+  runOnAvailable: /scripts/live_ladder.sh $MTX_PATH $MTX_SOURCE_TYPE
+  runOnAvailableRestart: yes
+  runOnUnavailable: /scripts/live_teardown.sh $MTX_PATH
+
+paths:
+  # One path per stream id, under the "live" prefix. The path is the stream id;
+  # the ingest key is the password and never appears in a path.
+  ~^live/[0-9a-fA-F-]{36}$:
