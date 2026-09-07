@@ -1,1 +1,0 @@
-/* video-pills stub */

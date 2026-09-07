@@ -1,0 +1,47 @@
+# Root Docker build context, shared by every image built with `context: .` in
+# docker-compose*.yml: feed-engine (Go) and each Rust brain that depends on the
+# shared `libs/manhattan-client` crate by path. A path dependency cannot be
+# reached from a per-brain context, so those brains build from the root and
+# their Dockerfiles COPY `<brain>/…` and `libs/…`.
+#
+# Whitelist approach: ignore everything, re-include only the trees an image
+# builds from, then drop their local build artefacts so the context stays small
+# and hermetic.
+
+# Ignore everything by default.
+*
+
+# Shared Rust crates.
+!libs
+
+# Go services.
+!feed-engine
+!gnosis-malkuth
+
+# Rust brains that depend on libs/ and therefore build from the repo root.
+!aethyr-ledger
+!alexandria
+!herald
+!themis
+!verity
+!zodacare
+!ain-soph
+!astraon
+!lore
+!registry-brain
+!elohim-veni
+!frequencies
+
+# Drop local build output / noise inside the included trees.
+**/target
+feed-engine/feed-engine
+feed-engine/web/static/uploads/
+feed-engine/.idea/
+gnosis-malkuth/target/
+**/.git
+**/.gitignore
+**/*.log
+**/*.swp
+**/.DS_Store
+**/._*
+**/node_modules
