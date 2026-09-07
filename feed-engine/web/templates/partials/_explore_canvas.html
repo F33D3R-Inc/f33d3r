@@ -1,0 +1,101 @@
+{{/*
+FACET explore_canvas
+  version: 1.0 | status: stable | layer: 2
+
+  inputs:
+    Surf          string            — the Explore tab shown: trending | you | news | live | paid | tags
+    FeedSurface   string            — the works surface that tab shows ("" on tags)
+    TrendingTags  []db.TrendingTag  — trending topics for the grid, chips and tag browser
+
+  states:
+    trending (grid + chips + results) | tags (tag browser) | feed (results only)
+
+  children:
+    none (the results container asks /facets/works/feed for its cards)
+
+  signals:
+    emits:    GET /facets/explore/canvas?surf=<tab> → #explore-canvas (a tab click
+              is a request for the canvas drawn for that tab)
+    receives: none
+
+  context:
+    explore.html → #explore-canvas (page render and every tab change)
+*/}}
+{{define "explore_tab"}}
+<button class="explore-surf-tab{{if .Active}} active{{end}}" role="tab" aria-selected="{{if .Active}}true{{else}}false{{end}}"
+        hx-get="/facets/explore/canvas?surf={{.Surf}}"
+        hx-target="#explore-canvas"
+        hx-swap="innerHTML">{{.Label}}</button>
+{{end}}
+{{define "explore_canvas"}}
+{{$s := .Surf}}
+<div class="explore-tab-strip" id="explore-tabs" role="tablist" data-facet-id="facet:f33d3r:explore:{{$s}}:tabs">
+  {{template "explore_tab" (dict "Surf" "trending" "Label" "Trending" "Active" (eq $s "trending"))}}
+  {{template "explore_tab" (dict "Surf" "you"      "Label" "For You"  "Active" (eq $s "you"))}}
+  {{template "explore_tab" (dict "Surf" "news"     "Label" "News"     "Active" (eq $s "news"))}}
+  <button class="explore-surf-tab" hx-get="/music" hx-target="#playground" hx-swap="innerHTML show:window:top" hx-push-url="true">Music</button>
+  {{template "explore_tab" (dict "Surf" "live"     "Label" "Live"     "Active" (eq $s "live"))}}
+  {{template "explore_tab" (dict "Surf" "paid"     "Label" "Paid"     "Active" (eq $s "paid"))}}
+  {{template "explore_tab" (dict "Surf" "tags"     "Label" "Tags"     "Active" (eq $s "tags"))}}
+</div>
+
+{{if eq $s "trending"}}
+{{/* Trending sections — the Trending tab's head lane */}}
+<div id="trending-strip" data-facet-id="facet:f33d3r:explore:trending:strip">
+  {{if .TrendingTags}}
+  <div class="explore-section-head">
+    <h2 class="explore-section-head-title">What's happening</h2>
+  </div>
+  <div class="explore-trend-grid">
+    {{range $i, $t := .TrendingTags}}
+    {{$colors := avatarColors $t.Tag}}
+    <a href="/search?q=%23{{$t.Tag}}" class="explore-trend-card" style="text-decoration:none">
+      <div class="explore-trend-thumb" style="background:linear-gradient(135deg,{{index $colors 0}},{{index $colors 1}})">
+        <span class="explore-trend-hashtag">#{{$t.Tag}}</span>
+      </div>
+      <div class="explore-trend-meta">
+        <div class="explore-trend-cat">Trending</div>
+        <div class="explore-trend-name">{{$t.Tag}}</div>
+        <div class="explore-trend-stat">{{$t.Count}} posts</div>
+      </div>
+    </a>
+    {{end}}
+  </div>
+  {{end}}
+  <div class="explore-section-head" style="margin-top:4px">
+    <h2 class="explore-section-head-title">Top Posts Today</h2>
+  </div>
+  {{if .TrendingTags}}
+  <div class="explore-tag-chips-row">
+    {{range .TrendingTags}}
+    <a href="/search?q=%23{{.Tag}}" class="explore-category-chip">#{{.Tag}}</a>
+    {{end}}
+  </div>
+  {{end}}
+</div>
+{{end}}
+
+{{if eq $s "tags"}}
+{{/* Tag browser — the Tags tab's whole canvas */}}
+<div id="explore-tags-panel" style="padding:16px" data-facet-id="facet:f33d3r:explore:tags:browser">
+  <p class="explore-section-head-title" style="margin-bottom:12px">Browse tags</p>
+  <div style="display:flex;flex-wrap:wrap;gap:8px;">
+    {{range .TrendingTags}}
+    {{$colors := avatarColors .Tag}}
+    <a href="/search?q=%23{{.Tag}}" class="explore-tag-browse-chip"
+       style="border-color:{{index $colors 0}}; color:{{index $colors 0}}">
+      #{{.Tag}} <span style="opacity:.6;font-size:11px">{{.Count}}</span>
+    </a>
+    {{end}}
+  </div>
+</div>
+{{else}}
+{{/* Feed results — the works Facet for this tab's surface, asked for on load */}}
+<div id="explore-results"
+     hx-get="/facets/works/feed?surface={{.FeedSurface}}"
+     hx-trigger="load"
+     hx-swap="innerHTML">
+  {{template "feed_skeletons" (dict "Count" 3)}}
+</div>
+{{end}}
+{{end}}

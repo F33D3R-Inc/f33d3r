@@ -1,0 +1,39 @@
+{{/*
+FACET live_chat_composer
+  version: 1.0 | status: stable | layer: 2
+
+  Chat entry for a signed-in watcher. The form posts to the server, which is the
+  only thing that decides whether the line exists; the response is that watcher's
+  own rendered line appended to the log. Nothing is drafted, queued or ordered in
+  the browser.
+
+  inputs:
+    StreamID string — stream UUID
+    Handle   string — sender handle (placeholder wording)
+
+  states:
+    default
+
+  children: none
+
+  signals:
+    emits:    live.chat.send (POST /live/{id}/chat)
+    receives: none
+
+  context:
+    live_chat_panel → footer
+*/}}
+{{define "live_chat_composer"}}
+<form class="live-chat__composer" data-facet-id="facet:f33d3r:live:{{.StreamID}}:chat_composer"
+      hx-post="/live/{{.StreamID}}/chat"
+      hx-target="#live-chat-log"
+      hx-swap="beforeend"
+      hx-on::after-request="if(event.detail.successful){this.reset()}">
+  <label class="live-chat__label" for="live-chat-input-{{.StreamID}}">Send a message</label>
+  <input class="live-chat__input" id="live-chat-input-{{.StreamID}}" type="text" name="body"
+         autocomplete="off" maxlength="280" required placeholder="Say something…">
+  <button class="live-chat__send" type="submit" aria-label="Send message">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 2 11 13"/><path d="M22 2 15 22 11 13 2 9 22 2Z"/></svg>
+  </button>
+</form>
+{{end}}

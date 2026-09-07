@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en" data-nav="expanded">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="f33d3r:pial" content="{{if .User}}{{.User.PIALID}}{{end}}">
+  <meta name="f33d3r:account" content="{{if .User}}{{.User.ID}}{{end}}">
+  <meta name="f33d3r:handle" content="{{if .User}}{{.User.Handle}}{{end}}">
+  {{/* Per-render session id — the listening/session key page scripts send with events. */}}
+  <meta name="f33d3r:session" content="{{.SessionID}}">
+  {{/* The standing the nav gates on, stated once so a native Shell gates the same
+       way without a second opinion about who this account is. */}}
+  <meta name="f33d3r:creator" content="{{if .User}}{{if .User.IsCreator}}1{{end}}{{end}}">
+  <meta name="f33d3r:admin" content="{{if .User}}{{if .User.IsAdmin}}1{{end}}{{end}}">
+  <meta name="f33d3r:verified" content="{{if .User}}{{if .User.IsVerified}}1{{end}}{{end}}">
+  <meta name="f33d3r:official" content="{{if .User}}{{.User.OfficialType}}{{end}}">
+  <title>{{block "title" .}}F33D3R{{end}}</title>
+  {{/* Apply saved dark/light mode before CSS loads — prevents flash */}}
+  <script>(function(){var m=localStorage.getItem('f33d3r_mode')||'dark';document.documentElement.dataset.mode=m;})()</script>
+  <style>[data-mode="dark"]{color-scheme:dark}</style>
+  <link rel="stylesheet" href="/static/css/layers.css?v={{assetVer}}">
+  <link rel="stylesheet" href="/static/css/styles.css?v={{assetVer}}">
+  <link rel="stylesheet" href="/static/css/components.css?v={{assetVer}}">
+  <link rel="stylesheet" href="/static/css/desktop.css?v={{assetVer}}">
+  {{/* responsive.css — shared site-wide responsive layer (shell/nav/messaging). Loaded after desktop.css so it can override shell layout at mobile/tablet breakpoints. */}}
+  <link rel="stylesheet" href="/static/css/responsive.css?v={{assetVer}}">
+  <link rel="stylesheet" href="/static/css/video-overlay.css?v={{assetVer}}">
+  <link rel="stylesheet" href="/static/css/celebrations.css?v={{assetVer}}">
+  <link rel="icon" href="/static/brand/favicon.png" type="image/png">
+  <link rel="manifest" href="/static/brand/manifest.json">
+  {{block "head-extra" .}}{{end}}
+  <script src="/static/js/htmx.min.js?v={{assetVer}}"></script>
+  {{/* History is never served from a browser cache of stale markup: back/forward
+       asks the server for the Playground again (HX-History-Restore-Request) and
+       swaps only #playground, which carries hx-history-elt. A miss never reloads
+       the document. */}}
+  <script>htmx.config.historyCacheSize = 0; htmx.config.refreshOnHistoryMiss = false;</script>
+</head>
+{{/* hx-boost on the body turns every same-origin anchor and plain form into a
+     Playground navigation: the Shell is created once and lives for the whole
+     session; only #playground changes. Links that must load a document (logout,
+     the auth pages) carry hx-boost="false". No hx-target/hx-swap live here —
+     they would be inherited by every hx-get on the site — the boosted request
+     is retargeted onto #playground by the Shell runtime (f33d3r.js). */}}
+<body data-theme="{{if .User}}{{.User.ThemeID}}{{else}}void{{end}}" class="{{celebrationClass .User}}" hx-boost="true">
+
+<div id="nav-progress" style="position:fixed;top:0;left:0;height:2px;background:var(--accent);width:0;opacity:0;z-index:9999;transition:width 200ms,opacity 320ms;pointer-events:none"></div>
+
+<div class="f33d3r-shell {{block "shell-class" .}}{{end}}">
+
+  {{/* Facet(nav_shell) — left sidebar. One call. Everything inside is a partial. */}}
+  {{template "nav_shell" .}}
+
+  {{/* Playground — the one surface navigation swaps. display:contents keeps the
+       .f33d3r-shell flex row unchanged: the page's main column and the right
+       rail still sit directly in the shell's layout. hx-history-elt makes
+       back/forward restore only this element. */}}
+  <div id="playground" hx-history-elt style="display:contents">
+    {{/* Main content area — pages provide their own .f33d3r-main wrapper */}}
+    {{block "body" .}}{{end}}
+
+    {{/* Right panel — filled by pages that need it */}}
+    <aside class="f33d3r-right" id="right-panel">
+      {{block "right-panel" .}}{{end}}
+    </aside>
+  </div>
+
+  {{/* Frequency dock — the Frequency a person is tuned in to lives in the
+       Shell, not the Playground, so navigation swaps pages under it and the
+       audio (Phase 3) never stops. Empty until Tune In answers with
+       frequency_dock, which replaces this element by id and carries the same
+       id back. Leave answers with this empty mount again. */}}
+  {{- /* Frequencies dock: the person's live Frequency, rendered by the server
+       for this document load (render() fills FrequencyDock), else the empty
+       mount every dock answer replaces by id. */ -}}
+  {{if .FrequencyDock}}{{.FrequencyDock}}{{else}}<div id="frequency-dock" class="freq-dock-slot" data-facet-id="facet:f33d3r:frequency:dock" aria-hidden="true"></div>{{end}}
+
+</div>
+
+{{/* Body-level overlay slots — Facets that portal above page content */}}
+{{template "compose_modal" .}}
+{{template "poll_panel" .}}
+{{template "topic_sheet" .}}
+{{template "user_menu_popup" .}}
+{{template "capture_stage" .}}
+{{/* work_menu_overlay — Layer 3 wire template slot. work_menu_dropdown portals here when open. */}}
+<div id="work-menu-overlay"></div>
+{{/* Mobile FABs — floating compose + account on small screens */}}
+{{if .User}}
+<button class="mobile-compose-fab" onclick="openCompose()" aria-label="New post">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="width:24px;height:24px">
+    <path d="M12 5v14M5 12h14"/>
+  </svg>
+</button>
+{{end}}
+{{/* Overlay slot — HTMX-loaded Layer 3 Facets (edit_profile_modal, follow_list_modal, etc.) */}}
+<div id="overlay-slot"></div>
+{{/* Portal modal — push prompt and permission dialogs inject here via HTMX */}}
+<div id="portal-modal"></div>
+{{/* Toast container — toast() JS function appends toasts here */}}
+<div id="toast-container" class="toast-container"></div>
+
+{{/* SSE real-time push is owned solely by f33d3r.js (single EventSource for the whole app).
+     The duplicate inline connection that used to live here was removed — two connections
+     double-delivered every FA Live event. */}}
+
+{{/* Malkuth — browser cryptographic substrate (ECDSA-P256 signing, SHA-256 CID) */}}
+<script src="/static/js/malkuth.js?v={{assetVer}}" defer></script>
+{{/* Core app runtime — loads on every page */}}
+<script src="/static/js/f33d3r.js?v={{assetVer}}"></script>
+{{/* feed_items.js: goToPost(), openRepostSheet() — needed wherever post cards appear */}}
+<script src="/static/js/pages/feed_items.js?v={{assetVer}}" defer></script>
+<script src="/static/js/video-player.js?v={{assetVer}}" defer></script>
+<script src="/static/js/video-pills.js?v={{assetVer}}" defer></script>
+<script src="/static/js/video-overlay.js?v={{assetVer}}" defer></script>
+<script src="/static/js/media-viewer.js?v={{assetVer}}" defer></script>
+<script src="/static/js/push-manager.js?v={{assetVer}}" defer></script>
+<script src="/static/js/permissions.js?v={{assetVer}}" defer></script>
+{{/* Capture Substrate — f33d3r camera stack (load in dependency order before the facade) */}}
+<script src="/static/js/capture/capture-state.js?v={{assetVer}}" defer></script>
+<script src="/static/js/capture/capture-devices.js?v={{assetVer}}" defer></script>
+<script src="/static/js/capture/capture-recorder.js?v={{assetVer}}" defer></script>
+<script src="/static/js/capture/capture-preview.js?v={{assetVer}}" defer></script>
+<script src="/static/js/capture/capture-controller.js?v={{assetVer}}" defer></script>
+<script src="/static/js/capture/capture.js?v={{assetVer}}" defer></script>
+{{/* React With Video — studio feature built on the camera substrate */}}
+<script src="/static/js/reactvideo/react-video-layouts.js?v={{assetVer}}" defer></script>
+<script src="/static/js/reactvideo/react-video.js?v={{assetVer}}" defer></script>
+{{/* Page-specific scripts injected by individual page templates */}}
+{{block "page-scripts" .}}{{end}}
+
+{{/* Dark/light mode toggle — reads localStorage, syncs icons, wires button */}}
+<script>
+window.toggleDarkMode = function() {
+  var next = (document.documentElement.dataset.mode === 'dark') ? 'light' : 'dark';
+  document.documentElement.dataset.mode = next;
+  document.body && (document.body.dataset.mode = next);
+  localStorage.setItem('f33d3r_mode', next);
+  _syncModeIcons();
+};
+function _syncModeIcons() {
+  var isDark = document.documentElement.dataset.mode === 'dark';
+  var sun  = document.getElementById('mode-icon-sun');
+  var moon = document.getElementById('mode-icon-moon');
+  if (sun)  sun.style.display  = isDark ? 'block' : 'none';
+  if (moon) moon.style.display = isDark ? 'none'  : 'block';
+}
+document.addEventListener('DOMContentLoaded', _syncModeIcons);
+</script>
+
+{{/* Playground — what the server answers when the standing Shell asks for a
+     page (HX-Boosted / HX-Target: playground / history restore). It is the
+     inside of #playground plus everything that must follow a page change:
+     the document title (htmx reads a top-level <title>), the page scripts
+     (the Shell runtime executes a script src once per session and re-runs its
+     registered mount afterwards), and the primary nav re-rendered out-of-band
+     so the active item moves. Nothing here is a Shell part: overlays, the FAB,
+     the toast container and the FA Live stream all live outside #playground
+     and persist. head-extra is Open Graph metadata for crawlers and belongs to
+     the document only. */}}
+{{define "playground"}}<title>{{template "title" .}}</title>
+{{template "body" .}}
+<aside class="f33d3r-right" id="right-panel">
+  {{template "right-panel" .}}
+</aside>
+{{template "page-scripts" .}}
+{{if isRealUser .User}}<div class="sidebar-nav" id="nav-primary" role="navigation" aria-label="Main navigation" hx-swap-oob="true">{{template "nav_primary_items" .}}</div>{{end}}
+{{end}}
+
+{{/* Block overrides — pages set these to mark their active nav item */}}
+{{define "head-extra"}}{{end}}
+{{define "shell-class"}}{{end}}
+{{define "sidebar-hidden"}}{{end}}
+{{define "mobile-nav-hidden"}}{{end}}
+{{define "nav-active-home"}}{{end}}
+{{define "nav-active-explore"}}{{end}}
+{{define "nav-active-music"}}{{end}}
+{{define "nav-active-notifications"}}{{end}}
+{{define "nav-active-wallet"}}{{end}}
+{{define "nav-active-bookmarks"}}{{end}}
+{{define "nav-active-profile"}}{{end}}
+{{define "nav-active-settings"}}{{end}}
+{{define "nav-active-shop"}}{{end}}
+{{define "nav-active-org-panel"}}{{end}}
+{{define "nav-active-admin"}}{{end}}
+{{define "nav-active-analytics"}}{{end}}
+{{define "nav-active-analytics-dup"}}{{end}}
+{{define "nav-active-achievements"}}{{end}}
+{{define "nav-active-create"}}{{end}}
+{{define "nav-active-articles"}}{{end}}
+{{define "nav-active-visions"}}{{end}}
+{{define "mob-active-home"}}{{end}}
+{{define "mob-active-explore"}}{{end}}
+{{define "mob-active-notifications"}}{{end}}
+{{define "mob-active-profile"}}{{end}}
+{{define "right-panel"}}{{end}}
+{{define "page-scripts"}}{{end}}
+</body>
+</html>

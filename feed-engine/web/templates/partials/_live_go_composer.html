@@ -1,0 +1,134 @@
+{{/*
+FACET live_go_composer
+  version: 1.1 | status: stable | layer: 3
+
+  Phone-first "go live" entry. The form is the whole flow: the server creates the
+  stream, decides its status, and answers with the broadcast surface. Nothing is
+  provisioned in the browser and the ingest key is never rendered here.
+
+  The source choice is a server input, not a browser mode: it decides which
+  broadcast surface the server hands back and, with it, whether this device's
+  camera is opened at all. A desktop-encoder broadcaster must never have a
+  second publisher started underneath them.
+
+  Go Live has two modes, and the mode is a server input, not a browser state:
+  the two tabs are links to /golive and /golive?mode=frequency, and the server
+  renders the form that matches. Video is the broadcast form below; Frequency
+  is frequency_go_form — live audio, the same tab.
+
+  inputs:
+    Handle          string — broadcaster handle
+    CanNSFW         bool   — PIAL is cleared to broadcast 18+ content
+    Error           string — server-side rejection, rendered back into the form
+    Title           string — title the broadcaster already typed, on a rejection
+    Description     string — description they already typed, on a rejection
+    Source          string — "browser" | "encoder", the choice to pre-select
+    FrequencyMode   bool   — true when ?mode=frequency: render frequency_go_form
+    FrequencyGo     map    — .Error .Title .Description for the audio form (on a rejection)
+    FrequenciesLive []FrequencyCardData — Frequencies live right now, shown under the form
+
+  states:
+    default | error | nsfw-allowed ; source-browser | source-encoder ; mode-video | mode-frequency
+
+  children:
+    frequency_go_form, frequency_card
+
+  signals:
+    emits:    live.start (POST /live/start) | frequency.go_live (POST /events, via frequency_go_form)
+    receives: none
+
+  context:
+    live.html (mode=compose) → centre column
+*/}}
+{{define "live_go_composer"}}
+<section class="live-go" data-facet-id="facet:f33d3r:live:new:go_composer" aria-labelledby="live-go-h">
+  <header class="live-go__head">
+    <h1 class="live-go__title" id="live-go-h">Go live</h1>
+    <p class="live-go__sub">Your phone is the studio. Point, name it, broadcast — or publish from OBS on a desktop.</p>
+  </header>
+
+  <nav class="live-go__modes" aria-label="What to go live with">
+    <a class="live-go__mode{{if not .FrequencyMode}} live-go__mode--on{{end}}" href="/golive"
+       {{if not .FrequencyMode}}aria-current="page"{{end}}>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m23 7-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+      Video
+    </a>
+    <a class="live-go__mode{{if .FrequencyMode}} live-go__mode--on{{end}}" href="/golive?mode=frequency"
+       {{if .FrequencyMode}}aria-current="page"{{end}}>
+      <span class="freq-badge__wave" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+      Frequency <span class="live-go__mode-sub">audio</span>
+    </a>
+  </nav>
+
+  {{if .FrequencyMode}}
+  {{/* FrequencyGo is present only after a rejected submit; without it the
+       form renders empty. */}}
+  {{with .FrequencyGo}}
+  {{template "frequency_go_form" (dict "Handle" $.Handle "CanNSFW" $.CanNSFW "Error" .Error "Title" .Title "Description" .Description)}}
+  {{else}}
+  {{template "frequency_go_form" (dict "Handle" .Handle "CanNSFW" .CanNSFW "Error" "" "Title" "" "Description" "")}}
+  {{end}}
+  {{else}}
+
+  {{if .Error}}
+  <p class="live-go__error" role="alert">{{.Error}}</p>
+  {{end}}
+
+  <form class="live-go__form" method="post" action="/live/start">
+    <label class="live-go__label" for="live-go-title">Stream title</label>
+    <input class="live-go__input" id="live-go-title" name="title" type="text" required
+           maxlength="120" autocomplete="off" placeholder="What are you doing?"
+           value="{{.Title}}">
+
+    <label class="live-go__label" for="live-go-desc">Description <span class="live-go__optional">optional</span></label>
+    <textarea class="live-go__textarea" id="live-go-desc" name="description" rows="3"
+              maxlength="600" placeholder="What should people know before they join?">{{.Description}}</textarea>
+
+    <fieldset class="live-go__fieldset live-go__fieldset--stack">
+      <legend class="live-go__legend">Where the video comes from</legend>
+      <label class="live-go__radio">
+        <input type="radio" name="source" value="browser" {{if ne .Source "encoder"}}checked{{end}}>
+        <span>This device — camera and microphone, straight from this browser</span>
+      </label>
+      <label class="live-go__radio">
+        <input type="radio" name="source" value="encoder" {{if eq .Source "encoder"}}checked{{end}}>
+        <span>OBS or another encoder — the next screen gives you the server URL and stream key</span>
+      </label>
+    </fieldset>
+
+    <fieldset class="live-go__fieldset">
+      <legend class="live-go__legend">Camera</legend>
+      <label class="live-go__radio">
+        <input type="radio" name="facing" value="environment" checked>
+        <span>Rear</span>
+      </label>
+      <label class="live-go__radio">
+        <input type="radio" name="facing" value="user">
+        <span>Front</span>
+      </label>
+    </fieldset>
+
+    {{if .CanNSFW}}
+    <label class="live-go__check">
+      <input type="checkbox" name="nsfw" value="1">
+      <span>This broadcast is 18+</span>
+    </label>
+    {{end}}
+
+    <button class="live-go__submit" type="submit">
+      <span class="live-go__submit-dot" aria-hidden="true"></span>
+      Go live
+    </button>
+    <p class="live-go__note">Streaming as @{{.Handle}}. You can end the broadcast at any time.</p>
+  </form>
+  {{end}}
+
+  {{if .FrequenciesLive}}
+  <section class="live-go__now" aria-labelledby="live-go-now-h">
+    <h2 class="live-go__now-h" id="live-go-now-h"><span class="freq-lane__dot" aria-hidden="true"></span>Frequencies live now</h2>
+    <div class="live-go__now-cards">{{range .FrequenciesLive}}{{template "frequency_card" .}}{{end}}</div>
+    <a class="live-go__now-all" href="/frequencies">All Frequencies →</a>
+  </section>
+  {{end}}
+</section>
+{{end}}

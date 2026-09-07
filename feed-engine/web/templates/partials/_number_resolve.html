@@ -1,0 +1,53 @@
+{{/*
+FACET number_resolve
+  version: 1.0 | status: stable | layer: 2
+
+  inputs:
+    PIALID       string — the viewer performing the lookup
+    Decision     string — "allow" | "request" | "deny"
+    Number       string — the Number the caller typed, echoed back
+    Unavailable  bool   — the contact policy authority could not be reached
+
+  states:
+    allow | request | deny | unavailable
+
+  children: none
+
+  signals:
+    emits:    POST /contact/start   → replaces this facet
+    receives: POST /contact/resolve → replaces this facet
+
+  context:
+    settings → contact section
+
+  notes:
+    Unknown, retired, malformed and refused all render the same fragment after
+    the same minimum duration, so this surface cannot be used to test whether a
+    Number exists. An allow discloses no handle, no name and no account — the
+    identity behind a Number surfaces only once a conversation opens.
+*/}}
+{{define "number_resolve"}}
+<div class="number-resolve"
+     data-facet-id="facet:f33d3r:identity:{{.PIALID}}:number_resolve">
+  {{if .Unavailable}}
+    <p class="settings-block-hint">Contact lookup is unavailable right now.</p>
+  {{else if eq .Decision "allow"}}
+    <p class="settings-block-hint">You may reach this person.</p>
+    <form method="post" action="/contact/start"
+          hx-post="/contact/start"
+          hx-target="closest .number-resolve"
+          hx-swap="outerHTML">
+      <input type="hidden" name="number" value="{{.Number}}">
+      <button type="submit" class="f33d3r-numbers__mint">Open a conversation</button>
+    </form>
+  {{else if eq .Decision "request"}}
+    <p class="settings-block-hint">
+      Your request to make contact has been sent. They decide whether it goes through.
+    </p>
+  {{else}}
+    <p class="settings-block-hint">
+      That Number is not reachable.
+    </p>
+  {{end}}
+</div>
+{{end}}

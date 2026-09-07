@@ -1,0 +1,20 @@
+[package]
+name = "manhattan-outbox-sqlx07"
+version = "1.0.0"
+edition = "2021"
+description = "The Manhattan outbox drain compiled against sqlx 0.7, for the brains still on it. Same source as manhattan-outbox."
+publish = false
+
+# The library is still called manhattan_outbox, so a brain's code is the same
+# whichever of the two crates it depends on.
+[lib]
+name = "manhattan_outbox"
+path = "src/lib.rs"
+
+[dependencies]
+manhattan-client = { path = "../manhattan-client" }
+sqlx = { version = "0.7", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "json"] }
+tokio = { version = "1", features = ["rt", "time", "macros"] }
+tracing = "0.1"
+serde_json = "1"
+anyhow = "1"

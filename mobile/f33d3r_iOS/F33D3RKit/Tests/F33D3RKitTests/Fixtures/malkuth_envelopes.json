@@ -1,0 +1,162 @@
+{
+  "go_version": "go1.26.2",
+  "results": [
+    {
+      "accepted": true,
+      "expect_accepted": true,
+      "is_nsfw": false,
+      "kind": "post",
+      "name": "plain_post",
+      "parent_cid": "",
+      "quoted_work_id": "",
+      "reason": "would insert",
+      "status": 201,
+      "tus_upload_id": ""
+    },
+    {
+      "accepted": true,
+      "expect_accepted": true,
+      "is_nsfw": false,
+      "kind": "post",
+      "name": "html_and_emoji_body",
+      "parent_cid": "",
+      "quoted_work_id": "",
+      "reason": "would insert",
+      "status": 201,
+      "tus_upload_id": ""
+    },
+    {
+      "accepted": true,
+      "expect_accepted": true,
+      "is_nsfw": false,
+      "kind": "post",
+      "name": "media_sorted_on_the_way_out",
+      "parent_cid": "",
+      "quoted_work_id": "",
+      "reason": "would insert",
+      "status": 201,
+      "tus_upload_id": ""
+    },
+    {
+      "accepted": true,
+      "expect_accepted": true,
+      "is_nsfw": false,
+      "kind": "reply",
+      "name": "reply",
+      "parent_cid": "sha256:9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a",
+      "quoted_work_id": "",
+      "reason": "would insert",
+      "status": 201,
+      "tus_upload_id": ""
+    },
+    {
+      "accepted": true,
+      "expect_accepted": true,
+      "is_nsfw": false,
+      "kind": "post",
+      "name": "repost",
+      "parent_cid": "",
+      "quoted_work_id": "",
+      "reason": "would insert",
+      "status": 201,
+      "tus_upload_id": ""
+    },
+    {
+      "accepted": true,
+      "expect_accepted": true,
+      "is_nsfw": false,
+      "kind": "poll",
+      "name": "poll",
+      "parent_cid": "",
+      "quoted_work_id": "",
+      "reason": "would insert",
+      "status": 201,
+      "tus_upload_id": ""
+    },
+    {
+      "accepted": true,
+      "expect_accepted": true,
+      "is_nsfw": true,
+      "kind": "video",
+      "name": "video_with_unsigned_extras",
+      "parent_cid": "",
+      "quoted_work_id": "",
+      "reason": "would insert",
+      "status": 201,
+      "tus_upload_id": "tus-abc-123"
+    },
+    {
+      "accepted": true,
+      "expect_accepted": true,
+      "is_nsfw": false,
+      "kind": "voice",
+      "name": "event_type_disagrees_with_kind",
+      "parent_cid": "",
+      "quoted_work_id": "",
+      "reason": "would insert",
+      "status": 201,
+      "tus_upload_id": ""
+    },
+    {
+      "accepted": true,
+      "expect_accepted": true,
+      "is_nsfw": false,
+      "kind": "quote",
+      "name": "quote_with_quoted_work_id",
+      "parent_cid": "",
+      "quoted_work_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+      "reason": "would insert",
+      "status": 201,
+      "tus_upload_id": ""
+    },
+    {
+      "accepted": false,
+      "expect_accepted": false,
+      "is_nsfw": false,
+      "kind": "",
+      "name": "tampered_body_after_signing",
+      "parent_cid": "",
+      "quoted_work_id": "",
+      "reason": "cid mismatch",
+      "status": 400,
+      "tus_upload_id": ""
+    },
+    {
+      "accepted": false,
+      "expect_accepted": false,
+      "is_nsfw": false,
+      "kind": "",
+      "name": "media_sent_unsorted",
+      "parent_cid": "",
+      "quoted_work_id": "",
+      "reason": "cid mismatch",
+      "status": 400,
+      "tus_upload_id": ""
+    },
+    {
+      "accepted": false,
+      "expect_accepted": false,
+      "is_nsfw": false,
+      "kind": "",
+      "name": "signature_over_the_payload",
+      "parent_cid": "",
+      "quoted_work_id": "",
+      "reason": "signature invalid",
+      "status": 403,
+      "tus_upload_id": ""
+    },
+    {
+      "accepted": false,
+      "expect_accepted": false,
+      "is_nsfw": false,
+      "kind": "",
+      "name": "signed_by_another_key",
+      "parent_cid": "",
+      "quoted_work_id": "",
+      "reason": "signature invalid",
+      "status": 403,
+      "tus_upload_id": ""
+    }
+  ],
+  "note": "Verdicts returned by a Go program running workEvent's admission sequence verbatim (rawBody parse loop, sha256: prefix, verifyCID, verifyMalkuthSig steps 2-6, workKinds, reply/repost rules) over POST /events bodies built by WorkEnvelope. Stops before InsertWork, the last point that needs no database. The signing key is supplied by the vector in place of the Elohim Veni fetch. Regenerate with /tmp/malkuth-golden/envelope."
+}

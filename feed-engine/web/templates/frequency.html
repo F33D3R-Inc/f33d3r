@@ -1,0 +1,30 @@
+{{define "title"}}{{if .PageTitle}}{{.PageTitle}}{{else}}Frequency · F33D3R{{end}}{{end}}
+{{/* The rail marks Go Live while the person is inside a live Frequency: the
+     stage is the audio side of the same tab the video broadcast lives under. */}}
+{{define "nav-active-golive"}}{{if eq .Stage.State "live"}}active{{end}}{{end}}
+{{/* The stage is a page like any other at every width. Audio does not take
+     over the viewport — there is nothing to look at but the people, and the
+     rail is how a listener keeps browsing while a Frequency plays. The shell
+     chrome therefore stays, exactly as the ended video surface keeps it.
+
+     Everything that changes while this page is open — who is on the mic, the
+     tally, the queue, the viewer's own controls, the end — arrives as a
+     re-rendered Facet over FA Live and is swapped in under its data-facet-id
+     by frequency-stage.js. The page decides nothing after render. */}}
+{{define "head-extra"}}
+<meta property="og:type" content="website">
+<meta property="og:title" content="{{.Stage.Title}} · Frequency by @{{.Stage.Host.Handle}}">
+{{if .Stage.Description}}<meta property="og:description" content="{{.Stage.Description}}">{{end}}
+<meta property="og:site_name" content="f33d3r">
+{{end}}
+{{define "body"}}
+<main class="f33d3r-main freq-main freq-main--{{.Stage.State}}" id="main-col">
+  {{template "frequency_stage" .Stage}}
+</main>
+{{end}}
+{{define "right-panel"}}
+{{template "sidebar_right" .}}
+{{end}}
+{{define "page-scripts"}}
+<script src="/static/js/frequency-stage.js?v={{assetVer}}" defer></script>
+{{end}}

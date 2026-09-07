@@ -1,0 +1,72 @@
+{{/*
+FACET work_focus_sidebar
+  version: 1.1 | status: stable | layer: 1
+
+  inputs:
+    W    Work    — .ID .AuthorHandle .AuthorName .AvatarURL .AuthorPIAL
+                   .LikedByUser .LikeCount .RepostedByUser .RepostCount
+                   .BookmarkedByUser .ReplyCount .ViewerFollowsAuthor
+    Ctx  PageCtx — optional .CurrentUserHandle
+
+  states:
+    default | liked | reposted | bookmarked
+
+  children:
+    btn_follow (Surface=dot)
+
+  signals:
+    emits:    work_like, work_unlike, work_repost, work_unrepost,
+              work_bookmark, work_unbookmark (via toggleWorkReaction)
+    receives: none
+
+  context:
+    work_card → pcf focus-right column
+*/}}
+{{define "work_focus_sidebar"}}
+{{$w := .W}}{{$ctx := .Ctx}}
+<div class="focus-right">
+
+  <div class="focus-av-wrap">
+    <a href="/{{$w.AuthorHandle}}" onclick="event.stopPropagation()" class="focus-av-ring">
+      {{template "user_avatar" (dict "Handle" $w.AuthorHandle "AvatarURL" $w.AvatarURL "DisplayName" $w.AuthorName "Size" "md")}}
+    </a>
+    {{if and $ctx (ne $w.AuthorHandle $ctx.CurrentUserHandle) (not $w.ViewerFollowsAuthor) $w.AuthorPIAL}}
+    {{template "btn_follow" (dict "TargetPIAL" $w.AuthorPIAL "TargetHandle" $w.AuthorHandle "IsFollowing" false "Surface" "dot")}}
+    {{end}}
+  </div>
+
+  <button class="f-act {{if $w.LikedByUser}}liked{{end}}"
+          onclick="event.stopPropagation();toggleWorkReaction(this,'{{$w.ID}}','like',{{if $w.LikedByUser}}true{{else}}false{{end}})"
+          aria-label="Like" aria-pressed="{{if $w.LikedByUser}}true{{else}}false{{end}}"
+          title="Like">
+    <svg viewBox="0 0 24 24" fill="{{if $w.LikedByUser}}currentColor{{else}}none{{end}}" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+    <span>{{$w.LikeCount}}</span>
+  </button>
+
+  <button class="f-act" title="Reply"
+          onclick="event.stopPropagation();openReplyCompose('{{$w.ID}}','{{$w.AuthorHandle}}','{{$w.AuthorName}}')"
+          aria-label="Reply ({{$w.ReplyCount}})">
+    <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+    <span id="reply-count-{{$w.ID}}"{{if not $w.ReplyCount}} style="display:none"{{end}}>{{$w.ReplyCount}}</span>
+  </button>
+
+  <button class="f-act {{if $w.RepostedByUser}}reposted{{end}}"
+          onclick="event.stopPropagation();toggleWorkReaction(this,'{{$w.ID}}','repost',{{if $w.RepostedByUser}}true{{else}}false{{end}})"
+          aria-label="Repost" aria-pressed="{{if $w.RepostedByUser}}true{{else}}false{{end}}"
+          title="Repost">
+    <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M17 1l4 4-4 4"/><path d="M3 11V9a4 4 0 014-4h14M7 23l-4-4 4-4"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg>
+    <span>{{$w.RepostCount}}</span>
+  </button>
+
+  <button class="f-act {{if $w.BookmarkedByUser}}saved{{end}}"
+          onclick="event.stopPropagation();toggleWorkReaction(this,'{{$w.ID}}','bookmark',{{if $w.BookmarkedByUser}}true{{else}}false{{end}})"
+          aria-label="Bookmark" aria-pressed="{{if $w.BookmarkedByUser}}true{{else}}false{{end}}"
+          title="Bookmark">
+    <svg viewBox="0 0 24 24" fill="{{if $w.BookmarkedByUser}}currentColor{{else}}none{{end}}" stroke="currentColor" stroke-width="2"><path d="M19 21l-7-5-7 5V5a2 2 0 012-2h10a2 2 0 012 2z"/></svg>
+  </button>
+
+  {{/* Facet(work_menu) — single source of truth for all work 3-dot menus */}}
+  {{template "work_menu" (dict "W" $w "Ctx" $ctx)}}
+
+</div>{{/* /focus-right */}}
+{{end}}

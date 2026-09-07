@@ -1,0 +1,32 @@
+{{/*
+FACET org_invite_form
+  version: 1.0 | status: stable | layer: 2
+
+  inputs:
+    OOB  bool — true when re-rendered out of band by the org_invite answer, so
+                the handle field is cleared by the server and not by page script
+
+  states:
+    default
+
+  children:
+    none
+
+  signals:
+    emits:    org_invite (POST /events — the answer is org_pending_invites
+              re-rendered into #org-pending-invites, and this form again)
+    receives: none
+
+  context:
+    org_panel.html → "Invite an employee" section
+*/}}
+{{define "org_invite_form"}}
+<form class="org-panel-invite-row" id="org-invite-form"{{if .OOB}} hx-swap-oob="outerHTML"{{end}}
+      hx-post="/events"
+      hx-vals='{"event_type":"org_invite"}'
+      hx-target="#org-pending-invites"
+      hx-swap="outerHTML">
+  <input type="text" name="target_handle" id="org-invite-handle" class="epm-input" placeholder="@handle" style="flex:1;max-width:280px" required autocomplete="off">
+  <button class="btn-primary" type="submit">Send invite</button>
+</form>
+{{end}}

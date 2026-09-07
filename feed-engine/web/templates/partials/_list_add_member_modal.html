@@ -1,0 +1,49 @@
+{{/*
+FACET list_add_member_modal
+  version: 1.0 | status: stable | layer: 3
+
+  inputs:
+    ListID    string — list UUID
+    ListName  string — list name (dialog label)
+
+  states:
+    default
+
+  children:
+    none
+
+  signals:
+    emits:    list_add_member (POST /events — the answer is the list_members
+              Facet re-rendered, plus an out-of-band clear of #overlay-slot)
+    receives: none
+
+  close:
+    backdrop or Close asks /facets/overlay/close — the empty fragment clears #overlay-slot
+
+  context:
+    #overlay-slot → hx-get="/facets/list/{id}/add_member_modal" from the list page (owner only)
+*/}}
+{{define "list_add_member_modal"}}
+<div id="add-member-modal" class="compose-overlay" role="dialog" aria-modal="true" aria-label="Add member to {{.ListName}}"
+     data-facet-id="facet:f33d3r:list:{{.ListID}}:add_member_modal">
+  <div class="compose-overlay-backdrop" hx-get="/facets/overlay/close" hx-target="#overlay-slot" hx-swap="innerHTML" hx-trigger="click"
+       style="position:absolute;inset:0"></div>
+  <form class="compose-card" style="max-width:380px;position:relative"
+        hx-post="/events"
+        hx-vals='{"event_type":"list_add_member","list_id":"{{.ListID}}"}'
+        hx-target="#list-members"
+        hx-swap="outerHTML">
+    <div class="compose-header">
+      <button class="compose-close" type="button" aria-label="Close"
+              hx-get="/facets/overlay/close" hx-target="#overlay-slot" hx-swap="innerHTML">
+        <svg fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+      <span class="compose-title">Add member</span>
+      <button class="btn-primary compose-post-btn" type="submit">Add</button>
+    </div>
+    <div style="padding:16px">
+      <input id="add-member-handle" name="handle" class="form-input" type="text" placeholder="@handle" autocomplete="off" required autofocus>
+    </div>
+  </form>
+</div>
+{{end}}

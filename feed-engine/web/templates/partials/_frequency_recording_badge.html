@@ -1,0 +1,33 @@
+{{/*
+FACET frequency_recording_badge
+  version: 1.0 | status: stable | layer: 5
+
+  Recording consent indicator (§25). Rendered by the server from the
+  Frequency's recording state; a browser cannot toggle it, and a participant
+  who joins a recorded Frequency receives it in the stage before any media
+  connection completes. When recording is off the Facet still exists, empty,
+  so a later "recording started" mutation has an address to land on.
+
+  inputs:
+    ID        string — frequency UUID
+    Recording bool
+
+  states:
+    recording | off
+
+  children: none
+
+  signals:
+    emits:    none
+    receives: frequency_facet (SSE)
+
+  context:
+    frequency_stage → header row
+*/}}
+{{define "frequency_recording_badge"}}
+<span class="freq-rec{{if .Recording}} freq-rec--on{{end}}"
+      data-facet-id="{{frequencyFacetID .ID "recording"}}"
+      {{if .Recording}}role="status" aria-label="This Frequency is being recorded"{{else}}aria-hidden="true"{{end}}>
+  {{- if .Recording}}<span class="freq-rec__dot" aria-hidden="true"></span>Recording{{end -}}
+</span>
+{{end}}

@@ -1,0 +1,72 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "economy.transfer",
+  "description": "Emitted by Ain Soph when an AET transfer completes. Amounts are in AET cents.",
+  "type": "object",
+  "required": [
+    "event_id",
+    "event_type",
+    "schema_version",
+    "pial_id",
+    "timestamp",
+    "transaction_id",
+    "amount_cents",
+    "transfer_type"
+  ],
+  "properties": {
+    "event_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "event_type": {
+      "type": "string",
+      "const": "economy.transfer"
+    },
+    "schema_version": {
+      "type": "string",
+      "const": "1.0"
+    },
+    "pial_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Source PIAL UUID (or 'system' for platform deposits)"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "transaction_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "recipient_pial_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    },
+    "amount_cents": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "fee_cents": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "transfer_type": {
+      "type": "string",
+      "enum": [
+        "deposit",
+        "tip",
+        "track_purchase",
+        "reward",
+        "withdrawal"
+      ]
+    },
+    "idempotency_key": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

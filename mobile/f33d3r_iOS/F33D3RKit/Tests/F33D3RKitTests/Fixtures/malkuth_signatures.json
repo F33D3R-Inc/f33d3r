@@ -1,0 +1,152 @@
+{
+  "note": "Cross-verification of Malkuth ECDSA-P256 signatures against the Go verifier. from_go: keys and signatures produced by crypto/ecdsa, verified here on every swift test run. from_swift: keys and signatures produced by CryptoKit and handed to a Go program running verifyMalkuthSig steps 2-6 verbatim; verified_by_go is what that Go answered. Regenerate with /tmp/malkuth-golden/verify.",
+  "go_version": "go1.26.2",
+  "from_go": [
+    {
+      "name": "go_signed_0",
+      "public_key_spki_b64": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEL14JtKI8h7pbpEeF4TU5nRrXHD7u3HCeMVGrFmoG69D27T6wjsXbqrqUYZXJ+U4dybETM9F5/t+rxtKUY6YAGg==",
+      "cid": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "signature_b64url": "jC4J5v34U5rkqNtExjbn8gFwY2cbEws7FEa-yGkryfFgcntJwBLOaYkgaYawwuvjBed6wsleyQIC42Sldk6SKw",
+      "should_verify": true
+    },
+    {
+      "name": "go_signed_1",
+      "public_key_spki_b64": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEL14JtKI8h7pbpEeF4TU5nRrXHD7u3HCeMVGrFmoG69D27T6wjsXbqrqUYZXJ+U4dybETM9F5/t+rxtKUY6YAGg==",
+      "cid": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "signature_b64url": "U2i_W450InZFyipYQbdFjDOiG9z4_0v8NKSxPXrECrhZLm8bRLDfCfTy-uqgFmyF9HNUzhaWa7LSN2uavBtSfg",
+      "should_verify": true
+    },
+    {
+      "name": "go_signed_2",
+      "public_key_spki_b64": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEL14JtKI8h7pbpEeF4TU5nRrXHD7u3HCeMVGrFmoG69D27T6wjsXbqrqUYZXJ+U4dybETM9F5/t+rxtKUY6YAGg==",
+      "cid": "sha256:4b1106eced440080b0473fccc79599fef3ba08369c1b15e29b49a9efd2e43938",
+      "signature_b64url": "szPAh1OxQ2c93lc9NSX1DclYE6_wvdJn6kvW5H2WjnSICB2JW7QxMTrIRde-J6a4UTqa2Z2ucsaFM3r0y-7l3Q",
+      "should_verify": true
+    },
+    {
+      "name": "go_signed_3",
+      "public_key_spki_b64": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEL14JtKI8h7pbpEeF4TU5nRrXHD7u3HCeMVGrFmoG69D27T6wjsXbqrqUYZXJ+U4dybETM9F5/t+rxtKUY6YAGg==",
+      "cid": "sha256:5f0d578704746ead2ccd16dfec8b0c25717edf317d13db9e3bf6090d5d1c0431",
+      "signature_b64url": "YEjjNas_CQyFj4IaYjGB4vt6nZSGdN7Qzj5R09oba5nQ3KAnHD6fb_e4mnXuN89FeN1QE43OYnCCjs36tSsvEg",
+      "should_verify": true
+    },
+    {
+      "name": "go_signed_4",
+      "public_key_spki_b64": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEL14JtKI8h7pbpEeF4TU5nRrXHD7u3HCeMVGrFmoG69D27T6wjsXbqrqUYZXJ+U4dybETM9F5/t+rxtKUY6YAGg==",
+      "cid": "sha256:d5576de250d7c8bb7f571c83a4d32e8079515a5a05b4f19270fe46e9b9030137",
+      "signature_b64url": "Mg-bNMwu4dN9am1-EyLYHAAToElJ3VG3n--N1h0R2Tf5pt6qPTXEMiV3KEHwd16dUmQRoSF9IrFjxa00AA97cw",
+      "should_verify": true
+    },
+    {
+      "name": "go_signed_5",
+      "public_key_spki_b64": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEL14JtKI8h7pbpEeF4TU5nRrXHD7u3HCeMVGrFmoG69D27T6wjsXbqrqUYZXJ+U4dybETM9F5/t+rxtKUY6YAGg==",
+      "cid": "sha256:8b2f08cadf75afb43f071fc1afbd623e2ed371a10b6916298c20ac90c930f8b7",
+      "signature_b64url": "IpClO-10AtY8rjotBoU_EBb6l8A0FbWrPB5KTIawq8-wDzrLlj7Xm7DgojPcJsgysFEvTEPUz4X2IWfNptx2KA",
+      "should_verify": true
+    },
+    {
+      "name": "go_signed_wrong_cid",
+      "public_key_spki_b64": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEL14JtKI8h7pbpEeF4TU5nRrXHD7u3HCeMVGrFmoG69D27T6wjsXbqrqUYZXJ+U4dybETM9F5/t+rxtKUY6YAGg==",
+      "cid": "sha256:0000000000000000000000000000000000000000000000000000000000000001",
+      "signature_b64url": "ppO_xS48Pg1v-qezHYvxWw0mRHhzpuQkxB0WsDQW7KrZL5EUc7Ta7o0z6nMcwflxbx2DHTS2z2wLzyBXHtpsOw",
+      "should_verify": false
+    },
+    {
+      "name": "go_signed_wrong_key",
+      "public_key_spki_b64": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEGP2HdA8Mc3CgOL/LfaGnysTPeMAFKM9XDBu6TPKaJHHKleO7D9ikzj0l94kfCPXiIQCB4yMUK0Nj8Kau8Geaeg==",
+      "cid": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "signature_b64url": "ZqY72bevSMCP9NMclxUeSP4z2enaZJDdc_5S1kb0gu3Fa3xS6uh1kjxIy4TPtYSHhT9fddeOgxeUGacpk6pMvw",
+      "should_verify": false
+    },
+    {
+      "name": "go_signed_bit_flipped",
+      "public_key_spki_b64": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEL14JtKI8h7pbpEeF4TU5nRrXHD7u3HCeMVGrFmoG69D27T6wjsXbqrqUYZXJ+U4dybETM9F5/t+rxtKUY6YAGg==",
+      "cid": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "signature_b64url": "bF6oj6uueiv5Ppu4v0w88Zsl7ejEA5Ww0x7UXFHJFr4A8V0ZUB-aitUzbCiYAgFsGFU7I__3fNinBrOKBa9TPw",
+      "should_verify": false
+    }
+  ],
+  "from_swift": [
+    {
+      "name": "swift_signed_0",
+      "private_key_raw_b64": "d+ZSSzc4XrfT4PPDuz4lGOUwwc+rfsk5OoUCms/gUNU=",
+      "public_key_spki_b64": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEgDqUB+cmMHrD+NjZVE4MkGKo+LnT5C95gxqfVkw36htdRzIUAoFiWMPXegCtiFv3OSYicdfR1eW0PCK/JWEJKw==",
+      "cid": "sha256:4b1106eced440080b0473fccc79599fef3ba08369c1b15e29b49a9efd2e43938",
+      "signature_b64url": "DmUyOIWz1E9aDGpGeK6SrOg4mPdp5-q6LsK3yiqzkQtGWp4cbm0RoB24rGhbXr9SnqQcSQePbHIxms7wrFCNWw",
+      "should_verify": true,
+      "verified_by_go": true
+    },
+    {
+      "name": "swift_signed_1",
+      "private_key_raw_b64": "d+ZSSzc4XrfT4PPDuz4lGOUwwc+rfsk5OoUCms/gUNU=",
+      "public_key_spki_b64": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEgDqUB+cmMHrD+NjZVE4MkGKo+LnT5C95gxqfVkw36htdRzIUAoFiWMPXegCtiFv3OSYicdfR1eW0PCK/JWEJKw==",
+      "cid": "sha256:5f0d578704746ead2ccd16dfec8b0c25717edf317d13db9e3bf6090d5d1c0431",
+      "signature_b64url": "MjG899w3ZyliQLiMjPRPL_IYW1Utvws1epM2OuRX9Bav3p_VePGJl63kcVTh8e0pJyOU9vzKk18jL3K4TjI-iw",
+      "should_verify": true,
+      "verified_by_go": true
+    },
+    {
+      "name": "swift_signed_2",
+      "private_key_raw_b64": "d+ZSSzc4XrfT4PPDuz4lGOUwwc+rfsk5OoUCms/gUNU=",
+      "public_key_spki_b64": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEgDqUB+cmMHrD+NjZVE4MkGKo+LnT5C95gxqfVkw36htdRzIUAoFiWMPXegCtiFv3OSYicdfR1eW0PCK/JWEJKw==",
+      "cid": "sha256:d5576de250d7c8bb7f571c83a4d32e8079515a5a05b4f19270fe46e9b9030137",
+      "signature_b64url": "a5mYyQAXMwEaswvdodBf96mkZHIJENclbDB8HLNuyOLgmaHp95-7wcOYjGNsgVe_lJYjUekVO97PqbkImQBUIA",
+      "should_verify": true,
+      "verified_by_go": true
+    },
+    {
+      "name": "swift_signed_3",
+      "private_key_raw_b64": "d+ZSSzc4XrfT4PPDuz4lGOUwwc+rfsk5OoUCms/gUNU=",
+      "public_key_spki_b64": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEgDqUB+cmMHrD+NjZVE4MkGKo+LnT5C95gxqfVkw36htdRzIUAoFiWMPXegCtiFv3OSYicdfR1eW0PCK/JWEJKw==",
+      "cid": "sha256:8b2f08cadf75afb43f071fc1afbd623e2ed371a10b6916298c20ac90c930f8b7",
+      "signature_b64url": "IvEf0Pm25CcW7S-OxLbaHqUgnSW-hzhUyoHvEkF6w7ruXNqySXRGkCfrBdY2uGbGv41V2dyz1V8VARdiPk22og",
+      "should_verify": true,
+      "verified_by_go": true
+    },
+    {
+      "name": "swift_signed_4",
+      "private_key_raw_b64": "d+ZSSzc4XrfT4PPDuz4lGOUwwc+rfsk5OoUCms/gUNU=",
+      "public_key_spki_b64": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEgDqUB+cmMHrD+NjZVE4MkGKo+LnT5C95gxqfVkw36htdRzIUAoFiWMPXegCtiFv3OSYicdfR1eW0PCK/JWEJKw==",
+      "cid": "sha256:3d222078ad17e112225397602be96ad69e66c84aad08a3fd2f33d068ffb1013c",
+      "signature_b64url": "Tmo_6cmzr5Lil1dW1C1XdqWbUwb4_rjcgW-h3zifESDiEZG79J9Lix1DanUNv5bmKksuW4qUfL8UhDm7zq8sNg",
+      "should_verify": true,
+      "verified_by_go": true
+    },
+    {
+      "name": "swift_signed_5",
+      "private_key_raw_b64": "d+ZSSzc4XrfT4PPDuz4lGOUwwc+rfsk5OoUCms/gUNU=",
+      "public_key_spki_b64": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEgDqUB+cmMHrD+NjZVE4MkGKo+LnT5C95gxqfVkw36htdRzIUAoFiWMPXegCtiFv3OSYicdfR1eW0PCK/JWEJKw==",
+      "cid": "sha256:c9fb654aeb80503158a3579d7f8eccf12870f32398a0cc93fef5f4583e874d14",
+      "signature_b64url": "w4_dj4PiM_YjIoDwbWB7q7a2tdxFFJu-s8YtyN58QXapkcwDMwOSTi0QqUue7iN9Sl8ae5vzSSDEiNVazqIbUg",
+      "should_verify": true,
+      "verified_by_go": true
+    },
+    {
+      "name": "swift_signed_wrong_cid",
+      "private_key_raw_b64": "d+ZSSzc4XrfT4PPDuz4lGOUwwc+rfsk5OoUCms/gUNU=",
+      "public_key_spki_b64": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEgDqUB+cmMHrD+NjZVE4MkGKo+LnT5C95gxqfVkw36htdRzIUAoFiWMPXegCtiFv3OSYicdfR1eW0PCK/JWEJKw==",
+      "cid": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "signature_b64url": "LgChVgWt6LOvP6YRTLhaPYlF8tzFpVGjiSSfyUjgTr55zq0s4K48HuYS6_mlxGtjCVhLN_T5Da_wdlWpUHgURQ",
+      "should_verify": false,
+      "verified_by_go": false
+    },
+    {
+      "name": "swift_signed_der_form",
+      "private_key_raw_b64": "d+ZSSzc4XrfT4PPDuz4lGOUwwc+rfsk5OoUCms/gUNU=",
+      "public_key_spki_b64": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEgDqUB+cmMHrD+NjZVE4MkGKo+LnT5C95gxqfVkw36htdRzIUAoFiWMPXegCtiFv3OSYicdfR1eW0PCK/JWEJKw==",
+      "cid": "sha256:4b1106eced440080b0473fccc79599fef3ba08369c1b15e29b49a9efd2e43938",
+      "signature_b64url": "MEUCIQDstQQ3RIYkpIg4TTwETY5qwCbhRVuPuW4Swe3nRP4R5AIge1shkHGgTZ47YdJuwQN217sdNVAGtLhMzdz_cDCteK8",
+      "should_verify": false,
+      "verified_by_go": false
+    },
+    {
+      "name": "swift_signed_padded_base64",
+      "private_key_raw_b64": "d+ZSSzc4XrfT4PPDuz4lGOUwwc+rfsk5OoUCms/gUNU=",
+      "public_key_spki_b64": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEgDqUB+cmMHrD+NjZVE4MkGKo+LnT5C95gxqfVkw36htdRzIUAoFiWMPXegCtiFv3OSYicdfR1eW0PCK/JWEJKw==",
+      "cid": "sha256:4b1106eced440080b0473fccc79599fef3ba08369c1b15e29b49a9efd2e43938",
+      "signature_b64url": "_9LRwWrLSDJ4Dpgu7y6fTVIey-HFcg7Hkv9eqA0CK_HVYDNXH5Sk9kAhPNe80lM4WttQ_1CINFAThHvNoWJKWQ=",
+      "should_verify": false,
+      "verified_by_go": false
+    }
+  ]
+}

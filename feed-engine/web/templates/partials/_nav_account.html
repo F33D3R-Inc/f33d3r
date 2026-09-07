@@ -1,0 +1,44 @@
+{{/*
+FACET nav_account
+  version: 1.1 | status: stable | layer: 2
+
+  inputs:
+    .User   User      — .Handle .AvatarURL .DisplayName .Role .IsVerified .PIALID .AETBalance
+    .Nexus  []Persona — linked personas (empty = shows "Manage accounts" link)
+
+  states:
+    default | menu-open | verified | unverified
+
+  children:
+    badge_pill (inline), user_avatar (inline)
+
+  signals:
+    emits:    none (menu items navigate; logout POSTs to /logout directly)
+    receives: balance (SSE — updates AET balance display in menu)
+
+  context:
+    nav_shell → bottom identity strip (one instance per page, never swapped)
+
+  note: same template for ALL roles. Data drives content inside slots, never removes slots.
+  note: The popup menu (user_menu_popup Facet) is rendered at body level in base.html
+  outside .f33d3r-shell so it paints above sidebar overflow:hidden clipping.
+  This Facet only renders the trigger button.
+*/}}
+{{define "nav_account"}}
+<div class="sidebar-user-wrap" id="sidebar-user-wrap">
+
+  {{/* Facet(nav_account_trigger) — identity row: avatar · name · handle · AET · dots */}}
+  <button class="sidebar-user nav-account" id="sidebar-user-btn" type="button">
+    {{template "user_avatar" (dict "Handle" .User.Handle "AvatarURL" .User.AvatarURL "DisplayName" .User.DisplayName "Size" "sm")}}
+    <div class="sidebar-user-info nav-account-meta">
+      <div class="nav-account-name">{{.User.DisplayName}}</div>
+      <div class="nav-account-aet">@{{.User.Handle}} · <b id="sidebar-aet-bal"></b></div>
+    </div>
+    <svg style="width:14px;height:14px;color:var(--ink-4);flex-shrink:0" fill="currentColor" viewBox="0 0 24 24">
+      <circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/>
+    </svg>
+  </button>
+
+  {{/* Facet(user_menu_popup) rendered at body level in base.html — see _user_menu_popup.html */}}
+</div>
+{{end}}

@@ -1,0 +1,49 @@
+{{/*
+FACET live_chat_panel
+  version: 1.0 | status: stable | layer: 2
+
+  The watch page's right column. The log is a server-ordered append surface: the
+  server holds the stream's message ring, renders each line, and delivers it as a
+  Fragment over the existing FA Live registry. The browser only appends what
+  arrives and keeps the scroll pinned.
+
+  inputs:
+    StreamID string             — stream UUID
+    Messages []liveChatMessage  — oldest-first backlog (empty for anonymous viewers)
+    CanChat  bool               — signed-in and the stream accepts chat
+    Handle   string             — viewer handle
+
+  states:
+    open (composer) | gated (logged out) | empty
+
+  children:
+    live_chat_row, live_chat_composer, live_chat_gate
+
+  signals:
+    emits:    live.chat.send (through live_chat_composer)
+    receives: live_chat (SSE — one rendered row appended to #live-chat-log)
+
+  context:
+    live.html → right-panel slot
+*/}}
+{{define "live_chat_panel"}}
+<section class="live-chat" data-facet-id="facet:f33d3r:live:{{.StreamID}}:chat"
+         data-stream-id="{{.StreamID}}" aria-label="Live chat">
+  <header class="live-chat__head">
+    <h2 class="live-chat__title">Chat</h2>
+  </header>
+
+  {{if .CanChat}}
+  <div class="live-chat__log" id="live-chat-log" role="log" aria-live="polite" aria-relevant="additions">
+    {{range .Messages}}
+      {{template "live_chat_row" (dict "M" .)}}
+    {{else}}
+    <p class="live-chat__empty">No messages yet. Say hello.</p>
+    {{end}}
+  </div>
+  {{template "live_chat_composer" (dict "StreamID" .StreamID "Handle" .Handle)}}
+  {{else}}
+  {{template "live_chat_gate" (dict "StreamID" .StreamID)}}
+  {{end}}
+</section>
+{{end}}

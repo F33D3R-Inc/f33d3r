@@ -1,0 +1,83 @@
+{{/*
+FACET contact_addresses
+  version: 1.0 | status: stable | layer: 2
+
+  inputs:
+    PIALID      string  — the identity these addresses resolve to
+    Addresses   []struct{ Address string; Live bool }
+    Notice      string  — server message, empty when there is nothing to say
+    Unavailable bool    — the naming plane could not be reached
+
+  states:
+    default | empty | unavailable | notice
+
+  children: none
+
+  signals:
+    emits: POST /identity/addresses/mint    → re-renders this facet
+    emits: POST /identity/addresses/revoke  → re-renders this facet
+
+  context:
+    settings → identity section
+
+  notes:
+    An address is a capability, not an inbox filter: possession of a live one
+    grants the right to fetch this identity's device key bundle and open an
+    end-to-end channel. Revoking stops future channels only — conversations
+    already open hold their own keys and are untouched.
+*/}}
+{{define "contact_addresses"}}
+<div class="contact-addresses"
+     data-facet-id="facet:f33d3r:identity:{{.PIALID}}:contact_addresses">
+
+  <div class="contact-addresses__head">
+    <h3 class="contact-addresses__title">Contact addresses</h3>
+    <p class="contact-addresses__sub">
+      Publish one anywhere. Anyone holding a live address can open an encrypted
+      channel with you — nothing else. Retire one at any time; conversations
+      already open are not affected.
+    </p>
+  </div>
+
+  {{if .Notice}}
+  <p class="contact-addresses__notice" role="status">{{.Notice}}</p>
+  {{end}}
+
+  {{if .Unavailable}}
+  <p class="contact-addresses__empty">Addresses are unavailable right now.</p>
+  {{else}}
+
+    {{if .Addresses}}
+    <ul class="contact-addresses__list">
+      {{range .Addresses}}
+      <li class="contact-addresses__row{{if not .Live}} is-revoked{{end}}">
+        <code class="contact-addresses__code">{{.Address}}</code>
+        {{if .Live}}
+          <span class="contact-addresses__state contact-addresses__state--live">Live</span>
+          <form method="post" action="/identity/addresses/revoke"
+                hx-post="/identity/addresses/revoke"
+                hx-target="closest .contact-addresses"
+                hx-swap="outerHTML">
+            <input type="hidden" name="address" value="{{.Address}}">
+            <button type="submit" class="contact-addresses__revoke">Retire</button>
+          </form>
+        {{else}}
+          <span class="contact-addresses__state contact-addresses__state--revoked">Retired</span>
+        {{end}}
+      </li>
+      {{end}}
+    </ul>
+    {{else}}
+    <p class="contact-addresses__empty">No addresses yet.</p>
+    {{end}}
+
+    <form method="post" action="/identity/addresses/mint"
+          hx-post="/identity/addresses/mint"
+          hx-target="closest .contact-addresses"
+          hx-swap="outerHTML">
+      <button type="submit" class="contact-addresses__mint">Mint a new address</button>
+    </form>
+
+  {{end}}
+</div>
+{{end}}

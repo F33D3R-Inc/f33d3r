@@ -1,0 +1,50 @@
+{{/*
+FACET settings_section_realm
+  version: 1.0 | status: stable | layer: 2
+
+  inputs:
+    .User  User — .Handle .XP .Achievements (realm resolved through realmOf)
+
+  states:
+    default
+
+  children:
+    xp_bar (inline)
+
+  signals:
+    emits:    none (read-only view)
+    receives: none
+
+  context:
+    settings → #settings-panel (HTMX-swapped from settings_nav)
+*/}}
+{{define "settings_section_realm"}}
+<div class="settings-panel-head">
+  <h2 class="settings-panel-title">Realm &amp; XP</h2>
+  <p class="settings-panel-sub">Your standing on F33D3R grows as you contribute and engage.</p>
+</div>
+
+<div class="settings-block">
+  <div class="settings-realm-row">
+    <div class="settings-realm-badge">R{{realmOf .User.Handle}}</div>
+    <div class="settings-realm-info">
+      <div class="settings-realm-name">{{realmName (realmOf .User.Handle)}}</div>
+      <div class="settings-realm-xp">{{.User.XP}} XP total</div>
+    </div>
+    <a href="/achievements" class="btn-ghost" style="font-size:13px;margin-left:auto">View achievements →</a>
+  </div>
+  {{template "xp_bar" .}}
+</div>
+
+<div class="settings-block">
+  <div class="settings-block-title">Realm levels</div>
+  <div class="settings-realm-levels">
+    {{range $n := (mkRange 1 6)}}
+    <div class="settings-realm-level{{if eq $n (realmOf $.User.Handle)}} is-current{{end}}">
+      <div class="settings-realm-level-badge">R{{$n}}</div>
+      <div class="settings-realm-level-name">{{realmName $n}}</div>
+    </div>
+    {{end}}
+  </div>
+</div>
+{{end}}

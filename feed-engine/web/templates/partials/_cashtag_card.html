@@ -1,0 +1,63 @@
+{{/*
+FACET cashtag_card
+  version: 1.0 | status: stable | layer: 2
+
+  inputs:
+    Ticker      string  — "$TSLA" (dollar sign included)
+    CompanyName string  — "Tesla Inc"
+    Exchange    string  — "NASDAQ" (optional)
+    PriceStr    string  — "443.30" (pre-formatted)
+    ChangeStr   string  — "+3.28%" or "-0.44%" (pre-formatted, sign included)
+    IsPositive  bool    — true = green, false = red
+    Sparkline   string  — SVG polyline points string (120×40 viewBox), "" = no chart
+
+  states:
+    positive | negative
+
+  children: none
+
+  signals:
+    emits:    none (card is display-only; ticker is a link to /stocks/TICKER)
+    receives: none
+
+  context:
+    post_card         → below post body, above link_preview
+    post_detail_focus → same position
+    compose_modal     → compose-preview-slot (via JS fetch)
+*/}}
+{{define "cashtag_card"}}
+{{$ticker := trimPrefix .Ticker "$"}}
+<a class="cashtag-card{{if .IsPositive}} cashtag-card--up{{else}} cashtag-card--down{{end}}"
+   href="/stocks/{{$ticker}}"
+   data-ticker="{{$ticker}}"
+   onclick="event.stopPropagation()">
+
+  {{/* Ticker + company */}}
+  <div class="cashtag-card__left">
+    <span class="cashtag-card__ticker">{{.Ticker}}</span>
+    {{if .CompanyName}}<span class="cashtag-card__company">{{.CompanyName}}</span>{{end}}
+    <div class="cashtag-card__price-row">
+      <span class="cashtag-card__price">${{.PriceStr}}</span>
+      <span class="cashtag-card__change{{if not .IsPositive}} cashtag-card__change--down{{end}}">
+        {{.ChangeStr}}
+      </span>
+    </div>
+  </div>
+
+  {{/* Sparkline chart */}}
+  {{if .Sparkline}}
+  <div class="cashtag-card__chart" aria-hidden="true">
+    <svg viewBox="0 0 120 40" preserveAspectRatio="none" width="120" height="40">
+      <polyline
+        points="{{.Sparkline}}"
+        fill="none"
+        stroke="{{if .IsPositive}}#22c55e{{else}}#ef4444{{end}}"
+        stroke-width="1.8"
+        stroke-linecap="round"
+        stroke-linejoin="round"/>
+    </svg>
+  </div>
+  {{end}}
+
+</a>
+{{end}}

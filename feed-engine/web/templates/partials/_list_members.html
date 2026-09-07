@@ -1,0 +1,40 @@
+{{/*
+FACET list_members
+  version: 1.0 | status: stable | layer: 2
+
+  inputs:
+    ListID   string       — list UUID
+    Members  []model.User — current members (.Handle .AvatarURL)
+
+  states:
+    default | empty (renders nothing inside the root)
+
+  children:
+    none
+
+  signals:
+    emits:    none
+    receives: none (re-rendered by list_add_member / list_remove_member answers)
+
+  context:
+    list_detail.html → member strip under the list header
+*/}}
+{{define "list_members"}}
+<div id="list-members" data-facet-id="facet:f33d3r:list:{{.ListID}}:members">
+  {{if .Members}}
+  <div style="padding:8px 0;border-bottom:1px solid var(--border)">
+    <div style="padding:6px 16px;font-size:12px;font-weight:600;color:var(--text-muted);letter-spacing:.04em">MEMBERS</div>
+    <div style="display:flex;gap:8px;padding:0 16px 8px;overflow-x:auto">
+    {{range .Members}}
+    <a href="/{{.Handle}}" style="display:flex;flex-direction:column;align-items:center;gap:4px;text-decoration:none;flex-shrink:0">
+      <div class="user-av" style="width:40px;height:40px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:15px;{{if .AvatarURL}}background:url('{{.AvatarURL}}') center/cover{{else}}background:var(--accent){{end}}">
+        {{if not .AvatarURL}}{{firstChar .Handle}}{{end}}
+      </div>
+      <span style="font-size:11px;color:var(--text-secondary);max-width:56px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">@{{.Handle}}</span>
+    </a>
+    {{end}}
+    </div>
+  </div>
+  {{end}}
+</div>
+{{end}}

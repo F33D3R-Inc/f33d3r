@@ -1,0 +1,26 @@
+{{/*
+FACET wallet_panel_governance
+  version: 1.0 | status: stable | layer: 2
+
+  inputs:
+    .Wallet  WalletData — passed through to wallet_governance
+    .User    User       — .Handle
+
+  states:
+    default
+
+  children:
+    wallet_governance
+
+  signals:
+    emits:    none (wallet_governance handles mutations)
+    receives: none
+
+  context:
+    wallet → #wallet-panel (hx-get /wallet/governance)
+*/}}
+{{define "wallet_panel_governance"}}
+<div class="admin-panel-inner">
+  {{template "wallet_governance" .}}
+</div>
+{{end}}

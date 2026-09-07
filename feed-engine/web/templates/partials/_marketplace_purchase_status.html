@@ -1,0 +1,40 @@
+{{/*
+FACET marketplace_purchase_status
+  version: 1.0 | status: stable | layer: 1
+
+  inputs:
+    PurchaseID  string — purchase UUID
+    Status      string — "pending" | "confirmed" | "delivered" | "expired" | "unavailable"
+    Polling     bool   — true while the purchase can still change: the fragment
+                         asks for itself again every 10s
+
+  states:
+    pending | confirmed | delivered | expired | unavailable
+
+  children:
+    none
+
+  signals:
+    emits:    none
+    receives: none (it asks the server; the answer is the next state)
+
+  context:
+    marketplace_purchase_modal → status line under the payment details
+*/}}
+{{define "marketplace_purchase_status"}}
+<div class="marketplace-purchase-modal__status-slot"
+     data-facet-id="facet:f33d3r:purchase:{{.PurchaseID}}:status"
+     {{if .Polling}}hx-get="/facets/marketplace/purchase/{{.PurchaseID}}/status" hx-trigger="every 10s" hx-swap="outerHTML"{{end}}>
+  {{if eq .Status "pending"}}
+  <p class="marketplace-purchase-modal__waiting" aria-live="polite">Waiting for payment&hellip;</p>
+  {{else if eq .Status "confirmed"}}
+  <p class="marketplace-purchase-modal__status" aria-live="polite">Payment confirmed &mdash; preparing your content&hellip;</p>
+  {{else if eq .Status "delivered"}}
+  <p class="marketplace-purchase-modal__status" aria-live="polite">Content unlocked &mdash; <a href="/buyer-library">open your library</a>.</p>
+  {{else if eq .Status "expired"}}
+  <p class="marketplace-purchase-modal__status marketplace-purchase-modal__status--expired" role="alert">Payment window expired.</p>
+  {{else}}
+  <p class="marketplace-purchase-modal__waiting" aria-live="polite">Checking payment status&hellip;</p>
+  {{end}}
+</div>
+{{end}}

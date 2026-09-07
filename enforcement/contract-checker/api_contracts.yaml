@@ -1,0 +1,234 @@
+# F33D3R API Contracts
+# Canonical definition of each brain's public HTTP API surface.
+# Used by api_schema_validator.py to verify contract coverage.
+
+version: "1.0"
+
+brains:
+
+  nantar:
+    base_url: "https://localhost:8443"
+    endpoints:
+      - method:
+          GET  path:
+            /api/health       auth:
+              none    response: { status: string, engine: bool }
+      - method:
+          GET  path:
+            /feed             auth:
+              cookie  response: html
+      - method:
+          POST path:
+            /api/post         auth:
+              cookie  body: { content, comment_gating, media_urls }
+      - method:
+          POST path:
+            /api/reply        auth:
+              cookie  body: { parent_id, body }
+      - method:
+          POST path:
+            /api/follow       auth:
+              cookie  body: { target_id, action }
+      - method:
+          POST path:
+            /api/bookmark     auth:
+              cookie  body: { post_id }
+      - method:
+          GET  path:
+            /api/users/search auth:
+              cookie  query: { q }
+      - method:
+          POST path:
+            /api/report       auth:
+              cookie  body: { content_id, content_type, reason, detail }
+      - method:
+          POST path:
+            /upload/avatar    auth:
+              cookie  content_type: multipart/form-data
+      - method:
+          POST path:
+            /upload/track     auth:
+              cookie  content_type: multipart/form-data
+
+  aethyrrank:
+    base_url: "http://localhost:8080"
+    endpoints:
+      - method:
+          GET  path:
+            /health           auth: none
+      - method:
+          POST path:
+            /rank             auth:
+              none    body: AethyrRankRequest
+      - method:
+          POST path:
+            /feedback         auth:
+              none    body: AethyrFeedbackRequest
+
+  zior:
+    base_url: "http://localhost:8082"
+    endpoints:
+      - method:
+          GET  path:
+            /health                      auth: none
+      - method:
+          GET  path:
+            /v1/tracks                  auth: none
+      - method:
+          GET  path:
+            /v1/tracks/by-genre          auth:
+              none    query: { genre }
+      - method:
+          GET  path:
+            /v1/tracks/trending          auth: none
+      - method:
+          GET  path:
+            /v1/artist/{user_id}/tracks  auth: none
+      - method:
+          POST path:
+            /v1/feedback/play            auth: none
+      - method:
+          POST path:
+            /v1/feedback/like            auth: none
+
+  vovin:
+    base_url: "http://localhost:8092"
+    endpoints:
+      - method:
+          GET  path:
+            /health                          auth: none
+      - method:
+          GET  path:
+            /v1/stats                       auth:
+              header  header: X-Vovin-Identity
+      - method:
+          POST path:
+            /v1/identity                    auth:
+              header  header: X-Vovin-Identity
+      - method:
+          GET  path:
+            /v1/identity/{pial_id}          auth: header
+      - method:
+          GET  path:
+            /v1/identity/by-handle/{handle} auth: header
+      - method:
+          POST path:
+            /v1/dm                          auth: header
+      - method:
+          GET  path:
+            /v1/dm/{pial_id}                auth: header
+      - method:
+          GET  path:
+            /v1/push/{pial_id}              auth:
+              header  protocol: websocket
+
+  ain-soph:
+    base_url: "http://localhost:8089"
+    endpoints:
+      - method:
+          GET  path:
+            /health                auth: none
+      - method:
+          GET  path:
+            /balance/{user_id}     auth: internal
+      - method:
+          POST path:
+            /deposit               auth:
+              internal  body: { user_id, amount_cents, source, idempotency_key }
+      - method:
+          POST path:
+            /transfer              auth:
+              internal  body: { from_user_id, to_user_id, amount_cents, memo, idempotency_key }
+      - method:
+          POST path:
+            /withdraw              auth:
+              internal  body: { user_id, amount_cents, destination }
+
+  elohim-veni:
+    base_url: "http://localhost:8093"
+    endpoints:
+      - method:
+          GET  path:
+            /health                              auth: none
+      - method:
+          GET  path:
+            /v1/stats                           auth: internal
+      - method:
+          POST path:
+            /v1/pial/bootstrap                  auth:
+              internal  body: { pial_id, account_id, handle }
+      - method:
+          GET  path:
+            /v1/pial/{pial_id}/capabilities     auth: internal
+      - method:
+          POST path:
+            /v1/pial/{pial_id}/capabilities     auth: internal
+      - method:
+          POST path:
+            /v1/pial/capabilities/bulk          auth: internal
+      - method:
+          GET  path:
+            /v1/pial/{pial_id}/trust            auth: internal
+      - method:
+          POST path:
+            /v1/pial/{pial_id}/status           auth: internal
+      - method:
+          POST path:
+            /v1/pial/{pial_id}/ban              auth: internal
+      - method:
+          POST path:
+            /v1/decisions                       auth: internal
+      - method:
+          GET  path:
+            /v1/decisions/log                   auth:
+              internal  query: { pial_id, limit, offset }
+
+  zodacare:
+    base_url: "http://localhost:8090"
+    endpoints:
+      - method:
+          GET  path:
+            /health                      auth: none
+      - method:
+          GET  path:
+            /v1/stats                   auth: internal
+      - method:
+          POST path:
+            /v1/reports                 auth:
+              internal  body: { reporter_pial, content_id, content_type, reason, detail }
+      - method:
+          GET  path:
+            /v1/reports                 auth:
+              internal  query: { status, limit, offset }
+      - method:
+          GET  path:
+            /v1/reports/{id}            auth: internal
+      - method:
+          POST path:
+            /v1/reports/{id}/resolve    auth: internal
+      - method:
+          POST path:
+            /v1/reports/{id}/escalate   auth: internal
+      - method:
+          GET  path:
+            /v1/user/{pial_id}/risk     auth: internal
+      - method:
+          POST path:
+            /v1/user/{pial_id}/action   auth:
+              internal  body: { action, reason }
+
+  schema-registry:
+    base_url: "http://localhost:8079"
+    endpoints:
+      - method:
+          GET  path:
+            /health                        auth: none
+      - method:
+          POST path:
+            /v1/schemas/register           auth: internal
+      - method:
+          GET  path:
+            /v1/schemas/{name}/{version}   auth: none
+      - method:
+          GET  path:
+            /v1/schemas/{name}/latest      auth: none

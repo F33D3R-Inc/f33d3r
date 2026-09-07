@@ -1,0 +1,32 @@
+{{/*
+FACET capture_stage (template facet)
+  version: 1.0 | status: stable | layer: 3 (template facet)
+
+  The f33d3r camera stack overlay — feature-agnostic capture surface. Rendered
+  once body-level in base.html; shown/hidden and driven entirely by the Capture
+  Substrate (window.Capture). Knows nothing about Visions / react-to-post / KYC;
+  those features mount it and consume the captured File via the output sink.
+
+  inputs:  none — stateless, JS-driven
+  states:  data-status (idle|requesting_permission|loading_device|ready|recording|processing|error)
+           data-mode (photo|video) · data-recording (0|1) · data-facing · data-multicam
+  children: camera_preview, camera_close_btn, camera_timer, camera_status,
+            camera_permission_state, camera_device_selector, camera_controls
+  signals:  emits none server-side; child facets emit capture.* intents to the substrate
+  context:  base.html → body-level overlay
+*/}}
+{{define "capture_stage"}}
+<div id="capture-stage" class="capture-stage" data-facet-id="facet:f33d3r:capture:stage"
+     data-status="idle" data-mode="photo" data-recording="0" data-facing="user" data-multicam="0"
+     role="dialog" aria-modal="true" aria-label="Camera" style="display:none">
+
+  {{template "camera_preview"}}
+  {{template "camera_close_btn"}}
+  {{template "camera_device_selector"}}
+  {{template "camera_timer"}}
+  {{template "camera_status"}}
+  {{template "camera_permission_state"}}
+  {{template "camera_controls"}}
+
+</div>
+{{end}}

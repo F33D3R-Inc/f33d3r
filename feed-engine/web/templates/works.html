@@ -1,0 +1,16 @@
+{{define "title"}}Works · F33D3R{{end}}
+{{define "nav-active-works"}}active{{end}}
+{{define "body"}}
+<main class="f33d3r-main" id="main-col">
+  <div class="feed-header">
+    <h1 class="feed-title">Works</h1>
+    <p class="feed-subtitle">Content-addressed, cryptographically signed posts</p>
+  </div>
+  <div id="works-feed-container"
+       hx-get="/facets/works/feed"
+       hx-trigger="load"
+       hx-swap="innerHTML"
+       aria-live="polite">
+  </div>
+</main>
+{{end}}

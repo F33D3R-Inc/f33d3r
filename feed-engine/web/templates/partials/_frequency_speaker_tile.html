@@ -1,0 +1,48 @@
+{{/*
+FACET frequency_speaker_tile
+  version: 1.0 | status: stable | layer: 5
+
+  The compact speaker tile used by the preview sheet and the dock: avatar
+  circle with realm ring, name below, role in muted small caps, mute glyph
+  overlaid bottom-right. `Speaking` is a server-set class (Phase 3, from the
+  RTP audio-level extension) that adds a 2px accent ring; it is never decided
+  in the browser. No moderation menu here — that belongs to the stage's
+  frequency_speaker.
+
+  inputs:
+    Person   FrequencyPerson
+    Role     string — "host" | "cohost" | "speaker"
+    Muted    bool
+    Present  bool
+    Speaking bool   — server-set (Phase 3); default false
+    Size     string — "lg" (56px, preview) | "md" (44px, dock)
+
+  states:
+    host | cohost | speaker ; muted ; away ; is-speaking
+
+  children:
+    user_avatar
+
+  signals:
+    emits:    none
+    receives: none (parent Facet replaced)
+
+  context:
+    frequency_preview → tiles grid
+    frequency_dock    → compact grid
+*/}}
+{{define "frequency_speaker_tile"}}
+<li class="freq-tile freq-tile--{{.Role}}{{if .Muted}} freq-tile--muted{{end}}{{if not .Present}} freq-tile--away{{end}}{{if .Speaking}} is-speaking{{end}}"
+    aria-label="@{{.Person.Handle}}{{if eq .Role "host"}}, host{{else if eq .Role "cohost"}}, co-host{{else}}, speaker{{end}}{{if .Muted}}, muted{{end}}{{if .Speaking}}, speaking{{end}}">
+  <span class="freq-tile__av">
+    {{template "user_avatar" (dict "Handle" .Person.Handle "AvatarURL" .Person.AvatarURL "DisplayName" .Person.DisplayName "Size" .Size "IsOnline" false)}}
+    {{if .Muted}}
+    <span class="freq-tile__mic" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v4M8 23h8"/><path d="M2 2l20 20"/></svg>
+    </span>
+    {{end}}
+  </span>
+  <span class="freq-tile__name">{{if .Person.DisplayName}}{{.Person.DisplayName}}{{else}}@{{.Person.Handle}}{{end}}</span>
+  <span class="freq-tile__role">{{if eq .Role "host"}}Host{{else if eq .Role "cohost"}}Co-host{{else}}Speaker{{end}}{{if .Muted}} · muted{{end}}</span>
+</li>
+{{end}}

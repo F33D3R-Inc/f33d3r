@@ -1,0 +1,85 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "safety.action",
+  "description": "Emitted by Elohim Veni when a capability is changed as a result of a moderation action.",
+  "type": "object",
+  "required": [
+    "event_id",
+    "event_type",
+    "schema_version",
+    "pial_id",
+    "timestamp",
+    "action",
+    "capability",
+    "new_state",
+    "actor"
+  ],
+  "properties": {
+    "event_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "event_type": {
+      "type": "string",
+      "const": "safety.action"
+    },
+    "schema_version": {
+      "type": "string",
+      "const": "1.0"
+    },
+    "pial_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Target PIAL UUID"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "action": {
+      "type": "string",
+      "enum": [
+        "warn",
+        "restrict",
+        "suspend",
+        "ban",
+        "unban",
+        "restore"
+      ]
+    },
+    "capability": {
+      "type": "string"
+    },
+    "new_state": {
+      "type": "string",
+      "enum": [
+        "granted",
+        "restricted",
+        "revoked",
+        "cooldown"
+      ]
+    },
+    "actor": {
+      "type": "string",
+      "description": "zodacare | elohim-veni | admin:<handle>"
+    },
+    "reason": {
+      "type": "string"
+    },
+    "expires_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "report_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    }
+  },
+  "additionalProperties": false
+}

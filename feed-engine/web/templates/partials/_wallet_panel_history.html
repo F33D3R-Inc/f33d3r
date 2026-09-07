@@ -1,0 +1,26 @@
+{{/*
+FACET wallet_panel_history
+  version: 1.0 | status: stable | layer: 2
+
+  inputs:
+    .Wallet  WalletData — passed through to wallet_tx_list
+    .User    User       — .Handle
+
+  states:
+    default
+
+  children:
+    wallet_tx_list
+
+  signals:
+    emits:    none (JS loadTxHistory fetches rows)
+    receives: balance (SSE — triggers balance refresh)
+
+  context:
+    wallet → #wallet-panel (hx-get /wallet/history)
+*/}}
+{{define "wallet_panel_history"}}
+<div class="admin-panel-inner">
+  {{template "wallet_tx_list" .}}
+</div>
+{{end}}

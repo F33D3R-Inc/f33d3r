@@ -1,0 +1,300 @@
+/* desktop.css — Desktop-specific layout: 3-column grid, right sidebar, nav action pills.
+ * Applies at @media (min-width: 1024px) only.
+ * All z-index values come from layers.css --z-* variables.
+ */
+
+/* ── Facet(sidebar_right) — info/discovery panel, desktop only ──────── */
+.f33d3r-sidebar-right {
+  display: none; /* hidden on mobile */
+}
+
+@media (min-width: 1024px) {
+  .f33d3r-sidebar-right {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    width: 320px;
+    flex-shrink: 0;
+    position: sticky;
+    top: 0;
+    height: 100dvh;
+    overflow-y: auto;
+    padding: 20px 16px;
+    border-left: 1px solid var(--border-soft);
+    scrollbar-width: none;
+  }
+  .f33d3r-sidebar-right::-webkit-scrollbar { display: none; }
+
+  /* Expand shell max-width to fit 3 columns */
+  .f33d3r-shell { max-width: 1380px; }
+}
+
+/* ── Facet(sidebar_card) — right sidebar widget cards ────────────────── */
+.sidebar-card {
+  border-radius: var(--r-lg);
+  border: 1px solid var(--border-soft);
+  background: var(--panel);
+  overflow: hidden;
+}
+
+.sidebar-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px 10px;
+}
+
+.sidebar-card-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: -.02em;
+}
+
+.sidebar-card-link {
+  font-size: 13px;
+  color: var(--accent);
+  text-decoration: none;
+  font-weight: 500;
+  transition: opacity 0.15s;
+}
+
+.sidebar-card-link:hover { opacity: 0.8; }
+
+.sidebar-card-body {
+  padding: 4px 0 8px;
+}
+
+/* ── Facet(sidebar_user_row) — "Who to follow" suggested user item ───── */
+.sidebar-user-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  transition: background 0.1s;
+  text-decoration: none;
+}
+
+.sidebar-user-row:hover { background: var(--panel-hover); }
+
+.sidebar-user-av {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 700;
+  color: #fff;
+  overflow: hidden;
+}
+
+.sidebar-user-av img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+.sidebar-user-info { flex: 1; min-width: 0; }
+
+.sidebar-user-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: block;
+}
+
+.sidebar-user-handle {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: block;
+}
+
+/* ── Facet(sidebar_trend_row) — trending hashtag item ───────────────── */
+.sidebar-trend-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 16px;
+  text-decoration: none;
+  transition: background 0.1s;
+}
+
+.sidebar-trend-row:hover { background: var(--panel-hover); }
+
+.sidebar-trend-tag {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.sidebar-trend-count {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+
+/* ── Portal roots — fixed full-screen layers for modals/sheets/dropdowns ─── */
+/* These sit at the document body level, above all page content.
+ * Each root is pointer-events:none by default; injected content sets auto. */
+.portal-dropdown {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: var(--z-dropdown);
+}
+
+.portal-sheet {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: var(--z-sheet);
+}
+
+.portal-modal {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: var(--z-modal);
+}
+
+.portal-toast {
+  position: fixed;
+  bottom: 80px;
+  right: 20px;
+  pointer-events: none;
+  z-index: var(--z-toast);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* ── Facet(post_card_thread_link) — dead-zone click target ───────────── */
+/* Sits at z-index: 0 (var(--z-base)) inside the card's stacking context.
+ * All interactive child elements sit at z-index: var(--z-card-content) or higher
+ * and naturally receive clicks before this link does. */
+.post-card-thread-link {
+  position: absolute;
+  inset: 0;
+  z-index: var(--z-base);
+  pointer-events: auto;
+  cursor: pointer;
+  text-decoration: none;
+  border-radius: inherit;
+  /* Transparent — visually invisible, click-catchable */
+}
+
+/* ── Post card stacking discipline ──────────────────────────────────────────
+ * .post-card gets isolation:isolate in styles.css.
+ * .pcd is promoted to z-index 3 so its interactive children (buttons, links)
+ * sit above the thread-link catch layer (z-index 0).
+ * .pcf is NOT touched here — styles.css gives it position:absolute which the
+ * focus-feed layout depends on. */
+.pcd {
+  position: relative;
+  z-index: var(--z-card-content);
+}
+
+/* Action bars and reply preview always sit at card-actions level */
+.post-actions.action-btn-row,
+.reply-preview {
+  position: relative;
+  z-index: var(--z-card-actions);
+  pointer-events: auto;
+}
+
+/* Gates above content */
+.nsfw-gate,
+.sensitive-gate,
+.subscriber-gate {
+  position: relative;
+  z-index: var(--z-card-overlay);
+  pointer-events: auto;
+}
+
+/* ── Account pill — desktop: full pill shape, narrow rail: collapses to circle ── */
+/* Full pill on expanded sidebar (≥1080px) */
+.sidebar-user {
+  border-radius: 9999px;
+}
+@media (hover: hover) {
+  .sidebar-user:hover { background: var(--panel-hover); border-radius: 9999px; }
+}
+
+/* ── Action bar — compact on narrow feed columns ─────────────────────────── */
+@media (max-width: 767px) {
+  /* v4 action system */
+  .post-actions { gap: 0; margin-left: -4px; }
+  .action { padding: 5px 5px; font-size: 12px; gap: 4px; }
+  .action svg { width: 16px; height: 16px; }
+  /* Legacy action system */
+  .action-btn { padding: 5px 5px; font-size: 11px; gap: 3px; }
+  .action-btn svg { width: 14px; height: 14px; }
+  .post-actions-legacy { gap: 0; }
+}
+
+/* ── Narrow rail overrides — lives in desktop.css (loads last) so these win
+      over any unconditional rule earlier in the cascade ──────────────────────── */
+@media (max-width: 1079px) {
+  /* No left accent bar on icon rail — background + icon colour signals active */
+  .nav-item.active::before,
+  .nav-item.is-active::before { display: none; }
+
+  /* Hide brand name — logo mark only on narrow rail */
+  .nav-brand-text { display: none; }
+
+  /* Center icon, tighter padding so more items fit on short screens */
+  .nav-item { justify-content: center; padding: 9px 6px; }
+
+  /* Tighter gap between nav items */
+  .sidebar-nav { gap: 1px; }
+
+  /* Post button hidden on narrow rail — floating compose FAB handles this */
+  .post-fab { display: none; }
+
+  /* ── Nav foot: unified column alignment ──────────────────────────────────
+     All three foot elements (xp_bar, theme_toggle, nav_account) must center
+     at exactly the same x as the nav icons above. One mechanism: stretch
+     children to full width, let each center its own content via flex.    */
+  .nav-foot {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    padding: 6px 0;
+    gap: 2px;
+  }
+
+  /* Theme toggle: full-width row, icon centered — matches nav-item pattern */
+  .theme-mode-toggle {
+    width: 100%;
+    height: 40px;
+    border-radius: var(--r-md);
+    border: none;
+    margin: 0;
+    background: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .theme-mode-toggle:hover { background: var(--bg-sunk); }
+
+  /* Account: collapse to full-width icon row — same pattern as nav-item */
+  .sidebar-user-info,
+  .nav-account-meta { display: none; }
+  .nav-account > svg  { display: none; }      /* hide three-dot ellipsis */
+  .sidebar-user-wrap  { display: block; width: 100%; }
+  .nav-account {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: auto;
+    padding: 9px 6px;
+    border-radius: var(--r-md);
+    margin: 0;
+  }
+}

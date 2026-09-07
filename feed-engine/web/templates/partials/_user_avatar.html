@@ -1,0 +1,55 @@
+{{/*
+FACET user_avatar
+  version: 2.0 | status: stable | layer: 1
+
+  THE avatar. Every surface that draws a person draws it through here. There is
+  no second avatar markup: a bespoke <img class="…-avatar"> is a bug, because it
+  is an avatar that cannot wear a ring.
+
+  inputs:
+    Handle       string  — required; ring authority, gradient seed, aria label
+    AvatarURL    string  — optional; photo when present, gradient initials when absent
+    DisplayName  string  — used for initials; falls back to Handle
+    Size         string  — "xs" (20px) | "sm" (32px) | "md" (40px) | "post" (44px) | "lg" (72px) | "xl" (96px); default "md"
+    IsOnline     bool    — delegates to status_dot
+
+  NOT an input — Realm.
+    The realm ring is resolved here from Handle through realmRing, which reads
+    the realm index on the server and decides both the level and whether a ring
+    is drawn at all. It is deliberately not a parameter: when it was
+    one, every one of ~30 render sites had to remember to carry it, and almost
+    none did — they passed 0, 1, "" or nothing, and the ring silently flattened.
+    An attribute of the author does not belong in the argument list of the
+    surface drawing them. A Realm key passed in by a caller is ignored.
+
+  states:
+    default | online | realm-ring (above the realm floor)
+
+  children:
+    status_dot
+
+  signals:
+    emits:    none
+    receives: none
+
+  context:
+    post_avatar            → post-size avatar column
+    nav_account            → identity strip
+    suggested_user_row     → sm avatar
+    quoted_work            → xs avatar (compact identity line)
+    profile_header         → xl avatar slot
+    notif_item, gnosis_*   → notification and message rows
+*/}}
+{{define "user_avatar"}}
+<div class="user-av-wrap user-av--{{if .Size}}{{.Size}}{{else}}md{{end}}{{realmRing .Handle}}">
+  <div class="user-av"
+       style="{{if not .AvatarURL}}{{$c := avatarColors .Handle}}background:linear-gradient(135deg,{{index $c 0}},{{index $c 1}}){{end}}">
+    {{if .AvatarURL}}
+      <img src="{{.AvatarURL}}" alt="{{if .DisplayName}}{{.DisplayName}}{{else}}{{.Handle}}{{end}}" loading="lazy" decoding="async">
+    {{else}}
+      {{if .DisplayName}}{{firstChar .DisplayName}}{{else}}{{firstChar .Handle}}{{end}}
+    {{end}}
+  </div>
+  {{template "status_dot" (dict "IsOnline" .IsOnline)}}
+</div>
+{{end}}

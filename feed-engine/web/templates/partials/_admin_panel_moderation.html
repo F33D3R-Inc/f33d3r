@@ -1,0 +1,179 @@
+{{/*
+FACET admin_panel_moderation
+  version: 1.3 | status: stable | layer: 2
+
+  inputs:
+    PendingReports  []ContentReport             — user-submitted report cards
+    ReviewQueue     []map[string]interface{}     — AI scan results awaiting decision
+                    keys: post_id, body, author_handle, author_avatar, scan_state, created_at,
+                          risk_level, nudity_score, gore_score, clickbait_score, signals, thumb_url
+
+  states:
+    default | empty-queue
+
+  children:
+    admin_report_card
+
+  signals:
+    emits:    approve, age_gate, block (POST /admin/moderation/action)
+              bulk_approve_all (POST /api/admin/bulk-approve-review)
+              warn, suspend, ban (POST /api/admin/user-action)
+    receives: none
+
+  context:
+    admin → #admin-panel (hx-get /admin/partials/moderation)
+    auto-refreshes every 60 s via HTMX polling
+*/}}
+{{define "admin_panel_moderation"}}
+<div class="admin-panel-inner"
+     id="mod-panel"
+     hx-get="/admin/partials/moderation"
+     hx-trigger="every 60s"
+     hx-swap="outerHTML"
+     hx-target="this">
+
+  {{/* ── Scan review queue ── */}}
+  <div class="admin-panel-section">
+    <div class="admin-section-head">
+      <span class="admin-section-head-title">Moderation queue</span>
+      {{if .ReviewQueue}}
+      <span class="admin-section-head-count">{{len .ReviewQueue}}</span>
+      {{end}}
+      {{if .ReviewQueue}}
+      {{/* Bulk approve — clears the whole queue in one shot */}}
+      <button class="admin-action-btn admin-action-btn--ok"
+              style="margin-left:auto"
+              hx-post="/api/admin/bulk-approve-review"
+              hx-target="#mod-panel"
+              hx-swap="outerHTML"
+              hx-confirm="Approve all {{len .ReviewQueue}} queued posts as clean?">
+        Approve all
+      </button>
+      {{end}}
+    </div>
+
+    {{if .ReviewQueue}}
+    <div class="amq-list">
+      {{range .ReviewQueue}}
+      {{$pid := index . "post_id"}}
+      <div class="amq-card" id="amq-{{$pid}}">
+
+        {{/* Header: avatar · handle · risk badge · state · age */}}
+        <div class="amq-header">
+          {{$h := printf "%s" (index . "author_handle")}}{{template "user_avatar" (dict "Handle" $h "AvatarURL" (printf "%s" (index . "author_avatar")) "DisplayName" $h "Size" "sm")}}
+          <a href="/{{index . "author_handle"}}" target="_blank" rel="noopener" class="amq-handle">@{{index . "author_handle"}}</a>
+          {{if eq (index . "scan_state") "pending"}}
+          <span class="amq-state amq-state--pending">⏳ awaiting scan</span>
+          {{else}}
+          <span class="amq-risk amq-risk--{{index . "risk_level"}}">{{index . "risk_level"}}</span>
+          <span class="amq-state amq-state--review">🔍 human review</span>
+          {{end}}
+          <span class="amq-age">{{timeAgo (index . "created_at")}}</span>
+        </div>
+
+        {{/* Post body preview */}}
+        <p class="amq-body">{{index . "body"}}</p>
+
+        {{/* Media thumbnail (if any) */}}
+        {{if index . "thumb_url"}}
+        <div class="amq-thumb-wrap">
+          <img src="{{index . "thumb_url"}}" alt="media preview" class="amq-thumb" loading="lazy">
+        </div>
+        {{end}}
+
+        {{/* Scan scores */}}
+        <div class="amq-scores">
+          <span class="amq-score {{if gt (index . "nudity_score") 0.5}}amq-score--warn{{end}}">
+            nudity {{printf "%.0f%%" (pct (index . "nudity_score"))}}
+          </span>
+          <span class="amq-score {{if gt (index . "gore_score") 0.5}}amq-score--warn{{end}}">
+            gore {{printf "%.0f%%" (pct (index . "gore_score"))}}
+          </span>
+          <span class="amq-score {{if gt (index . "clickbait_score") 0.5}}amq-score--warn{{end}}">
+            clickbait {{printf "%.0f%%" (pct (index . "clickbait_score"))}}
+          </span>
+          {{if index . "signals"}}
+          <span class="amq-signals">{{index . "signals"}}</span>
+          {{end}}
+        </div>
+
+        {{/* Action row */}}
+        <div class="amq-actions">
+          <button class="admin-action-btn admin-action-btn--ok"
+                  hx-post="/admin/moderation/action"
+                  hx-vals='{"post_id":"{{$pid}}","action":"approve","reason":"moderator: approved"}'
+                  hx-target="#amq-{{$pid}}" hx-swap="outerHTML">
+            ✓ Approve
+          </button>
+          <button class="admin-action-btn admin-action-btn--warn"
+                  hx-post="/admin/moderation/action"
+                  hx-vals='{"post_id":"{{$pid}}","action":"age_gate","reason":"moderator: adult content"}'
+                  hx-target="#amq-{{$pid}}" hx-swap="outerHTML">
+            18+ Age-gate
+          </button>
+          <button class="admin-action-btn admin-action-btn--danger"
+                  hx-post="/admin/moderation/action"
+                  hx-vals='{"post_id":"{{$pid}}","action":"block","reason":"moderator: policy violation"}'
+                  hx-target="#amq-{{$pid}}" hx-swap="outerHTML"
+                  hx-confirm="Block this post? This removes it from all feeds permanently.">
+            ✕ Block
+          </button>
+          <a href="/post/{{$pid}}" target="_blank" rel="noopener" class="amq-view-link">View post ↗</a>
+        </div>
+
+      </div>
+      {{end}}
+    </div>
+    {{else}}
+    <div class="admin-alert-strip admin-alert-strip--ok">✓ No posts awaiting review.</div>
+    {{end}}
+  </div>
+
+  {{/* ── User-submitted content reports ── */}}
+  <div class="admin-panel-section">
+    <div class="admin-section-head">
+      <span class="admin-section-head-title">User reports</span>
+      {{if .PendingReports}}
+      <span class="admin-section-head-count">{{len .PendingReports}}</span>
+      {{end}}
+    </div>
+    {{if .PendingReports}}
+    <div class="admin-report-list">
+      {{range .PendingReports}}{{template "admin_report_card" .}}{{end}}
+    </div>
+    {{else}}
+    <div class="admin-alert-strip admin-alert-strip--ok">✓ No pending reports — queue is clear.</div>
+    {{end}}
+  </div>
+
+  {{/* ── User moderation actions ── */}}
+  <div class="admin-panel-section">
+    <div class="admin-section-head">
+      <span class="admin-section-head-title">User actions</span>
+    </div>
+    <p style="font-size:12px;color:var(--text-muted);margin:0 0 12px">
+      Warn, suspend (7d), or ban a user by handle. All actions are logged to the PIAL audit trail.
+    </p>
+    <div class="admin-devtool-card">
+      <div class="admin-devtool-title">Apply user action</div>
+      <form class="amq-user-action-form"
+            hx-post="/api/admin/user-action"
+            hx-target="#amq-user-action-result"
+            hx-swap="innerHTML">
+        <input type="text" name="target_handle" class="form-input admin-input-sm"
+               placeholder="@handle" autocomplete="off" required>
+        <select name="action" class="form-input admin-select-sm">
+          <option value="warn">Warn</option>
+          <option value="suspend">Suspend (7d)</option>
+          <option value="ban">Ban</option>
+        </select>
+        <input type="text" name="reason" class="form-input admin-input-flex"
+               placeholder="Reason (required)" required>
+        <button type="submit" class="admin-action-btn admin-action-btn--danger">Apply</button>
+      </form>
+      <div class="admin-devtool-result" id="amq-user-action-result"></div>
+    </div>
+  </div>
+
+</div>
+{{end}}

@@ -1,0 +1,70 @@
+{{/*
+FACET gnosis_prospect_thread
+  version: 1.0 | status: stable | layer: 2
+
+  The thread pane for a conversation that does not exist yet.
+
+  Until this facet existed, a conversation was the only place a message could
+  live, and a conversation only came into being after the contact policy had
+  already said yes. So the gate had to be asked for before anything was written:
+  a knock placed on somebody's behalf for a message nobody had composed, and a
+  refusal shown for a sentence that was never typed. Nobody learned anything
+  from that, least of all what to do next.
+
+  This is the surface that fixes the ordering. Opening a conversation with
+  somebody costs nothing and tells nobody. You write. The server then decides
+  whether it may land, and whatever it decides is drawn HERE, under your own
+  words: the message you wrote, still visible and still held, and beneath it the
+  reason it has not been delivered and the one thing that can still deliver it.
+
+  inputs:
+    ToHandle     string — who this is addressed to
+    ToDisplay    string — their display name
+    ToAvatar     string — their avatar URL
+    Pending      *gnosis.Message — the message the SERVER is holding, rendered as
+                                   an undelivered bubble. Nil before anything has
+                                   been written.
+    PendingID    string — the id of that held message, carried by the Number form
+                          so entering a Number sends THAT message
+    Decision     string — "" before any attempt; otherwise the contact gate state
+                          ("request" | "deny" | "unavailable" | "malformed")
+
+  children:
+    gnosis_thread_head, gnosis_bubble, contact_gate, gnosis_composer
+
+  signals:
+    emits:    POST /messages/send        (body + to)   → replaces this pane
+              POST /messages/new-number  (number + p)  → replaces this pane
+    receives: POST /messages/new (handleCreateConvo), and both of the above
+
+  context:
+    messages → thread pane
+
+  notes:
+    The header carries no mode badge. A conversation that has not been created
+    has no mode, and stamping either "Encrypted" or "Standard" on it would be a
+    claim about encryption that nothing has decided yet.
+
+    An undelivered message is drawn with the one canonical bubble render, so it
+    looks like what it is — a message — rather than like a form field. What
+    marks it as undelivered is the state around it, not a second bubble design.
+*/}}
+{{define "gnosis_prospect_thread"}}
+<div class="gn-thread" data-facet-id="facet:f33d3r:contact:{{.ToHandle}}:prospect_thread">
+  {{template "gnosis_thread_head" (dict
+      "ConvoID" "" "IsGroup" false "Title" "" "Sealed" false "HasMode" false
+      "OtherHandle" .ToHandle "OtherDisplay" .ToDisplay "OtherAvatar" .ToAvatar)}}
+  <div class="gn-messages" id="gnosis-messages">
+    {{if .Pending}}
+    <div class="gn-undelivered">
+      {{template "gnosis_bubble" (dict "M" .Pending "Variant" "out")}}
+    </div>
+    {{end}}
+  </div>
+  {{if .Decision}}
+    {{template "contact_gate" (dict "Handle" .ToHandle "Decision" .Decision "PendingID" .PendingID)}}
+  {{end}}
+  {{template "gnosis_composer" (dict
+      "ConvoID" "" "Sealed" false "ToHandle" .ToHandle "Draft" "")}}
+</div>
+{{end}}

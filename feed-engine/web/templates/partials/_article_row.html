@@ -1,0 +1,46 @@
+{{/*
+FACET article_row
+  version: 1.0 | status: stable | layer: 1
+  inputs:
+    Article    model.Article    — article data
+    IsOwner    bool             — whether the current user owns this article
+  states:
+    draft | published
+  children:
+    article_status_badge
+  signals:
+    emits:    none
+    receives: none
+  context:
+    article_creator_dashboard → article list
+*/}}
+{{define "article_row"}}
+<div class="article-row">
+  <div class="article-row__meta">
+    {{template "article_status_badge" (dict "Status" .Article.Status)}}
+    <span class="article-row__date">{{timeAgo .Article.UpdatedAt}}</span>
+    {{if gt .Article.ViewCount 0}}<span class="article-row__views">{{.Article.ViewCount}} views</span>{{end}}
+  </div>
+  <div class="article-row__title">
+    {{if eq .Article.Status "published"}}
+    <a href="/article/{{.Article.Slug}}" class="article-row__link">{{.Article.Title}}</a>
+    {{else}}
+    <span class="article-row__link">{{.Article.Title}}</span>
+    {{end}}
+  </div>
+  {{if .Article.Excerpt}}
+  <p class="article-row__excerpt">{{.Article.Excerpt}}</p>
+  {{end}}
+  <div class="article-row__actions">
+    <a href="/articles/{{.Article.ID}}/edit" class="article-action-btn">Edit</a>
+    {{if eq .Article.Status "published"}}
+    <a href="/article/{{.Article.Slug}}" class="article-action-btn" target="_blank">View</a>
+    {{end}}
+    <form method="POST" action="/api/article/{{.Article.ID}}/delete" style="display:inline"
+          hx-post="/api/article/{{.Article.ID}}/delete" hx-confirm="Delete this article?"
+          hx-target="#playground" hx-swap="innerHTML show:window:top" hx-push-url="true">
+      <button class="article-action-btn article-action-btn--danger" type="submit">Delete</button>
+    </form>
+  </div>
+</div>
+{{end}}

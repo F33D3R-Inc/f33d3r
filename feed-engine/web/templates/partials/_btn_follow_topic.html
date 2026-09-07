@@ -1,0 +1,39 @@
+{{/*
+FACET btn_follow_topic
+  version: 1.0 | status: stable | layer: 5
+
+  inputs:
+    Tag          string — topic tag, lowercase, no leading #
+    IsFollowing  bool   — current follow state
+
+  states:
+    default | following (is-on)
+
+  children: none
+
+  signals:
+    emits:    follow_topic (POST /events) | unfollow_topic (POST /events)
+    receives: none
+
+  context:
+    tag.html → head row, beside the #tag title
+
+  note:
+    Following a topic is a different mutation from following a person, so it is a
+    different Facet — but it is the same control, so it wears the same .btn-follow
+    class and the same is-on state rather than a private one. tag.html used to
+    hand-write this button with a `btn-following` class that no stylesheet defined,
+    against a handler that answered 204 No Content into an outerHTML swap — the
+    button deleted itself on click.
+*/}}
+{{define "btn_follow_topic"}}
+<button data-facet-id="facet:f33d3r:topic:{{.Tag}}:btn_follow"
+        data-topic="{{.Tag}}"
+        type="button"
+        class="btn-follow{{if .IsFollowing}} is-on{{end}}"
+        hx-post="/events"
+        hx-vals='{"event_type":"{{if .IsFollowing}}unfollow_topic{{else}}follow_topic{{end}}","tag":"{{.Tag}}"}'
+        hx-target="this" hx-swap="outerHTML"
+        aria-label="{{if .IsFollowing}}Unfollow #{{.Tag}}{{else}}Follow #{{.Tag}}{{end}}"
+        aria-pressed="{{if .IsFollowing}}true{{else}}false{{end}}">{{if .IsFollowing}}Following{{else}}Follow{{end}}</button>
+{{end}}

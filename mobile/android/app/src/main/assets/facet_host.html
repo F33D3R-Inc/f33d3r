@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en" data-mode="__FA_UIMODE__" data-fa-mode="__FA_MODE__" data-density="__FA_DENSITY__">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="f33d3r:pial" content="__PIAL__">
+<meta name="f33d3r:account" content="__ACCOUNT__">
+<meta name="f33d3r:handle" content="__HANDLE__">
+<style>[data-mode="dark"]{color-scheme:dark}</style>
+<link rel="stylesheet" href="/static/css/layers.css?v=__ASSET_VER__">
+<link rel="stylesheet" href="/static/css/styles.css?v=__ASSET_VER__">
+<link rel="stylesheet" href="/static/css/components.css?v=__ASSET_VER__">
+<link rel="stylesheet" href="/static/css/desktop.css?v=__ASSET_VER__">
+<link rel="stylesheet" href="/static/css/responsive.css?v=__ASSET_VER__">
+<link rel="stylesheet" href="/static/css/video-overlay.css?v=__ASSET_VER__">
+<style>
+  /* The Shell is native, so the content plane gets the whole viewport and none of
+     the web shell's sidebars, rails or page chrome. Anything a facet needs is
+     inside the facet; anything outside it belongs to the Android Shell. */
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--text-primary);
+    overscroll-behavior-y: contain;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #fa-root { min-height: 100vh; }
+  .f33d3r-nav, .f33d3r-right, .nav-shell, .main-head, #right-panel { display: none !important; }
+  /* A page's own header, tab strip and section nav are the Shell's title bar and tab
+     row here; the page arrives with them because the web shell needs them. */
+  .page-header-bar, .search-tabs, .explore-search-form, .anl-period-tabs,
+  .settings-nav-panel, .settings-side, .admin-nav-panel, .music-nav-panel, .music-genre-tabs,
+  .genre-strip, .crt-nav, .profile-tabs, .explore-tab-strip { display: none !important; }
+  /* The page never scrolls sideways. Rails that are meant to — the Vision rings, a
+     chip row, a table — scroll inside their own box; the page itself does not. */
+  html, body { overflow-x: hidden; }
+  /* A strip of trending cards reads as a list on a phone, not a sideways rail. */
+  .explore-trending-strip-inner { flex-wrap: wrap; min-width: 0; }
+  .explore-trend-tag-chip { flex: 1 1 46%; }
+  /* Selection and long-press callouts belong to the native Shell's own gestures. */
+  #fa-root { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+  #fa-root input, #fa-root textarea { -webkit-user-select: text; user-select: text; }
+
+  /* ── Timeline rows ───────────────────────────────────────────────────────────
+     On a phone a work is a row, not a card: no frame, no shadow, no inset, a
+     hairline between one and the next. The server's stylesheet frames the card
+     for any ancestor that is not marked dark, and the body here is not, so the
+     row is stated for the dark document explicitly. Nothing inside the row moves:
+     the same avatar, author line, body, media and action bar, set as a list. */
+  html[data-mode="dark"] .post-card,
+  html[data-mode="dark"] .post-card:hover {
+    margin: 0; border: 0; border-radius: 0; box-shadow: none; background: transparent;
+    border-bottom: 1px solid var(--border-soft);
+    padding: 12px 16px 6px; animation: none;
+  }
+  .post-avatar { width: 40px; height: 40px; box-shadow: none; font-size: 14px; }
+  .thread-avatar-col, .post-col-left { width: 40px; }
+  .pcd-row, .post-inner, .pcd-head { gap: 10px; }
+  /* One line: name, badge, handle, time, then the menu at the far right. The name
+     and handle give way before anything wraps. */
+  .pcd-author-row { gap: 5px; margin-bottom: 2px; flex-wrap: nowrap; align-items: center; min-width: 0; }
+  .pcd-author-name { font-size: 15px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 1; min-width: 0; }
+  .post-handle, .post-time, .post-meta-sep { font-size: 14px; font-family: inherit; }
+  .post-handle { flex-shrink: 2; }
+  .role-badge, .verified-badge, .post-menu-wrap, .btn-follow--card { flex-shrink: 0; }
+  .post-body { font-size: 15.5px; line-height: 1.35; margin-bottom: 8px; }
+  .pcd-media { margin-top: 8px; border-radius: 16px; overflow: hidden; }
+  .btn-follow--card { padding: 3px 12px; font-size: 12px; border-width: 1px; }
+  .role-badge { font-size: 9px; padding: 1px 5px; }
+  .post-actions { margin: 2px -6px 0; justify-content: space-between; }
+  .post-actions .action { padding: 6px 6px; gap: 4px; font-size: 12.5px; }
+  .post-actions .action svg { width: 18px; height: 18px; }
+
+  /* ── One accent ──────────────────────────────────────────────────────────────
+     The server's stylesheet colours a few marks with fixed hues — the unseen
+     Vision ring and its count in a blue, the founder badge as a filled pill, the
+     top realm ring as a spinning gradient with a glow. On a phone the frame has
+     one accent, the persona's, and every other mark is ink or hairline. Nothing
+     is hidden: each mark keeps its place and its words, set in the frame's ink. */
+  .vision-rail { background: transparent; padding: 10px 0 8px 12px; }
+  .vision-ring--unseen .vision-ring__frame { border-color: var(--accent); }
+  .vision-ring__count, .vision-ring__plus, .vision-rail__add { background: var(--accent); }
+  .vision-ring__handle { font-weight: 600; }
+  .vision-rail__empty { display: none; }
+  .realm-ring { animation: none; }
+  .post-card .realm-ring { padding: 2px; }
+  .post-card .user-av--post { width: 40px; height: 40px; box-shadow: none; }
+  .role-badge { background: transparent; border: 0; padding: 0 2px; font-size: 10px; letter-spacing: .06em; }
+  .work-label--nsfw { background: transparent; padding: 0 5px; }
+
+  /* ── Density ─────────────────────────────────────────────────────────────────
+     The Shell's density chip sets data-density on this element. Compact tightens
+     the card's own spacing and caps its media; it draws nothing new and hides no
+     control — a compact card is the same card, set tighter. */
+  html[data-density="compact"] .post-card { padding-top: 8px; padding-bottom: 6px; }
+  html[data-density="compact"] .post-body { font-size: 14px; line-height: 1.35; }
+  html[data-density="compact"] .pcd-author-row { margin-bottom: 2px; }
+  html[data-density="compact"] .pcd-media { margin-top: 6px; }
+  html[data-density="compact"] .pcd-media .vp-wrap { max-height: 220px; }
+  html[data-density="compact"] .pcd-media img,
+  html[data-density="compact"] .pcd-media video { max-height: 220px; object-fit: cover; }
+  html[data-density="compact"] .reply-preview { display: none; }
+  html[data-density="compact"] .post-actions { margin-top: 2px; }
+
+  /* ── Vision viewer (mode "vision") ───────────────────────────────────────────
+     The frame is the server's vision_viewer Facet, fixed to the viewport. The
+     native Shell holds this document in a full-screen layer with its own reply bar
+     underneath, so the frame is the whole of this document. */
+  html[data-fa-mode="vision"], html[data-fa-mode="vision"] body { background: #000; }
+  html[data-fa-mode="vision"] #fa-root { min-height: 100vh; }
+
+  /* ── Watch surface (mode "watch") ────────────────────────────────────────────
+     The video is decoded natively underneath this document. What this document
+     carries is everything around the picture: the title and its LIVE badge, the
+     author row with its follow control, the tally, and the chat log — the server's
+     own Facets, restyled as an overlay on glass rather than a page in a column. */
+  html[data-fa-mode="watch"], html[data-fa-mode="watch"] body,
+  html[data-fa-mode="broadcast"], html[data-fa-mode="broadcast"] body { background: transparent; }
+  html[data-fa-mode="watch"] .live-main {
+    background: transparent; max-width: none; display: flex; flex-direction: column; min-height: 100vh;
+  }
+  html[data-fa-mode="watch"] .live-titlebar {
+    position: static; background: transparent; border: 0; backdrop-filter: none; -webkit-backdrop-filter: none;
+    padding: 10px 64px 4px 14px;
+  }
+  html[data-fa-mode="watch"] .live-titlebar__back { display: none; }
+  html[data-fa-mode="watch"] .live-titlebar__title { color: #fff; text-shadow: 0 1px 4px rgba(0,0,0,.65); }
+  html[data-fa-mode="watch"] .live-player {
+    background: transparent; aspect-ratio: auto; max-height: none; height: auto; display: block; overflow: visible;
+  }
+  html[data-fa-mode="watch"] .live-player__video,
+  html[data-fa-mode="watch"] .live-player__hud--top,
+  html[data-fa-mode="watch"] .live-player__bigplay,
+  html[data-fa-mode="watch"] .live-ctlbar,
+  html[data-fa-mode="watch"] .live-player__wall { display: none; }
+  html[data-fa-mode="watch"] .live-player__hud { position: static; padding: 0 0 2px; background: none; }
+  html[data-fa-mode="watch"] .live-player__corner { padding: 0 14px; }
+  html[data-fa-mode="watch"] .live-ended { padding: 24px 16px; color: #fff; }
+  html[data-fa-mode="watch"] .live-author { border: 0; padding: 4px 14px 6px; }
+  html[data-fa-mode="watch"] .live-author__name,
+  html[data-fa-mode="watch"] .live-author__handle { color: #fff; text-shadow: 0 1px 4px rgba(0,0,0,.65); }
+  html[data-fa-mode="watch"] .live-author__desc { display: none; }
+  html[data-fa-mode="watch"] .live-chat-mobile { margin-top: auto; padding: 0 76px 6px 12px; }
+
+  /* ── Broadcast surface (mode "broadcast") ────────────────────────────────────
+     The camera is the native renderer underneath. The stage Facet keeps its status
+     strip and its ended state; its own camera element and its button row are not
+     drawn because the Shell draws the flip, mute and end controls itself. */
+  html[data-fa-mode="broadcast"] .live-main { background: transparent; max-width: none; position: relative; min-height: 100vh; }
+  html[data-fa-mode="broadcast"] .live-bcast { background: transparent; height: 100vh; }
+  html[data-fa-mode="broadcast"] .live-bcast--ended { background: #000; }
+  html[data-fa-mode="broadcast"] .live-bcast__preview,
+  html[data-fa-mode="broadcast"] .live-bcast__controls { display: none; }
+  html[data-fa-mode="broadcast"] .live-bcast__top { right: 72px; }
+  html[data-fa-mode="broadcast"] .live-bcast__status { top: auto; bottom: 46%; transform: none; }
+  html[data-fa-mode="broadcast"] .live-chat-bcast {
+    position: absolute; left: 0; right: 0; bottom: 0; z-index: 5; padding: 0 76px 6px 12px;
+  }
+
+  /* Chat as bubbles over the picture, on both live surfaces. The rows are the
+     server's live_chat_row Facets, untouched; only their setting changes. */
+  html[data-fa-mode="watch"] .live-chat,
+  html[data-fa-mode="broadcast"] .live-chat {
+    height: auto; max-height: 36vh; border: 0; background: transparent; overflow: hidden;
+  }
+  html[data-fa-mode="watch"] .live-chat__head,
+  html[data-fa-mode="broadcast"] .live-chat__head,
+  html[data-fa-mode="watch"] .live-chat__composer,
+  html[data-fa-mode="broadcast"] .live-chat__composer,
+  html[data-fa-mode="watch"] .live-chat__av,
+  html[data-fa-mode="broadcast"] .live-chat__av,
+  html[data-fa-mode="watch"] .live-chat__time,
+  html[data-fa-mode="broadcast"] .live-chat__time { display: none; }
+  html[data-fa-mode="watch"] .live-chat__log,
+  html[data-fa-mode="broadcast"] .live-chat__log { padding: 0; gap: 6px; max-height: 36vh; }
+  html[data-fa-mode="watch"] .live-chat__row,
+  html[data-fa-mode="broadcast"] .live-chat__row {
+    align-self: flex-start; max-width: 82%; padding: 6px 10px; border-radius: 999px;
+    background: rgba(0,0,0,.55); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+  }
+  html[data-fa-mode="watch"] .live-chat__row--host,
+  html[data-fa-mode="broadcast"] .live-chat__row--host { background: rgba(168,131,255,.42); }
+  html[data-fa-mode="watch"] .live-chat__line,
+  html[data-fa-mode="broadcast"] .live-chat__line,
+  html[data-fa-mode="watch"] .live-chat__who,
+  html[data-fa-mode="broadcast"] .live-chat__who,
+  html[data-fa-mode="watch"] .live-chat__text,
+  html[data-fa-mode="broadcast"] .live-chat__text { color: #fff; font-size: 13px; }
+  html[data-fa-mode="watch"] .live-chat__empty,
+  html[data-fa-mode="broadcast"] .live-chat__empty { text-align: left; padding: 4px 0; color: rgba(255,255,255,.7); }
+  html[data-fa-mode="watch"] .live-chat-gate,
+  html[data-fa-mode="broadcast"] .live-chat-gate { display: none; }
+  /* "chat off": a clean watch. The log is only hidden; nothing stops arriving. */
+  html[data-chat="off"] .live-chat-mobile,
+  html[data-chat="off"] .live-chat-bcast { visibility: hidden; }
+
+  /* ── Sports ───────────────────────────────────────────────────────────────
+     A phone reads a slate top to bottom. The strip's rail and the hub's grid both
+     become one column of full-width cards; the cards themselves are untouched. */
+  .sports-strip__rail { flex-direction: column; overflow-x: visible; scroll-snap-type: none; gap: 10px; }
+  .sports-strip__rail > .sports-card, .sports-hub__grid > .sports-card { width: auto; min-width: 0; flex: 0 0 auto; }
+  .sports-hub__grid { grid-template-columns: 1fr; }
+
+  /* ── Messages ─────────────────────────────────────────────────────────────
+     The thread Facet arrives without the web page's two-pane grid around it. It
+     fills this surface: messages scroll, the composer stays at the foot, and the
+     Facet's own back control is not drawn because the Shell's title bar has one. */
+  .gn-thread { display: flex; flex-direction: column; height: 100vh; min-height: 0; }
+  .gn-messages { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+  .gn-back { display: none !important; }
+  /* The head names the peer and the seal; the Shell's title bar says the same
+     words from the same render, so the head is not drawn a second time. */
+  .gn-thread-head { display: none !important; }
+  .gn-thread-empty { padding: 40px 20px; text-align: center; }
+
+  /* ── Display (settings) ──────────────────────────────────────────────────────
+     The website's profile editor is a dialog over a page. Here it is the page: the
+     backdrop is the surface, the card is the column, and the dialog's own close
+     control is not drawn because the Shell's title bar has the way back. */
+  .epm-backdrop { position: static; inset: auto; z-index: auto; background: transparent; display: block; }
+  .epm-card {
+    max-width: none; height: auto; max-height: none;
+    border: 0; border-radius: 0; box-shadow: none; background: transparent;
+  }
+  [data-mode="dark"] .epm-card { background: transparent; backdrop-filter: none; }
+  .epm-header { position: static; }
+  .epm-close { display: none; }
+  .epm-body { overflow: visible; max-height: none; }
+
+  /* ── Pane (mode "pane") ──────────────────────────────────────────────────────
+     One Facet shown on its own — the composer's server-rendered artboard preview,
+     the confirmation after a post. Nothing but that Facet, edge to edge. */
+  html[data-fa-mode="pane"] #fa-root { min-height: 0; }
+  html[data-fa-mode="pane"] .vision-artboard { border-radius: 14px; }
+</style>
+</head>
+<body data-theme="__FA_THEME__">
+<div id="fa-root" data-fa-surface="1"></div>
+<!-- The runtime is inlined at load time from the app's own assets: it ships
+     with the client, not with the server, and must not depend on a network fetch
+     to be able to place the first fragment. -->
+<script>__FA_RUNTIME__</script>
+<script>
+(function () {
+  'use strict';
+  // ── What the server's fragments call by name ─────────────────────────────
+  // The web shell defines these globals for its own overlays. Here each one is a
+  // request to the native Shell, carried on the same intent bridge the runtime
+  // uses, so a control that works in the browser works in the app — and decides
+  // nothing more here than it decides there.
+  function send(intent) {
+    if (window.FAHost) window.FAHost.intent(JSON.stringify(intent));
+  }
+  window.openTipModal = function (handle) {
+    send({ kind: 'tip', handle: String(handle || '') });
+  };
+  window.toast = function (text) {
+    send({ kind: 'notice', text: String(text || '') });
+  };
+  window.goToWork = function (id) {
+    if (id) send({ kind: 'navigate', path: '/work/' + encodeURIComponent(String(id)) });
+  };
+  window.goToPost = window.goToWork;
+
+  // The repost sheet on a work card is opened and closed by class, as the web
+  // shell does it; the sheet's Quote and the card's Reply are requests to the
+  // native composer. The reply's parent content id is read off the card the
+  // server rendered — the same attribute the web composer reads — because a
+  // reply is signed against it and this document holds no other copy.
+  function closeRepostSheets() {
+    var open = document.querySelectorAll('.repost-btn-wrap--open');
+    for (var i = 0; i < open.length; i++) open[i].classList.remove('repost-btn-wrap--open');
+    document.removeEventListener('click', onOutsideSheet);
+  }
+  function onOutsideSheet(e) {
+    if (!e.target.closest('.repost-btn-wrap')) closeRepostSheets();
+  }
+  window.toggleRepostSheet = function (workId) {
+    var wrap = document.getElementById('rs-wrap-' + workId);
+    if (!wrap) return;
+    var wasOpen = wrap.classList.contains('repost-btn-wrap--open');
+    closeRepostSheets();
+    if (!wasOpen) {
+      wrap.classList.add('repost-btn-wrap--open');
+      setTimeout(function () { document.addEventListener('click', onOutsideSheet); }, 0);
+    }
+  };
+  window.openRepostSheet = function (btn, workId) { window.toggleRepostSheet(workId); };
+  window.closeRepostSheet = function () { closeRepostSheets(); };
+  window.openWorkQuoteCompose = function (workId) {
+    if (workId) send({ kind: 'quote', workId: String(workId) });
+  };
+  window.openQuoteCompose = window.openWorkQuoteCompose;
+  window.openReplyCompose = function (workId, handle) {
+    if (!workId) return;
+    var card = document.querySelector('[data-facet-id="work:' + workId + '"], [data-work-id="' + workId + '"]');
+    var cid = card ? (card.dataset.workCid || '') : '';
+    send({ kind: 'reply', workId: String(workId), cid: cid, handle: String(handle || '') });
+  };
+
+  // ── What the native Shell asks this document ─────────────────────────────
+  // Hit-testing for the lane swipe: a horizontal drag that starts on something
+  // that scrolls sideways (the ring rail, a tab strip) is that thing's to scroll.
+  window.__faHScrollAt = function (x, y) {
+    var el = document.elementFromPoint(x, y);
+    while (el && el !== document.body) {
+      var s = getComputedStyle(el);
+      if ((s.overflowX === 'auto' || s.overflowX === 'scroll') && el.scrollWidth > el.clientWidth + 2) return true;
+      el = el.parentElement;
+    }
+    return false;
+  };
+  // Presses the control the server rendered for a step, so a native swipe takes
+  // exactly the path a tap on that control takes.
+  window.__faStep = function (selector) {
+    var el = document.querySelector(selector);
+    if (!el) return false;
+    el.click();
+    return true;
+  };
+  // A Vision frame's video plays on arrival and, when it ends, asks the server
+  // for the next frame by pressing the anchor the server rendered — the same
+  // plumbing the web viewer has, with no sequence held here.
+  window.__faVisionPlay = function () {
+    var v = document.querySelector('.vision-viewer video');
+    if (!v) return false;
+    var hls = v.getAttribute('data-f33d-hls');
+    if (hls && !v.getAttribute('src')) v.setAttribute('src', hls);
+    v.loop = false;
+    v.onended = function () {
+      if (!window.__faStep('[data-vision-next]')) window.__faStep('[data-vision-close]');
+    };
+    var p = v.play();
+    if (p && typeof p.catch === 'function') p.catch(function () {});
+    return true;
+  };
+  // Hold to pause: the frame's media stops while the finger is down.
+  window.__faMediaHold = function () {
+    var vids = document.querySelectorAll('video');
+    for (var i = 0; i < vids.length; i++) {
+      if (!vids[i].paused) { vids[i].setAttribute('data-fa-held', '1'); vids[i].pause(); }
+    }
+  };
+  window.__faMediaRelease = function () {
+    var vids = document.querySelectorAll('video[data-fa-held]');
+    for (var i = 0; i < vids.length; i++) {
+      vids[i].removeAttribute('data-fa-held');
+      var p = vids[i].play();
+      if (p && typeof p.catch === 'function') p.catch(function () {});
+    }
+  };
+  // Puts a render inside the element a control named as its target — the
+  // innerHTML swap a facet asked for, when the target is a slot rather than a
+  // Facet. The slot's previous contents go; the render is complete.
+  window.__faPlace = function (id, html) {
+    var slot = document.getElementById(id);
+    if (!slot) return false;
+    slot.innerHTML = html;
+    return true;
+  };
+  // Keeps a chat log at its newest line after a row is appended.
+  window.__faPinLog = function (id) {
+    var log = document.getElementById(id);
+    if (log) log.scrollTop = log.scrollHeight;
+  };
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,55 @@
+{{define "title"}}Organization Panel · F33D3R{{end}}
+{{define "body"}}
+{{$u := .User}}
+<main class="f33d3r-main org-panel-main" id="main-col">
+  {{template "page_header" (dict "Title" "Organization Panel" "BackURL" (printf "/%s" $u.Handle) )}}
+
+  <div class="org-panel-shell">
+
+    {{/* ── Identity ── */}}
+    <div class="org-panel-identity">
+      {{template "org_badge" (dict "Handle" $u.Handle "AvatarURL" $u.AvatarURL "DisplayName" $u.DisplayName "OrgType" $u.OfficialType)}}
+      <div>
+        <div class="org-panel-name">{{$u.DisplayName}}</div>
+        <div class="org-panel-type">{{if eq $u.OfficialType "government"}}Government account{{else}}Business account{{end}}</div>
+      </div>
+    </div>
+
+    {{/* ── Invite by handle ── */}}
+    <div class="org-panel-section">
+      <div class="org-panel-section-title">Invite an employee</div>
+      <p class="sorg-hint">Enter a F33D3R handle to invite someone to your organization. They'll receive a notification and must accept.</p>
+      {{template "org_invite_form" (dict "OOB" false)}}
+    </div>
+
+    {{/* ── Pending applications ── */}}
+    <div class="org-panel-section" id="org-pending-applications">
+      <div class="org-panel-section-title">Pending applications <span class="org-panel-count">{{len .PendingApplications}}</span></div>
+      {{if .PendingApplications}}
+      {{range .PendingApplications}}
+      {{template "org_member_row" (dict "Row" . "Mode" "pending_employee")}}
+      {{end}}
+      {{else}}
+      <p class="org-panel-empty">No pending applications.</p>
+      {{end}}
+    </div>
+
+    {{/* ── Pending invites sent — Facet(org_pending_invites), re-rendered by the invite answer ── */}}
+    {{template "org_pending_invites" (dict "PendingInvites" .PendingInvites)}}
+
+    {{/* ── Current members ── */}}
+    <div class="org-panel-section">
+      <div class="org-panel-section-title">Members <span class="org-panel-count">{{len .ApprovedMembers}}</span></div>
+      {{if .ApprovedMembers}}
+      {{range .ApprovedMembers}}
+      {{template "org_member_row" (dict "Row" . "Mode" "approved")}}
+      {{end}}
+      {{else}}
+      <p class="org-panel-empty">No members yet. Approve applications or send invites above.</p>
+      {{end}}
+    </div>
+
+  </div>
+</main>
+{{end}}
+{{define "right-panel"}}{{template "sidebar_right" .}}{{end}}

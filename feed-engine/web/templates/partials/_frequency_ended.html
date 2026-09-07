@@ -1,0 +1,47 @@
+{{/*
+FACET frequency_ended
+  version: 1.0 | status: stable | layer: 3
+
+  Terminal surface for a finished Frequency. Pushed over FA Live as part of the
+  re-rendered stage when Auralis ends the session, so every open stage falls
+  quiet together, without a reload. The Frequency object survives its session:
+  this is where the replay will appear.
+
+  inputs:
+    ID           string
+    Title        string
+    State        string — "ended" | "moderation_terminated" | "processing_replay" | "archived"
+    EndReason    string — "host_ended" | "host_lost" | "moderation" | …
+    Host         FrequencyPerson
+    SpeakerCount int
+
+  states:
+    ended | terminated | replay-processing | replay-ready
+
+  children: none
+
+  signals:
+    emits:    none
+    receives: frequency_facet (SSE)
+
+  context:
+    frequency_stage → replaces the speaker grid and queue
+*/}}
+{{define "frequency_ended"}}
+<div class="freq-ended freq-ended--{{.State}}" role="status">
+  <svg class="freq-ended__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+    <path d="M3 18v-6a9 9 0 0 1 18 0v6"/><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/><path d="M2 2l20 20"/>
+  </svg>
+  {{if eq .State "moderation_terminated"}}
+  <p class="freq-ended__title">This Frequency was removed</p>
+  <p class="freq-ended__sub">It was ended by F33D3R moderation.</p>
+  {{else}}
+  <p class="freq-ended__title">This Frequency has ended</p>
+  <p class="freq-ended__sub">
+    {{if eq .EndReason "host_lost"}}The host lost connection. {{end}}
+    Hosted by <a href="/{{.Host.Handle}}">@{{.Host.Handle}}</a>{{if gt .SpeakerCount 0}} with {{.SpeakerCount}} speaker{{if ne .SpeakerCount 1}}s{{end}}{{end}}.
+  </p>
+  <p class="freq-ended__replay">{{if eq .State "archived"}}Replay ready{{else}}Replay soon{{end}}</p>
+  {{end}}
+</div>
+{{end}}

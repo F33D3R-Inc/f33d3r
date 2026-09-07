@@ -1,0 +1,23 @@
+{{/*
+FACET notif_badge
+  version: 1.0 | status: stable | layer: 1 (atomic)
+
+  inputs:
+    PIALID      string — the identity this badge counts for
+    UnreadCount int    — unread notifications
+
+  states:
+    default | empty
+
+  children: none
+
+  signals:
+    receives: notify (SSE — the rendered badge)
+
+  context:
+    nav_shell → notifications item
+*/}}
+{{define "notif_badge"}}
+<span class="notif-badge" data-facet-id="facet:f33d3r:identity:{{.PIALID}}:notif_badge"
+      {{if not .UnreadCount}}hidden{{end}}>{{if gt .UnreadCount 9}}9+{{else if gt .UnreadCount 0}}{{.UnreadCount}}{{end}}</span>
+{{end}}

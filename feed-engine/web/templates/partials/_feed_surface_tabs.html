@@ -1,0 +1,39 @@
+{{/*
+FACET feed_surface_tabs
+  version: 1.0 | status: stable | layer: 2
+
+  inputs:
+    Surfaces   []model.FeedSurface — user's pinned interest surfaces
+    SessionID  string              — passed through to feed HTMX requests
+
+  states:
+    default (may be empty when no surfaces pinned)
+
+  children:
+    feed_tab (one per surface)
+
+  inputs (additional):
+    Active  string — the surface id currently shown; that tab renders .is-active
+
+  signals:
+    emits:    GET /facets/works/feed?surface=<id> → #feed-container (tab click)
+    emits:    pin_surface, unpin_surface (POST /events — result swaps this Facet)
+    receives: none
+
+  context:
+    index → injected into span#feed-surface-tabs after the core tabs row
+*/}}
+{{define "feed_surface_tabs"}}
+{{$active := .Active}}
+{{range .Surfaces}}
+<button class="feed-tab user-surface-tab{{if eq $active .ID}} is-active{{end}}"
+        data-surface="{{.ID}}"
+        hx-get="/facets/works/feed?surface={{.ID}}"
+        hx-target="#feed-container"
+        hx-swap="innerHTML"
+        hx-push-url="/?surface={{.ID}}"
+        role="tab"
+        aria-selected="{{if eq $active .ID}}true{{else}}false{{end}}"
+        title="{{.Label}}">{{.Emoji}} {{.Label}}</button>
+{{end}}
+{{end}}

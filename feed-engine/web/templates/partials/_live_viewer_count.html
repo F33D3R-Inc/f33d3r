@@ -1,0 +1,64 @@
+{{/*
+FACET live_viewer_count
+  version: 1.1 | status: stable | layer: 5
+
+  Server-owned viewer tally. The browser never counts anything: the number is
+  computed on the server from the live presence set and delivered here as a
+  rendered Fragment (FA Live push for signed-in watchers, heartbeat response for
+  everyone, including logged-out ones who hold no live session).
+
+  Each surface gets its own sub_id — a tally on the watch page carries the
+  presence beat, the same stream's card in the Playground must not, or reading
+  the feed would count you as a viewer.
+
+  inputs:
+    StreamID  string — stream UUID
+    Slot      string — sub_id: "viewers" (watch) | "card_viewers" | "bcast_viewers"
+    Display   string — pre-formatted count ("1.2K"), server-computed
+    Count     int    — raw count, for the aria label
+    Heartbeat bool   — when true this element re-posts presence every 20s and
+                       swaps itself with the server's fresh Fragment
+    Token     string — opaque per-page viewer token. It identifies a logged-out
+                       watcher's connection so the server can count them; it
+                       addresses nothing and grants nothing. Empty for a
+                       signed-in watcher, who is keyed by PIAL.
+
+  states:
+    default | heartbeat
+
+  children: none
+
+  signals:
+    emits:    live.presence (POST /live/{id}/heartbeat)
+    receives: live_facet (SSE — this Fragment replaced)
+
+  ending the beat:
+    The beat is a property of a running broadcast, and only the server knows
+    when that stops being true. It ends the beat by rendering this Facet without
+    it. A beat that arrives after the broadcast ended is answered with the
+    re-rendered live_player instead — the terminal live_ended state, which has
+    no tally at all — retargeted onto the player Facet. The browser holds no
+    rule about when to stop; it is handed an element that either asks for the
+    next beat or does not.
+
+  context:
+    live_player           → player bottom-left overlay (Slot=viewers)
+    live_card             → thumbnail overlay        (Slot=card_viewers)
+    live_broadcast_stage  → broadcaster top bar      (Slot=bcast_viewers)
+*/}}
+{{define "live_viewer_count"}}
+<span class="live-viewers"
+      data-facet-id="facet:f33d3r:live:{{.StreamID}}:{{.Slot}}"
+      {{- if .Heartbeat}}
+      hx-post="/live/{{.StreamID}}/heartbeat"
+      hx-trigger="every 20s"
+      hx-swap="outerHTML"
+      hx-vals='{"vt":"{{.Token}}"}'
+      {{- end}}
+      aria-label="{{.Count}} watching now">
+  <svg class="live-viewers__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
+  </svg>
+  <span class="live-viewers__n">{{.Display}}</span>
+</span>
+{{end}}

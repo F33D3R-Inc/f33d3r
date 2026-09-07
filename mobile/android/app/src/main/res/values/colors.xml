@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The bg and accent design tokens, resolved. The Shell reads the same values
+         from Ink.kt; these exist for the window and launcher, which are drawn
+         before Compose is. They are the dark "void" resolution — the palette the
+         Shell starts on before the server has stated a theme — so the first frame,
+         the splash and the launcher are the ground the Shell then paints on. -->
+    <color name="surface">#FF05050A</color>
+    <color name="accent">#FF855DD7</color>
+</resources>

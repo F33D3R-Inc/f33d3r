@@ -1,0 +1,32 @@
+{{/*
+FACET frequency_captions
+  version: 1.0 | status: stable | layer: 5
+
+  Live captions region. Empty in Phase 2; Phase 5 fills it from the recorder
+  tap through LibreTranslate, pushed here as rendered lines. It exists now so
+  the region has an address and an aria-live contract before the first caption
+  ever arrives — a screen reader finds it where it will always be.
+
+  inputs:
+    ID    string
+    Lines []string — rendered caption lines, newest last (empty in Phase 2)
+
+  states:
+    empty | captioning
+
+  children: none
+
+  signals:
+    emits:    none
+    receives: frequency_facet (SSE — this Fragment replaced)
+
+  context:
+    frequency_dock → between the speaker grid and the controls
+*/}}
+{{define "frequency_captions"}}
+<div class="freq-captions{{if not .Lines}} freq-captions--empty{{end}}"
+     data-facet-id="{{frequencyFacetID .ID "captions"}}"
+     role="region" aria-live="polite" aria-label="Live captions">
+  {{range .Lines}}<p class="freq-captions__line">{{.}}</p>{{end}}
+</div>
+{{end}}

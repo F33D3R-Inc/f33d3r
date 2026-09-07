@@ -1,0 +1,51 @@
+{{/*
+FACET live_quality_selector
+  version: 1.0 | status: stable | layer: 3
+
+  The ABR ladder, rendered by the server. Selecting a rung is a media-decode
+  instruction handed to the HLS decoder (hls.js level / native variant switch) —
+  it carries no application state and nothing is stored in the browser. Rungs the
+  master manifest does not actually publish are disabled by the decoder once the
+  manifest is parsed.
+
+  inputs:
+    StreamID string — stream UUID
+    Ladder   []int  — variant heights, highest first (2160, 1440, 1080, 720, 480)
+
+  states:
+    closed | open ; per-rung: available | unavailable | active
+
+  children: none
+
+  signals:
+    emits:    none (decoder-local level select)
+    receives: none
+
+  context:
+    live_player_controls → gear button popover
+*/}}
+{{define "live_quality_selector"}}
+<div class="live-quality" data-facet-id="facet:f33d3r:live:{{.StreamID}}:quality" data-open="0">
+  <button class="live-ctl live-quality__gear" type="button"
+          data-live-action="quality-toggle"
+          aria-haspopup="menu" aria-expanded="false" aria-label="Video quality">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+      <circle cx="12" cy="12" r="3"/>
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+    </svg>
+  </button>
+  <div class="live-quality__menu" role="menu" aria-label="Video quality" hidden>
+    <button class="live-quality__item is-active" type="button" role="menuitemradio" aria-checked="true"
+            data-live-action="quality-set" data-level="-1">
+      Auto<span class="live-quality__tick" aria-hidden="true">✓</span>
+    </button>
+    {{range .Ladder}}
+    <button class="live-quality__item" type="button" role="menuitemradio" aria-checked="false"
+            data-live-action="quality-set" data-height="{{.}}"
+            data-variant="/live/{{$.StreamID}}/{{.}}p/index.m3u8">
+      {{.}}p<span class="live-quality__tick" aria-hidden="true">✓</span>
+    </button>
+    {{end}}
+  </div>
+</div>
+{{end}}

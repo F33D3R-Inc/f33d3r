@@ -1,0 +1,44 @@
+{{/*
+FACET frequency_request_queue
+  version: 1.0 | status: stable | layer: 3
+
+  The Request Mic queue, best reasons first (upvotes, then age — the server
+  sorts; this renders the order it was given). Rendered for moderators as the
+  thing they act on, and for listeners as the public queue they can upvote.
+  A request arriving, being accepted or withdrawn replaces this whole Fragment
+  over FA Live, so the host sees the hand go up without a reload.
+
+  inputs:
+    ID          string
+    Requests    []FrequencyRequestData
+    CanModerate bool
+    Ctx         PageCtx
+
+  states:
+    default | empty
+
+  children:
+    frequency_request_row
+
+  signals:
+    emits:    none
+    receives: frequency_facet (SSE — this Fragment replaced)
+
+  context:
+    frequency_stage → below the speaker grid
+*/}}
+{{define "frequency_request_queue"}}
+<section class="freq-queue" data-facet-id="{{frequencyFacetID .ID "requests"}}" aria-labelledby="freq-queue-h-{{.ID}}">
+  <h2 class="freq-queue__h" id="freq-queue-h-{{.ID}}">
+    {{if .CanModerate}}Asking for the mic{{else}}Waiting to speak{{end}}
+    {{if .Requests}}<span class="freq-queue__n">{{len .Requests}}</span>{{end}}
+  </h2>
+  {{if .Requests}}
+  <ul class="freq-queue__list" role="list">
+    {{range .Requests}}{{template "frequency_request_row" .}}{{end}}
+  </ul>
+  {{else}}
+  <p class="freq-queue__empty">No one is asking for the mic.</p>
+  {{end}}
+</section>
+{{end}}

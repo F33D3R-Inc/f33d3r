@@ -1,0 +1,101 @@
+{{/*
+FACET vision_media_composer
+  version: 1.0 | status: stable | layer: 3 (composite)
+
+  The media-Vision composer: a photo from disk, or a work shared into the
+  ephemeral lane. The phone is the primary capture device, so the first thing
+  this Facet offers is the camera.
+
+  A Vision photo is stored under the expirable Vision media class and its purge is
+  owned by the vision_media row written with it — a Vision object is never filed as
+  permanent post media.
+
+  Video Visions are written by POSTing content_type=video with media_url naming an
+  asset this platform already transcoded; that is the contract the capture
+  surface calls, and this Facet does not duplicate the transcode wait.
+
+  inputs:
+    Handle  string — author handle
+    CanNSFW bool   — account cleared to post 18+
+    IsNSFW  bool   — 18+ toggle state carried back on a rejection
+    Error   string — server-side rejection, rendered back into the form
+    Body    string — caption carried back on a rejection
+
+  states:
+    default | error | nsfw-allowed
+
+  children: none
+
+  signals:
+    emits:    vision.create (POST /visions, multipart)
+    receives: none
+
+  context:
+    any surface that mounts GET /facets/vision/composer?mode=media
+*/}}
+{{define "vision_media_composer"}}
+<section class="vision-compose vision-compose--media" data-facet-id="facet:f33d3r:vision:new:media_composer"
+         aria-labelledby="vision-media-h">
+  <header class="vision-compose__head">
+    <h2 class="vision-compose__title" id="vision-media-h">New Vision</h2>
+    <p class="vision-compose__sub">Gone in 24 hours. Posting as @{{.Handle}}.</p>
+  </header>
+
+  {{if .Error}}
+  <p class="vision-compose__error" role="alert">{{.Error}}</p>
+  {{end}}
+
+  <nav class="vision-compose__modes" aria-label="Vision type">
+    <a class="vision-compose__mode" href="/facets/vision/composer?mode=text"
+       hx-get="/facets/vision/composer?mode=text"
+       hx-target="closest .vision-compose" hx-swap="outerHTML">Text</a>
+    <span class="vision-compose__mode vision-compose__mode--on" aria-current="true">Photo, video or share</span>
+  </nav>
+
+  <a class="vision-compose__camera" href="/visions/camera">
+    <span class="vision-compose__camera-dot" aria-hidden="true"></span>
+    Open the camera
+  </a>
+
+  <form class="vision-compose__form" method="post" action="/visions"
+        enctype="multipart/form-data" hx-encoding="multipart/form-data"
+        hx-post="/visions" hx-target="closest .vision-compose" hx-swap="outerHTML">
+    <input type="hidden" name="source" value="composer">
+
+    <fieldset class="vision-compose__set">
+      <legend class="vision-compose__legend">What are you posting?</legend>
+      <div class="vision-compose__chips">
+        <label class="vision-chip">
+          <input class="vision-compose__radio" type="radio" name="content_type" value="image" checked>
+          <span class="vision-chip__label">Photo</span>
+        </label>
+        <label class="vision-chip">
+          <input class="vision-compose__radio" type="radio" name="content_type" value="share">
+          <span class="vision-chip__label">Share a work</span>
+        </label>
+      </div>
+    </fieldset>
+
+    <label class="vision-compose__label" for="vision-media">Photo</label>
+    <input class="vision-compose__file" id="vision-media" type="file" name="media"
+           accept="image/jpeg,image/png,image/gif,image/webp">
+
+    <label class="vision-compose__label" for="vision-share">Work link</label>
+    <input class="vision-compose__input" id="vision-share" type="text" name="shared_work_id"
+           autocomplete="off" placeholder="Paste a f33d3r work link">
+
+    <label class="vision-compose__label" for="vision-caption">Caption</label>
+    <input class="vision-compose__input" id="vision-caption" type="text" name="body"
+           maxlength="280" autocomplete="off" value="{{.Body}}" placeholder="Say something…">
+
+    {{if .CanNSFW}}
+    <label class="vision-compose__check">
+      <input type="checkbox" name="nsfw" value="1"{{if .IsNSFW}} checked{{end}}>
+      <span>This Vision is 18+</span>
+    </label>
+    {{end}}
+
+    <button class="vision-compose__submit" type="submit">Post Vision</button>
+  </form>
+</section>
+{{end}}

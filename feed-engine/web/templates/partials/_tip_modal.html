@@ -1,0 +1,70 @@
+{{/*
+FACET tip_modal
+  version: 2.0 | status: stable | layer: 3
+
+  inputs:
+    Handle  string          — the creator being tipped
+    Links   []tipExternal   — the creator's external payment links (may be empty)
+
+  states:
+    open | sending | success | error (success/error are tip_result in #tip-result)
+
+  children:
+    tip_external_links, tip_result
+
+  signals:
+    emits:    tip (POST /events {event_type:tip, target_handle, amount} → #tip-result)
+    receives: none
+
+  close:
+    backdrop, Close and Cancel ask /facets/overlay/close — the empty fragment clears #overlay-slot
+
+  context:
+    #overlay-slot → hx-get="/facets/tip_modal?handle=<handle>" from btn_tip,
+    the work action bar and the shop header
+*/}}
+{{define "tip_modal"}}
+<div id="tip-modal" class="tip-modal" role="dialog" aria-modal="true" aria-label="Send a tip to @{{.Handle}}"
+     data-facet-id="facet:f33d3r:tip:{{.Handle}}:modal">
+  <div class="tip-modal-overlay" hx-get="/facets/overlay/close" hx-target="#overlay-slot" hx-swap="innerHTML" hx-trigger="click"></div>
+  <form class="tip-modal-card"
+        hx-post="/events"
+        hx-vals='{"event_type":"tip","target_handle":"{{.Handle}}"}'
+        hx-target="#tip-result"
+        hx-swap="innerHTML"
+        hx-disabled-elt="#tip-send-btn">
+    <div class="tip-modal-header">
+      <span class="tip-modal-title">Send a tip</span>
+      <button class="tip-modal-close" type="button" aria-label="Close"
+              hx-get="/facets/overlay/close" hx-target="#overlay-slot" hx-swap="innerHTML">
+        <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="width:18px;height:18px"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="tip-modal-body">
+      <p class="tip-modal-to">Tipping <strong id="tip-modal-handle">@{{.Handle}}</strong></p>
+      <div class="tip-preset-row">
+        <button class="tip-preset" type="button" onclick="setTipAmount(1)">1 AET</button>
+        <button class="tip-preset" type="button" onclick="setTipAmount(5)">5 AET</button>
+        <button class="tip-preset" type="button" onclick="setTipAmount(10)">10 AET</button>
+        <button class="tip-preset" type="button" onclick="setTipAmount(50)">50 AET</button>
+      </div>
+      <div class="tip-custom-row">
+        <label class="tip-custom-label" for="tip-amount-input">Custom amount</label>
+        <div class="tip-amount-wrap">
+          <input id="tip-amount-input" name="amount" class="tip-amount-input" type="number"
+                 min="0.01" max="10000" step="0.01" placeholder="0.00" required autofocus>
+          <span class="tip-amount-unit">AET</span>
+        </div>
+      </div>
+      <p class="tip-modal-note">AET is sent instantly from your wallet balance.</p>
+      <div id="tip-result" aria-live="polite"></div>
+      <div id="tip-external-links">{{template "tip_external_links" (dict "Links" .Links)}}</div>
+    </div>
+    <div class="tip-modal-footer">
+      <button type="submit" class="btn-primary tip-send-btn" id="tip-send-btn">Send tip</button>
+      <button type="button" class="btn-ghost"
+              hx-get="/facets/overlay/close" hx-target="#overlay-slot" hx-swap="innerHTML">Cancel</button>
+    </div>
+  </form>
+</div>
+{{end}}

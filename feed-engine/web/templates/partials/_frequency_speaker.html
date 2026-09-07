@@ -1,0 +1,115 @@
+{{/*
+FACET frequency_speaker
+  version: 1.0 | status: stable | layer: 5
+
+  One person on the mic. Their role, whether they are muted, and whether they
+  are present are all server facts and are shown as TEXT, not only as colour or
+  motion, so a screen reader and a low-contrast display get the same answer.
+  For a moderator viewing, the tile carries the actions the role matrix in
+  Auralis will accept; the server still decides every one of them when pressed.
+
+  inputs:
+    ID      string          — frequency UUID
+    Person  FrequencyPerson — .Handle .DisplayName .AvatarURL .Realm .IsVerified .VerifiedType
+    Role    string          — "host" | "cohost" | "speaker"
+    Muted   bool
+    Present bool            — presence key alive (false = reconnecting/away)
+    IsHost  bool
+    ViewerCanModerate bool  — the viewer holds a moderating role (menu rendered)
+    ViewerIsHost      bool  — the viewer is the host (co-host grant/revoke shown)
+    Ctx     PageCtx         — .CurrentUserHandle .User
+
+  states:
+    host | cohost | speaker ; muted | unmuted ; present | away
+
+  children:
+    user_avatar, badge_verified
+
+  signals:
+    emits:    frequency.mute / unmute / demote / remove / block / cohost / uncohost (POST /events, target_handle)
+    receives: frequency_facet (SSE — speakers grid replaced)
+
+  context:
+    frequency_speaker_grid → one tile per speaking role, host first
+*/}}
+{{define "frequency_speaker"}}
+{{$canMod := and .ViewerCanModerate (not .IsHost)}}
+<li class="freq-speaker freq-speaker--{{.Role}}{{if .Muted}} freq-speaker--muted{{end}}{{if not .Present}} freq-speaker--away{{end}}"
+    data-handle="{{.Person.Handle}}">
+  <a class="freq-speaker__av" href="/{{.Person.Handle}}" aria-label="@{{.Person.Handle}}{{if eq .Role "host"}}, host{{else if eq .Role "cohost"}}, co-host{{end}}{{if .Muted}}, muted{{end}}{{if not .Present}}, reconnecting{{end}}">
+    {{template "user_avatar" (dict "Handle" .Person.Handle "AvatarURL" .Person.AvatarURL "DisplayName" .Person.DisplayName "Size" "lg" "IsOnline" .Present)}}
+    <span class="freq-speaker__mic{{if .Muted}} freq-speaker__mic--off{{end}}" aria-hidden="true">
+      {{if .Muted}}
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v4M8 23h8"/><path d="M2 2l20 20"/></svg>
+      {{else}}
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v4M8 23h8"/></svg>
+      {{end}}
+    </span>
+  </a>
+  <span class="freq-speaker__name">
+    <a href="/{{.Person.Handle}}">{{if .Person.DisplayName}}{{.Person.DisplayName}}{{else}}@{{.Person.Handle}}{{end}}</a>
+    {{if .Person.IsVerified}}{{template "badge_verified" (dict "Type" .Person.VerifiedType)}}{{end}}
+  </span>
+  <span class="freq-speaker__role">
+    {{- if eq .Role "host"}}<span class="freq-chip freq-chip--host">HOST</span>
+    {{- else if eq .Role "cohost"}}<span class="freq-chip freq-chip--cohost">CO-HOST</span>
+    {{- else}}<span class="freq-chip">SPEAKER</span>{{end}}
+    {{- if .Muted}} <span class="freq-speaker__state">Muted</span>{{end}}
+    {{- if not .Present}} <span class="freq-speaker__state freq-speaker__state--away">Reconnecting…</span>{{end}}
+  </span>
+
+  {{if $canMod}}
+  <details class="freq-speaker__menu">
+    <summary class="freq-speaker__menu-btn" aria-label="Moderate @{{.Person.Handle}}">···</summary>
+    <ul class="freq-speaker__menu-list" role="menu">
+      <li role="none">
+        <form hx-post="/events" hx-target="closest .freq-stage" hx-swap="outerHTML">
+          <input type="hidden" name="event_type" value="{{if .Muted}}frequency.unmute{{else}}frequency.mute{{end}}">
+          <input type="hidden" name="frequency_id" value="{{.ID}}">
+          <input type="hidden" name="target_handle" value="{{.Person.Handle}}">
+          <button type="submit" role="menuitem" class="freq-menu-item">{{if .Muted}}Unmute{{else}}Mute{{end}}</button>
+        </form>
+      </li>
+      {{if eq .Role "speaker"}}
+      <li role="none">
+        <form hx-post="/events" hx-target="closest .freq-stage" hx-swap="outerHTML">
+          <input type="hidden" name="event_type" value="frequency.demote">
+          <input type="hidden" name="frequency_id" value="{{.ID}}">
+          <input type="hidden" name="target_handle" value="{{.Person.Handle}}">
+          <button type="submit" role="menuitem" class="freq-menu-item">Move to listeners</button>
+        </form>
+      </li>
+      {{end}}
+      {{if .ViewerIsHost}}
+      <li role="none">
+        <form hx-post="/events" hx-target="closest .freq-stage" hx-swap="outerHTML">
+          <input type="hidden" name="event_type" value="{{if eq .Role "cohost"}}frequency.uncohost{{else}}frequency.cohost{{end}}">
+          <input type="hidden" name="frequency_id" value="{{.ID}}">
+          <input type="hidden" name="target_handle" value="{{.Person.Handle}}">
+          <button type="submit" role="menuitem" class="freq-menu-item">{{if eq .Role "cohost"}}Remove co-host{{else}}Make co-host{{end}}</button>
+        </form>
+      </li>
+      {{end}}
+      {{if ne .Role "cohost"}}
+      <li role="none">
+        <form hx-post="/events" hx-target="closest .freq-stage" hx-swap="outerHTML" hx-confirm="Remove @{{.Person.Handle}} from this Frequency?">
+          <input type="hidden" name="event_type" value="frequency.remove">
+          <input type="hidden" name="frequency_id" value="{{.ID}}">
+          <input type="hidden" name="target_handle" value="{{.Person.Handle}}">
+          <button type="submit" role="menuitem" class="freq-menu-item freq-menu-item--danger">Remove</button>
+        </form>
+      </li>
+      <li role="none">
+        <form hx-post="/events" hx-target="closest .freq-stage" hx-swap="outerHTML" hx-confirm="Block @{{.Person.Handle}} from this Frequency? They cannot rejoin.">
+          <input type="hidden" name="event_type" value="frequency.block">
+          <input type="hidden" name="frequency_id" value="{{.ID}}">
+          <input type="hidden" name="target_handle" value="{{.Person.Handle}}">
+          <button type="submit" role="menuitem" class="freq-menu-item freq-menu-item--danger">Block</button>
+        </form>
+      </li>
+      {{end}}
+    </ul>
+  </details>
+  {{end}}
+</li>
+{{end}}

@@ -1,0 +1,118 @@
+{{/*
+FACET live_card
+  version: 1.1 | status: stable | layer: 2
+
+  A running broadcast as it appears inside the Playground, shaped like a work
+  card so it sits natively in the stream of works. A live card is not a picture
+  of a broadcast — the tile decodes the broadcast, muted, so the Playground
+  shows what is happening rather than what happened when the last poster frame
+  was written. The poster is still rendered as the tile's poster frame, so the
+  card paints instantly and never shows a black hole while the first segment
+  arrives. The tile carries the LIVE badge and the server's viewer tally;
+  tapping anywhere on it opens the watch surface. Status and tally arrive as
+  replacement Fragments over FA Live, so a card in the feed goes dark at the
+  same instant the watch page does.
+
+  A Playground can hold several of these at once, so the tile does not attach a
+  decoder of its own accord: it declares the ladder it would decode and the
+  browser attaches one only while the tile is actually on screen, tearing it
+  down again when it is not. That is decoder resource management and lives
+  entirely in the browser — no stream status is held there.
+
+  inputs:
+    S            *model.LiveStream — .ID .Title .Status .PosterURL .IsNSFW
+    AuthorHandle string
+    AuthorName   string
+    AvatarURL    string
+    AuthorRealm  int
+    IsVerified   bool
+    VerifiedType string — "blue" | "gold"
+    Viewers      string — server-formatted tally
+    ViewerCount  int
+    TimeLabel    string — "live for 42m", server-computed
+    Ctx          PageCtx — .CurrentUserHandle .User
+
+  states:
+    live | ended | nsfw
+    decode: idle | starting | playing | blocked  (decoder-owned, tile only)
+
+  children:
+    post_avatar, badge_verified, live_badge, live_viewer_count
+
+  signals:
+    emits:    none
+    receives: live_status, live_viewers (SSE)
+
+  context:
+    works_feed / playground → card in the stream
+    live_rail_panel         → compact row (same Facet, .Compact unused here)
+*/}}
+{{define "live_card"}}
+{{$s := .S}}
+<article class="post-card live-card" data-facet-id="facet:f33d3r:live:{{$s.ID}}:card"
+         data-stream-id="{{$s.ID}}" data-status="{{$s.Status}}" role="article">
+  <div class="pcd">
+    <div class="pcd-row">
+      <div class="thread-avatar-col">
+        <a href="/{{.AuthorHandle}}" data-live-stop>
+          {{template "post_avatar" (dict "Handle" .AuthorHandle "AvatarURL" .AvatarURL "AuthorName" .AuthorName "Realm" .AuthorRealm "IsOnline" true)}}
+        </a>
+      </div>
+      <div class="pcd-right">
+        <div class="pcd-author-row">
+          <a href="/{{.AuthorHandle}}" class="pcd-author-name" data-live-stop>{{.AuthorName}}</a>
+          {{if .IsVerified}}{{template "badge_verified" (dict "Type" .VerifiedType)}}{{end}}
+          <a href="/{{.AuthorHandle}}" class="post-handle" data-live-stop>@{{.AuthorHandle}}</a>
+          <span class="post-time">{{.TimeLabel}}</span>
+        </div>
+
+        {{if $s.Title}}<p class="live-card__title">{{$s.Title}}</p>{{end}}
+
+        <a class="live-card__tile{{if $s.IsNSFW}} live-card__tile--nsfw{{end}}" href="/live/{{$s.ID}}"
+           data-decode="idle"
+           aria-label="Watch {{if $s.Title}}{{$s.Title}}{{else}}the live stream{{end}} by @{{.AuthorHandle}}">
+          {{if eq $s.Status "live"}}
+          {{/* Muted + playsinline is what an autoplay policy will honour. The
+               ladder is declared, not loaded: the browser attaches a decoder
+               only while this tile is on screen. */}}
+          <video class="live-card__poster live-card__video"
+                 data-f33d-live-card-hls="/live/{{$s.ID}}/master.m3u8"
+                 {{if $s.PosterURL}}poster="{{$s.PosterURL}}"{{end}}
+                 preload="none" autoplay playsinline muted aria-hidden="true"></video>
+          {{else if $s.PosterURL}}
+          <img class="live-card__poster" src="{{$s.PosterURL}}" alt="" loading="lazy" decoding="async">
+          {{else}}
+          <span class="live-card__poster live-card__poster--blank" aria-hidden="true"></span>
+          {{end}}
+          <span class="live-card__corner">
+            {{template "live_badge" (dict "StreamID" $s.ID "Slot" "card_badge" "Status" $s.Status "OOB" false)}}
+            {{template "live_viewer_count" (dict "StreamID" $s.ID "Slot" "card_viewers" "Display" .Viewers "Count" .ViewerCount "Heartbeat" false "Token" "")}}
+          </span>
+          <span class="live-card__play" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="6,3 21,12 6,21"/></svg>
+          </span>
+        </a>
+
+        <div class="post-actions action-btn-row live-card__actions">
+          <a class="wab-btn" href="/live/{{$s.ID}}" data-live-stop aria-label="Open chat">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+            <span>Chat</span>
+          </a>
+          <a class="wab-btn" href="/live/{{$s.ID}}" data-live-stop aria-label="Watch now">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><polygon points="5,3 19,12 5,21"/></svg>
+            <span>Watch</span>
+          </a>
+          <button class="wab-btn" type="button" data-live-action="copy-link"
+                  data-live-url="/live/{{$s.ID}}" aria-label="Copy stream link">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+              <path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/>
+            </svg>
+            <span>Share</span>
+          </button>
+          <span class="action spacer"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+</article>
+{{end}}

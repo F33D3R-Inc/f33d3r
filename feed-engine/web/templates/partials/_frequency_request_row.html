@@ -1,0 +1,79 @@
+{{/*
+FACET frequency_request_row
+  version: 1.0 | status: stable | layer: 5
+
+  One Request Mic, with its REASON as the primary line. That line is what a
+  host reads to decide; the name is secondary. Listeners who are not the
+  requester may upvote a reason once; moderators accept or decline. All three
+  are server decisions answered with the re-rendered queue.
+
+  inputs:
+    ID           string — frequency UUID
+    RequestID    string
+    Person       FrequencyPerson
+    Reason       string — may be empty ("no reason given")
+    Upvotes      int
+    CreatedLabel string — "2m ago", server-computed
+    CanModerate  bool   — viewer may accept/decline
+    IsMine       bool   — viewer is the requester
+    Ctx          PageCtx
+
+  states:
+    moderator | listener | mine
+
+  children:
+    user_avatar, badge_verified
+
+  signals:
+    emits:    frequency.approve / frequency.decline / frequency.upvote / frequency.withdraw (POST /events, request_id)
+    receives: frequency_facet (SSE — queue replaced)
+
+  context:
+    frequency_request_queue → one row per pending request, best first
+*/}}
+{{define "frequency_request_row"}}
+<li class="freq-req{{if .IsMine}} freq-req--mine{{end}}" data-request-id="{{.RequestID}}">
+  <a class="freq-req__av" href="/{{.Person.Handle}}" aria-label="@{{.Person.Handle}}">
+    {{template "user_avatar" (dict "Handle" .Person.Handle "AvatarURL" .Person.AvatarURL "DisplayName" .Person.DisplayName "Size" "md" "IsOnline" false)}}
+  </a>
+  <div class="freq-req__body">
+    <p class="freq-req__reason">{{if .Reason}}{{.Reason}}{{else}}<em>No reason given</em>{{end}}</p>
+    <p class="freq-req__who">
+      <a href="/{{.Person.Handle}}">@{{.Person.Handle}}</a>
+      {{if .Person.IsVerified}}{{template "badge_verified" (dict "Type" .Person.VerifiedType)}}{{end}}
+      {{if .CreatedLabel}}<span class="freq-req__when">· {{.CreatedLabel}}</span>{{end}}
+      <span class="freq-req__votes" aria-label="{{.Upvotes}} upvotes">▲ {{.Upvotes}}</span>
+    </p>
+  </div>
+  <div class="freq-req__actions">
+    {{if .CanModerate}}
+    <form hx-post="/events" hx-target="closest .freq-stage" hx-swap="outerHTML">
+      <input type="hidden" name="event_type" value="frequency.approve">
+      <input type="hidden" name="frequency_id" value="{{.ID}}">
+      <input type="hidden" name="request_id" value="{{.RequestID}}">
+      <button type="submit" class="freq-btn freq-btn--primary freq-btn--sm" aria-label="Give @{{.Person.Handle}} the mic">Accept</button>
+    </form>
+    <form hx-post="/events" hx-target="closest .freq-stage" hx-swap="outerHTML">
+      <input type="hidden" name="event_type" value="frequency.decline">
+      <input type="hidden" name="frequency_id" value="{{.ID}}">
+      <input type="hidden" name="request_id" value="{{.RequestID}}">
+      <button type="submit" class="freq-btn freq-btn--ghost freq-btn--sm" aria-label="Decline @{{.Person.Handle}}">Decline</button>
+    </form>
+    {{else if .IsMine}}
+    <form hx-post="/events" hx-target="closest .freq-stage" hx-swap="outerHTML">
+      <input type="hidden" name="event_type" value="frequency.withdraw">
+      <input type="hidden" name="frequency_id" value="{{.ID}}">
+      <input type="hidden" name="request_id" value="{{.RequestID}}">
+      <button type="submit" class="freq-btn freq-btn--ghost freq-btn--sm">Withdraw</button>
+    </form>
+    {{else}}
+    <form hx-post="/events" hx-target="closest .freq-stage" hx-swap="outerHTML">
+      <input type="hidden" name="event_type" value="frequency.upvote">
+      <input type="hidden" name="frequency_id" value="{{.ID}}">
+      <input type="hidden" name="request_id" value="{{.RequestID}}">
+      <button type="submit" class="freq-btn freq-btn--ghost freq-btn--sm" aria-label="Upvote this request">▲ Upvote</button>
+    </form>
+    {{end}}
+  </div>
+</li>
+{{end}}

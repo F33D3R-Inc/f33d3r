@@ -1,0 +1,71 @@
+{{/*
+FACET live_player_controls
+  version: 1.1 | status: stable | layer: 2
+
+  The player's bottom control bar, identical docked and fullscreen:
+    left  — play/pause · author avatar · display name · handle
+    right — mute · quality (gear) · fullscreen/minimize
+  Every icon pair is rendered once by the server; the decoder wiring only flips
+  data-paused / data-muted / data-fs on the player root and CSS shows the right
+  glyph. No markup is generated in the browser.
+
+  inputs:
+    S            *model.LiveStream — .ID .Status
+    AuthorHandle string
+    AuthorName   string
+    AvatarURL    string
+    IsVerified   bool
+    VerifiedType string — "blue" | "gold"
+    Ladder       []int  — ABR rungs for the quality selector
+
+  states:
+    paused | playing ; muted | unmuted ; docked | fullscreen
+
+  children:
+    user_avatar, badge_verified, live_quality_selector
+
+  signals:
+    emits:    none (decoder-local)
+    receives: none
+
+  context:
+    live_player → the floor of the stage HUD, directly under live_badge/live_viewer_count
+*/}}
+{{define "live_player_controls"}}
+{{$s := .S}}
+<div class="live-ctlbar" data-facet-id="facet:f33d3r:live:{{$s.ID}}:controls">
+
+  <button class="live-ctl live-ctl--play" type="button" data-live-action="playpause"
+          aria-label="Pause">
+    <svg class="live-ico live-ico--pause" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="5" y="3" width="4" height="18" rx="1"/><rect x="15" y="3" width="4" height="18" rx="1"/></svg>
+    <svg class="live-ico live-ico--play" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><polygon points="5,3 19,12 5,21"/></svg>
+  </button>
+
+  {{/* user_avatar, not avatar_img: the sized box lives on user_avatar's wrapper.
+       avatar_img is the inner image layer and sizes itself to whatever contains
+       it, so used bare in a flex row it collapses to the height of the text
+       beside it. */}}
+  <a class="live-ctlbar__author" href="/{{.AuthorHandle}}" data-live-stop>
+    {{template "user_avatar" (dict "AvatarURL" .AvatarURL "Handle" .AuthorHandle "DisplayName" .AuthorName "Size" "sm" "Realm" 0 "IsOnline" false)}}
+    <span class="live-ctlbar__names">
+      <span class="live-ctlbar__name"><span class="live-ctlbar__nametext">{{.AuthorName}}</span>{{if .IsVerified}}{{template "badge_verified" (dict "Type" .VerifiedType)}}{{end}}</span>
+      <span class="live-ctlbar__handle">@{{.AuthorHandle}}</span>
+    </span>
+  </a>
+
+  <span class="live-ctlbar__spacer"></span>
+
+  <button class="live-ctl live-ctl--mute" type="button" data-live-action="mute" aria-label="Unmute">
+    <svg class="live-ico live-ico--muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M11 5 6 9H2v6h4l5 4z" fill="currentColor" stroke="none"/><path d="M23 9l-6 6M17 9l6 6"/></svg>
+    <svg class="live-ico live-ico--unmuted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M11 5 6 9H2v6h4l5 4z" fill="currentColor" stroke="none"/><path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14"/></svg>
+  </button>
+
+  {{template "live_quality_selector" (dict "StreamID" $s.ID "Ladder" .Ladder)}}
+
+  <button class="live-ctl live-ctl--fs" type="button" data-live-action="fullscreen" aria-label="Fullscreen">
+    <svg class="live-ico live-ico--expand" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+    <svg class="live-ico live-ico--minimize" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"/></svg>
+  </button>
+
+</div>
+{{end}}

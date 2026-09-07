@@ -1,0 +1,45 @@
+{{/*
+FACET profile_live_stage
+  version: 1.0 | status: stable | layer: 2
+
+  The author's running broadcast at the top of their profile, above the works.
+
+  This Facet is a surface, not a stream. Its id is scoped to the ACCOUNT whose
+  profile is being read, not to a stream id, so the element exists and can be
+  addressed whether or not that account is broadcasting. A stream-scoped id
+  would only exist while a broadcast did, which is the one moment a surface
+  cannot be told that a broadcast started.
+
+  When there is nothing to show the surface renders empty and hidden: no stage,
+  no placeholder, no reserved space. A profile whose author is not broadcasting
+  reads exactly as it did before the live lane existed.
+
+  Nothing about a broadcast this viewer may not see reaches here — the server
+  hands over a nil V and the surface stays empty, so no title, poster, tally or
+  even the fact of the broadcast is rendered.
+
+  inputs:
+    AuthorID string          — the profile owner's account id (facet id scope)
+    V        *liveStreamView — the broadcast to play, or nil for none
+
+  states:
+    empty | live
+
+  children:
+    live_player
+
+  signals:
+    emits:    live.presence (through live_player → live_viewer_count)
+    receives: live_facet (SSE — live_player replaced in place by its own id)
+
+  context:
+    profile.html → above the pinned work and the works feed
+*/}}
+{{define "profile_live_stage"}}
+<section class="profile-live-stage"
+         data-facet-id="facet:f33d3r:profile:{{.AuthorID}}:live_stage"
+         {{if not .V}}hidden{{end}}
+         aria-label="Live broadcast">
+  {{if .V}}{{template "live_player" .V}}{{end}}
+</section>
+{{end}}

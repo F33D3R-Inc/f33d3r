@@ -1,0 +1,63 @@
+{{/*
+FACET frequency_lanes
+  version: 1.0 | status: stable | layer: 4
+
+  Discovery, in three lanes the server fills: live now, scheduled, recently
+  ended. Lives under Go Live — it is the audio side of the same tab. Ranking is
+  the server's (start recency now; AethyrRank later); this renders the order it
+  is given.
+
+  inputs:
+    Live      []FrequencyCardData
+    Scheduled []FrequencyCardData
+    Ended     []FrequencyCardData
+    Ctx       PageCtx
+
+  states:
+    default | all-empty
+
+  children:
+    frequency_card
+
+  signals:
+    emits:    none
+    receives: frequency_facet (SSE — individual cards replaced)
+
+  context:
+    frequencies.html → centre column
+*/}}
+{{define "frequency_lanes"}}
+<div class="freq-lanes">
+  <header class="freq-lanes__head">
+    <h1 class="freq-lanes__title">Frequencies</h1>
+    <p class="freq-lanes__sub">Live audio on F33D3R. Tune in, ask for the mic, or <a href="/golive?mode=frequency">start your own</a>.</p>
+  </header>
+
+  <section class="freq-lane" aria-labelledby="freq-lane-live">
+    <h2 class="freq-lane__h" id="freq-lane-live"><span class="freq-lane__dot" aria-hidden="true"></span>Live now</h2>
+    {{if .Live}}
+    <div class="freq-lane__cards">{{range .Live}}{{template "frequency_card" .}}{{end}}</div>
+    {{else}}
+    <p class="freq-lane__empty">Nothing live right now. <a href="/golive?mode=frequency">Start a Frequency</a> and it appears here.</p>
+    {{end}}
+  </section>
+
+  <section class="freq-lane" aria-labelledby="freq-lane-sched">
+    <h2 class="freq-lane__h" id="freq-lane-sched">Scheduled</h2>
+    {{if .Scheduled}}
+    <div class="freq-lane__cards">{{range .Scheduled}}{{template "frequency_card" .}}{{end}}</div>
+    {{else}}
+    <p class="freq-lane__empty">No upcoming Frequencies.</p>
+    {{end}}
+  </section>
+
+  <section class="freq-lane" aria-labelledby="freq-lane-ended">
+    <h2 class="freq-lane__h" id="freq-lane-ended">Recently ended</h2>
+    {{if .Ended}}
+    <div class="freq-lane__cards">{{range .Ended}}{{template "frequency_card" .}}{{end}}</div>
+    {{else}}
+    <p class="freq-lane__empty">Replays will appear here.</p>
+    {{end}}
+  </section>
+</div>
+{{end}}

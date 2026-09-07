@@ -1,0 +1,66 @@
+{{/*
+FACET vision_reel
+  version: 1.0 | status: stable | layer: 3 (composite)
+
+  One live Vision as a full-screen reel in the vertical Playground. The phone is
+  the primary surface: a reel is one viewport tall, snaps under the thumb, and
+  keeps its chrome clear of the notch and the home indicator.
+
+  Tapping the reel opens the sequential viewer at this Vision, so the reels feed
+  and the ring rail lead into the same server-ordered sequence.
+
+  An 18+ Vision reaches this Facet only for a viewer cleared to see it; the reel
+  still carries the server's 18+ marking so the ground stays covered until the
+  viewer opens it deliberately.
+
+  inputs:
+    Still   visionStillView — the Vision's content, already resolved
+    Scope   string — following | for_you
+    OpenURL string — the sequential viewer frame for this Vision
+    IsNSFW  bool   — server-decided 18+ marking
+    Index   int    — 1-based position in this render
+    Total   int
+
+  states:
+    default | nsfw
+
+  children:
+    vision_still, user_avatar
+
+  signals:
+    emits:    vision.viewer (GET /facets/vision/viewer)
+    receives: none
+
+  context:
+    vision_reels → the vertical Playground
+*/}}
+{{define "vision_reel"}}
+{{$v := .Still.V}}
+<article class="vision-reel{{if .IsNSFW}} vision-reel--nsfw{{end}}"
+         data-facet-id="facet:f33d3r:vision:{{.Still.Ref}}:reel"
+         aria-label="Vision {{.Index}} of {{.Total}} by @{{$v.AuthorHandle}}">
+  <div class="vision-reel__stage">
+    {{template "vision_still" .Still}}
+  </div>
+
+  <div class="vision-reel__chrome">
+    <div class="vision-reel__author">
+      <a class="vision-reel__avatar" href="{{.Still.AuthorURL}}" aria-label="@{{$v.AuthorHandle}}'s profile">
+        {{template "user_avatar" (dict "Handle" $v.AuthorHandle "AvatarURL" $v.AvatarURL "DisplayName" $v.AuthorName "Size" "sm" "IsOnline" false)}}
+      </a>
+      <div class="vision-reel__ident">
+        <a class="vision-reel__handle" href="{{.Still.AuthorURL}}">@{{$v.AuthorHandle}}</a>
+        <span class="vision-reel__meta">{{.Still.TimeAgo}} · {{.Still.ExpiryLabel}}</span>
+      </div>
+      {{if .IsNSFW}}<span class="vision-reel__age">18+</span>{{end}}
+    </div>
+
+    <a class="vision-reel__open" href="{{.OpenURL}}"
+       hx-get="{{.OpenURL}}"
+       hx-target="#vision-viewer-slot"
+       hx-swap="innerHTML"
+       data-vision-open
+       aria-label="Open @{{$v.AuthorHandle}}'s Visions from here">Open</a>
+  </div>
+</article>
+{{end}}

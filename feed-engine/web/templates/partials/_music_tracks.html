@@ -1,0 +1,34 @@
+{{/*
+FACET music_tracks
+  version: 1.0 | status: stable | layer: 2
+
+  inputs:
+    Tracks              []*model.Track — track list; nil = empty state
+    CurrentUserHandle   string         — for ownership check in music_track_row
+    Genre               string         — active genre filter (for infinite scroll cursor)
+    After               string         — cursor of the next page (last shown track id); empty = last page
+    NextURL             string         — address of the next page Facet (genre/filter preserved)
+
+  states:
+    default | empty
+
+  children:
+    music_track_row
+
+  signals:
+    emits:    none (infinite scroll triggers hx-get /music/tracks?after=...)
+    receives: none
+
+  context:
+    music → .music-content-panel (HTMX-swapped by genre/filter nav)
+*/}}
+{{define "music_tracks"}}
+{{if .Tracks}}
+{{range .Tracks}}
+{{template "music_track_row" (dict "Track" . "CurrentUserHandle" $.CurrentUserHandle)}}
+{{end}}
+{{if .After}}{{template "feed_sentinel" (dict "URL" .NextURL "Cursor" .After)}}{{end}}
+{{else}}
+<div class="track-empty">No tracks yet — be the first to upload.</div>
+{{end}}
+{{end}}

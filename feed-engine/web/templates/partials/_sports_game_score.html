@@ -1,0 +1,43 @@
+{{/*
+FACET sports_game_score
+  version: 1.0 | status: stable | layer: 1 (atomic)
+
+  One side's score. The smallest mutable rendering unit in the sports lane: when
+  a tick moves only the numbers, this is the whole fragment that goes on the
+  wire, and the rest of the card is never re-sent.
+
+  Before a game starts there is no score. The upstream reports 0–0, which means
+  "nobody has scored yet", not "nil–nil" — so the facet renders an em dash and
+  says so to a screen reader. A scheduled card showing 0 would be a lie.
+
+  inputs:
+    GameID  string
+    Side    string      — "home" | "away"
+    Team    sports.Team — .Name .Abbr
+    Score   int
+    Show    bool        — false before kickoff / for a postponed or canceled game
+    Reason  string      — why there is no score, in this state's own words
+    Leading bool        — this side is ahead
+
+  states:
+    unplayed | trailing | leading
+
+  children: none
+
+  signals:
+    emits:    none
+    receives: sports_facet (SSE) — replacement fragment on a scoring play
+
+  context:
+    sports_game_card → the score column of a team row
+*/}}
+{{define "sports_game_score"}}
+<span class="sports-score{{if .Leading}} sports-score--lead{{end}}{{if not .Show}} sports-score--none{{end}}"
+      data-facet-id="{{sportsScoreFacetID .GameID .Side}}">
+  {{- if .Show -}}
+  <span class="sr-only">{{.Team.Name}} score </span>{{.Score}}
+  {{- else -}}
+  <span class="sr-only">{{.Team.Name}} has not scored — {{.Reason}}</span><span aria-hidden="true">—</span>
+  {{- end -}}
+</span>
+{{end}}

@@ -1,0 +1,848 @@
+# F33D3R Production Docker Compose
+# Usage: docker compose -f docker-compose.prod.yml --env-file .env.prod up --build -d
+# Or use: bash bootstrap-prod.sh (first time) / bash deploy.sh (updates)
+
+services:
+
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: "${POSTGRES_USER:-f33d3r}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+      POSTGRES_DB: "${POSTGRES_DB:-f33d3r}"
+      PGDATA: "/var/lib/postgresql/data/18/docker"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-f33d3r}" ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  aethyr-schema-registry:
+    build:
+      context: ./aethyr-schema-registry
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD}@postgres:5432/f33d3r_registry?sslmode=disable"
+      PORT: "8079"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8079/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+
+  aethyrrank-engine:
+    build:
+      context: ./aethyrrank-engine
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+      APP__SERVER__PORT: "8080"
+      APP__SERVER__HOST: "0.0.0.0"
+      SCHEMA_REGISTRY_URL: "http://aethyr-schema-registry:8079"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD}@postgres:5432/f33d3r_feed?sslmode=disable"
+    depends_on:
+      aethyr-schema-registry:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8080/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+
+  zior-engine:
+    build:
+      context: ./zior-engine
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+      ZIOR__SERVER__PORT: "8082"
+      ZIOR__AETHYR__CONTENT_STORE_URL: "http://aethyrrank-engine:8080"
+      SCHEMA_REGISTRY_URL: "http://aethyr-schema-registry:8079"
+    depends_on:
+      aethyrrank-engine:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8082/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 25s
+
+  feed-engine:
+    build:
+      # Context is the repo root so the build can reach the gnosis-malkuth WASM core
+      # (sibling of feed-engine). A root .dockerignore keeps the context tight.
+      context: .
+      dockerfile: feed-engine/Dockerfile
+    restart: unless-stopped
+    environment:
+      PORT: "8081"
+      HOST: "0.0.0.0"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD}@postgres:5432/f33d3r_feed?sslmode=disable"
+      AETHYRRANK_URL: "http://aethyrrank-engine:8080"
+      ZIOR_URL: "http://zior-engine:8082"
+      AIN_SOPH_URL: "http://ain-soph:8089"
+      ZODACARE_URL: "http://zodacare:8090"
+      ELOHIM_VENI_URL: "http://elohim-veni:8093"
+      VERITY_URL: "http://verity:8095"
+      EKYC_URL: "http://ekyc:8099"
+      LEDGER_URL: "http://aethyr-ledger:8096"
+      CAEOR_URL: "http://caeor:8086"
+      TRANSCODING_URL: "http://transcoding:8085"
+      THEMIS_URL: "http://themis:8100"
+      ASTRAON_URL: "http://astraon:8088"
+      ALEXANDRIA_URL: "http://alexandria:8098"
+      HERALD_URL: "http://herald:8105"
+      MANHATTAN_URL: "http://manhattan:8107"
+      REGISTRY_BRAIN_URL: "http://registry-brain:8094"
+      AURALIS_URL: "http://auralis:8108"
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY}"
+      MEDIA_TOKEN_SECRET: "${MEDIA_TOKEN_SECRET}"
+      METRICS_TOKEN: "${METRICS_TOKEN:-}"
+      KAFKA_BROKERS: "sitra-achra:9092"
+      TIINGO_API_KEY: "${TIINGO_API_KEY:-}"
+      GIPHY_API: "${GIPHY_API:-}"
+      # Sports lane — always on. BBS_API set → Big Balls; empty → ESPN (keyless).
+      # SPORTS_PROVIDER is an optional override only; it cannot turn the lane off.
+      SPORTS_PROVIDER: "${SPORTS_PROVIDER:-}"
+      BBS_API: "${BBS_API:-}"
+      SPORTS_BASE_URL: "${SPORTS_BASE_URL:-}"
+      TRANSLATION_API_URL: "http://libretranslate:5000"
+      REDIS_URL: "redis://redis:6379"
+      SESSION_SECRET: "${SESSION_SECRET}"
+      SHOW_SCORES: "${SHOW_SCORES:-false}"
+      DEV_MODE: "false"
+      # Live lane — control plane address, media server API, publish endpoints.
+      # LIVE_PUBLIC_HOST is what a phone or OBS dials, not what containers use.
+      LIVE_CONTROL_ADDR: ":8110"
+      LIVE_MEDIA_API_URL: "http://mediamtx:9997"
+      # ── live capacity governor ───────────────────────────────────────────
+      # Cores this host will spend on encoding, and the hardware sessions it
+      # may use. Sized below the machine: the media server's ingest and the
+      # edge serving the segments share it, and a live lane sized to the whole
+      # box starves the ingest it is reading from.
+      LIVE_CPU_BUDGET_CORES: "${LIVE_CPU_BUDGET_CORES:-7.8}"
+      LIVE_NVENC_ENABLED: "${LIVE_NVENC_ENABLED:-false}"
+      LIVE_NVENC_SESSIONS: "${LIVE_NVENC_SESSIONS:-8}"
+      # Segment duration the governor plans for. Read here, by the governor —
+      # the ladder takes its duration from the plan it is issued, never from
+      # its own environment, so this is the only place the number is set.
+      LIVE_SEGMENT_SECONDS: "${LIVE_SEGMENT_SECONDS:-1}"
+      LIVE_SCAN_DIR: "/app/live-scan"
+      LIVE_RTMP_BASE: "rtmp://${LIVE_PUBLIC_HOST:-f33d3r.com}:1935"
+      LIVE_SRT_HOST: "${LIVE_PUBLIC_HOST:-f33d3r.com}:8890"
+      CONTENT_SCAN_URL: "${CONTENT_SCAN_URL:-http://content-scan:8097}"
+      # Onion-Location. Blank means the address is read from the hostname tor
+      # exports to the tor_hostname volume (below) once it has started — the
+      # address follows the hidden-service key. Set only to pin an address
+      # served by a tor daemon outside this compose stack.
+      ONION_HOSTNAME: "${ONION_HOSTNAME:-}"
+      ONION_HOSTNAME_FILE: "/run/tor/hostname"
+    volumes:
+      - ./feed-engine/web/static:/app/web/static    # live CSS/JS/brand — git pull = instant update
+      - ./feed-engine/web/templates:/app/web/templates:ro  # live templates — restart to pick up
+      - f33d3r_media:/app/web/static/media          # user media — named volume overlays bind mount
+      - f33d3r_live_scan:/app/live-scan             # sampled live keyframes — never served
+      - tor_hostname:/run/tor:ro                    # .onion hostname written by the tor service
+    depends_on:
+      postgres:
+        condition: service_healthy
+      aethyrrank-engine:
+        condition: service_healthy
+      caeor:
+        condition: service_healthy
+      transcoding:
+        condition: service_healthy
+      registry-brain:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "wget", "-qO-", "http://localhost:8081/api/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
+
+  ain-soph:
+    build:
+      context: .
+      dockerfile: ain-soph/docker/Dockerfile
+    restart: unless-stopped
+    environment:
+      MANHATTAN_URL: "http://manhattan:8107"
+      RUST_LOG: "${RUST_LOG:-info}"
+      PORT: "8089"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD}@postgres:5432/f33d3r_wallet?sslmode=disable"
+      AETHYRRANK_URL: "http://aethyrrank-engine:8080"
+      FEED_ENGINE_URL: "http://feed-engine:8081"
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8089/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+
+  elohim-veni:
+    build:
+      context: .
+      dockerfile: elohim-veni/docker/Dockerfile
+    restart: unless-stopped
+    environment:
+      MANHATTAN_URL: "http://manhattan:8107"
+      RUST_LOG: "${RUST_LOG:-info}"
+      PORT: "8093"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD}@postgres:5432/f33d3r_security?sslmode=disable"
+      VERITY_URL: "http://verity:8095"
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY}"
+      # Ed25519 seed (base64, 32 bytes) signing contact key bundles. Unset means
+      # bundles ship unsigned and report themselves as unsigned.
+      CONTACT_BUNDLE_SIGNING_SEED: "${CONTACT_BUNDLE_SIGNING_SEED:-}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      verity:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8093/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+
+  zodacare:
+    build:
+      context: .
+      dockerfile: zodacare/docker/Dockerfile
+    restart: unless-stopped
+    environment:
+      MANHATTAN_URL: "http://manhattan:8107"
+      # Authenticates every call to Manhattan; the brain refuses to boot without it.
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY}"
+      RUST_LOG: "${RUST_LOG:-info}"
+      PORT: "8090"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD}@postgres:5432/f33d3r_safety?sslmode=disable"
+      ELOHIM_VENI_URL: "http://elohim-veni:8093"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      elohim-veni:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8090/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+
+  registry-brain:
+    build:
+      context: .
+      dockerfile: registry-brain/docker/Dockerfile
+    restart: unless-stopped
+    environment:
+      MANHATTAN_URL: "http://manhattan:8107"
+      # Authenticates every call to Manhattan; the brain refuses to boot without it.
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY}"
+      RUST_LOG: "${RUST_LOG:-info}"
+      PORT: "8094"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD}@postgres:5432/f33d3r_handles?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8094/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+
+  manhattan:
+    build:
+      context: ./manhattan
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+      PORT: "8107"
+      # Every call into the naming plane carries this shared secret; Manhattan
+      # refuses to boot without it. A brain name in a header is a claim anyone on
+      # the network could make — the key is what makes it a fact.
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY}"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD}@postgres:5432/f33d3r_manhattan?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8107/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+
+  verity:
+    build:
+      context: .
+      dockerfile: verity/docker/Dockerfile
+    restart: unless-stopped
+    environment:
+      MANHATTAN_URL: "http://manhattan:8107"
+      RUST_LOG: "${RUST_LOG:-info}"
+      PORT: "8095"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD}@postgres:5432/f33d3r_verity?sslmode=disable"
+      # Verity decides who may earn money — kyc_tier, admin tier overrides, KYC
+      # results, risk and compliance records are all set here and read downstream
+      # as authority. Every mutating route requires this shared secret; the
+      # service refuses to boot without it.
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY}"
+      # NEXUS maintenance sweep (was the nexus-sweep container): expires stale
+      # link requests and session context, flags AML aggregates for EDD.
+      NEXUS_SWEEP_INTERVAL_SECS: "900"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8095/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+
+  aethyr-ledger:
+    build:
+      context: .
+      dockerfile: aethyr-ledger/docker/Dockerfile
+    restart: unless-stopped
+    environment:
+      MANHATTAN_URL: "http://manhattan:8107"
+      RUST_LOG: "${RUST_LOG:-info}"
+      PORT: "8096"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD}@postgres:5432/f33d3r_ledger?sslmode=disable"
+      # Ain Soph authenticates the block checkpoint this brain posts after each
+      # seal. Without the shared secret that call is refused.
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8096/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+
+  caeor:
+    build:
+      context: ./caeor
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+      PORT: "8086"
+      MEDIA_DIR: "/data/media"
+    volumes:
+      - f33d3r_media:/data/media
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8086/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 60s
+
+  # ── eKYC brain — face match, OCR, anti-spoof (Python, port 8099) ─────────
+  ekyc:
+    build:
+      context: ./ekyc
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      PORT: "8099"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8099/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
+  # ── MediaMTX — live ingest ───────────────────────────────────────────────
+  # Accepts video and nothing else. Publish authorisation is an HTTP callback
+  # into the feed-engine live control plane; delivery is live-edge, not this.
+  #   1935      RTMP  — OBS and every desktop encoder
+  #   8890/udp  SRT   — hardware and mobile encoders
+  #   8889      WHIP  — WebRTC from a phone browser (fronted by Caddy)
+  mediamtx:
+    build:
+      context: ./infra/live
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    # The ladder's encodes run in this container, so this is where a GPU has to
+    # be reachable. Set LIVE_GPU_RUNTIME=nvidia on a host with the NVIDIA
+    # container runtime and the ladder's session probe will succeed; leave it
+    # unset and every plan the control plane issues is a software plan, which
+    # is correct on a host with no card rather than a failure.
+    #
+    # A variable and not a literal because compose refuses to start a service
+    # whose named runtime is not installed, and a live ingest server that will
+    # not start because a machine has no graphics card is far worse than one
+    # that encodes in software.
+    runtime: ${LIVE_GPU_RUNTIME:-runc}
+    # The wall behind the capacity governor. The governor in feed-engine sizes
+    # every broadcast against a core budget; this bounds what the whole live
+    # lane can take from the rest of the platform even if that accounting is
+    # ever wrong.
+    cpus: ${LIVE_CONTAINER_CPUS:-9.0}
+    ports:
+      - "1935:1935"        # RTMP ingest
+      - "8890:8890/udp"    # SRT ingest
+      - "8189:8189/udp"    # WebRTC media
+    environment:
+      MTX_AUTHHTTPADDRESS: "http://feed-engine:8110/live/auth"
+      MTX_WEBRTCADDITIONALHOSTS: "${LIVE_PUBLIC_HOST:-f33d3r.com}"
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY}"
+      LIVE_CONTROL_URL: "http://feed-engine:8110"
+      LIVE_MEDIA_ROOT: "/data/media/live"
+      LIVE_SCAN_ROOT: "/data/live-scan"
+      LIVE_DVR_SEGMENTS: "${LIVE_DVR_SEGMENTS:-12}"
+      LIVE_SAMPLE_SECONDS: "${LIVE_SAMPLE_SECONDS:-10}"
+      LIVE_PRESSURE_SPEED_FLOOR: "${LIVE_PRESSURE_SPEED_FLOOR:-0.94}"
+      LIVE_PRESSURE_SAMPLES: "${LIVE_PRESSURE_SAMPLES:-12}"
+    volumes:
+      - ./infra/live/mediamtx.yml:/mediamtx.yml:ro
+      - f33d3r_media:/data/media
+      - f33d3r_live_scan:/data/live-scan
+    depends_on:
+      feed-engine:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -s -o /dev/null -w '%{http_code}' http://localhost:9997/v3/paths/list | grep -qE '200|401'" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+
+  # ── live-edge — HLS delivery ─────────────────────────────────────────────
+  # The ABR ladder served as static files. /live/* is routed here by Caddy so
+  # video delivery never passes through the application server.
+  live-edge:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    volumes:
+      - ./infra/live/nginx.conf:/etc/nginx/nginx.conf:ro
+      - f33d3r_media:/srv:ro
+    healthcheck:
+      test: [ "CMD-SHELL", "wget -qO- http://localhost/healthz || exit 1" ]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  transcoding:
+    build:
+      context: ./transcoding
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+      PORT: "8085"
+      MEDIA_DIR: "/data/media"
+    volumes:
+      - f33d3r_media:/data/media
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8085/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 60s
+
+  # ── Astraon — astral/discovery brain (Rust, port 8088) ──────────────────────
+  astraon:
+    build:
+      context: .
+      dockerfile: astraon/docker/Dockerfile
+    restart: unless-stopped
+    environment:
+      MANHATTAN_URL: "http://manhattan:8107"
+      # Authenticates every call to Manhattan; the brain refuses to boot without it.
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY}"
+      RUST_LOG: "${RUST_LOG:-info}"
+      PORT: "8088"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD}@postgres:5432/f33d3r_feed?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8088/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 60s
+
+  # ── Alexandria — library brain (Rust, port 8098) ────────────────────────────
+  alexandria:
+    build:
+      context: .
+      dockerfile: alexandria/docker/Dockerfile
+    restart: unless-stopped
+    environment:
+      MANHATTAN_URL: "http://manhattan:8107"
+      # Authenticates every call to Manhattan; the brain refuses to boot without it.
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY}"
+      RUST_LOG: "${RUST_LOG:-info}"
+      PORT: "8098"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD}@postgres:5432/f33d3r_library?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8098/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+
+  # ── Herald — web-push / notification brain (Rust, port 8105) ────────────────
+  herald:
+    build:
+      context: .
+      dockerfile: herald/docker/Dockerfile
+    restart: unless-stopped
+    environment:
+      MANHATTAN_URL: "http://manhattan:8107"
+      # Authenticates every call to Manhattan; the brain refuses to boot without it.
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY}"
+      RUST_LOG: "${RUST_LOG:-info}"
+      PORT: "8105"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD}@postgres:5432/f33d3r_herald?sslmode=disable"
+      VAPID_PUBLIC_KEY: "${VAPID_PUBLIC_KEY:-not-configured}"
+      VAPID_PRIVATE_KEY: "${VAPID_PRIVATE_KEY:-}"
+      VAPID_SUBJECT: "${VAPID_SUBJECT:-mailto:admin@f33d3r.com}"
+    mem_limit: 512m
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8105/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+
+  # ── Lore — notification fan-out / digest brain (Rust, port 8106) ────────────
+  lore:
+    build:
+      context: .
+      dockerfile: lore/docker/Dockerfile
+    restart: unless-stopped
+    environment:
+      MANHATTAN_URL: "http://manhattan:8107"
+      # Authenticates every call to Manhattan; the brain refuses to boot without it.
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY}"
+      RUST_LOG: "${RUST_LOG:-info}"
+      PORT: "8106"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD}@postgres:5432/f33d3r_lore?sslmode=disable"
+      HERALD_URL: "http://herald:8105"
+    mem_limit: 512m
+    depends_on:
+      postgres:
+        condition: service_healthy
+      herald:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8106/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+
+  # ── Help Center — docs site served at help.f33d3r.com ──────────────────────
+  # ── Auralis — F33D3R Frequencies, live-audio social object brain (Rust, 8108) ─
+  # Control plane now; the audio SFU joins it in Phase 3 on AURALIS_MEDIA_UDP_PORT
+  # (published then, with the matching ufw rule in provision-server.sh).
+  auralis:
+    build:
+      context: .
+      dockerfile: frequencies/docker/Dockerfile
+    restart: unless-stopped
+    environment:
+      MANHATTAN_URL: "http://manhattan:8107"
+      # Authenticates every call to Manhattan and every call INTO this brain;
+      # it refuses to boot without it.
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY}"
+      RUST_LOG: "${RUST_LOG:-info}"
+      PORT: "8108"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD}@postgres:5432/f33d3r_frequencies?sslmode=disable"
+      REDIS_URL: "redis://redis:6379"
+      KAFKA_BROKERS: "sitra-achra:9092"
+      HERALD_URL: "http://herald:8105"
+      AURALIS_SIGNAL_SECRET: "${AURALIS_SIGNAL_SECRET}"
+      AURALIS_PUBLIC_HOST: "${LIVE_PUBLIC_HOST}"
+      AURALIS_MEDIA_UDP_PORT: "40000"
+    mem_limit: 512m
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      sitra-achra:
+        condition: service_healthy
+      manhattan:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8108/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+
+  help-center:
+    build:
+      context: ./help-center
+      dockerfile: Dockerfile
+    image: f33d3r-help-center:latest
+    restart: unless-stopped
+    volumes:
+      - ./help-center/docs:/app/docs
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
+
+  libretranslate:
+    image: libretranslate/libretranslate:latest
+    restart: unless-stopped
+    environment:
+      LT_LOAD_ONLY: "en,es,fr,de,pt,it,ja,ko,zh,ar,ru,hi,tr,nl,pl,sv,uk,he,id,vi"
+      LT_DISABLE_WEB_UI: "true"
+    volumes:
+      - libretranslate_data:/home/libretranslate/.local
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:5000/languages')\""]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+  # ── Sitra Achra — Redpanda/Kafka event backbone ───────────────────────────
+  sitra-achra:
+    image: redpandadata/redpanda:latest
+    command:
+      - redpanda
+      - start
+      - --smp 2
+      - --memory 1G
+      - --overprovisioned
+      - --kafka-addr PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr PLAINTEXT://sitra-achra:9092
+      - --pandaproxy-addr sitra-achra:8082
+      - --advertise-pandaproxy-addr sitra-achra:8082
+      - --set redpanda.auto_create_topics_enabled=true
+    restart: unless-stopped
+    volumes:
+      - sitra_achra_data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster info --brokers localhost:9092 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # ── Abraxas Shield — content safety pipeline (Rust, Kafka consumer) ────────
+  # Built with visual-nsfw feature: full ONNX image scanning on AVX2 CPUs (CCX33+).
+  abraxas-shield:
+    build:
+      context: ./abraxas-shield
+      dockerfile: Dockerfile
+      args:
+        FEATURES: "visual-nsfw"
+    restart: unless-stopped
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+      KAFKA_BROKERS: "sitra-achra:9092"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD}@postgres:5432/f33d3r_feed?sslmode=disable"
+      SCAN_VERSION: "3.0"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      sitra-achra:
+        condition: service_healthy
+
+  # ── content-scan — visual / audio / text classifier (Python, port 8097) ─────
+  # The live lane posts every sampled keyframe to /v1/scan/image and drives
+  # live_streams.scan_state from the answer.
+  #
+  # First boot: the NudeNet, EasyOCR and faster-whisper weights are baked into
+  # the image at build time, so start-up is a load from local disk (roughly a
+  # minute) and not a download. start_period covers that; /ready answers 503
+  # until the NSFW detector is actually loaded, so a broken model shows up as an
+  # unhealthy container rather than as silence.
+  #
+  # Nothing depends_on this service on purpose. A classifier that is still
+  # warming, or that failed to build, must not hold the rest of the stack down —
+  # feed-engine already fails closed while it is away: sampled frames are held
+  # unjudged at scan_state='pending_scan' and are never recorded clean.
+  content-scan:
+    build:
+      context: ./content-scan
+      dockerfile: Dockerfile
+      args:
+        # Set to onnxruntime-gpu to run NudeNet on an NVIDIA GPU as well.
+        ONNXRUNTIME_PACKAGE: "${CONTENT_SCAN_ONNXRUNTIME:-onnxruntime}"
+    restart: unless-stopped
+    environment:
+      PORT: "8097"
+      DB_HOST: "postgres"
+      DB_PORT: "5432"
+      DB_NAME: "f33d3r_feed"
+      DB_USER: "${POSTGRES_USER:-f33d3r}"
+      DB_PASSWORD: "${POSTGRES_PASSWORD}"
+      FEED_ENGINE_URL: "http://feed-engine:8081"
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY}"
+      # cpu | cuda. cuda also needs CONTENT_SCAN_RUNTIME=nvidia below; a cuda
+      # request the host cannot honour logs a warning naming the reason and runs
+      # on CPU rather than refusing to start.
+      CONTENT_SCAN_DEVICE: "${CONTENT_SCAN_DEVICE:-cpu}"
+      NVIDIA_VISIBLE_DEVICES: "${NVIDIA_VISIBLE_DEVICES:-all}"
+      NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
+      # Keep the math libraries from claiming every core on a shared host.
+      OMP_NUM_THREADS: "${CONTENT_SCAN_THREADS:-4}"
+      OPENBLAS_NUM_THREADS: "${CONTENT_SCAN_THREADS:-4}"
+    # runc is Docker's default runtime. On a host with the nvidia container
+    # runtime configured, set CONTENT_SCAN_RUNTIME=nvidia together with
+    # CONTENT_SCAN_DEVICE=cuda. Left at runc, the service runs on CPU.
+    runtime: "${CONTENT_SCAN_RUNTIME:-runc}"
+    volumes:
+      # Read-only: /v1/scan/risk is handed a file_path under the media tree.
+      - f33d3r_media:/app/web/static/media:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-fsS", "http://localhost:8097/ready" ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+
+  # ── Themis — private Bitcoin marketplace brain (Rust, port 8100) ─────────────
+  themis:
+    build:
+      context: .
+      dockerfile: themis/Dockerfile
+    restart: unless-stopped
+    environment:
+      MANHATTAN_URL: "http://manhattan:8107"
+      RUST_LOG: "${RUST_LOG:-info}"
+      PORT: "8100"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD}@postgres:5432/f33d3r_market?sslmode=disable"
+      NANTAR_URL: "http://feed-engine:8081"
+      ELOHIM_VENI_URL: "http://elohim-veni:8093"
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY}"
+      MEMPOOL_WS_URL: "wss://mempool.space/api/v1/ws"
+      XRP_WS_URL: "${XRP_WS_URL:-wss://xrpl.ws}"
+      THEMIS_ECDH_PRIVKEY_B64: "${THEMIS_ECDH_PRIVKEY_B64}"
+      CONF_THRESHOLD_LOW: "1"
+      CONF_THRESHOLD_HIGH: "3"
+      AIN_SOPH_URL: "http://ain-soph:8089"
+      VERITY_URL: "http://verity:8095"
+      STRIPE_SECRET_KEY: "${STRIPE_SECRET_KEY:-}"
+      STRIPE_WEBHOOK_SECRET: "${STRIPE_WEBHOOK_SECRET:-}"
+      STRIPE_PUBLISHABLE_KEY: "${STRIPE_PUBLISHABLE_KEY:-}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      elohim-veni:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8100/health" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 120s
+
+  # Tor hidden service — mirrors f33d3r.com at its .onion address
+  tor:
+    build:
+      context: ./infra/tor
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    # The hidden-service identity is never in the image or in git. It persists
+    # in the tor_hs volume; on first start the entrypoint seeds it from
+    # TOR_HS_KEY_DIR/hs_ed25519_secret_key when that file exists, and lets tor
+    # generate a fresh identity when it does not. The host DIRECTORY is
+    # mounted, not the file: a bind mount of an absent file path would make
+    # docker create an empty directory there, whereas an absent directory
+    # simply holds no key.
+    #
+    # tor writes the .onion hostname it derives from the key into the tor_hs
+    # dir; the entrypoint exports it to tor_hostname, which feed-engine reads
+    # at /run/tor/hostname to emit Onion-Location. The address is never a
+    # string in any config file.
+    volumes:
+      - ${TOR_HS_KEY_DIR:-./infra/tor}:/run/secrets/tor:ro
+      - tor_hs:/var/lib/tor/hs
+      - tor_hostname:/run/tor
+    depends_on:
+      feed-engine:
+        condition: service_healthy
+
+  # HTTPS reverse proxy — Let's Encrypt certs for f33d3r.com
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./infra/Caddyfile.prod:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      feed-engine:
+        condition: service_healthy
+      help-center:
+        condition: service_healthy
+      live-edge:
+        condition: service_started
+      mediamtx:
+        condition: service_started
+
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:
+  f33d3r_media:
+  f33d3r_live_scan:
+  libretranslate_data:
+  sitra_achra_data:
+  # Hidden-service identity (key + hostname tor derives from it). Deleting this
+  # volume changes the .onion address unless TOR_HS_KEY_DIR holds the key.
+  tor_hs:
+  # The exported .onion hostname: written by tor, read by feed-engine.
+  tor_hostname:

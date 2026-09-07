@@ -1,0 +1,88 @@
+{
+  local_certs
+  auto_https disable_redirects
+
+  # A client connecting to a bare IP sends no SNI (RFC 6066 forbids it for IP
+  # literals), so Caddy has no name to select a certificate by and aborts the
+  # handshake. Name the LAN address as the fallback so phone testing over
+  # https://<LAN-IP>:8443 gets the certificate issued for that IP.
+  default_sni {$LIVE_PUBLIC_HOST:127.0.0.1}
+}
+
+# ── HTTPS: this machine, mDNS name, and the LAN address ───────────────────────
+# Same machine:   https://localhost:8443
+# Other devices:  https://XXXG-00W0.local:8443  or  https://<LIVE_PUBLIC_HOST>:8443
+# Other devices must trust the Caddy root CA first — see infra/README-CERTS.md.
+# One block, not three: the bodies were duplicated and drifted apart.
+https://localhost:8443, https://XXXG-00W0.local:8443, https://{$LIVE_PUBLIC_HOST:127.0.0.1}:8443 {
+  tls internal
+
+  # ── edge hardening ──────────────────────────────────────────────────────────
+  # The same response headers prod sets, so a page that breaks under them
+  # breaks here first. HSTS is left out on purpose: it would pin localhost and
+  # the LAN address to HTTPS in every browser used for development, for every
+  # other project on this machine. CSP stays with the Go server.
+  header {
+    X-Content-Type-Options nosniff
+    X-Frame-Options DENY
+    Referrer-Policy strict-origin-when-cross-origin
+    Permissions-Policy "camera=(self), microphone=(self), geolocation=(), payment=()"
+    Cross-Origin-Opener-Policy same-origin
+    -Server
+  }
+
+  # Compress text responses (HTML/CSS/JS/JSON) — defense-in-depth alongside the
+  # feed-engine gzip middleware for clients that reach the app via Caddy.
+  # Exclude the SSE channel: compressing /api/events buffers the stream and
+  # facet/Gnosis frames never reach the client.
+  @compressible not path /api/events
+  encode @compressible zstd gzip
+
+  # ── live delivery ───────────────────────────────────────────────────────────
+  # Only the ladder's own files go to the live edge: playlists, CMAF segments and
+  # the poster. Every other /live/ path — the watch page, the broadcast page, the
+  # WHIP handshake, chat — is an application route and must not be diverted.
+  # A playlist and a segment per viewer per second is a file-serving workload;
+  # routing that through the application server is what breaks at scale.
+  @live_media path_regexp ^/live/[^/]+/.*\.(m3u8|m4s|mp4|jpg)$
+
+  # route preserves the order written here; without it the matchers are sorted
+  # and the media rule could fall behind the catch-all.
+  route {
+    # Prometheus scrapes feed-engine:8081/metrics on the internal network; the
+    # public edge never serves it. Answered before the catch-all so the path
+    # is not proxied.
+    respond /metrics 404
+
+    handle @live_media {
+      reverse_proxy live-edge:80
+    }
+
+    # There is deliberately no route to the media server's WHIP endpoint. A
+    # browser broadcast posts its offer to feed-engine (/live/{id}/whip),
+    # same-origin, and feed-engine presents it to the media server with a
+    # ticket the browser never holds. A WHIP URL carrying the ingest key is
+    # never rendered anywhere, so a public route to it would serve nobody.
+
+    handle {
+      reverse_proxy feed-engine:8081 {
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-Proto https
+      }
+    }
+  }
+}
+
+# ── HTTP → HTTPS redirect ─────────────────────────────────────────────────────
+# auto_https disable_redirects is set above, so this block is the only redirect
+# there is. The port written here is the port Caddy binds inside the container
+# and the port docker-compose.local.yml publishes on the host — one number, no
+# translation, or the listener exists and nothing can reach it.
+#
+# The same three names the HTTPS site answers to, because a redirect that only
+# knows "localhost" strands every phone that reaches this machine by LAN address
+# or mDNS name. {host} carries the name the client actually used across to the
+# TLS side, so the certificate matches what the browser then asks for.
+http://localhost:8444, http://XXXG-00W0.local:8444, http://{$LIVE_PUBLIC_HOST:127.0.0.1}:8444 {
+  redir https://{host}:8443{uri} 308
+}

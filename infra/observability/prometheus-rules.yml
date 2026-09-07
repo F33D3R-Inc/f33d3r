@@ -1,0 +1,86 @@
+# F33D3R — Prometheus alerting rules
+# Sprint 0 / S0.1 baseline. Four golden signals + capacity triggers from
+# the T0 → T1 staircase decision (D-015).
+
+groups:
+
+  - name: brain_health
+    interval: 30s
+    rules:
+
+      - alert: BrainDown
+        expr: up{job=~"nantar|aethyrrank|zior|caeor|ain-soph|aethyr-ledger|verity|elohim-veni|zodacare|schema-registry|registrar|ekyc|auralis"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "Brain {{ $labels.brain }} is down"
+          description: "Prometheus has not scraped {{ $labels.instance }} for 2 minutes."
+
+      # Triggers a T0→T1 review. See D-015 in PROJECT_STATE.md.
+      - alert: HostCpuSustainedHigh
+        expr: avg(rate(process_cpu_seconds_total[5m])) by (instance) > 0.6
+        for: 4h
+        labels: { severity: warning, capacity_trigger: t0_to_t1 }
+        annotations:
+          summary: "Sustained CPU > 60% for 4h on {{ $labels.instance }}"
+          description: "T0→T1 migration trigger fired. Review capacity plan."
+
+      - alert: HighRequestErrorRate
+        expr: |
+          sum(rate(http_requests_total{status=~"5.."}[5m])) by (brain)
+            / sum(rate(http_requests_total[5m])) by (brain)
+            > 0.01
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.brain }} 5xx rate > 1%"
+          description: "Brain {{ $labels.brain }} has elevated 5xx errors. Check logs in Loki."
+
+      - alert: HighLatencyP95
+        expr: |
+          histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (brain, le)) > 0.3
+        for: 1h
+        labels: { severity: warning, capacity_trigger: t0_to_t1 }
+        annotations:
+          summary: "{{ $labels.brain }} p95 > 300ms for 1h"
+          description: "T0→T1 migration trigger fired. Review latency plan."
+
+  - name: postgres_health
+    interval: 30s
+    rules:
+
+      - alert: PgBouncerDown
+        expr: up{component="pgbouncer"} == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "PgBouncer is down"
+          description: "All Postgres traffic via PgBouncer is failing."
+
+      - alert: PostgresConnectionsHigh
+        expr: pgbouncer_databases_pool_size > 60
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Postgres pool size approaching limit"
+          description: "PgBouncer reports pool size {{ $value }}. Limit is 70."
+
+  - name: storage_health
+    interval: 60s
+    rules:
+
+      - alert: MinioDown
+        expr: up{component="minio"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "MinIO is down"
+          description: "Media uploads + backups are failing."
+
+      - alert: DiskUsageHigh
+        expr: (node_filesystem_size_bytes - node_filesystem_avail_bytes) / node_filesystem_size_bytes > 0.85
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Disk usage > 85% on {{ $labels.mountpoint }}"
+          description: "Run cleanup or expand disk. CCX23 has 160 GB total."

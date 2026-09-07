@@ -1,0 +1,64 @@
+{{/*
+FACET vision_reels
+  version: 1.0 | status: stable | layer: 2 (content template)
+
+  The reels Playground: a vertical, full-screen, snap-scrolling feed of every
+  live Vision in scope. The order is the server's — authors newest-first, and one
+  author's Visions oldest-first inside their run — the same sequence the
+  sequential viewer walks, so opening a reel never jumps somewhere else.
+
+  Expiry is enforced in SQL on the read behind this Facet. Nothing here hides an
+  expired Vision with a class or a timer; an expired Vision simply is not in the
+  Fragment.
+
+  inputs:
+    Scope        string — following | for_you
+    Reels        []visionReelView
+    IsEmpty      bool
+    FollowingURL string — GET /facets/vision/reels?scope=following
+    ForYouURL    string — GET /facets/vision/reels?scope=for_you
+    ComposeURL   string — GET /facets/vision/composer?mode=text
+
+  states:
+    default | empty
+
+  children:
+    vision_reel
+
+  signals:
+    emits:    vision.reels   (GET /facets/vision/reels)    — scope switch
+              vision.compose (GET /facets/vision/composer) — mounts the composer
+    receives: vision.reels (whole Fragment replaced)
+
+  context:
+    visions.html → the Playground
+*/}}
+{{define "vision_reels"}}
+<section class="vision-reels" data-facet-id="facet:f33d3r:vision:reels:playground"
+         data-scope="{{.Scope}}" aria-label="Visions">
+  <div class="vision-reels__scopes" role="tablist" aria-label="Vision scope">
+    <a class="vision-reels__scope{{if eq .Scope "following"}} is-on{{end}}"
+       role="tab" aria-selected="{{if eq .Scope "following"}}true{{else}}false{{end}}"
+       href="/visions?scope=following"
+       hx-get="{{.FollowingURL}}" hx-target="closest .vision-reels" hx-swap="outerHTML">Following</a>
+    <a class="vision-reels__scope{{if eq .Scope "for_you"}} is-on{{end}}"
+       role="tab" aria-selected="{{if eq .Scope "for_you"}}true{{else}}false{{end}}"
+       href="/visions?scope=for_you"
+       hx-get="{{.ForYouURL}}" hx-target="closest .vision-reels" hx-swap="outerHTML">For You</a>
+  </div>
+
+  {{if .IsEmpty}}
+  <div class="vision-reels__empty">
+    <p class="vision-reels__empty-title">No live Visions</p>
+    <p class="vision-reels__empty-sub">A Vision is gone in 24 hours. Post the first one.</p>
+    <a class="vision-reels__empty-action" href="{{.ComposeURL}}"
+       hx-get="{{.ComposeURL}}" hx-target="#vision-composer-slot" hx-swap="innerHTML"
+       data-vision-compose>Post a Vision</a>
+  </div>
+  {{else}}
+  <div class="vision-reels__track">
+    {{range .Reels}}{{template "vision_reel" .}}{{end}}
+  </div>
+  {{end}}
+</section>
+{{end}}

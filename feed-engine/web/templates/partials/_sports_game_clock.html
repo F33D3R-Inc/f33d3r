@@ -1,0 +1,51 @@
+{{/*
+FACET sports_game_clock
+  version: 1.0 | status: stable | layer: 1 (atomic)
+
+  The game's condition in one line: kickoff time before, quarter and clock
+  during, "Halftime" / "End 3rd" / "Delayed" between, "Final" or "Final/OT"
+  after. It is the highest-frequency mutation in the lane — during a live game
+  the clock is the only thing that changes on most poll ticks — so it is its own
+  Facet and a tick costs this fragment and nothing else.
+
+  Every label on it is computed on the server (sports.Game.StatusLabel). The
+  browser never formats a clock, never derives a quarter and never decides that
+  a game is over.
+
+  The visible text is a scoreboard abbreviation ("8:42 · 3rd"); the screen
+  reader gets the sentence ("Third quarter, 8:42 remaining"). Both live inside
+  this fragment, so a replacement can never leave the spoken version describing
+  a quarter that ended ten minutes ago.
+
+  inputs:
+    Game  sports.Game — .State .StatusLabel .PeriodLabel .Clock .Live .Final
+                        .SpokenStatus .Overtime
+    Stale bool        — the poller has not heard from the upstream recently
+
+  states:
+    scheduled | in_progress | halftime | end_period | delayed | postponed
+    | canceled | final (| final/OT) | unknown | stale
+
+  children: none
+
+  signals:
+    emits:    none
+    receives: sports_facet (SSE) — replacement fragment on every clock change
+
+  context:
+    sports_game_card → the status row beneath the team rows
+*/}}
+{{define "sports_game_clock"}}
+{{$g := .Game}}
+<div class="sports-clock sports-clock--{{$g.State}}{{if .Stale}} sports-clock--stale{{end}}"
+     data-facet-id="{{sportsClockFacetID $g.ID}}"
+     data-state="{{$g.State}}">
+  {{if $g.Live}}<span class="sports-clock__dot" aria-hidden="true"></span>{{end}}
+  <span class="sports-clock__label" aria-hidden="true">{{$g.StatusLabel}}</span>
+  <span class="sr-only">{{$g.SpokenStatus}}</span>
+  {{if .Stale}}
+  <span class="sports-clock__stale" aria-hidden="true" title="The score feed has not answered recently">delayed feed</span>
+  <span class="sr-only">This score may be out of date; the score feed has not answered recently.</span>
+  {{end}}
+</div>
+{{end}}

@@ -1,0 +1,149 @@
+{{define "title"}}{{if .PageTitle}}{{.PageTitle}}{{else}}Live · F33D3R{{end}}{{end}}
+{{/* The rail marks Go Live while the broadcaster is composing or broadcasting. */}}
+{{define "nav-active-golive"}}{{if or (eq .Mode "compose") (eq .Mode "broadcast")}}active{{end}}{{end}}
+{{/* A broadcast in progress is a full-viewport surface ON A PHONE: the shell
+     chrome steps out of the way so the handset is all camera. That is true of a
+     broadcast and not of this page — and the two are not the same thing. A
+     broadcast that has ended is still Mode "broadcast", and the terminal surface
+     it leaves behind is a page like any other: the nav has to be there, or its
+     only exits are the two links on it.
+
+     It is also true of a phone and not of a desktop. A workstation has room for
+     the chrome beside a stage, and a broadcaster who is live still needs the
+     rest of the site; a takeover there buys nothing and costs them navigation.
+     So above the shell's desktop boundary the broadcast is a page in the centre
+     column like every other page, and the takeover belongs to the widths where
+     the viewport is the whole surface. styles.css draws that line at 1220px,
+     where .f33d3r-right appears and the rail takes its labels — the width at
+     which the shell becomes a desktop shell.
+
+     So the decision is not taken here. Mode is fixed for the life of the
+     document and a broadcast is not: it can end while this page is open, from
+     the owner's own End button or from the server (media server notready,
+     reconcile, moderation), and the way that arrives is the live_broadcast_stage
+     Facet re-rendered by the server and swapped in under its own data-facet-id.
+     A class chosen at render time cannot follow that; the Facet that carries the
+     broadcast's state can. live_broadcast_stage renders data-status onto its
+     root, the shell reads that status in styles.css, and the chrome returns the
+     instant the ended Fragment lands — with no reload, and with the browser
+     deciding nothing.
+
+     The mobile expression needs no separate answer: responsive.css holds the
+     rail on the left at every breakpoint, so .f33d3r-sidebar IS the mobile nav
+     and one rule governs both.
+
+     BROADCAST CHAT — liveBroadcastPage now passes ChatMessages via
+     liveRuntime.chatBacklog(s.ID) (the owner is entitled to the whole ring, no
+     CanChat gate to check), and liveChatSend already fans each line to
+     s.AuthorPIAL after the audience loop when the broadcaster wasn't reached
+     by it — audiencePIALs never contains them because their own stage never
+     beats. Both pieces of internal/handler/live.go are wired; a broadcaster
+     who reloads mid-stream now opens with the existing log, not an empty one. */}}
+{{define "head-extra"}}
+{{if .V}}
+<meta property="og:type" content="video.other">
+<meta property="og:title" content="{{.OGTitle}}">
+<meta property="og:description" content="{{.OGDesc}}">
+<meta property="og:image" content="{{.OGImage}}">
+<meta property="og:url" content="{{.OGUrl}}">
+<meta property="og:site_name" content="f33d3r">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="{{.OGTitle}}">
+<meta name="twitter:description" content="{{.OGDesc}}">
+<meta name="twitter:image" content="{{.OGImage}}">
+{{end}}
+{{end}}
+{{define "body"}}
+{{$mode := .Mode}}
+<main class="f33d3r-main live-main live-main--{{$mode}}" id="main-col">
+
+  {{if eq $mode "watch"}}
+  {{$v := .V}}
+  {{template "live_title_bar" (dict "StreamID" $v.S.ID "Title" $v.S.Title "Status" $v.S.Status "BackURL" "#back")}}
+  {{template "live_player" $v}}
+  {{template "live_author_row" $v}}
+
+  {{/* Mobile: the chat panel lives under the player. Desktop moves the
+       right-panel copy into the third column and hides this one via CSS. */}}
+  <div class="live-chat-mobile">
+    {{template "live_chat_panel" (dict "StreamID" $v.S.ID "Messages" .ChatMessages "CanChat" $v.CanChat "Handle" $v.ViewerHandle)}}
+  </div>
+
+  {{else if eq $mode "broadcast"}}
+  {{template "live_broadcast_stage" .B}}
+
+  {{/* The broadcaster reads their own chat. Reading it is most of the reason a
+       person is live at all, and the stage left the column below it empty.
+
+       ONE panel, in the main column, at every width. Not two.
+         · The watch surface renders live_chat_panel twice — once under the
+           player and once in the rail — and lets CSS hide one. That works there
+           because both copies are of the same stream and the surface tolerates
+           it; it also means two elements share the id live-chat-log, and
+           live-chat.js appends an arriving line to
+           document.querySelector('.live-chat[data-stream-id=…]'), which is
+           whichever copy comes first in the document. A second copy here would
+           put the broadcaster's chat in whichever panel the CSS happened to
+           hide.
+         · The rail keeps the rest of the site, which is the whole reason the
+           desktop broadcast surface keeps its shell.
+         · The column below the stage is exactly where the space is: the stage is
+           one aspect-ratio box and everything under it was dead.
+
+       Chat belongs to a running broadcast. A stream that has ended or been
+       blocked has no chat to show and the server refuses lines for it, so the
+       panel is not rendered for one — the broadcaster gets live_ended and its
+       two exits, not a composer that would be answered with an error.
+
+       Messages is read with index rather than .ChatMessages so the key may be
+       absent: the broadcast page's data map does not carry it yet, and a bare
+       field reference would be "<no value>" here and a hard 500 under
+       TEMPLATE_STRICT. The backlog is server state and belongs in the handler —
+       see the note in this file's header. */}}
+  {{$bs := .B.S}}
+  {{if and (ne $bs.Status "ended") (not $bs.IsBlocked)}}
+  <div class="live-chat-bcast">
+    {{template "live_chat_panel" (dict
+        "StreamID" $bs.ID
+        "Messages" (index . "ChatMessages")
+        "CanChat" true
+        "Handle" .B.AuthorHandle)}}
+  </div>
+  {{end}}
+
+  {{else if eq $mode "compose"}}
+  {{/* The three Frequency keys are read with index so a compose data map
+       written before the audio mode existed still renders (missingkey=error
+       under TEMPLATE_STRICT would 500 on a bare field). */}}
+  {{template "live_go_composer" (dict "Handle" .ComposerHandle "CanNSFW" .CanNSFW "Error" .Error "Title" .Title "Description" .Description "Source" .Source
+      "FrequencyMode" (index . "FrequencyMode") "FrequencyGo" (index . "FrequencyGo") "FrequenciesLive" (index . "FrequenciesLive"))}}
+
+  {{else}}
+  {{if .GateHandle}}
+  {{template "stateEmpty" (dict "Icon" "🔞" "Title" "18+ broadcast" "Sub" (printf "@%s is streaming 18+ content. Your account is not set up to view it." .GateHandle))}}
+  {{else}}
+  {{template "stateEmpty" (dict "Title" "Stream not found" "Sub" "This broadcast does not exist or was removed.")}}
+  {{end}}
+  {{end}}
+
+</main>
+{{end}}
+{{define "right-panel"}}
+{{if eq .Mode "watch"}}
+{{$v := .V}}
+<div class="live-chat-desktop">
+  {{template "live_chat_panel" (dict "StreamID" $v.S.ID "Messages" .ChatMessages "CanChat" $v.CanChat "Handle" $v.ViewerHandle)}}
+</div>
+{{else}}
+{{template "sidebar_right" .}}
+{{end}}
+{{end}}
+{{define "page-scripts"}}
+<script src="/static/js/live-player.js?v={{assetVer}}" defer></script>
+<script src="/static/js/live-chat.js?v={{assetVer}}" defer></script>
+{{/* The broadcast surface loads both legs in either source. live-broadcast.js
+     opens the camera only when the server said this device is the source; in
+     encoder mode it wires the copy affordances and nothing else. */}}
+{{if eq .Mode "broadcast"}}<script src="/static/js/live-ingest.js?v={{assetVer}}" defer></script>
+<script src="/static/js/live-broadcast.js?v={{assetVer}}" defer></script>{{end}}
+{{end}}

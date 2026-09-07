@@ -1,0 +1,37 @@
+{{/*
+FACET live_title_bar
+  version: 1.0 | status: stable | layer: 2
+
+  Sticky bar above the player: back control + stream title. Mirrors page_header
+  but carries live-specific status so the title and the LIVE state mutate together.
+
+  inputs:
+    StreamID string — stream UUID
+    Title    string — stream title (server-owned, never edited in the browser)
+    Status   string — "idle" | "live" | "ended"
+    BackURL  string — "#back" → history.back(); any other value → href
+
+  states:
+    live | idle | ended
+
+  children:
+    live_badge
+
+  signals:
+    emits:    none
+    receives: live_status (SSE — replaced when the stream starts or ends)
+
+  context:
+    live.html → top of the centre column
+*/}}
+{{define "live_title_bar"}}
+<div class="live-titlebar" data-facet-id="facet:f33d3r:live:{{.StreamID}}:title_bar">
+  <button class="live-titlebar__back" type="button" data-live-action="back"
+          {{if ne .BackURL "#back"}}data-live-href="{{.BackURL}}"{{end}}
+          aria-label="Back">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>
+  </button>
+  <h1 class="live-titlebar__title">{{.Title}}</h1>
+  {{template "live_badge" (dict "StreamID" .StreamID "Slot" "title_badge" "Status" .Status "OOB" false)}}
+</div>
+{{end}}

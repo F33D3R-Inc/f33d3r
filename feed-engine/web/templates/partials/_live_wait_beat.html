@@ -1,0 +1,55 @@
+{{/*
+FACET live_wait_beat
+  version: 1.0 | status: stable | layer: 5
+
+  The presence beat of a surface that is waiting for a broadcast to start.
+
+  live_viewer_count carries the beat of a running broadcast, and it is not
+  rendered on the idle wall — a wall has no tally to show. That left the idle
+  wall with no channel at all: a logged-out watcher holds no FA Live session,
+  and a signed-in one falls out of the audience set fifty seconds after the
+  page loaded, before the ladder has even finished probing the source. The
+  wall promised "this page updates itself the moment the stream starts" and
+  could not keep it.
+
+  This Facet is that channel. It draws nothing. It re-posts presence every ten
+  seconds carrying the status the surface was rendered for, and the server
+  answers one of two ways: 204 when nothing has changed, or the whole
+  re-rendered player — retargeted onto the player Facet by the response
+  headers, exactly as the beat of an ended stream is answered — when it has.
+  The wall is replaced by the player, and this element goes with it.
+
+  hx-swap is none because the steady-state answer carries nothing to swap; the
+  transition answer overrides it with HX-Reswap, which is the server naming the
+  swap, not the browser deciding one.
+
+  inputs:
+    StreamID string — stream UUID
+    Token    string — opaque per-page viewer token, as live_viewer_count's:
+                      identifies a logged-out watcher's connection and nothing
+                      else. Empty for a signed-in watcher, who is keyed by PIAL.
+    Status   string — the status this surface was rendered for ("idle"). Echoed
+                      on every beat so the server can tell whether the surface
+                      is behind.
+
+  states:
+    default
+
+  children: none
+
+  signals:
+    emits:    live.presence (POST /live/{id}/heartbeat)
+    receives: none directly — the player around it is replaced
+
+  context:
+    live_player (status=idle) → inside the idle wall
+*/}}
+{{define "live_wait_beat"}}
+<span class="live-wait"
+      data-facet-id="facet:f33d3r:live:{{.StreamID}}:wait"
+      hx-post="/live/{{.StreamID}}/heartbeat"
+      hx-trigger="every 10s"
+      hx-swap="none"
+      hx-vals='{"vt":"{{.Token}}","status":"{{.Status}}"}'
+      hidden aria-hidden="true"></span>
+{{end}}

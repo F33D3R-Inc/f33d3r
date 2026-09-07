@@ -1,0 +1,31 @@
+{{/*
+FACET work_reply_btn
+  version: 1.0 | status: stable | layer: 1
+
+  inputs:
+    WorkID       string — work UUID
+    AuthorHandle string — handle of work author
+    AuthorName   string — display name of work author
+    ReplyCount   int    — reply count
+
+  states:
+    default
+
+  children: none
+
+  signals:
+    emits: opens compose modal in reply mode (no POST until submit)
+
+  context:
+    work_action_bar → first button slot
+*/}}
+{{define "work_reply_btn"}}
+<button class="wab-btn wab-reply"
+        onclick="event.stopPropagation();openReplyCompose('{{.WorkID}}','{{.AuthorHandle}}','{{.AuthorName}}')"
+        aria-label="Reply ({{.ReplyCount}})">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+  </svg>
+  <span id="reply-count-{{.WorkID}}"{{if not .ReplyCount}} style="display:none"{{end}}>{{.ReplyCount}}</span>
+</button>
+{{end}}

@@ -1,0 +1,129 @@
+{{/*
+FACET live_player
+  version: 1.2 | status: stable | layer: 2
+
+  The watch surface's video stage. The server decides what is playable (status,
+  playlist, poster, NSFW/blocked walls) and what shape the stage is; the browser
+  only decodes. The LIVE badge and the viewer tally are burned into the stage's
+  bottom-left corner and are replaced as whole Fragments over FA Live — never
+  recomputed here.
+
+  A running broadcast plays on sight. The stage renders muted and playsinline,
+  which is what every browser's autoplay policy requires, and carries an
+  unmistakable unmute affordance for as long as it stays muted. Nothing about
+  that is a promise: if a browser still refuses the decode, the decoder marks
+  the stage blocked and the large play control comes back rather than the
+  surface sitting dead.
+
+  Stage geometry is server-owned. The media server reports the source's real
+  dimensions on the first keyframe and the server hands them down as --live-ar,
+  so a phone broadcast renders as a tall stage and a camera as a wide one. The
+  browser never measures anything to decide this.
+
+  inputs:
+    S            *model.LiveStream — .ID .Title .Status .PosterURL .PlaylistURL
+                                     .IsNSFW .IsBlocked .SourceWidth .SourceHeight
+    AuthorHandle string
+    AuthorName   string
+    AvatarURL    string
+    IsVerified   bool
+    VerifiedType string
+    Viewers      string — server-formatted viewer tally
+    ViewerCount  int
+    Ladder       []int  — ABR rungs
+    Heartbeat    bool   — viewer presence beat (false for the broadcaster's own preview)
+    ViewerToken  string — opaque per-page token that identifies this watcher
+
+  states:
+    live | idle | ended | blocked
+    decode: idle | starting | playing | blocked | stalled  (decoder-owned)
+
+  children:
+    live_badge, live_viewer_count, live_heart_burst, live_player_controls,
+    live_ended, live_wait_beat
+
+  signals:
+    emits:    live.presence (through live_viewer_count while live,
+                             through live_wait_beat while idle)
+    receives: live_status, live_viewers (SSE); the whole Facet in answer to a
+              wait beat once the broadcast is playable
+
+  going live:
+    The idle wall carries live_wait_beat. The server marks a stream live only
+    once the ladder has read its first segment back off disk, and answers the
+    next beat — or pushes over FA Live, whichever reaches the surface first —
+    with this Facet in its live shape. The player root is replaced only on a
+    change of shape (idle → live → ended, or blocked); a ladder change while
+    live reaches the surface through live_quality_selector alone, so a running
+    decoder is never torn down for a change the viewer cannot see.
+
+  context:
+    live.html           → centre column stage
+    profile_live_stage  → the author's broadcast at the top of their profile
+    live_card           → not used (the card decodes its own tile)
+*/}}
+{{define "live_player"}}
+{{$s := .S}}
+<div class="live-player" data-facet-id="facet:f33d3r:live:{{$s.ID}}:player"
+     data-stream-id="{{$s.ID}}" data-status="{{$s.Status}}"
+     data-paused="1" data-muted="1" data-fs="0" data-decode="idle"
+     {{if and (gt $s.SourceWidth 0) (gt $s.SourceHeight 0)}}style="--live-ar:{{$s.SourceWidth}} / {{$s.SourceHeight}}"{{end}}>
+
+  {{if $s.IsBlocked}}
+  <div class="live-player__wall" role="status">
+    <p class="live-player__wall-title">This stream is unavailable</p>
+    <p class="live-player__wall-sub">It was removed for violating the platform rules.</p>
+  </div>
+  {{else if eq $s.Status "ended"}}
+  {{template "live_ended" (dict "S" $s "AuthorHandle" .AuthorHandle)}}
+  {{else if eq $s.Status "idle"}}
+  <div class="live-player__wall" role="status">
+    <p class="live-player__wall-title">@{{.AuthorHandle}} is not live right now</p>
+    <p class="live-player__wall-sub">This page updates itself the moment the stream starts.</p>
+    {{/* The promise above is kept by this beat: the server answers it with the
+         player the moment there is a playlist to name. Without it an open wall
+         had no channel at all and the sentence was false. */}}
+    {{template "live_wait_beat" (dict "StreamID" $s.ID "Token" .ViewerToken "Status" $s.Status)}}
+  </div>
+  {{else}}
+  {{/* muted + playsinline + autoplay is the exact shape every browser's
+       autoplay policy will honour. The poster paints before the first segment
+       decodes so the stage is never an empty black hole. */}}
+  <video class="live-player__video"
+         data-f33d-live-hls="/live/{{$s.ID}}/master.m3u8"
+         {{if $s.PosterURL}}poster="{{$s.PosterURL}}"{{end}}
+         preload="auto" autoplay playsinline muted
+         aria-label="Live stream by @{{.AuthorHandle}}"></video>
+
+  {{/* Bottom chrome — the status corner and the control bar stack in one
+       flow-laid column anchored to the floor of the stage, so the corner can
+       never be told how tall the control bar is and get it wrong. */}}
+  <div class="live-player__hud">
+    <div class="live-player__corner">
+      {{template "live_badge" (dict "StreamID" $s.ID "Slot" "badge" "Status" $s.Status "OOB" false)}}
+      {{template "live_viewer_count" (dict "StreamID" $s.ID "Slot" "viewers" "Display" .Viewers "Count" .ViewerCount "Heartbeat" .Heartbeat "Token" .ViewerToken)}}
+      {{template "live_heart_burst" (dict "StreamID" $s.ID "Slot" "hearts" "Count" $s.HeartCount)}}
+    </div>
+    {{template "live_player_controls" (dict "S" $s "AuthorHandle" .AuthorHandle "AuthorName" .AuthorName "AvatarURL" .AvatarURL "IsVerified" .IsVerified "VerifiedType" .VerifiedType "Ladder" .Ladder)}}
+  </div>
+
+  {{/* Top of the stage: whatever the decoder has to say, and the sound
+       affordance. One row, so a status message and the unmute control can never
+       be drawn over each other however narrow the stage gets. */}}
+  <div class="live-player__hud live-player__hud--top">
+    <p class="live-player__err" data-live-error role="status" aria-live="polite" hidden></p>
+    {{/* Sound is off because the browser demands it, not because the viewer
+         asked. Say so, in the one place they are already looking. */}}
+    <button class="live-player__unmute" type="button" data-live-action="mute">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M11 5 6 9H2v6h4l5 4z" fill="currentColor" stroke="none"/><path d="M23 9l-6 6M17 9l6 6"/></svg>
+      <span>Tap for sound</span>
+    </button>
+  </div>
+
+  <button class="live-player__bigplay" type="button" data-live-action="playpause" aria-label="Play">
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><polygon points="6,3 21,12 6,21"/></svg>
+  </button>
+  {{end}}
+
+</div>
+{{end}}

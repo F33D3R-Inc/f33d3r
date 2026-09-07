@@ -1,0 +1,74 @@
+# F33D3R Production Caddyfile
+# Caddy automatically provisions Let's Encrypt TLS for f33d3r.com.
+# Requires ports 80 and 443 open and DNS pointing to this server.
+
+
+
+f33d3r.com {
+  # ── edge hardening ──────────────────────────────────────────────────────────
+  # Set here, once, for every response that leaves this host — the application
+  # cannot forget one. Content-Security-Policy is deliberately absent: the Go
+  # server sets it per page, and a second CSP here would only intersect it.
+  # Onion-Location is absent too: the .onion address is derived by tor from the
+  # hidden-service key, so feed-engine reads it from the hostname tor exports
+  # and sets the header itself — a string here would drift from the key.
+  header {
+    Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+    X-Content-Type-Options nosniff
+    X-Frame-Options DENY
+    Referrer-Policy strict-origin-when-cross-origin
+    Permissions-Policy "camera=(self), microphone=(self), geolocation=(), payment=()"
+    Cross-Origin-Opener-Policy same-origin
+    -Server
+  }
+  # Compress text responses — exclude the SSE channel (/api/events), which must
+  # stream unbuffered (see flush_interval -1 below) or facet frames never arrive.
+  @compressible not path /api/events
+  encode @compressible zstd gzip
+  # ── live delivery ───────────────────────────────────────────────────────────
+  # Only the ladder's own files go to the live edge: playlists, CMAF segments and
+  # the poster. Every other /live/ path — the watch page, the broadcast page, the
+  # WHIP handshake, chat — is an application route and must not be diverted.
+  # A playlist and a segment per viewer per second is a file-serving workload;
+  # routing that through the application server is what breaks at scale.
+  @live_media path_regexp ^/live/[^/]+/.*\.(m3u8|m4s|mp4|jpg)$
+
+  # route preserves the order written here; without it the matchers are sorted
+  # and the media rule could fall behind the catch-all.
+  route {
+    # Prometheus scrapes feed-engine:8081/metrics on the internal network; the
+    # public edge never serves it. Answered before the catch-all so the path
+    # is not proxied.
+    respond /metrics 404
+
+    handle @live_media {
+      reverse_proxy live-edge:80
+    }
+
+    # There is deliberately no route to the media server's WHIP endpoint. A
+    # browser broadcast posts its offer to feed-engine (/live/{id}/whip),
+    # same-origin, and feed-engine presents it to the media server with a
+    # ticket the browser never holds. A WHIP URL carrying the ingest key is
+    # never rendered anywhere, so a public route to it would serve nobody.
+
+    handle {
+      reverse_proxy feed-engine:8081 {
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-Proto https
+        # Required for the FA Live SSE stream (/api/events) — the persistent connection
+        # that delivers facet mutations and Gnosis message events. Without this Caddy
+        # buffers the response and stream frames never reach the client.
+        flush_interval -1
+      }
+    }
+  }
+}
+
+help.f33d3r.com {
+  reverse_proxy help-center:8080 {
+    header_up X-Real-IP {remote_host}
+    header_up X-Forwarded-Proto https
+  }
+}
+
+

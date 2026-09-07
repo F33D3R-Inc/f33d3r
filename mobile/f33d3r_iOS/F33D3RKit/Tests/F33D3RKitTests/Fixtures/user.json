@@ -1,0 +1,22 @@
+{
+  "handle": "dev",
+  "display_name": "Dev Account",
+  "bio": "Engineer at F33D3R. Building the thing.",
+  "pronouns": "they/them",
+  "location": "Portland, OR",
+  "website": "https://example.com",
+  "avatar_url": "/static/media/avatars/abc-feed.webp",
+  "header_url": "/static/media/headers/def-md.webp",
+  "is_verified": true,
+  "is_creator": true,
+  "role": "user",
+  "follower_count": 1240,
+  "following_count": 310,
+  "post_count": 874,
+  "realm": 3,
+  "realm_name": "Seeker",
+  "xp": 2500,
+  "theme_id": "void",
+  "accent_hex": "#7c5cff",
+  "is_private": false
+}

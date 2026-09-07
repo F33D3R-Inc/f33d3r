@@ -1,0 +1,97 @@
+# F33D3R Rate Limit Rules
+# Applied at the API gateway layer (Nginx) and per-service (in-process).
+# All limits are per-IP unless noted.
+
+version: "1.0"
+
+# ── Gateway-level limits (Nginx / Envoy) ──────────────────────────────────────
+
+gateway:
+  global:
+    requests_per_second: 100
+    burst: 200
+    zone: f33d3r_global
+
+  by_path:
+    # Auth endpoints — strict limit to prevent credential stuffing
+    - pattern: "^/(onboard|login)"
+      rps: 2
+      burst: 5
+      zone: f33d3r_auth
+      response_code: 429
+
+    # Feed read — generous, most traffic
+    - pattern: "^/(feed|explore|music/tracks)"
+      rps: 30
+      burst: 60
+      zone: f33d3r_read
+
+    # Write actions — moderate
+    - pattern: "^/api/(post|reply|follow|bookmark|report)"
+      rps: 5
+      burst: 10
+      zone: f33d3r_write
+
+    # Uploads — expensive, limit aggressively
+    - pattern: "^/upload/"
+      rps: 1
+      burst: 3
+      zone: f33d3r_upload
+
+    # Vovin proxy — messaging
+    - pattern: "^/vovin/"
+      rps: 10
+      burst: 20
+      zone: f33d3r_vovin
+
+# ── Per-service in-process limits (feed-engine token bucket) ──────────────────
+
+feed_engine:
+  buckets:
+    read: { per_minute: 300, applies_to: [ pages, feeds, search ] }
+    write: { per_minute: 60,  applies_to: [ posts, likes, follows, uploads ] }
+    auth: { per_minute: 10,  applies_to: [ login, onboard ] }
+
+# ── AethyrRank limits ─────────────────────────────────────────────────────────
+
+aethyrrank:
+  # Rank endpoint — called only by Nantar
+  rank:
+    requests_per_minute: 600    # 10 RPS from Nantar
+    max_pool_size: 500          # max items in one rank request
+    max_response_items: 50
+
+  # Feedback — high volume, cheap
+  feedback:
+    requests_per_minute: 6000   # 100 RPS
+    max_events_per_request: 100
+
+# ── Vovin limits ──────────────────────────────────────────────────────────────
+
+vovin:
+  messages_per_minute_per_pial: 60
+  max_message_size_bytes: 65536     # 64KB ciphertext
+  max_pending_messages_per_pial: 1000
+  websocket_connections_per_pial: 5
+
+# ── Ain Soph limits ───────────────────────────────────────────────────────────
+
+ain_soph:
+  transfers_per_hour_per_account: 100
+  max_transfer_amount_aet_cents: 100000  # 1000 AET per transfer
+  daily_transfer_limit_aet_cents: 1000000  # 10,000 AET per day
+
+# ── Zodacare limits ───────────────────────────────────────────────────────────
+
+zodacare:
+  reports_per_hour_per_pial: 10     # prevent report flooding
+  max_pending_reports_per_content: 500
+
+# ── Abuse thresholds → automatic action ───────────────────────────────────────
+
+auto_action_thresholds:
+  # If a PIAL hits these thresholds, trigger Zodacare risk re-score
+  posts_per_hour: 50          # likely spam
+  follows_per_hour: 100       # likely follow-bot
+  reports_submitted_per_day: 20  # report abuse
+  failed_auth_per_hour: 10    # credential stuffing → block IP

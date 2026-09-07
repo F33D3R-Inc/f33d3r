@@ -1,0 +1,50 @@
+{{/*
+FACET frequency_status
+  version: 1.0 | status: stable | layer: 5
+
+  One line of server truth about where the Frequency is: how long it has been
+  live, that it ended and why, that the host locked it or closed requests.
+  Every word here is decided on the server; the stage shows it as text so no
+  state is only an animation.
+
+  inputs:
+    ID           string
+    State        string — see frequency_live_badge
+    TimeLabel    string — "live for 42m", server-computed
+    EndedLabel   string — "ended 3 minutes ago"
+    EndReason    string — "host_ended" | "host_lost" | "moderation" | "" (server vocabulary)
+    Locked       bool
+    RequestsOpen bool
+
+  states:
+    live | live-locked | live-requests-closed | ended | scheduled | other
+
+  children: none
+
+  signals:
+    emits:    none
+    receives: frequency_facet (SSE)
+
+  context:
+    frequency_stage → under the header
+*/}}
+{{define "frequency_status"}}
+<p class="freq-status freq-status--{{.State}}" data-facet-id="{{frequencyFacetID .ID "status"}}" role="status">
+  {{- if eq .State "live"}}
+    <span class="freq-status__item">{{if .TimeLabel}}{{.TimeLabel}}{{else}}Live now{{end}}</span>
+    {{- if .Locked}}<span class="freq-status__item freq-status__item--warn">Locked — no new listeners</span>{{end}}
+    {{- if not .RequestsOpen}}<span class="freq-status__item freq-status__item--warn">Mic requests closed</span>{{end}}
+  {{- else if eq .State "ended"}}
+    <span class="freq-status__item">This Frequency has ended{{if .EndedLabel}} · {{.EndedLabel}}{{end}}</span>
+    {{- if eq .EndReason "host_lost"}}<span class="freq-status__item freq-status__item--warn">The host lost connection</span>{{end}}
+  {{- else if eq .State "moderation_terminated"}}
+    <span class="freq-status__item freq-status__item--warn">Removed by F33D3R moderation</span>
+  {{- else if eq .State "scheduled"}}
+    <span class="freq-status__item">Scheduled{{if .TimeLabel}} · {{.TimeLabel}}{{end}}</span>
+  {{- else if or (eq .State "processing_replay") (eq .State "archived")}}
+    <span class="freq-status__item">Ended{{if .EndedLabel}} · {{.EndedLabel}}{{end}} · Replay {{if eq .State "archived"}}ready{{else}}soon{{end}}</span>
+  {{- else}}
+    <span class="freq-status__item">{{.State}}</span>
+  {{- end}}
+</p>
+{{end}}

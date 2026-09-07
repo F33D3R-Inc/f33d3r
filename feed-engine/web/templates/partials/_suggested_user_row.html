@@ -1,0 +1,38 @@
+{{/*
+FACET suggested_user_row
+  version: 1.1 | status: stable | layer: 2
+
+  inputs:
+    Handle       string — user handle
+    DisplayName  string — display name
+    AvatarURL    string — avatar image src
+    (no Realm — the ring is resolved by user_avatar from Handle)
+    PIALID       string — used only in the follow POST payload (never rendered in HTML)
+    ViewerFollows bool  — viewer already follows this user (resolved by FollowStateFor)
+
+  states:
+    default | following
+
+  children:
+    user_avatar (size=sm, inline), btn_follow (Surface=compact)
+
+  signals:
+    emits:    follow, unfollow (POST /events)
+    receives: follow_state (SSE — server pushes the re-rendered btn_follow fragment)
+
+  context:
+    sidebar_right → who-to-follow panel
+    search        → people results
+*/}}
+{{define "suggested_user_row"}}
+<div class="suggested-user-row">
+  <a href="/{{.Handle}}" class="suggested-user-av-link">
+    {{template "user_avatar" (dict "Handle" .Handle "AvatarURL" .AvatarURL "DisplayName" .DisplayName "Size" "sm")}}
+  </a>
+  <a href="/{{.Handle}}" class="suggested-user-info">
+    <p class="suggested-user-name">{{.DisplayName}}</p>
+    <p class="suggested-user-handle">@{{.Handle}}</p>
+  </a>
+  {{template "btn_follow" (dict "TargetPIAL" .PIALID "TargetHandle" .Handle "IsFollowing" .ViewerFollows "Surface" "compact")}}
+</div>
+{{end}}

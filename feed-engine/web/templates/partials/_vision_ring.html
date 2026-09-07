@@ -1,0 +1,54 @@
+{{/*
+FACET vision_ring
+  version: 1.0 | status: stable | layer: 4 (atomic)
+
+  One author's avatar as the Vision entry point. The ring's state — unseen, seen,
+  or absent — is decided by one SQL answer on the server and arrives here as a
+  class name and an accessible label. Nothing here counts Visions, measures an
+  expiry or draws an arc from a timestamp: the browser is handed the answer.
+
+  Opening the ring is a server round trip to the resume point the same query
+  chose, so a viewer always re-enters where they left off.
+
+  inputs:
+    R       *model.VisionRing — .AuthorPIAL .AuthorHandle .AuthorName .AvatarURL
+                               .State (none|unseen|seen) .Count .UnseenCount
+    Scope   string — following | for_you (carried into the viewer)
+    OpenURL string — server-resolved address of the resume frame
+    ElemID  string — dom id focus returns to when the viewer closes
+    Label   string — server-composed accessible name
+
+  states:
+    unseen | seen | none
+
+  children:
+    user_avatar
+
+  signals:
+    emits:    vision.viewer (GET /facets/vision/viewer) — opens the sequence
+    receives: none
+
+  context:
+    vision_ring_rail → the rail across the top of the home timeline and of the
+                      reels Playground
+*/}}
+{{define "vision_ring"}}
+{{$r := .R}}
+<a class="vision-ring vision-ring--{{$r.State}}"
+   data-facet-id="facet:f33d3r:vision:{{$r.AuthorPIAL}}:ring"
+   id="{{.ElemID}}"
+   href="{{.OpenURL}}"
+   hx-get="{{.OpenURL}}"
+   hx-target="#vision-viewer-slot"
+   hx-swap="innerHTML"
+   data-vision-open
+   aria-label="{{.Label}}">
+  <span class="vision-ring__frame">
+    {{template "user_avatar" (dict "Handle" $r.AuthorHandle "AvatarURL" $r.AvatarURL "DisplayName" $r.AuthorName "Size" "md" "IsOnline" false)}}
+    {{if gt $r.UnseenCount 0}}
+    <span class="vision-ring__count" aria-hidden="true">{{$r.UnseenCount}}</span>
+    {{end}}
+  </span>
+  <span class="vision-ring__handle">@{{$r.AuthorHandle}}</span>
+</a>
+{{end}}

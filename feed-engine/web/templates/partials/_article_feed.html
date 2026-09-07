@@ -1,0 +1,41 @@
+{{/*
+FACET article_feed
+  version: 1.0 | status: stable | layer: 2
+
+  inputs:
+    Articles   []model.Article — list of articles to render
+    After      string          — pagination cursor (last article ID); empty = no more pages
+    Surface    string          — "articles" | "profile_articles"
+    SessionID  string          — current session ID for pagination cursor URL
+
+  states:
+    default | empty | paginating
+
+  children:
+    article_card, feed_sentinel (after= cursor: the last article id)
+
+  signals:
+    emits:    none
+    receives: none
+
+  context:
+    feed.go → surface=articles | surface=profile_articles → HTMX fragment
+*/}}
+{{define "article_feed"}}
+{{$surface   := .Surface}}
+{{$sessionID := .SessionID}}
+
+{{if .Articles}}
+<div class="article-feed">
+  {{range .Articles}}
+  {{template "article_card" .}}
+  {{end}}
+</div>
+{{else}}
+{{template "stateEmpty" (dict "Title" "No articles yet" "Sub" "Published articles will appear here")}}
+{{end}}
+
+{{if .After}}
+{{template "feed_sentinel" (dict "URL" (printf "/feed?surface=%s&session_id=%s&after=%s" $surface $sessionID .After) "Cursor" .After)}}
+{{end}}
+{{end}}

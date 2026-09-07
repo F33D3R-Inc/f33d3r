@@ -1,0 +1,374 @@
+{{/*
+FACET f33d3r_numbers
+  version: 1.0 | status: stable | layer: 2
+
+  inputs:
+    PIALID              string  — the identity these Numbers resolve to
+    Numbers             []struct{ Number, Display, Policy, Label string
+                                  Live, Legacy bool; Lease numberLease }
+    Policies            []string
+    ExpiryOptions       []struct{ Value, Label string } — minting a Number
+    ExpiryChangeOptions []struct{ Value, Label string } — changing one
+    ExpiryDaysMax       int     — the day count the form offers
+    BudgetMax           int     — the budget the form offers
+    BudgetOptions       []struct{ Value, Label string } — minting a Number
+    HandlePolicy        string
+    DefaultNumberPolicy string
+    Capabilities        []struct{ ID, Label string; Uses, MaxUses int; Revoked bool }
+    Requests            []struct{ ID, Handle, Name, Note, When string }
+    NewNumber           string  — just minted, shown once in spoken form
+    NewCapability       string  — just minted, shown once and never again
+    Notice              string
+    Unavailable         bool
+
+  states:
+    default | empty | unavailable | notice | minted
+
+  children: none
+
+  signals:
+    emits: POST /identity/numbers/mint             → re-renders this facet
+    emits: POST /identity/numbers/revoke           → re-renders this facet
+    emits: POST /identity/numbers/policy           → re-renders this facet
+    emits: POST /identity/contact/policy           → re-renders this facet
+    emits: POST /identity/contact/capability/mint  → re-renders this facet
+    emits: POST /identity/contact/capability/revoke → re-renders this facet
+    emits: POST /identity/contact/requests/decide  → re-renders this facet
+
+  context:
+    settings → contact section
+
+  notes:
+    A Number is a policy address, not a bearer secret. Whoever holds one may
+    attempt contact under that Number's policy and learns nothing else. The
+    contact link beside it is the bearer half: 160 bits, shown once.
+
+    Everything a Lease carries is OWNER-PRIVATE: the label, the countdown and
+    what is left of the budget. None of it appears on the resolve surface, in a
+    refusal, or in a key bundle. An owner sees "Expired" and "Full"; whoever
+    typed the Number sees exactly what an unknown Number produces.
+
+    Every countdown and every count here was computed by the authority that
+    enforces them. This facet renders words the server chose; the browser works
+    nothing out.
+*/}}
+{{define "f33d3r_numbers"}}
+<div class="f33d3r-numbers"
+     data-facet-id="facet:f33d3r:identity:{{.PIALID}}:numbers">
+
+  <div class="settings-block">
+    <div class="settings-block-title">Your F33D3R Numbers</div>
+    <p class="settings-block-hint">
+      A Number is how someone reaches you without your phone number, your email
+      or your address book. Say it aloud, put it on a badge, print it on a
+      flyer. Anyone who has it may ask to reach you under the rules you set for
+      that Number — and learns nothing else about you. Retire one at any time:
+      your account, your keys and every open conversation are untouched.
+    </p>
+
+    {{if .Notice}}
+    <p class="settings-block-hint" role="status">{{.Notice}}</p>
+    {{end}}
+
+    {{if .NewNumber}}
+    <div class="settings-block">
+      <div class="settings-option-label">Your new Number</div>
+      <code class="f33d3r-numbers__code">{{.NewNumber}}</code>
+    </div>
+    {{end}}
+
+    {{if .NewCapability}}
+    <div class="settings-block">
+      <div class="settings-option-label">Your new contact link</div>
+      <div class="settings-option-sub">
+        Shown once and never again — only its fingerprint is stored. Send it to
+        the person you want to reach you; anyone holding it may contact you.
+      </div>
+      <code class="f33d3r-numbers__code">{{.NewCapability}}</code>
+    </div>
+    {{end}}
+
+    {{if .Unavailable}}
+    <p class="settings-block-hint">F33D3R Numbers are unavailable right now.</p>
+    {{else}}
+
+      {{if .Numbers}}
+      <ul class="f33d3r-numbers__list">
+        {{range .Numbers}}
+        <li class="f33d3r-numbers__row{{if not .Live}} is-revoked{{end}}">
+          <code class="f33d3r-numbers__code">{{.Display}}</code>
+          {{if .Label}}<span class="f33d3r-numbers__label">{{.Label}}</span>{{end}}
+          {{/* An older Number keeps working for ever — nothing was retired to
+               make room for the new shape. This says so, and says why somebody
+               might want a new one anyway, without ever implying the old one
+               has stopped. */}}
+          {{if .Legacy}}
+          <span class="f33d3r-numbers__state" title="Minted before Numbers became digits. It still works exactly as it always did.">Older format</span>
+          {{end}}
+          {{if .Live}}
+            {{if .Lease.Expired}}
+              <span class="f33d3r-numbers__state f33d3r-numbers__state--revoked">Expired</span>
+            {{else if .Lease.Spent}}
+              <span class="f33d3r-numbers__state f33d3r-numbers__state--revoked">Full</span>
+            {{else}}
+              <span class="f33d3r-numbers__state f33d3r-numbers__state--live">Live</span>
+            {{end}}
+            {{if .Lease.Expires}}
+            <span class="f33d3r-numbers__state">{{.Lease.Expires}}</span>
+            {{end}}
+            {{if .Lease.HasBudget}}
+            <span class="f33d3r-numbers__state">
+              {{.Lease.Remaining}} of {{.Lease.Budget}} left
+            </span>
+            {{else}}
+            <span class="f33d3r-numbers__state">{{.Lease.Used}} admitted</span>
+            {{end}}
+            <form method="post" action="/identity/numbers/policy">
+              <input type="hidden" name="number" value="{{.Number}}">
+              <input type="hidden" name="label" value="{{.Label}}">
+              <select name="policy" class="settings-select"
+                      hx-post="/identity/numbers/policy"
+                      hx-target="closest .f33d3r-numbers"
+                      hx-swap="outerHTML"
+                      hx-trigger="change"
+                      hx-include="closest form"
+                      aria-label="Who may reach you through this Number">
+                {{$current := .Policy}}
+                {{range $.Policies}}
+                <option value="{{.}}"{{if eq . $current}} selected{{end}}>{{.}}</option>
+                {{end}}
+              </select>
+            </form>
+            {{/* Changing the lease. Policy and label ride along as hidden
+                 fields so saving one thing never quietly discards another, and
+                 the expiry select defaults to "Leave unchanged" because an
+                 instant cannot be pre-selected from a list of durations. */}}
+            <form method="post" action="/identity/numbers/policy"
+                  hx-post="/identity/numbers/policy"
+                  hx-target="closest .f33d3r-numbers"
+                  hx-swap="outerHTML">
+              <input type="hidden" name="number" value="{{.Number}}">
+              <input type="hidden" name="label"  value="{{.Label}}">
+              <input type="hidden" name="policy" value="{{.Policy}}">
+              <label class="settings-option-label"
+                     for="expiry-{{.Number}}">Stops admitting</label>
+              <select id="expiry-{{.Number}}" name="expiry" class="settings-select">
+                {{range $.ExpiryChangeOptions}}
+                <option value="{{.Value}}">{{.Label}}</option>
+                {{end}}
+              </select>
+              <label class="settings-option-label"
+                     for="expiry-days-{{.Number}}">Days, if you chose a number of days</label>
+              <input type="number" id="expiry-days-{{.Number}}" name="expiry_days"
+                     min="1" max="{{$.ExpiryDaysMax}}" class="settings-input">
+              <label class="settings-option-label"
+                     for="budget-{{.Number}}">Admits at most</label>
+              <input type="number" id="budget-{{.Number}}" name="max_admissions"
+                     min="1" max="{{$.BudgetMax}}" class="settings-input"
+                     value="{{if .Lease.HasBudget}}{{.Lease.Budget}}{{end}}"
+                     placeholder="Leave empty for no limit">
+              <button type="submit" class="f33d3r-numbers__mint">Save this Number</button>
+            </form>
+            <form method="post" action="/identity/numbers/revoke"
+                  hx-post="/identity/numbers/revoke"
+                  hx-target="closest .f33d3r-numbers"
+                  hx-swap="outerHTML">
+              <input type="hidden" name="number" value="{{.Number}}">
+              <button type="submit" class="f33d3r-numbers__revoke">Retire</button>
+            </form>
+          {{else}}
+            <span class="f33d3r-numbers__state f33d3r-numbers__state--revoked">Retired</span>
+            {{/* Taking your own Number back. A retired Number is held out of
+                 circulation for a year so it cannot reach a stranger — but you
+                 are not a stranger to it, so you may have it back at once. It
+                 comes back CLEAN: a fresh budget, an empty count, no waiting
+                 requests and no label. */}}
+            <form method="post" action="/identity/numbers/mint"
+                  hx-post="/identity/numbers/mint"
+                  hx-target="closest .f33d3r-numbers"
+                  hx-swap="outerHTML">
+              <input type="hidden" name="reclaim" value="{{.Number}}">
+              <input type="hidden" name="policy" value="{{.Policy}}">
+              <button type="submit" class="f33d3r-numbers__mint">Take this Number back</button>
+            </form>
+          {{end}}
+        </li>
+        {{end}}
+      </ul>
+      {{else}}
+      <p class="settings-block-hint">You have no Numbers yet.</p>
+      {{end}}
+
+      <form method="post" action="/identity/numbers/mint"
+            hx-post="/identity/numbers/mint"
+            hx-target="closest .f33d3r-numbers"
+            hx-swap="outerHTML">
+        <label class="settings-option-label" for="new-number-label">Label</label>
+        <div class="settings-option-sub">
+          Only you ever see this. It is how you know which Number to retire when
+          the conference ends and the class is still running.
+        </div>
+        <input type="text" id="new-number-label" name="label" maxlength="64"
+               class="settings-input" placeholder="ACL Conference 2026">
+        <label class="settings-option-label" for="new-number-policy">Who may reach you</label>
+        <select id="new-number-policy" name="policy" class="settings-select">
+          {{range .Policies}}
+          <option value="{{.}}"{{if eq . "number_only"}} selected{{end}}>{{.}}</option>
+          {{end}}
+        </select>
+        <label class="settings-option-label" for="new-number-expiry">Stops admitting</label>
+        <div class="settings-option-sub">
+          The Number stops letting new people in when the event is over, whether
+          or not you remember. Anyone already talking to you is unaffected.
+        </div>
+        <select id="new-number-expiry" name="expiry" class="settings-select">
+          {{range .ExpiryOptions}}
+          <option value="{{.Value}}">{{.Label}}</option>
+          {{end}}
+        </select>
+        <label class="settings-option-label" for="new-number-expiry-days">
+          Days, if you chose a number of days
+        </label>
+        <input type="number" id="new-number-expiry-days" name="expiry_days"
+               min="1" max="{{.ExpiryDaysMax}}" class="settings-input"
+               placeholder="Leave empty unless you chose a number of days">
+        <label class="settings-option-label" for="new-number-budget">Admits at most</label>
+        <div class="settings-option-sub">
+          Say it to a room of forty and it stops at forty. People who already
+          follow you both ways do not count against it — they never needed the
+          Number. Every new Number carries a limit unless you choose otherwise:
+          a Number with no limit is one anybody who finds it can keep using for
+          ever, and that should be a decision rather than an accident. You can
+          raise it, or remove it, at any time.
+        </div>
+        <select id="new-number-budget" name="budget" class="settings-select">
+          {{range .BudgetOptions}}
+          <option value="{{.Value}}">{{.Label}}</option>
+          {{end}}
+        </select>
+        <label class="settings-option-label" for="new-number-budget-people">
+          People, if you chose a number of people
+        </label>
+        <input type="number" id="new-number-budget-people" name="max_admissions"
+               min="1" max="{{.BudgetMax}}" class="settings-input"
+               placeholder="Leave empty unless you chose a number of people">
+        <button type="submit" class="f33d3r-numbers__mint">Create a Number</button>
+      </form>
+
+    {{end}}
+  </div>
+
+  {{/* ── Identity-wide contact defaults ── */}}
+  <div class="settings-block">
+    <div class="settings-block-title">Who may reach you</div>
+    <p class="settings-block-hint">
+      These apply to your @handle and to any new Number you create.
+    </p>
+    <form method="post" action="/identity/contact/policy"
+          hx-post="/identity/contact/policy"
+          hx-target="closest .f33d3r-numbers"
+          hx-swap="outerHTML">
+      <label class="settings-option-label" for="handle-policy">By @handle</label>
+      <select id="handle-policy" name="handle_policy" class="settings-select">
+        {{$h := .HandlePolicy}}
+        {{range .Policies}}
+        <option value="{{.}}"{{if eq . $h}} selected{{end}}>{{.}}</option>
+        {{end}}
+      </select>
+      <label class="settings-option-label" for="default-number-policy">New Numbers default to</label>
+      <select id="default-number-policy" name="default_number_policy" class="settings-select">
+        {{$d := .DefaultNumberPolicy}}
+        {{range .Policies}}
+        <option value="{{.}}"{{if eq . $d}} selected{{end}}>{{.}}</option>
+        {{end}}
+      </select>
+      <button type="submit" class="f33d3r-numbers__mint">Save</button>
+    </form>
+  </div>
+
+  {{/* ── Contact links: the bearer half ── */}}
+  <div class="settings-block">
+    <div class="settings-block-title">Contact links</div>
+    <p class="settings-block-hint">
+      A contact link pre-authorises one person to reach you, whatever your
+      Number's policy says. It is far too long to say aloud, which is the point:
+      it is a secret, and a Number is not.
+    </p>
+
+    {{if .Capabilities}}
+    <ul class="f33d3r-numbers__list">
+      {{range .Capabilities}}
+      <li class="f33d3r-numbers__row{{if .Revoked}} is-revoked{{end}}">
+        <span class="f33d3r-numbers__label">{{if .Label}}{{.Label}}{{else}}Contact link{{end}}</span>
+        <span class="f33d3r-numbers__state">
+          used {{.Uses}}{{if .MaxUses}} of {{.MaxUses}}{{end}}
+        </span>
+        {{if .Revoked}}
+          <span class="f33d3r-numbers__state f33d3r-numbers__state--revoked">Revoked</span>
+        {{else}}
+          <form method="post" action="/identity/contact/capability/revoke"
+                hx-post="/identity/contact/capability/revoke"
+                hx-target="closest .f33d3r-numbers"
+                hx-swap="outerHTML">
+            <input type="hidden" name="capability_id" value="{{.ID}}">
+            <button type="submit" class="f33d3r-numbers__revoke">Revoke</button>
+          </form>
+        {{end}}
+      </li>
+      {{end}}
+    </ul>
+    {{else}}
+    <p class="settings-block-hint">No contact links yet.</p>
+    {{end}}
+
+    <form method="post" action="/identity/contact/capability/mint"
+          hx-post="/identity/contact/capability/mint"
+          hx-target="closest .f33d3r-numbers"
+          hx-swap="outerHTML">
+      <label class="settings-option-label" for="new-capability-label">Label</label>
+      <input type="text" id="new-capability-label" name="label" maxlength="64"
+             class="settings-input" placeholder="For Dana">
+      <label class="settings-option-label" for="new-capability-uses">Limit uses</label>
+      <input type="number" id="new-capability-uses" name="max_uses" min="1"
+             class="settings-input" placeholder="Leave empty for no limit">
+      <button type="submit" class="f33d3r-numbers__mint">Create a contact link</button>
+    </form>
+  </div>
+
+  {{/* ── Pending contact requests ── */}}
+  <div class="settings-block">
+    <div class="settings-block-title">Contact requests</div>
+    {{if .Requests}}
+    <ul class="f33d3r-numbers__list">
+      {{range .Requests}}
+      <li class="f33d3r-numbers__row">
+        <span class="f33d3r-numbers__label">
+          {{if .Handle}}@{{.Handle}}{{else}}Someone{{end}}
+        </span>
+        {{if .Note}}<span class="f33d3r-numbers__note">{{.Note}}</span>{{end}}
+        <form method="post" action="/identity/contact/requests/decide"
+              hx-post="/identity/contact/requests/decide"
+              hx-target="closest .f33d3r-numbers"
+              hx-swap="outerHTML">
+          <input type="hidden" name="request_id" value="{{.ID}}">
+          <input type="hidden" name="accept" value="1">
+          <button type="submit" class="f33d3r-numbers__mint">Accept</button>
+        </form>
+        <form method="post" action="/identity/contact/requests/decide"
+              hx-post="/identity/contact/requests/decide"
+              hx-target="closest .f33d3r-numbers"
+              hx-swap="outerHTML">
+          <input type="hidden" name="request_id" value="{{.ID}}">
+          <input type="hidden" name="accept" value="0">
+          <button type="submit" class="f33d3r-numbers__revoke">Decline</button>
+        </form>
+      </li>
+      {{end}}
+    </ul>
+    {{else}}
+    <p class="settings-block-hint">No pending requests.</p>
+    {{end}}
+  </div>
+
+</div>
+{{end}}

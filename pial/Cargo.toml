@@ -1,0 +1,24 @@
+[package]
+name = "f33d3r-pial"
+version = "1.0.0"
+edition = "2021"
+description = "F33D3R PIAL — Persistent Identity + Access Layer shared types and crypto"
+
+[lib]
+name = "f33d3r_pial"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+anyhow = "1"
+base64 = "0.22"
+rand = "0.8"
+
+# Ed25519 signatures for PIALTokens
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }

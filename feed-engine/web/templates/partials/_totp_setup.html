@@ -1,0 +1,42 @@
+{{/*
+FACET totp_setup
+  version: 1.0 | status: stable | layer: 2
+
+  inputs:
+    URI     string — otpauth:// provisioning URI for the authenticator app
+    Secret  string — the base32 secret, for typing in by hand
+
+  states:
+    default
+
+  children:
+    none
+
+  signals:
+    emits:    POST /api/2fa/enable (code) → #settings-panel
+    receives: none
+
+  context:
+    settings_section_security → #2fa-setup-wrap, in place of the "Set up 2FA" control
+*/}}
+{{define "totp_setup"}}
+<div id="2fa-qr-section" data-facet-id="facet:f33d3r:settings:security:totp_setup">
+  <p class="settings-block-hint" style="margin-top:8px">Open your authenticator app and add this account, then enter the 6-digit code to confirm.</p>
+  <div id="2fa-qr-img" style="margin:12px 0;background:#fff;padding:12px;border-radius:8px;display:inline-block">
+    <p style="font-size:12px;color:#666;max-width:280px;word-break:break-all;margin:0">
+      <a href="{{.URI}}" style="color:var(--accent)">Open in authenticator app</a><br>
+      Or enter this key by hand: <code>{{.Secret}}</code>
+    </p>
+  </div>
+  <form hx-post="/api/2fa/enable" hx-target="#settings-panel" hx-swap="innerHTML">
+    <div class="form-field">
+      <label class="form-label" for="2fa-enable-code">Verification code</label>
+      <input type="text" id="2fa-enable-code" name="code" class="form-input" inputmode="numeric" maxlength="6" placeholder="6-digit code" autocomplete="one-time-code" required>
+    </div>
+    <div id="2fa-result" style="font-size:13px;margin:8px 0;min-height:18px"></div>
+    <div class="settings-save-row">
+      <button class="btn-primary" type="submit">Enable 2FA</button>
+    </div>
+  </form>
+</div>
+{{end}}

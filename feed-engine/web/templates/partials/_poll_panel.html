@@ -1,0 +1,39 @@
+{{/*
+FACET poll_panel
+  version: 1.0 | status: stable | layer: 3
+
+  inputs: none (standalone DOM element; JS populates option inputs at runtime)
+
+  states:
+    hidden (default) | active (JS-moved into .compose-card)
+
+  children: none
+
+  signals:
+    emits:    poll_post (via submitCompose() when _pollMode is true)
+    receives: none
+
+  context:
+    base.html → body-level (JS moves it into compose_modal on toggle)
+*/}}
+{{define "poll_panel"}}
+<div id="poll-compose-panel" class="poll-compose-panel">
+  <p class="poll-compose-label">Poll options</p>
+  <div id="poll-options-list" class="poll-options-list">
+    <input type="text" class="poll-option-input" placeholder="Option 1" maxlength="80">
+    <input type="text" class="poll-option-input" placeholder="Option 2" maxlength="80">
+  </div>
+  <div class="poll-compose-footer">
+    <button id="poll-add-btn" type="button" class="poll-add-btn">+ Add option</button>
+    <div class="poll-duration-row">
+      <span class="poll-duration-label">Ends in</span>
+      <select id="poll-duration" class="poll-duration-select">
+        <option value="24">24 hours</option>
+        <option value="48">2 days</option>
+        <option value="168">7 days</option>
+        <option value="">No limit</option>
+      </select>
+    </div>
+  </div>
+</div>
+{{end}}

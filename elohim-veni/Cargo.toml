@@ -1,0 +1,60 @@
+[package]
+name = "elohim-veni"
+version = "1.0.0"
+edition = "2021"
+description = "Elohim Veni — Security Brain for F33D3R: PIAL enforcement, trust, and capability decisions"
+
+[[bin]]
+name = "elohim-veni"
+path = "src/main.rs"
+
+[dependencies]
+manhattan-client = { path = "../libs/manhattan-client" }
+manhattan-outbox = { path = "../libs/manhattan-outbox" }
+# Web framework
+axum = { version = "0.7", features = ["json"] }
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["trace"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Database
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono"] }
+
+# Identifiers + time
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
+
+# Error handling
+anyhow = "1"
+
+# Observability (S0.2)
+metrics = "0.23"
+metrics-exporter-prometheus = "0.15"
+once_cell = "1"
+
+# HTTP client for Verity attestation lookups
+reqwest = { version = "0.11", default-features = false, features = ["rustls-tls", "json"] }
+
+# Hashing — used to derive pial_shard_id from PIAL UUID for NEXUS tier lookups
+sha2 = "0.10"
+hex  = "0.4"
+
+# Contact capability secrets and key-bundle signing
+rand = "0.8"
+base64 = "0.22"
+ed25519-dalek = "2"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+
+[profile.dev]
+opt-level = 1

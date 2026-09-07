@@ -1,0 +1,67 @@
+{{/*
+FACET quoted_work_nested
+  version: 1.0 | status: stable | layer: 2
+
+  Second-level quote embed — the work that the QUOTED work itself quotes.
+  Drawn as a bare left-rail row instead of a second bordered card, so a quote
+  chain reads as one nested column rather than a stack of boxes: one identity
+  line (avatar · name · badge · handle · time), then a square media thumbnail
+  beside a truncated body line.
+
+  Depth stops here. This facet never recalls a third level — the render is
+  bounded exactly where db.attachQuotedWorks stops loading (2 rounds).
+
+  inputs:
+    (dot) Work — the twice-quoted work (.ID .AuthorHandle .AuthorName .AvatarURL
+                 .AuthorRealm .IsVerified .TimeAgo .Body .MediaURLs
+                 .VideoMasterURL .VideoPosterURL .IsNSFW .IsGore)
+
+  states:
+    default | has-media | has-video | multi-media (+N) | gated (nsfw/gore chip)
+
+  children:
+    user_avatar (xs), badge_verified
+
+  signals:
+    emits:    none
+    receives: none
+
+  context:
+    quoted_work → nested tail (level 2 of a quote chain)
+
+  note: gated works never leak a raw frame here — flagged media collapses to a
+        chip, the same rule work_core applies to the embed variant.
+*/}}
+{{define "quoted_work_nested"}}
+{{$thumb := ""}}{{if .VideoPosterURL}}{{$thumb = .VideoPosterURL}}{{else if .MediaURLs}}{{$thumb = index .MediaURLs 0}}{{end}}
+{{$gated := or .IsNSFW .IsGore}}
+{{$hasMedia := or $thumb .VideoMasterURL}}
+<a class="quoted-nested" href="/work/{{.ID}}" onclick="event.stopPropagation()"
+   data-facet-id="facet:f33d3r:work:{{.ID}}:quote_nested" data-work-id="{{.ID}}">
+  <div class="quoted-nested-head">
+    {{template "user_avatar" (dict "Handle" .AuthorHandle "AvatarURL" .AvatarURL "DisplayName" .AuthorName "Size" "xs")}}
+    <span class="quoted-nested-name">{{.AuthorName}}</span>
+    {{if .IsVerified}}{{template "badge_verified" (dict "Type" "blue")}}{{end}}
+    <span class="quoted-nested-handle">@{{.AuthorHandle}}</span>
+    {{if .TimeAgo}}<span class="quoted-nested-sep">·</span><time class="quoted-nested-time" data-ts="{{.CreatedAt.Unix}}">{{.TimeAgo}}</time>{{end}}
+  </div>
+  <div class="quoted-nested-row{{if $hasMedia}} quoted-nested-row--media{{end}}">
+    {{if $hasMedia}}
+      {{if $gated}}
+      <div class="quoted-nested-thumb quoted-nested-thumb--gated">{{if .IsNSFW}}18+{{else}}Sensitive{{end}}</div>
+      {{else}}
+      <div class="quoted-nested-thumb">
+        {{if $thumb}}<img src="{{signedMediaURL $thumb "" .IsNSFW}}" alt="" loading="lazy" decoding="async">{{end}}
+        {{if .VideoMasterURL}}
+        <span class="quoted-nested-thumb-play" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+        </span>
+        {{end}}
+        {{if gt (len .MediaURLs) 1}}<span class="quoted-nested-thumb-more">+{{add (len .MediaURLs) -1}}</span>{{end}}
+      </div>
+      {{end}}
+    {{end}}
+    {{if .Body}}<p class="quoted-nested-body">{{.Body}}</p>{{end}}
+  </div>
+</a>
+{{end}}

@@ -1,0 +1,4 @@
+{
+  "uri": "otpauth://totp/F33D3R:dev?secret=JBSWY3DPEHPK3PXP&issuer=F33D3R&algorithm=SHA1&digits=6&period=30",
+  "secret": "JBSWY3DPEHPK3PXP"
+}

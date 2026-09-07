@@ -1,0 +1,21 @@
+{{define "title"}}Library &middot; F33D3R{{end}}
+{{define "nav-active-marketplace"}}active{{end}}
+{{define "body"}}
+<main class="f33d3r-main" id="main-col">
+  <header class="marketplace-header">
+    <h1 class="marketplace-header__title">Your Library</h1>
+  </header>
+  {{/* The library Facet: asked for on load, and again on `refresh` — the
+       signal the Shell raises when marketplace_purchase_delivered arrives. */}}
+  <div id="buyer-library"
+       hx-get="/themis/v1/library"
+       hx-trigger="load, refresh"
+       hx-swap="innerHTML"
+       aria-live="polite">
+    {{template "stateLoading" .}}
+  </div>
+</main>
+{{block "page-scripts" .}}
+<script src="/static/js/pages/marketplace.js?v={{assetVer}}" defer></script>
+{{end}}
+{{end}}

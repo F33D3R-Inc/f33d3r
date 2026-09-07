@@ -1,0 +1,46 @@
+{{/*
+FACET buyer_library
+  version: 1.0 | status: stable | layer: 2
+
+  inputs:
+    FacetID   string       — facet:f33d3r:library:<pial>:list
+    Rows      []libraryRow — delivered purchases, newest first
+    Error     string       — non-empty when Themis could not answer
+    RetryURL  string       — address that re-renders this Facet
+
+  states:
+    default | empty | error
+
+  children:
+    marketplace_content_viewer (per row, when the content location is known)
+
+  signals:
+    emits:    none
+    receives: marketplace_purchase_delivered (the page re-requests this Facet)
+
+  context:
+    buyer_library.html → #buyer-library (hx-get /themis/v1/library)
+*/}}
+{{define "buyer_library"}}
+<div class="buyer-library" id="buyer-library-list" data-facet-id="{{.FacetID}}">
+  {{if .Error}}
+  {{template "stateError" (dict "Message" .Error "RetryURL" .RetryURL "Target" "#buyer-library-list")}}
+  {{else if .Rows}}
+  {{range .Rows}}
+  <article class="buyer-library-row" data-purchase-id="{{.PurchaseID}}">
+    <div class="buyer-library-row__body">
+      <a class="buyer-library-row__title" href="{{.ListingURL}}">{{.Title}}</a>
+      <span class="buyer-library-row__meta">{{.Price}}{{if .Delivered}} · delivered {{.Delivered}}{{end}} · ref {{.ListingRef}}</span>
+    </div>
+    {{if and .ContentURL .CekForBuyer}}
+    {{template "marketplace_content_viewer" (dict "PurchaseID" .PurchaseID "ContentURL" .ContentURL "ContentHash" .ContentHash "CekForBuyer" .CekForBuyer "MimeType" "")}}
+    {{else}}
+    <a class="buyer-library-row__link" href="{{.ListingURL}}">View listing</a>
+    {{end}}
+  </article>
+  {{end}}
+  {{else}}
+  {{template "stateEmpty" (dict "Title" "Nothing in your library yet" "Sub" "Content you buy on the marketplace unlocks here the moment payment confirms.")}}
+  {{end}}
+</div>
+{{end}}

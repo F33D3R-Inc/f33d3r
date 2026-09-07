@@ -1,0 +1,30 @@
+{{define "title"}}Visions · F33D3R{{end}}
+{{define "nav-active-visions"}}active{{end}}
+{{define "body"}}
+{{/* WIRE visions — the Vision lane's Playground.
+     Three slots, each filled by a server-rendered Facet: the ring rail, the
+     reels Playground, and the overlay the sequential viewer swaps into. The
+     composer mounts into its own slot from the rail's entry point. */}}
+<main class="f33d3r-main vision-main" id="main-col">
+  {{/* The rail is rendered whole by the server on this request; it restates
+       itself from the server after the sequential viewer closes. */}}
+  <div class="vision-main__rail" id="vision-rail-slot"
+       hx-get="/facets/vision/rings?scope={{.Scope}}"
+       hx-trigger="visionclosed from:body"
+       hx-swap="innerHTML">
+    {{template "vision_ring_rail" .Rail}}
+  </div>
+
+  <div class="vision-main__composer" id="vision-composer-slot"></div>
+
+  <div class="vision-main__playground">
+    {{template "vision_reels" .Reels}}
+  </div>
+</main>
+
+{{/* Overlay slot — the sequential viewer replaces its contents on every step. */}}
+<div class="vision-viewer-slot" id="vision-viewer-slot"></div>
+{{end}}
+{{define "page-scripts"}}
+<script src="/static/js/vision-viewer.js?v={{assetVer}}" defer></script>
+{{end}}

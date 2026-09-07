@@ -1,0 +1,56 @@
+{{/*
+FACET frequency_request_button
+  version: 1.0 | status: stable | layer: 5
+
+  The listener's one control: ask for the mic, with a reason. Its state is the
+  server's answer — nothing asked, asked and waiting, or requests closed — and
+  a press is answered with this Facet re-rendered in its new state, so the
+  button never says "Requested" until Auralis has the row. Separate from
+  frequency_controls so it can ride out-of-band beside another answer.
+
+  inputs:
+    ID            string
+    CanRequestMic bool                  — viewer is a listener, requests are open, none pending
+    Request       *FrequencyRequestData — the viewer's pending request, or nil
+    RequestsOpen  bool
+    Live          bool
+
+  states:
+    ask | requested | closed | hidden
+
+  children: none
+
+  signals:
+    emits:    frequency.request_mic (reason), frequency.withdraw (request_id) — POST /events
+    receives: frequency_facet (SSE)
+
+  context:
+    frequency_controls → listener row
+*/}}
+{{define "frequency_request_button"}}
+<div class="freq-ask" data-facet-id="{{frequencyFacetID .ID "request_button"}}">
+  {{- if .Request}}
+  <form class="freq-ask__form" hx-post="/events" hx-target="closest .freq-ask" hx-swap="outerHTML">
+    <input type="hidden" name="event_type" value="frequency.withdraw">
+    <input type="hidden" name="frequency_id" value="{{.ID}}">
+    <input type="hidden" name="request_id" value="{{.Request.RequestID}}">
+    <span class="freq-ask__state" role="status" tabindex="-1" data-freq-focus>Hand is up — the host can see your reason</span>
+    <button type="submit" class="freq-btn freq-btn--ghost">Withdraw</button>
+  </form>
+  {{- else if .CanRequestMic}}
+  <form class="freq-ask__form freq-ask__form--ask" hx-post="/events" hx-target="closest .freq-ask" hx-swap="outerHTML">
+    <input type="hidden" name="event_type" value="frequency.request_mic">
+    <input type="hidden" name="frequency_id" value="{{.ID}}">
+    <label class="freq-ask__label" for="freq-reason-{{.ID}}">Why do you want the mic?</label>
+    <input class="freq-ask__reason" id="freq-reason-{{.ID}}" name="reason" type="text" maxlength="140"
+           autocomplete="off" placeholder="One line the host will read first">
+    <button type="submit" class="freq-btn freq-btn--primary">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v4M8 23h8"/></svg>
+      Request Mic
+    </button>
+  </form>
+  {{- else if and .Live (not .RequestsOpen)}}
+  <p class="freq-ask__state freq-ask__state--closed" role="status">The host has closed mic requests.</p>
+  {{- end}}
+</div>
+{{end}}

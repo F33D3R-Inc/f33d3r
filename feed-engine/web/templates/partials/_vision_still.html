@@ -1,0 +1,66 @@
+{{/*
+FACET vision_still
+  version: 1.0 | status: stable | layer: 4 (atomic)
+
+  One Vision's content, full-bleed. This is the single place a Vision's body is
+  drawn, so the same Vision is the same picture in the reels Playground and in the
+  sequential viewer.
+
+  A text Vision is first class here: it goes through the identical
+  buildVisionArtboard the composer previews, so its background, typeface, size and
+  alignment are resolved preset KEYS by the time this Facet runs. The browser
+  never styles a Vision.
+
+  inputs:
+    V           *model.Vision — the row
+    Ref         string — canonical `<author_pial>.<seq>` address (facet id scope)
+    Artboard    visionArtboardView — resolved text artboard
+    HasArtboard bool
+    IsImage     bool
+    IsVideo     bool
+    IsHLS       bool   — the video master is an HLS playlist
+    MediaURL    string — stored object backing an image or video Vision
+    SharedWork  *model.Work — the Work a share Vision carries
+    HasShare    bool
+
+  states:
+    artboard | image | video | share
+
+  children:
+    vision_artboard, quoted_work
+
+  signals:
+    emits:    none
+    receives: none
+
+  context:
+    vision_reel   → one reel in the Playground
+    vision_viewer → the sequential frame
+*/}}
+{{define "vision_still"}}
+<div class="vision-still vision-still--{{.V.ContentType}}"
+     data-facet-id="facet:f33d3r:vision:{{.Ref}}:still">
+  {{if .HasArtboard}}
+    {{template "vision_artboard" .Artboard}}
+  {{else if .IsVideo}}
+    <video class="vision-still__media vision-still__media--video"
+           {{if .IsHLS}}data-f33d-hls="{{.MediaURL}}"{{else}}src="{{.MediaURL}}"{{end}}
+           playsinline muted loop preload="metadata"
+           aria-label="Video Vision by @{{.V.AuthorHandle}}"></video>
+  {{else if .IsImage}}
+    <img class="vision-still__media" src="{{.MediaURL}}" loading="lazy" decoding="async"
+         alt="Vision by @{{.V.AuthorHandle}}">
+  {{else if .HasShare}}
+    <div class="vision-still__share">
+      {{if .SharedWork}}
+        {{template "quoted_work" .SharedWork}}
+      {{else}}
+        <p class="vision-still__share-gone">That work is no longer available.</p>
+      {{end}}
+    </div>
+  {{end}}
+  {{if and .V.Body (not .HasArtboard)}}
+  <p class="vision-still__caption">{{.V.Body}}</p>
+  {{end}}
+</div>
+{{end}}

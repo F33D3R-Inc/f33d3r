@@ -1,0 +1,91 @@
+{{/*
+FACET frequency_stage
+  version: 1.0 | status: stable | layer: 4
+
+  The Frequency, as a person inside it sees it. A composite: header (title,
+  host, state, tally, recording), the speaker grid, the Request Mic queue, the
+  viewer's controls, and a status line. Every part is its own Facet with its
+  own address so Auralis's events land as small mutations — a tally, a grid, a
+  queue — and the whole stage is replaced only when the viewer's own standing
+  changes (they tuned in, left, were promoted, or the host ended it).
+
+  The root carries the media bootstrap for the Phase 3 runtime as data
+  attributes, never as visible text: the signaling path and a short-lived token
+  minted by Auralis when this viewer tuned in. The browser presents that token
+  to the signaling socket and nothing else; it decides no role from it.
+
+  inputs:
+    ID             string
+    Title          string
+    Description    string
+    State          string — "live" | "scheduled" | "ended" | "moderation_terminated" | …
+    Host           FrequencyPerson
+    Speakers       []FrequencySpeakerData
+    Cohosts        []FrequencyPerson
+    ListenerCount  int
+    SpeakerCount   int
+    ListenersLabel string
+    Requests       []FrequencyRequestData
+    RequestsOpen   bool
+    Locked         bool
+    Recording      bool
+    IsNSFW         bool
+    Viewer         FrequencyViewer — .Role .InFrequency .Muted .Blocked .CanRequestMic .CanModerate .CanEnd .CanSpeak .Request
+    Session        *FrequencySession — .Token .SignalPath .ExpiresAt .Permissions; nil unless the viewer is a participant
+    TimeLabel      string
+    EndedLabel     string
+    EndReason      string
+    Ctx            PageCtx — .CurrentUserHandle .User
+
+  states:
+    live | scheduled | ended | terminated ; viewer: out | listener | speaker | moderator | host
+
+  children:
+    frequency_header, frequency_status, frequency_speaker_grid, frequency_request_queue,
+    frequency_controls, frequency_ended
+
+  signals:
+    emits:    none directly (children emit)
+    receives: frequency_facet (SSE — this Fragment or any child replaced)
+
+  context:
+    frequency.html → centre column
+*/}}
+{{define "frequency_stage"}}
+{{$v := .Viewer}}
+<section class="freq-stage freq-stage--{{.State}}"
+         data-facet-id="{{frequencyFacetID .ID "stage"}}"
+         data-frequency-id="{{.ID}}"
+         data-state="{{.State}}"
+         data-viewer-role="{{if $v.InFrequency}}{{$v.Role}}{{else}}none{{end}}"
+         {{- with .Session}}
+         data-frequency-signal-path="{{.SignalPath}}"
+         data-frequency-token="{{.Token}}"
+         data-frequency-token-expires="{{.ExpiresAt}}"
+         data-frequency-permissions="{{range $i, $p := .Permissions}}{{if $i}} {{end}}{{$p}}{{end}}"
+         {{- end}}
+         aria-label="Frequency: {{.Title}}">
+
+  {{template "frequency_header" (dict
+      "ID" .ID "Title" .Title "Description" .Description "State" .State "Host" .Host
+      "ListenerCount" .ListenerCount "ListenersLabel" .ListenersLabel
+      "Recording" .Recording "IsNSFW" .IsNSFW
+      "Heartbeat" (and $v.InFrequency (eq .State "live")) "Ctx" .Ctx)}}
+
+  {{template "frequency_status" (dict
+      "ID" .ID "State" .State "TimeLabel" .TimeLabel "EndedLabel" .EndedLabel "EndReason" .EndReason
+      "Locked" .Locked "RequestsOpen" .RequestsOpen)}}
+
+  {{if or (eq .State "ended") (eq .State "moderation_terminated") (eq .State "processing_replay") (eq .State "archived")}}
+    {{template "frequency_ended" (dict "ID" .ID "Title" .Title "State" .State "EndReason" .EndReason "Host" .Host "SpeakerCount" .SpeakerCount)}}
+  {{else}}
+    {{template "frequency_speaker_grid" (dict "ID" .ID "Speakers" .Speakers "Ctx" .Ctx)}}
+    {{if or $v.CanModerate .Requests}}
+    {{template "frequency_request_queue" (dict "ID" .ID "Requests" .Requests "CanModerate" $v.CanModerate "Ctx" .Ctx)}}
+    {{end}}
+  {{end}}
+
+  {{template "frequency_controls" (dict
+      "ID" .ID "State" .State "Viewer" $v "RequestsOpen" .RequestsOpen "Locked" .Locked "Ctx" .Ctx "InDock" false)}}
+</section>
+{{end}}

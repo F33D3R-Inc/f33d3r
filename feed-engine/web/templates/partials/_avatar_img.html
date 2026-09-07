@@ -1,0 +1,35 @@
+{{/*
+FACET avatar_img
+  version: 1.0 | status: stable | layer: 5
+
+  inputs:
+    URL     string — image src; empty → gradient initials fallback
+    Handle  string — user handle; gradient seed and aria label
+    Size    string — "sm" (32px) | "md" (40px) | "post" (36px) | "lg" (72px) | "xl" (96px); default "md"
+
+  states:
+    photo | initials-gradient
+
+  children: none
+
+  signals:
+    emits:    none
+    receives: none
+
+  context:
+    user_avatar   → inner image layer
+    post_avatar   → post column avatar
+    profile_header → xl avatar slot
+    quoted_post   → sm avatar
+*/}}
+{{define "avatar_img"}}
+<div class="avatar-img user-av{{if .Size}} user-av--{{.Size}}{{else}} user-av--md{{end}}"
+     style="{{if not .URL}}{{$c := avatarColors .Handle}}background:linear-gradient(135deg,{{index $c 0}},{{index $c 1}}){{end}}"
+     aria-label="{{.Handle}}">
+  {{if .URL}}
+    <img src="{{.URL}}" alt="{{.Handle}}" loading="lazy" decoding="async">
+  {{else}}
+    {{firstChar .Handle}}
+  {{end}}
+</div>
+{{end}}

@@ -1,0 +1,97 @@
+{{define "title"}}Messages · F33D3R{{end}}
+{{define "nav-active-messages"}}active{{end}}
+{{define "mob-active-messages"}}active{{end}}
+{{define "body"}}
+<main class="f33d3r-main gn-main" id="main-col">
+  <div class="gn-layout" id="gnosis-layout">
+
+    {{/* Conversation list pane */}}
+    <section class="gn-sidebar" aria-label="Conversations">
+      <div class="gn-sidebar-head">
+        <h1 class="gn-title">Messages</h1>
+        {{/* Your own Number lives on the surface that owns it — Settings → Contact,
+             where it is minted, given a policy and retired. This is the way in from
+             the place people are when they want to hand it to somebody. */}}
+        <a class="gn-my-number" href="/settings/contact">Your F33D3R Number</a>
+      </div>
+      <form class="gn-new" hx-post="/messages/new" hx-target="#gnosis-thread" hx-swap="innerHTML"
+            hx-on::after-request="if(event.detail.successful){this.reset()}">
+        <div class="gn-new-input-wrap">
+          <input class="gn-new-input" type="text" name="handle" autocomplete="off" required
+                 placeholder="Message @handle…">
+          {{/* Facet(gn_mention_dropdown) — live user search, rendered from /api/users/search,
+               anchored directly under the input. Picking a row opens the conversation. */}}
+          <div id="gn-mention-dropdown" class="gn-mention-dropdown" role="listbox"
+               aria-label="Matching people" style="display:none"></div>
+        </div>
+        <button class="gn-new-btn" type="submit" aria-label="Start conversation">→</button>
+      </form>
+
+      {{/* A second way in, added deliberately alongside the @handle field above
+           rather than only inside a failed send. It stays collapsed until
+           opened, carries its own label, and never touches /api/users/search —
+           so it cannot be confused with the live-search field beside it, which
+           was the original objection to putting a Number field here at all.
+
+           Submitting this goes straight to handleCreateConvoByNumber
+           (POST /messages/new-number with no held message id) — a different
+           call than the in-thread Facet(contact_gate) path, which still exists
+           for a message that fails to reach an @handle. Every non-allow
+           outcome renders Facet(gnosis_number_gate) in the thread pane, under
+           the same resolve-time floor as the gated path, so this entry point
+           discloses nothing more than that one already does. */}}
+      <details class="gn-new-number">
+        <summary class="gn-new-number-btn">Message by F33D3R Number</summary>
+        <form class="gn-new-number-form" hx-post="/messages/new-number"
+              hx-target="#gnosis-thread" hx-swap="innerHTML"
+              hx-on::after-request="if(event.detail.successful){this.reset()}">
+          <label class="gn-new-number-label" for="gn-new-number-input">Their F33D3R Number</label>
+          <input class="gn-new-number-input" type="text" id="gn-new-number-input" name="number"
+                 inputmode="numeric" autocomplete="off" autocapitalize="off" spellcheck="false" required>
+          <label class="gn-new-number-label" for="gn-new-capability-input">Contact link, if they sent you one</label>
+          <input class="gn-new-number-input" type="text" id="gn-new-capability-input" name="capability"
+                 autocomplete="off" autocapitalize="off" spellcheck="false">
+          <label class="gn-new-number-label" for="gn-new-note-input">A note, if they review requests</label>
+          <input class="gn-new-number-input" type="text" id="gn-new-note-input" name="note" maxlength="280">
+          <button class="gn-new-number-send" type="submit">Start conversation</button>
+        </form>
+      </details>
+
+      {{/* Facet(gnosis_contact_requests) — what landed on the viewer. Quiet until
+           somebody is actually waiting on a decision. */}}
+      <div id="gnosis-requests"
+           hx-get="/facets/messages_requests"
+           hx-trigger="load, gnosis-contacts from:body"
+           hx-swap="innerHTML"></div>
+      {{/* Search is server-authoritative: the input drives an hx-get that re-renders
+           the conversation list from the server. The browser holds no filter state. */}}
+      <div class="gn-search-wrap" role="search">
+        <span class="gn-search-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+        </span>
+        <input class="gn-search" type="search" name="q" autocomplete="off"
+               hx-get="/facets/messages_convos" hx-target="#gnosis-convos" hx-swap="innerHTML"
+               hx-trigger="input changed delay:200ms, search"
+               placeholder="Search conversations" aria-label="Search conversations">
+      </div>
+      <div class="gn-convos" id="gnosis-convos"
+           hx-get="/facets/messages_convos"
+           hx-trigger="load, gnosis-refresh from:body"
+           hx-swap="innerHTML">
+        <div class="gn-convos-loading">Loading…</div>
+      </div>
+    </section>
+
+    {{/* Thread pane — populated when a conversation is opened */}}
+    <section class="gn-thread-pane" id="gnosis-thread" aria-label="Conversation">
+      {{template "gnosis_thread_empty" .}}
+    </section>
+
+  </div>
+</main>
+{{end}}
+{{define "right-panel"}}{{template "sidebar_right" .}}{{end}}
+{{define "page-scripts"}}
+<script src="/static/js/pages/gnosis.js?v={{assetVer}}" defer></script>
+<script type="module" src="/static/js/gnosis-seal.js?v={{assetVer}}"></script>
+{{end}}

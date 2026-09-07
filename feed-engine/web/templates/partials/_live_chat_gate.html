@@ -1,0 +1,33 @@
+{{/*
+FACET live_chat_gate
+  version: 1.0 | status: stable | layer: 3
+
+  Logged-out chat state. The stream itself stays watchable — only the
+  conversation is gated, so this replaces the composer and the log, nothing else.
+
+  inputs:
+    StreamID string — stream UUID
+
+  states:
+    default
+
+  children: none
+
+  signals:
+    emits:    none
+    receives: none
+
+  context:
+    live_chat_panel → replaces log + composer for anonymous viewers
+*/}}
+{{define "live_chat_gate"}}
+<div class="live-chat__gate" data-facet-id="facet:f33d3r:live:{{.StreamID}}:chat_gate">
+  <svg class="live-chat__gate-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+  </svg>
+  <p class="live-chat__gate-title">Log in to chat</p>
+  <p class="live-chat__gate-sub">The stream keeps playing. Sign in to join the conversation.</p>
+  <a class="live-chat__gate-btn" href="/login" hx-boost="false">Log in</a>
+  <a class="live-chat__gate-alt" href="/onboard" hx-boost="false">Create an account</a>
+</div>
+{{end}}

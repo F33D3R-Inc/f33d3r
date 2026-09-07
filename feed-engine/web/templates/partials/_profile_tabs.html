@@ -1,0 +1,47 @@
+{{/*
+FACET profile_tabs
+  version: 1.0 | status: stable | layer: 2
+
+  inputs:
+    Handle   string — profile handle the tabs address
+    IsOwner  bool   — the Likes tab is the owner's alone
+    Active   string — the works surface shown in #profile-feed
+    OOB      bool   — true when appended out of band to a works feed answer (a
+                      tab change), so the strip restates the active tab from
+                      the server's side
+
+  states:
+    default
+
+  children:
+    none
+
+  signals:
+    emits:    GET /facets/works/feed?surface=<tab>&handle=<Handle> → #profile-feed
+    receives: none
+
+  context:
+    profile_header → surface tabs (page render)
+    facetWorksFeed → appended out of band when HX-Target is profile-feed
+*/}}
+{{define "profile_tab"}}
+<button class="profile-tab{{if .Active}} active{{end}}" data-surface="{{.Surface}}"
+        hx-get="/facets/works/feed?surface={{.Surface}}&handle={{.Handle}}"
+        hx-target="#profile-feed"
+        hx-swap="innerHTML"
+        role="tab"
+        aria-selected="{{if .Active}}true{{else}}false{{end}}">{{.Label}}</button>
+{{end}}
+{{define "profile_tabs"}}
+{{$h := .Handle}}{{$a := .Active}}
+<div class="profile-tabs" id="profile-tabs" data-facet-id="facet:f33d3r:profile:{{$h}}:tabs"{{if .OOB}} hx-swap-oob="true"{{end}} role="tablist">
+  {{template "profile_tab" (dict "Surface" "profile_posts"    "Label" "Posts"    "Handle" $h "Active" (eq $a "profile_posts"))}}
+  {{template "profile_tab" (dict "Surface" "profile_replies"  "Label" "Replies"  "Handle" $h "Active" (eq $a "profile_replies"))}}
+  {{template "profile_tab" (dict "Surface" "profile_reposts"  "Label" "Reposts"  "Handle" $h "Active" (eq $a "profile_reposts"))}}
+  {{template "profile_tab" (dict "Surface" "profile_media"    "Label" "Media"    "Handle" $h "Active" (eq $a "profile_media"))}}
+  {{template "profile_tab" (dict "Surface" "profile_articles" "Label" "Articles" "Handle" $h "Active" (eq $a "profile_articles"))}}
+  {{if .IsOwner}}
+  {{template "profile_tab" (dict "Surface" "profile_saves"    "Label" "Likes"    "Handle" $h "Active" (eq $a "profile_saves"))}}
+  {{end}}
+</div>
+{{end}}

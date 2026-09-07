@@ -1,0 +1,80 @@
+{{/*
+FACET subscription_tier_form
+  version: 1.0 | status: stable | layer: 3
+
+  inputs:
+    CreatorPIALID  string  — creator's PIAL root anchor (used only server-side, not emitted to DOM per D-047)
+
+  states:
+    default | submitted
+
+  children:
+    none
+
+  signals:
+    emits: creator.plan.create — on form submit
+
+  context:
+    creator_memberships → below the tier list
+*/}}
+{{define "subscription_tier_form"}}
+<div class="stier-form-wrap">
+  <div class="crt-section-head">
+    <h2 class="crt-section-title">Add a tier</h2>
+  </div>
+
+  <form class="stier-form"
+        id="stier-form-new"
+        hx-post="/events"
+        hx-target="#creator-panel"
+        hx-swap="innerHTML"
+        hx-disabled-elt="find button[type=submit]"
+        hx-on::after-request="if(event.detail.successful) this.reset()">
+    <input type="hidden" name="event_type" value="creator.plan.create">
+
+    <div class="stier-form-fields">
+      <div class="stier-form-field">
+        <label class="stier-form-label" for="stier-name">Tier name</label>
+        <input id="stier-name" type="text" name="name" class="stier-form-input"
+               placeholder="e.g. Fan, Supporter, VIP"
+               required maxlength="80"
+               autocomplete="off">
+      </div>
+
+      <div class="stier-form-field">
+        <label class="stier-form-label" for="stier-price">
+          Price <span class="stier-form-label-unit">(AET / month)</span>
+        </label>
+        <div class="stier-price-wrap">
+          <input id="stier-price" type="number" name="price_aet" class="stier-form-input"
+                 placeholder="0"
+                 min="0" step="1"
+                 oninput="document.getElementById('stier-price-usd').textContent = (this.value * 0.01).toFixed(2)"
+                 autocomplete="off">
+          <span class="stier-price-usd-hint">
+            &asymp; $<span id="stier-price-usd">0.00</span> USD
+          </span>
+        </div>
+        <span class="stier-form-hint">Enter whole AET units (1 AET = 100 micro-AET). Free tier = 0.</span>
+      </div>
+
+      <div class="stier-form-field stier-form-field--full">
+        <label class="stier-form-label" for="stier-desc">
+          Description
+          <span class="stier-form-opt">optional</span>
+        </label>
+        <textarea id="stier-desc" name="description" class="stier-form-input"
+                  rows="3" maxlength="500"
+                  placeholder="What do subscribers get? e.g. early access, exclusive posts, direct messages..."></textarea>
+      </div>
+    </div>
+
+    <div class="stier-form-actions">
+      <button class="crt-btn-primary stier-btn-create" type="submit">
+        <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" width="14" height="14"><path d="M12 4.5v15m7.5-7.5h-15"/></svg>
+        Create tier
+      </button>
+    </div>
+  </form>
+</div>
+{{end}}

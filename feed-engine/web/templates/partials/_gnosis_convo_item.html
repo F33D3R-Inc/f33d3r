@@ -1,0 +1,36 @@
+{{/*
+FACET gnosis_convo_item
+  version: 1.0 | status: stable | layer: 2
+
+  One conversation row in the messages sidebar. Clicking it loads that thread into
+  the thread pane via HTMX. Sealed conversations show a lock and a placeholder
+  preview (the server holds only ciphertext and cannot read the last message).
+
+  inputs:
+    . gnosis.ConvoListRow — .ConversationID .Mode .IsGroup .Title .OtherHandle
+                            .OtherDisplay .OtherAvatar .Preview .Unread
+
+  states:
+    gn-convo (active highlight applied client-side on selection)
+
+  signals:
+    emits:    none
+    receives: none
+
+  context:
+    GET /facets/messages_convos (one per conversation)
+*/}}
+{{define "gnosis_convo_item"}}
+<button class="gn-convo" data-facet-id="convo:{{.ConversationID}}" data-convo-id="{{.ConversationID}}"
+        hx-get="/facets/messages_thread?c={{.ConversationID}}" hx-target="#gnosis-thread" hx-swap="innerHTML">
+  {{template "user_avatar" (dict "Handle" .OtherHandle "AvatarURL" .OtherAvatar "DisplayName" .OtherDisplay "Size" "post")}}
+  <span class="gn-convo-meta">
+    <span class="gn-convo-top">
+      <span class="gn-convo-name">{{if .IsGroup}}{{or .Title "Group"}}{{else}}{{.OtherDisplay}}{{end}}</span>
+      {{if eq .Mode "sealed"}}<span class="gn-convo-lock" title="End-to-end encrypted">🔒</span>{{end}}
+    </span>
+    <span class="gn-convo-preview">{{if .Preview}}{{.Preview}}{{else if eq .Mode "sealed"}}Encrypted{{else}}Tap to start chatting{{end}}</span>
+  </span>
+  {{if gt .Unread 0}}<span class="gn-convo-unread">{{if gt .Unread 9}}9+{{else}}{{.Unread}}{{end}}</span>{{end}}
+</button>
+{{end}}

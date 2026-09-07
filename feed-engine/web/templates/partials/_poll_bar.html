@@ -1,0 +1,34 @@
+{{/*
+FACET poll_bar
+  version: 2.0 | status: stable | layer: 5
+
+  One option's result row. Every number arriving here is already computed by
+  model.Poll.Project — this facet does no arithmetic.
+
+  inputs:
+    Label     string — option text
+    Pct       int    — percentage 0–100, precomputed
+    Count     int    — raw vote count
+    Voted     bool   — this is the option the viewer chose (accent fill + check)
+    IsWinner  bool   — this option leads the tally (ties: every tied option)
+
+  states:
+    default | voted | winner (independent; an option can be both)
+
+  children: none
+
+  signals:
+    emits:    none
+    receives: none
+
+  context:
+    poll_card → poll_results list
+*/}}
+{{define "poll_bar"}}
+<div class="poll-bar{{if .Voted}} poll-voted{{end}}{{if .IsWinner}} poll-winner{{end}}"
+     aria-label="{{.Label}}: {{.Pct}}% ({{.Count}} vote{{if ne .Count 1}}s{{end}})">
+  <div class="poll-bar-fill" style="width:{{.Pct}}%"></div>
+  <span class="poll-bar-label">{{.Label}}</span>
+  <span class="poll-bar-pct">{{.Pct}}%</span>
+</div>
+{{end}}

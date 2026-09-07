@@ -1,0 +1,40 @@
+{{/*
+FACET leaderboard_row
+  version: 1.0 | status: stable | layer: 1
+
+  inputs:
+    .Rank        int    — numeric rank (tied entries share the same number)
+    .Handle      string — @handle
+    .DisplayName string — shown name
+    .AvatarURL   string — avatar image URL
+    .XPToday     int64  — XP earned in current leaderboard period
+
+  states:
+    default | rank-1 | rank-2 | rank-3 (gold/silver/bronze highlight)
+
+  children:
+    user_avatar
+
+  signals:
+    emits:    none
+    receives: none
+
+  context:
+    leaderboard_panel → inside .lb-board list
+*/}}
+{{define "leaderboard_row"}}
+<div class="lb-row{{if eq .Rank 1}} lb-row--gold{{else if eq .Rank 2}} lb-row--silver{{else if eq .Rank 3}} lb-row--bronze{{end}}">
+  <span class="lb-rank">{{if eq .Rank 1}}🥇{{else if eq .Rank 2}}🥈{{else if eq .Rank 3}}🥉{{else}}{{.Rank}}{{end}}</span>
+  <a href="/{{.Handle}}" class="lb-avatar-wrap" onclick="event.stopPropagation()">
+    {{template "user_avatar" (dict "Handle" .Handle "AvatarURL" .AvatarURL "DisplayName" .DisplayName "Size" "md")}}
+  </a>
+  <div class="lb-identity">
+    <a href="/{{.Handle}}" class="lb-name" onclick="event.stopPropagation()">{{if .DisplayName}}{{.DisplayName}}{{else}}@{{.Handle}}{{end}}</a>
+    <span class="lb-handle">@{{.Handle}}</span>
+  </div>
+  <div class="lb-xp">
+    <span class="lb-xp-num">{{.XPToday}}</span>
+    <span class="lb-xp-label">XP</span>
+  </div>
+</div>
+{{end}}

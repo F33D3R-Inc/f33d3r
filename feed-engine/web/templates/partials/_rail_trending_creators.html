@@ -1,0 +1,40 @@
+{{/*
+FACET rail_trending_creators
+  version: 1.0 | status: stable | layer: 2
+
+  inputs:
+    RailCreators  []dbpkg.SuggestedUser — .Handle .DisplayName .AvatarURL .FollowerCount .IsVerified .IsCreator
+                  The one suggestion set (db.SuggestPeople) narrowed to creator
+                  accounts, so this panel and "Who to follow" cannot disagree
+                  about who is worth showing. Absent entirely when no creator
+                  clears the bar: the who-to-follow panel below owns the rail's
+                  empty state, and two empty panels in one rail is noise.
+
+  states:
+    default | empty
+
+  children:
+    user_avatar
+
+  signals:
+    emits:    follow, unfollow (POST /events via inline follow buttons)
+    receives: none
+
+  context:
+    sidebar_right → creators section on feed/explore surfaces
+*/}}
+{{define "rail_trending_creators"}}
+<div class="sidebar-panel rail-creators-panel">
+  <h3 class="sidebar-panel-title">Creators to follow</h3>
+  {{range .RailCreators}}
+  <a href="/{{.Handle}}" class="rail-creator-row">
+    {{template "user_avatar" (dict "Handle" .Handle "AvatarURL" .AvatarURL "DisplayName" .DisplayName "Size" "md")}}
+    <div class="rail-creator-info">
+      <span class="rail-creator-name">{{.DisplayName}}{{if .IsVerified}} <svg viewBox="0 0 24 24" fill="var(--accent)" style="width:12px;height:12px;vertical-align:middle"><path d="M9 12l2 2 4-4m6 2a9 9 0 1 1-18 0 9 9 0 0 1 18 0z"/></svg>{{end}}</span>
+      <span class="rail-creator-handle">@{{.Handle}}</span>
+    </div>
+    <span class="rail-creator-followers">{{.FollowerCount}}</span>
+  </a>
+  {{end}}
+</div>
+{{end}}

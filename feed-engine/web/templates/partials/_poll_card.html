@@ -1,0 +1,66 @@
+{{/*
+FACET poll_card
+  version: 2.0 | status: stable | layer: 2
+
+  The ballot. One work's poll, rendered complete — the server computes every
+  tally, percentage, winner mark and remaining-time label (model.Poll.Project)
+  and this facet only lays them out. The browser computes no poll state.
+
+  inputs:
+    PostID   string      — parent work ID (DOM id + vote payload)
+    Poll     *model.Poll — projected ballot: .Results .UserVote .Closed .TimeLeft .TotalVotes
+    Surface  string      — which wireframe is drawing it: "pcd" | "pcf" | "embed"
+                           A work is drawn by more than one wireframe on the same
+                           page (desktop card and mobile focus card both exist in
+                           the DOM), so the swap target is namespaced by surface —
+                           without it a vote on mobile swaps the hidden desktop
+                           ballot.
+    ReadOnly bool        — true for surfaces that show the ballot but do not take
+                           a vote (a quoted work). Renders results, never buttons,
+                           and claims no swap-target id — nothing swaps it, and the
+                           same work can be quoted twice on one page.
+
+  states:
+    voting (no ballot cast, poll open, not read-only) | results | closed
+
+  children: none
+
+  signals:
+    emits:    poll_vote (POST /api/poll/vote {post_id, option_idx})
+    receives: the vote handler renders THIS facet back over #poll-<surface>-<id>
+
+  context:
+    work_core → feed/detail (Surface="pcd"), embed (Surface="embed", ReadOnly)
+    work_card → mobile focus card (Surface="pcf")
+*/}}
+{{define "poll_card"}}
+{{$postID  := .PostID}}
+{{$poll    := .Poll}}
+{{$surface := .Surface}}
+{{$ro      := .ReadOnly}}
+{{$voted   := ge $poll.UserVote 0}}
+<div class="poll-wrap"
+     data-facet-id="facet:f33d3r:work:{{$postID}}:poll_{{$surface}}"
+     {{if not $ro}}id="poll-{{$surface}}-{{$postID}}"{{end}}
+     onclick="event.stopPropagation()">
+  {{if or $voted $poll.Closed $ro}}
+  <div class="poll-results">
+    {{range $poll.Results}}
+    {{template "poll_bar" (dict "Label" .Label "Pct" .Pct "Count" .Votes "Voted" .Voted "IsWinner" .IsWinner)}}
+    {{end}}
+  </div>
+  {{else}}
+  <div class="poll-options">
+    {{range $oi, $r := $poll.Results}}
+    <button class="poll-option-btn"
+            hx-post="/api/poll/vote"
+            hx-vals='{"post_id":"{{$postID}}","option_idx":"{{$oi}}","surface":"{{$surface}}"}'
+            hx-target="#poll-{{$surface}}-{{$postID}}"
+            hx-swap="outerHTML"
+            onclick="event.stopPropagation()">{{$r.Label}}</button>
+    {{end}}
+  </div>
+  {{end}}
+  <p class="poll-total">{{$poll.TotalVotes}} vote{{if ne $poll.TotalVotes 1}}s{{end}}{{if $poll.TimeLeft}} · {{$poll.TimeLeft}}{{end}}</p>
+</div>
+{{end}}

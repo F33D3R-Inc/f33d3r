@@ -1,0 +1,42 @@
+{
+  "blocked": [
+    {
+      "handle": "spammer",
+      "display_name": "Spam Merchant",
+      "is_verified": false,
+      "is_creator": false,
+      "official_type": "",
+      "role": "user",
+      "follower_count": 3,
+      "following_count": 8000,
+      "post_count": 12000,
+      "realm": 1,
+      "realm_name": "Wanderer",
+      "xp": 0,
+      "theme_id": "void",
+      "accent_hex": "#7c5cff",
+      "is_private": false
+    }
+  ],
+  "muted": [
+    {
+      "handle": "loudneighbour",
+      "display_name": "Loud Neighbour",
+      "bio": "posts every four minutes",
+      "avatar_url": "/media/avatars/loud.webp",
+      "is_verified": false,
+      "is_creator": true,
+      "official_type": "",
+      "role": "user",
+      "follower_count": 940,
+      "following_count": 120,
+      "post_count": 41000,
+      "realm": 2,
+      "realm_name": "Initiate",
+      "xp": 700,
+      "theme_id": "void",
+      "accent_hex": "#7c5cff",
+      "is_private": false
+    }
+  ]
+}

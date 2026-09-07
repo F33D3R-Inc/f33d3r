@@ -1,0 +1,14 @@
+{{define "title"}}Frequencies · F33D3R{{end}}
+{{/* Frequencies are the audio side of Go Live; the rail marks that tab. */}}
+{{define "nav-active-golive"}}active{{end}}
+{{define "body"}}
+<main class="f33d3r-main freq-main freq-main--lanes" id="main-col">
+  {{template "frequency_lanes" .Lanes}}
+</main>
+{{end}}
+{{define "right-panel"}}
+{{template "sidebar_right" .}}
+{{end}}
+{{define "page-scripts"}}
+<script src="/static/js/frequency-stage.js?v={{assetVer}}" defer></script>
+{{end}}

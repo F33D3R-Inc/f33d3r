@@ -1,0 +1,191 @@
+{{define "title"}}{{if .ShopUser}}@{{.ShopUser.Handle}}'s Shop · F33D3R{{else}}Shop · F33D3R{{end}}{{end}}
+{{define "nav-active-shop"}}active{{end}}
+{{define "body"}}
+<main class="f33d3r-main" id="main-col">
+
+  {{if not .ShopUser}}
+  {{template "stateEmpty" (dict "Title" "Shop not found" "Sub" "This page doesn't exist")}}
+  {{else}}
+
+  {{/* Facet(shop_hero) — banner + avatar + name + actions */}}
+  <div class="shop-hero">
+    <div class="shop-banner">
+      {{if .ShopUser.HeaderURL}}<img src="{{.ShopUser.HeaderURL}}" alt="">{{end}}
+    </div>
+    <div class="shop-hero-body">
+      <div class="shop-avatar-wrap">
+        {{template "user_avatar" (dict "Handle" .ShopUser.Handle "AvatarURL" .ShopUser.AvatarURL "DisplayName" .ShopUser.DisplayName "Size" "lg")}}
+        {{template "badge_pill" (dict "Role" .ShopUser.Role "OfficialType" .ShopUser.OfficialType "IsVerified" .ShopUser.IsVerified)}}
+      </div>
+      <div class="shop-info">
+        <h1 class="shop-display-name">{{.ShopUser.DisplayName}}</h1>
+        <p class="shop-handle">@{{.ShopUser.Handle}}</p>
+        {{if .ShopUser.Bio}}<p class="shop-bio">{{.ShopUser.Bio}}</p>{{end}}
+        <div class="shop-meta-row">
+          <span class="shop-stat"><strong>{{.ShopUser.FollowingCount}}</strong> Following</span>
+          <span class="shop-stat"><strong>{{.ShopUser.FollowerCount}}</strong> Followers</span>
+          {{if .Earnings}}<span class="shop-stat"><strong>{{.Earnings.SubsDisplay}}</strong> subscribers</span>{{end}}
+        </div>
+      </div>
+    </div>
+
+    {{/* Facet(shop_actions) — subscribe / tip / message / edit */}}
+    <div class="shop-actions">
+      {{if .IsOwner}}
+        <a href="/settings" class="shop-edit-btn">
+          <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="width:14px;height:14px"><path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+          Edit profile
+        </a>
+        {{if not .IsEnabled}}
+        <button class="btn-primary" id="enable-creator-btn" hx-post="/api/creator/enable" hx-swap="none" hx-disabled-elt="this">
+          <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="width:14px;height:14px"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
+          Enable creator mode
+        </button>
+        {{end}}
+      {{else}}
+        {{/* Subscribe CTA */}}
+        {{if .IsEnabled}}
+        <button class="shop-subscribe-btn{{if .IsSubscribed}} subscribed{{end}}"
+                id="shop-sub-btn"
+                hx-post="{{if .IsSubscribed}}/api/unsubscribe{{else}}/api/subscribe{{end}}"
+                hx-vals='{"creator_id":"{{.ShopUser.ID}}","plan_id":"{{if .Plans}}{{(index .Plans 0).ID}}{{end}}"}'
+                hx-swap="none"
+                hx-on:htmx:after-request="toggleShopSubscribe(this)">
+          {{if .IsSubscribed}}Subscribed{{else}}Subscribe{{end}}
+        </button>
+        {{end}}
+        {{/* Tip button */}}
+        <button class="shop-tip-btn" type="button"
+                hx-get="/facets/tip_modal?handle={{.ShopUser.Handle}}"
+                hx-target="#overlay-slot" hx-swap="innerHTML">
+          <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="width:13px;height:13px"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+          Tip AET
+        </button>
+      {{end}}
+    </div>
+  </div>
+
+  {{/* Facet(shop_earnings) — owner earnings panel */}}
+  {{if and .IsOwner .Earnings}}
+  <div class="shop-section">
+    <div class="shop-section-head">
+      <h2 class="shop-section-title">Earnings</h2>
+      <a href="/analytics" class="shop-section-btn">View analytics →</a>
+    </div>
+    <div class="shop-earnings-grid">
+      <div class="shop-earn-card">
+        <div class="shop-earn-value">{{.Earnings.TotalDisplay}} AET</div>
+        <div class="shop-earn-label">Total earned</div>
+      </div>
+      <div class="shop-earn-card">
+        <div class="shop-earn-value">{{.Earnings.SubsDisplay}}</div>
+        <div class="shop-earn-label">Subscribers</div>
+      </div>
+      <div class="shop-earn-card">
+        <div class="shop-earn-value">{{.Earnings.TipsDisplay}}</div>
+        <div class="shop-earn-label">Tips</div>
+      </div>
+    </div>
+  </div>
+  {{end}}
+
+  {{/* Facet(shop_plans) — subscription plan cards */}}
+  {{if .IsEnabled}}
+  <div class="shop-section">
+    <div class="shop-section-head">
+      <h2 class="shop-section-title">Subscription plans</h2>
+      {{if .IsOwner}}<button class="shop-section-btn" onclick="openAddPlan()">+ Add plan</button>{{end}}
+    </div>
+    {{if .Plans}}
+    <div class="shop-plans-grid">
+      {{range $i, $p := .Plans}}
+      <div class="shop-plan-card{{if eq $i 0}} shop-plan-featured{{end}}">
+        <div class="shop-plan-top">
+          <div>
+            <h3 class="shop-plan-name">{{$p.Name}}</h3>
+            {{if $p.Description}}<p class="shop-plan-desc">{{$p.Description}}</p>{{end}}
+          </div>
+          <div class="shop-plan-price-block">
+            <span class="shop-plan-amount">{{$p.PriceDisplay}}</span>
+            <span class="shop-plan-unit">AET / month</span>
+          </div>
+        </div>
+        {{if not $.IsOwner}}
+        <button class="btn-primary shop-plan-cta"
+                hx-post="/api/subscribe"
+                hx-vals='{"creator_id":"{{$.ShopUser.ID}}","plan_id":"{{$p.ID}}","price_aet":"{{$p.PriceAET}}"}'
+                hx-swap="none"
+                hx-on:htmx:after-request="toast('Subscribed to {{$p.Name}}')">
+          {{if $.IsSubscribed}}Current plan{{else}}Subscribe · {{$p.PriceDisplay}} AET/mo{{end}}
+        </button>
+        {{end}}
+      </div>
+      {{end}}
+    </div>
+    {{else if .IsOwner}}
+    <div class="shop-setup-cta">
+      <div class="shop-setup-icon">💰</div>
+      <h3 class="shop-setup-title">Set up your subscription</h3>
+      <p class="shop-setup-sub">Create subscription tiers to let your fans support you monthly and unlock exclusive content.</p>
+      <button class="btn-primary" onclick="openAddPlan()">Create your first plan</button>
+    </div>
+    {{else}}
+    {{template "stateEmpty" (dict "Title" "No plans yet" "Sub" "This creator hasn't set up subscription plans yet")}}
+    {{end}}
+  </div>
+  {{else if .IsOwner}}
+  {{/* Owner without creator mode enabled */}}
+  <div class="shop-section">
+    <div class="shop-setup-cta">
+      <div class="shop-setup-icon">✦</div>
+      <h3 class="shop-setup-title">Become a creator</h3>
+      <p class="shop-setup-sub">Enable creator mode to monetise your content with subscriptions, tips, and pay-per-view posts. You need a verified badge first.</p>
+      {{if .User.IsVerified}}
+      <button class="btn-primary" id="enable-creator-btn" hx-post="/api/creator/enable" hx-swap="none" hx-disabled-elt="this">Enable creator mode</button>
+      {{else}}
+      <p class="shop-locked-note">Complete <a href="/kyc" style="color:var(--accent)">identity verification</a> to unlock creator mode.</p>
+      {{end}}
+    </div>
+  </div>
+  {{end}}
+
+  {{/* Facet(shop_ppv) — pay-per-view items (future) */}}
+  {{if .PPVItems}}
+  <div class="shop-section">
+    <div class="shop-section-head">
+      <h2 class="shop-section-title">Exclusive content</h2>
+    </div>
+    <div class="shop-plans-grid">
+      {{range .PPVItems}}
+      <div class="shop-plan-card">
+        <div class="shop-plan-top">
+          <div><h3 class="shop-plan-name">{{.Title}}</h3></div>
+          <div class="shop-plan-price-block">
+            <span class="shop-plan-amount">{{.PriceDisplay}}</span>
+            <span class="shop-plan-unit">AET one-time</span>
+          </div>
+        </div>
+        <button class="btn-primary shop-plan-cta">Unlock</button>
+      </div>
+      {{end}}
+    </div>
+  </div>
+  {{end}}
+
+  {{end}}{{/* /if .ShopUser */}}
+
+</main>
+{{end}}
+{{define "right-panel"}}{{template "sidebar_right" .}}{{end}}
+{{define "page-scripts"}}<script>
+window.toggleShopSubscribe = function(btn) {
+  var subscribed = btn.classList.contains('subscribed');
+  btn.classList.toggle('subscribed', !subscribed);
+  btn.textContent = subscribed ? 'Subscribe' : 'Subscribed';
+  btn.setAttribute('hx-post', subscribed ? '/api/subscribe' : '/api/unsubscribe');
+  toast(subscribed ? 'Unsubscribed' : 'Subscribed! Welcome aboard 🎉');
+};
+window.openAddPlan = function() {
+  toast('Plan management coming soon — contact support to set up plans', 'info');
+};
+</script>{{end}}

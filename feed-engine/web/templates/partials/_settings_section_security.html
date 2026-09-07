@@ -1,0 +1,100 @@
+{{/*
+FACET settings_section_security
+  version: 1.2 | status: stable | layer: 2
+
+  inputs:
+    .User        User — .TwoFAEnabled
+    .HasPassword bool — shows change-password form when true; set-password form when false
+
+  states:
+    default | has-password | no-password | 2fa-enabled | 2fa-disabled
+
+  children:
+    sessions_list (loaded via hx-get="/api/sessions")
+
+  signals:
+    emits:    change_password (POST /api/settings/password)
+              enable_2fa (GET /api/2fa/setup → POST /api/2fa/enable)
+              disable_2fa (POST /api/2fa/disable)
+              session.revoke (POST /events — delegated through sessions_list → session_card)
+    receives: none
+
+  context:
+    settings → #settings-panel (HTMX-swapped from settings_nav)
+*/}}
+{{define "settings_section_security"}}
+<div class="settings-panel-head">
+  <h2 class="settings-panel-title">Security</h2>
+  <p class="settings-panel-sub">Keep your account safe. Change your password or review login activity.</p>
+</div>
+
+{{if .HasPassword}}
+<div class="settings-block">
+  <div class="settings-block-title">Change password</div>
+  <form hx-post="/api/settings/password" hx-target="#pw-result" hx-swap="innerHTML">
+  <div class="settings-fields settings-fields--single">
+    <div class="form-field">
+      <label class="form-label" for="pw-current">Current password</label>
+      <input type="password" id="pw-current" name="current_password" class="form-input" autocomplete="current-password">
+    </div>
+    <div class="form-field">
+      <label class="form-label" for="pw-new">New password</label>
+      <input type="password" id="pw-new" name="new_password" class="form-input" autocomplete="new-password" minlength="8" placeholder="Min 8 characters" required>
+    </div>
+    <div class="form-field">
+      <label class="form-label" for="pw-confirm">Confirm new password</label>
+      <input type="password" id="pw-confirm" name="confirm_password" class="form-input" autocomplete="new-password" required>
+    </div>
+  </div>
+  <div id="pw-result" style="font-size:13px;margin:8px 0;min-height:18px" aria-live="polite"></div>
+  <div class="settings-save-row">
+    <button class="btn-primary" type="submit">Update password</button>
+  </div>
+  </form>
+</div>
+{{else}}
+<div class="settings-block">
+  <div class="settings-block-title">Password</div>
+  <p class="settings-block-hint">Your account uses a passwordless login. A password can be set through your email link.</p>
+</div>
+{{end}}
+
+<div class="settings-block" id="2fa-block">
+  <div class="settings-block-title">Two-factor authentication</div>
+  {{if .User.TwoFAEnabled}}
+  <p class="settings-block-hint">2FA is <strong>enabled</strong>. Your account requires a verification code from your authenticator app on every login.</p>
+  <div id="2fa-disable-wrap">
+    <div class="form-field" style="margin-top:12px">
+      <label class="form-label">Verification code</label>
+      <input type="text" id="2fa-disable-code" name="code" class="form-input" inputmode="numeric" maxlength="6" placeholder="6-digit code" autocomplete="one-time-code">
+    </div>
+    <div id="2fa-result" style="font-size:13px;margin:8px 0;min-height:18px"></div>
+    <div class="settings-save-row">
+      <button class="btn-secondary" type="button"
+              hx-post="/api/2fa/disable" hx-include="#2fa-disable-code"
+              hx-target="#settings-panel" hx-swap="innerHTML">Disable 2FA</button>
+    </div>
+  </div>
+  {{else}}
+  <p class="settings-block-hint">Add a second layer of security to your account. Use an authenticator app (Google Authenticator, Authy, etc.).</p>
+  {{/* "Set up 2FA" asks for the totp_setup Facet in place of this control */}}
+  <div id="2fa-setup-wrap">
+    <div class="settings-save-row" id="2fa-start-row">
+      <button class="btn-secondary" type="button"
+              hx-get="/api/2fa/setup"
+              hx-target="#2fa-setup-wrap"
+              hx-swap="innerHTML">Set up 2FA</button>
+    </div>
+  </div>
+  {{end}}
+</div>
+
+<div class="settings-block" id="sessions-block"
+     hx-get="/api/sessions"
+     hx-trigger="load"
+     hx-swap="innerHTML">
+  <div class="settings-block-title">Active sessions</div>
+  {{template "stateLoading" .}}
+</div>
+
+{{end}}

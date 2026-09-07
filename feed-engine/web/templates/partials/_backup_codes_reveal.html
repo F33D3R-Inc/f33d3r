@@ -1,0 +1,32 @@
+{{/*
+FACET backup_codes_reveal
+  version: 1.0 | status: stable | layer: 2
+  inputs:
+    Codes []string — plaintext codes shown once; never stored after render
+  states:
+    default
+  children:
+    none
+  signals:
+    emits:    none
+    receives: none
+  context:
+    backup_codes_setup.html → default
+*/}}
+{{define "backup_codes_reveal"}}
+<div class="backup-codes-reveal">
+  <div class="backup-codes-warning">
+    <svg class="backup-codes-warning-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/></svg>
+    <div>
+      <p class="backup-codes-warning-title">Save these codes before continuing</p>
+      <p class="backup-codes-warning-body">These are your only way to recover your account if you forget your password. F33D3R cannot recover your account without them. Store them somewhere safe — offline is best. They will not be shown again.</p>
+    </div>
+  </div>
+  <ul class="backup-codes-list" aria-label="Backup codes">
+    {{range .Codes}}
+    <li class="backup-code">{{.}}</li>
+    {{end}}
+  </ul>
+  <a href="/" class="btn-primary backup-codes-confirm">I have saved my codes — continue</a>
+</div>
+{{end}}
