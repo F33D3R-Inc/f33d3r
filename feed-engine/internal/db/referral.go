@@ -116,28 +116,40 @@ func CompleteReferral(database *sql.DB, referredID, referredHandle string) {
 		return
 	}
 
-	// Mark complete + reward granted atomically.
-	_, err = database.Exec(`
-		UPDATE creator_referrals
-		SET completed_at  = NOW(),
-		    reward_granted = TRUE
-		WHERE id = $1
-		  AND reward_granted = FALSE
-	`, referralID)
+	// Completion, the reward flag and the notification commit together.
+	granted := false
+	err = WithTx(database, func(tx *sql.Tx) error {
+		res, err := tx.Exec(`
+			UPDATE creator_referrals
+			SET completed_at  = NOW(),
+			    reward_granted = TRUE
+			WHERE id = $1
+			  AND reward_granted = FALSE
+		`, referralID)
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		if err != nil || n == 0 {
+			return err
+		}
+		granted = true
+		_, err = WriteNotice(tx, Notice{
+			Recipient: referrerID, Kind: "system", TargetID: referredID, TargetType: "user",
+			Payload: map[string]interface{}{"message": "@" + referredHandle + " joined F33D3R through your referral link!"},
+		})
+		return err
+	})
 	if err != nil {
 		log.Printf("[referral] complete update: %v", err)
+		return
+	}
+	if !granted {
 		return
 	}
 
 	// Award 200 XP to the referrer.
 	AwardXP(database, referrerID, "referral_complete", 200)
-
-	// Insert a system notification for the referrer.
-	msg := "@" + referredHandle + " joined F33D3R through your referral link!"
-	database.Exec(`
-		INSERT INTO notifications (user_id, type, target_id, target_type, payload)
-		VALUES ($1, 'system', $2, 'user', $3::jsonb)
-	`, referrerID, referredID, fmt.Sprintf(`{"message":%q}`, msg))
 
 	log.Printf("[referral] complete: referrer=%s referred=%s (+200 XP)", referrerID, referredID)
 }

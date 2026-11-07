@@ -38,7 +38,7 @@ import (
 func main() {
 	addr := flag.String("addr", "http://127.0.0.1:8081", "dev server")
 	as := flag.String("as", "dev", "handle to post as")
-	password := flag.String("password", "REMOVED_DEV_PASSWORD", "that account's password")
+	password := flag.String("password", "devserver-only", "that account's password")
 	body := flag.String("body", "", "the work's body (required)")
 	kind := flag.String("kind", "post", "post | reply")
 	parent := flag.String("parent", "", "parent CID for a reply")

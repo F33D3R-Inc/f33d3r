@@ -53,7 +53,7 @@ FACET settings_section_notifications
 
   <div class="settings-block">
     <div class="settings-block-title">Notify me about</div>
-    {{range $key, $label := (dict "likes_enabled" "Likes on your posts" "reposts_enabled" "Reposts of your posts" "replies_enabled" "Replies and mentions" "follows_enabled" "New followers" "messages_enabled" "Direct messages" "achievements_enabled" "Achievements &amp; milestones")}}
+    {{range $key, $label := (dict "likes_enabled" "Likes on your posts" "reposts_enabled" "Reposts of your posts" "replies_enabled" "Replies and quotes" "mentions_enabled" "Mentions" "follows_enabled" "New followers" "messages_enabled" "Direct messages" "tips_enabled" "Tips" "subscribers_enabled" "New subscribers" "frequencies_enabled" "Frequencies" "achievements_enabled" "Achievements &amp; milestones")}}
     <div class="settings-toggle-row">
       <div class="settings-toggle-info">
         <div class="settings-option-label">{{$label}}</div>
@@ -66,6 +66,33 @@ FACET settings_section_notifications
       </label>
     </div>
     {{end}}
+  </div>
+
+  <div class="settings-block">
+    <div class="settings-block-title">Quiet hours</div>
+    <div class="settings-toggle-row">
+      <div class="settings-toggle-info">
+        <div class="settings-option-label">Hold push notifications overnight</div>
+        <div class="settings-option-sub">Nothing is lost. Everything is still in your notifications.</div>
+      </div>
+      <label class="settings-toggle">
+        <input type="checkbox" name="quiet_hours_enabled" value="true"
+               {{if and $p (index $p "quiet_hours_enabled")}}checked{{end}}>
+        <span class="settings-toggle-track"></span>
+        <span class="settings-toggle-thumb"></span>
+      </label>
+    </div>
+    <div class="settings-toggle-row">
+      <label class="settings-option-label" for="quiet-hours-start">Starts at hour (0–23)</label>
+      <input id="quiet-hours-start" type="number" min="0" max="23" name="quiet_hours_start"
+             value="{{if $p}}{{index $p "quiet_hours_start"}}{{else}}22{{end}}">
+    </div>
+    <div class="settings-toggle-row">
+      <label class="settings-option-label" for="quiet-hours-end">Ends at hour (0–23)</label>
+      <input id="quiet-hours-end" type="number" min="0" max="23" name="quiet_hours_end"
+             value="{{if $p}}{{index $p "quiet_hours_end"}}{{else}}8{{end}}">
+    </div>
+    <input type="hidden" name="timezone" data-browser-timezone>
   </div>
 
   <div class="settings-save-row">

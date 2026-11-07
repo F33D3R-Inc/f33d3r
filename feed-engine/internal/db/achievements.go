@@ -1,7 +1,9 @@
 package db
 
 import (
+	"context"
 	"database/sql"
+	"github.com/f33d3r/feed-engine/internal/herald"
 	"log"
 	"strings"
 	"time"
@@ -432,10 +434,12 @@ func TryAwardTrollOnReported(database *sql.DB, reportedUserID string) {
 		AwardAchievement(database, reportedUserID, "troll_internet_antichrist")
 	}
 	// Historically Problematic — mentioned by 100+ unique users in 30 days
-	recentMentions := countQuery(database,
-		`SELECT COUNT(DISTINCT n.actor_id) FROM notifications n
-		 WHERE n.user_id = $1 AND n.type = 'mention'
-		   AND n.created_at >= NOW() - INTERVAL '30 days'`, reportedUserID)
+	mentionsCtx, mentionsCancel := context.WithTimeout(context.Background(), heraldTimeout)
+	defer mentionsCancel()
+	recentMentions, mentionsErr := herald.DistinctActors(mentionsCtx, reportedUserID, "mention", 30)
+	if mentionsErr != nil {
+		log.Printf("[achievements] mention count for %s: %v", reportedUserID, mentionsErr)
+	}
 	if recentMentions >= 100 {
 		AwardAchievement(database, reportedUserID, "troll_historically_problematic")
 	}

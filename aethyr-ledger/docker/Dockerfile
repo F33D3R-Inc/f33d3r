@@ -17,6 +17,7 @@ ENV CARGO_TARGET_DIR=/app/target
 # Shared crates first: they change rarely and sit under the dependency cache.
 COPY libs/manhattan-client ./libs/manhattan-client
 COPY libs/manhattan-outbox ./libs/manhattan-outbox
+COPY libs/notification-outbox ./libs/notification-outbox
 COPY libs/manhattan-outbox-sqlx07 ./libs/manhattan-outbox-sqlx07
 
 # Manifest only, with a stub main, so dependencies compile into a cached layer

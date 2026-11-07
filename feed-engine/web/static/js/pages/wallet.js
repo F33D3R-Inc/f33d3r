@@ -3,6 +3,7 @@
 // every arrival of the wallet Playground. Document-level listeners are
 // installed once.
 F33D3R.page('wallet', function () {
+  window._faReloadTxHistory = loadTxHistory;
   // Server values from <meta> tags — no template injection in JS
   const MY_PIAL   = document.querySelector('meta[name="f33d3r:pial"]')?.content || '';
   const MY_HANDLE = document.querySelector('meta[name="f33d3r:handle"]')?.content || '';

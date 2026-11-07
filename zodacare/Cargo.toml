@@ -10,6 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 manhattan-client = { path = "../libs/manhattan-client" }
+notification-outbox = { path = "../libs/notification-outbox" }
 manhattan-outbox = { path = "../libs/manhattan-outbox" }
 # Web framework
 axum = { version = "0.7", features = ["json"] }

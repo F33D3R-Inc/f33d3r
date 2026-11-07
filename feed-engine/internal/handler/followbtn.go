@@ -102,7 +102,7 @@ func (h *Handler) renderFollowButton(targetPIAL, targetHandle string, isFollowin
 // anyone else watching that person, would assert the acting viewer's
 // relationship on someone else's screen. Other viewers' panels are their own
 // fragments; nothing here can render them, so nothing here tries. The person
-// being followed gets a notification (notifyUser), not this fragment.
+// being followed gets a notification, not this fragment.
 //
 // One event per surface, not one event carrying four fragments: the event model
 // is one event = one facet mutation, and the same person can be on screen in two

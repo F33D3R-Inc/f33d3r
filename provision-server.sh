@@ -86,6 +86,8 @@ $SUDO ufw --force enable
 $SUDO ufw allow 22/tcp   comment "SSH"
 $SUDO ufw allow 80/tcp   comment "HTTP — Caddy Let's Encrypt challenge"
 $SUDO ufw allow 443/tcp  comment "HTTPS — F33D3R"
+$SUDO ufw allow 7881/tcp comment "LiveKit — Frequency audio over TCP"
+$SUDO ufw allow 7882/udp comment "LiveKit — Frequency audio"
 $SUDO ufw reload
 ok "Firewall: 22 (SSH), 80 (HTTP), 443 (HTTPS) open"
 
@@ -161,6 +163,9 @@ if [ ! -f "$ENV_FILE" ]; then
   INTERNAL_API_KEY=$(openssl rand -hex 32)
   # NSFW media URL signing key
   MEDIA_TOKEN_SECRET=$(openssl rand -base64 48)
+  # LiveKit: signs Frequency audio join tokens and Auralis's calls to its server API
+  LIVEKIT_API_KEY="frequencies_$(openssl rand -hex 6)"
+  LIVEKIT_API_SECRET=$(openssl rand -hex 32)
   # Prometheus /metrics bearer token
   METRICS_TOKEN=$(openssl rand -hex 24)
   # Themis P-256 ECDH key (PKCS#8 DER, base64 single line). Losing this key
@@ -175,6 +180,8 @@ if [ ! -f "$ENV_FILE" ]; then
   sed -i "s|CHANGE_ME_media_token_generate_with_openssl_rand_-base64_48|${MEDIA_TOKEN_SECRET}|g" "$ENV_FILE"
   sed -i "s|CHANGE_ME_metrics_generate_with_openssl_rand_-hex_24|${METRICS_TOKEN}|g" "$ENV_FILE"
   sed -i "s|CHANGE_ME_generate_with_openssl_ecparam|${THEMIS_ECDH_PRIVKEY_B64}|g" "$ENV_FILE"
+  sed -i "s|^LIVEKIT_API_KEY=CHANGE_ME_frequencies$|LIVEKIT_API_KEY=${LIVEKIT_API_KEY}|" "$ENV_FILE"
+  sed -i "s|CHANGE_ME_livekit_generate_with_openssl_rand_-hex_32|${LIVEKIT_API_SECRET}|g" "$ENV_FILE"
 
   ok "Secrets auto-generated in $ENV_FILE"
   echo ""

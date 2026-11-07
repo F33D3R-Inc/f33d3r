@@ -1,7 +1,13 @@
 {{define "title"}}Analytics · F33D3R{{end}}
 {{define "nav-active-analytics"}}active{{end}}
 {{define "body"}}
-<main class="f33d3r-main" id="main-col">
+<main class="f33d3r-main" id="main-col"
+      hx-get="/analytics?period={{if eq .Period 0}}all{{else}}{{.Period}}{{end}}&sort={{.SortBy}}"
+      hx-trigger="fa:engagement from:body delay:5s"
+      hx-select="#main-col"
+      hx-target="this"
+      hx-swap="outerHTML"
+      hx-push-url="false">
 
   {{/* Facet(analytics_header) — title + period selector + astraon status */}}
   <div class="main-head anl-head">

@@ -105,6 +105,7 @@ func (h *Handler) marketplaceEvent(w http.ResponseWriter, r *http.Request, rawBo
 			BtcAddress  string  `json:"btc_address"`
 			AmountSats  int64   `json:"amount_sats"`
 			XrpAddress  string  `json:"xrp_address"`
+			XrpTag      int64   `json:"destination_tag"`
 			AmountDrops int64   `json:"amount_drops"`
 			AmountXRP   float64 `json:"amount_xrp"`
 			ExpiresAt   string  `json:"expires_at"`
@@ -119,6 +120,7 @@ func (h *Handler) marketplaceEvent(w http.ResponseWriter, r *http.Request, rawBo
 				"BtcAddress": result.BtcAddress,
 				"AmountSats": result.AmountSats,
 				"XrpAddress": result.XrpAddress,
+				"XrpTag":     result.XrpTag,
 				"AmountXRP":  amountXRPStr,
 				"ExpiresAt":  result.ExpiresAt,
 				"Status":     "pending",

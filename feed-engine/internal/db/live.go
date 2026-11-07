@@ -385,6 +385,24 @@ func StartStream(database *sql.DB, streamID string, sourceWidth, sourceHeight in
 	if database == nil {
 		return errors.New("live: no database")
 	}
+	return startStream(database, streamID, sourceWidth, sourceHeight, proto)
+}
+
+// StartStreamAnnounced opens a room and queues the job that tells followers,
+// together, so a room that opened can never go unannounced.
+func StartStreamAnnounced(database *sql.DB, streamID string, sourceWidth, sourceHeight int, proto string, job FanoutJob) error {
+	if database == nil {
+		return errors.New("live: no database")
+	}
+	return WithTx(database, func(tx *sql.Tx) error {
+		if err := startStream(tx, streamID, sourceWidth, sourceHeight, proto); err != nil {
+			return err
+		}
+		return CreateFanoutJob(tx, job)
+	})
+}
+
+func startStream(database DBTX, streamID string, sourceWidth, sourceHeight int, proto string) error {
 	if err := checkStreamID(streamID); err != nil {
 		return err
 	}

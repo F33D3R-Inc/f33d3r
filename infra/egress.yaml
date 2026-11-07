@@ -1,0 +1,9 @@
+# LiveKit Egress for Frequency replays. Its keys come from compose.
+# It shares LiveKit's network, so it reaches LiveKit at whatever address LiveKit
+# advertises, and audio-only rooms are mixed without a browser.
+ws_url: ws://localhost:7880
+redis:
+  address: redis-state:6379
+logging:
+  level: info
+  json: true

@@ -7,7 +7,7 @@
 # ── Stage 1: build ─────────────────────────────────────────────────────────────
 FROM rust:latest AS builder
 
-RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libssl-dev cmake libsasl2-dev && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 # One target directory for both cargo invocations, so the dependency build
@@ -31,7 +31,7 @@ RUN touch herald/src/main.rs && cargo build --release --manifest-path herald/Car
 FROM debian:latest
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && apt-get install -y --no-install-recommends ca-certificates curl libsasl2-2 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

@@ -30,6 +30,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/health", get(handler::health))
         .route("/v1/video/upload", post(handler::upload))
         .route("/v1/video/job/:job_id", get(handler::job_status))
+        .route("/v1/frequency/clip", post(handler::frequency_clip))
         .layer(DefaultBodyLimit::max(10 * 1024 * 1024 * 1024))
         .with_state(state)
         .layer(axum::middleware::from_fn(observ::http_middleware));

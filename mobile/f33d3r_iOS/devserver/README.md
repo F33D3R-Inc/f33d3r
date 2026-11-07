@@ -29,7 +29,7 @@ from a phone on the same network: `F33D3R_ADDR=0.0.0.0:8081 make run` and set
 
 ## Accounts
 
-Seeded on first start, all with password `REMOVED_DEV_PASSWORD`:
+Seeded on first start, all with password `devserver-only`:
 
 | Handle | Role |
 |---|---|

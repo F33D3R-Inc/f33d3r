@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/f33d3r/feed-engine/internal/model"
 )
@@ -73,10 +74,20 @@ func TestWriteSSEFrameCarriesID(t *testing.T) {
 	}
 }
 
-// TestStreamSequenceAndReplay is the gap contract: every published event takes
-// the next number for that person, every connection of theirs sees the same
-// number, and a reconnect quoting a number is handed everything after it and
-// nothing else.
+// recvLive reads one event from a session or fails.
+func recvLive(t *testing.T, ch <-chan SSEEvent) SSEEvent {
+	t.Helper()
+	select {
+	case ev := <-ch:
+		return ev
+	case <-time.After(time.Second):
+		t.Fatal("event was never delivered")
+		return SSEEvent{}
+	}
+}
+
+// TestStreamSequenceAndReplay is the gap contract: numbers increase, and a
+// reconnect quoting a number is handed everything after it and nothing else.
 func TestStreamSequenceAndReplay(t *testing.T) {
 	account, pial := streamPIAL(t)
 	ch, _, cleanup := RegisterSSESession(account, pial)
@@ -85,79 +96,99 @@ func TestStreamSequenceAndReplay(t *testing.T) {
 	for i := 1; i <= 3; i++ {
 		PublishToUser(pial, SSEEvent{Type: "new_post", JSON: fmt.Sprintf(`{"work_id":"w%d"}`, i)})
 	}
-
-	for i := int64(1); i <= 3; i++ {
-		select {
-		case ev := <-ch:
-			if ev.ID != i {
-				t.Fatalf("event %d arrived numbered %d — the sequence must be monotonic per person", i, ev.ID)
-			}
-		default:
-			t.Fatalf("event %d was never delivered", i)
+	var ids []int64
+	for i := 0; i < 3; i++ {
+		ev := recvLive(t, ch)
+		if len(ids) > 0 && ev.ID <= ids[len(ids)-1] {
+			t.Fatalf("event %d arrived numbered %d after %d: numbers must increase", i, ev.ID, ids[len(ids)-1])
 		}
+		ids = append(ids, ev.ID)
 	}
 
-	missed, ok := ReplayAfter(pial, 1)
+	missed, ok := ReplayAfter(account, pial, ids[0])
 	if !ok {
-		t.Fatal("a resume point inside the ring must be honoured")
+		t.Fatal("a resume point inside the log must be honoured")
 	}
-	if len(missed) != 2 {
-		t.Fatalf("want the 2 frames after id 1, got %d", len(missed))
-	}
-	if missed[0].ID != 2 || missed[1].ID != 3 {
-		t.Fatalf("replay must be oldest-first and gapless, got %d then %d", missed[0].ID, missed[1].ID)
+	if len(missed) != 2 || missed[0].ID != ids[1] || missed[1].ID != ids[2] {
+		t.Fatalf("replay must be oldest-first and gapless, got %v", missed)
 	}
 	if missed[0].Event.JSON != `{"work_id":"w2"}` {
 		t.Fatalf("replayed frame lost its payload: %q", missed[0].Event.JSON)
 	}
 
 	// Caught up: honoured, and nothing to say.
-	if frames, ok := ReplayAfter(pial, 3); !ok || len(frames) != 0 {
+	if frames, ok := ReplayAfter(account, pial, ids[2]); !ok || len(frames) != 0 {
 		t.Fatalf("a client already at the head must be told so, got ok=%v frames=%d", ok, len(frames))
 	}
 
-	// A number this stream never issued is not a resume point. Answering it
-	// with "you missed nothing" would be a lie the client cannot detect.
-	if _, ok := ReplayAfter(pial, 99); ok {
-		t.Fatal("a resume point ahead of the sequence must be refused")
+	// A number no replica could have issued is not a resume point.
+	if _, ok := ReplayAfter(account, pial, time.Now().Add(time.Hour).UnixMicro()); ok {
+		t.Fatal("a resume point in the future must be refused")
 	}
-	if _, ok := ReplayAfter("c0000000-0000-4000-8000-00000000dead", 1); ok {
-		t.Fatal("a person with no ring must be refused, not answered emptily")
-	}
-	if _, ok := ReplayAfter(pial, 0); ok {
+	if _, ok := ReplayAfter(account, pial, 0); ok {
 		t.Fatal("no resume point is not a resume point")
 	}
 }
 
-// TestReplayRefusesBeyondTheRing pins the honest failure. The ring holds the
-// last streamReplayDepth frames; a client that was away longer must be told the
-// server cannot account for the gap, so it re-reads instead of believing a
-// partial replay was the whole of it.
-func TestReplayRefusesBeyondTheRing(t *testing.T) {
-	_, pial := streamPIAL(t)
-	for i := 0; i < streamReplayDepth+10; i++ {
-		RecordForPIAL(pial, SSEEvent{Type: "new_post", JSON: `{"work_id":"w"}`})
-	}
-	if _, ok := ReplayAfter(pial, 1); ok {
-		t.Fatal("a gap older than the ring must be refused")
-	}
-	frames, ok := ReplayAfter(pial, streamReplayDepth+9)
-	if !ok || len(frames) != 1 {
-		t.Fatalf("a gap inside the ring must be served exactly, got ok=%v frames=%d", ok, len(frames))
+// TestReplayRefusesBelowTheFloor pins the honest failure: a client whose gap
+// starts before what this replica can vouch for must re-read, not believe a
+// partial replay was the whole of it. A restart produces exactly this.
+func TestReplayRefusesBelowTheFloor(t *testing.T) {
+	account, pial := streamPIAL(t)
+	before := nextLiveID()
+	liveEvents.raiseFloor(nextLiveID())
+	if _, ok := ReplayAfter(account, pial, before); ok {
+		t.Fatal("a gap older than the floor must be refused")
 	}
 }
 
-// TestPublishRecordsWithoutAListener pins why the ring does not live in the
-// session bucket: the moment a person has no connection is the moment they are
-// about to reconnect and ask what they missed.
+// TestPublishRecordsWithoutAListener pins why the log is not per session: the
+// moment a person has no connection is the moment they are about to reconnect.
+// That holds for account events too, which is how an offline message is replayed.
 func TestPublishRecordsWithoutAListener(t *testing.T) {
-	_, pial := streamPIAL(t)
+	account, pial := streamPIAL(t)
+	start := nextLiveID()
 	PublishToUser(pial, SSEEvent{Type: "notify", JSON: `{"unread":1}`})
-	PublishToUser(pial, SSEEvent{Type: "notify", JSON: `{"unread":2}`})
-	frames, ok := ReplayAfter(pial, 1)
-	if !ok || len(frames) != 1 || frames[0].ID != 2 {
-		t.Fatalf("events published to a disconnected person must still hold their place, got ok=%v %v", ok, frames)
+	PublishToAccount(account, SSEEvent{Type: "gnosis_message", JSON: `{"id":"m"}`})
+	frames, ok := ReplayAfter(account, pial, start)
+	if !ok || len(frames) != 2 {
+		t.Fatalf("events for a disconnected person must be replayable, got ok=%v %v", ok, frames)
 	}
+}
+
+// TestBulkEventsCannotCrowdOutOthers pins the two buffers: a burst of high-volume
+// events must not cost a person an update addressed to them.
+func TestBulkEventsCannotCrowdOutOthers(t *testing.T) {
+	account, pial := streamPIAL(t)
+	ch, _, cleanup := RegisterSSESession(account, pial)
+	defer cleanup()
+	for i := 0; i < sseBufferSize*2; i++ {
+		PublishToUser(pial, SSEEvent{Type: "new_post", Data: "p"})
+	}
+	PublishToUser(pial, SSEEvent{Type: "balance", Data: "1"})
+
+	for i := 0; i < sseBufferSize+3; i++ {
+		if recvLive(t, ch).Type == "balance" {
+			return
+		}
+	}
+	t.Fatal("an update addressed to the person was lost behind a burst of bulk events")
+}
+
+// TestDroppedDeliveryAsksForResync pins that a lost event is not a silent gap.
+func TestDroppedDeliveryAsksForResync(t *testing.T) {
+	account, pial := streamPIAL(t)
+	ch, _, cleanup := RegisterSSESession(account, pial)
+	defer cleanup()
+	for i := 0; i < sseBufferSize+5; i++ {
+		PublishToUser(pial, SSEEvent{Type: "new_post", Data: "p"})
+	}
+	for i := 0; i < sseBufferSize+5; i++ {
+		if recvLive(t, ch).Type == sseResync {
+			return
+		}
+	}
+	t.Fatal("a dropped delivery must tell the client to re-read")
 }
 
 // TestFullConnectionDropsAreCounted pins that a delivery lost to a full buffer
@@ -169,7 +200,7 @@ func TestFullConnectionDropsAreCounted(t *testing.T) {
 	defer cleanup()
 
 	before := sseDropCount.Load()
-	// The channel holds 64 and nothing is reading it.
+	// The buffer holds sseBufferSize and nothing is reading it.
 	for i := 0; i < 70; i++ {
 		PublishToUser(pial, SSEEvent{Type: "new_post", JSON: `{"work_id":"w"}`})
 	}

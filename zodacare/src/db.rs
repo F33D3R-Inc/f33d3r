@@ -448,6 +448,7 @@ pub async fn apply_moderation_action(
     applied_by: Option<&str>,
     expires_at: Option<chrono::DateTime<chrono::Utc>>,
 ) -> Result<Uuid> {
+    let mut tx = pool.begin().await?;
     let new_status = match action_type {
         "ban" => "banned",
         "restrict" => "restricted",
@@ -482,7 +483,7 @@ pub async fn apply_moderation_action(
     .bind(new_status)
     .bind(risk_delta)
     .bind(action_type)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
 
     // Log the action.
@@ -495,8 +496,28 @@ pub async fn apply_moderation_action(
     .bind(reason)
     .bind(applied_by)
     .bind(expires_at)
-    .fetch_one(pool)
+    .fetch_one(&mut *tx)
     .await?;
 
+    // The person hears about it in the same transaction.
+    crate::notifications::enqueue(
+        &mut *tx,
+        &crate::notifications::Event {
+            actor_account: None,
+            recipient_account: None,
+            event_id: format!("zodacare:action:{}", row.0),
+            recipient_pial: pial_id.to_string(),
+            kind: "enforcement".into(),
+            target_id: row.0.to_string(),
+            target_type: "moderation".into(),
+            payload: serde_json::json!({ "preview": reason }),
+            push_title: "A moderation action was applied to your account".into(),
+            push_body: String::new(),
+            push_url: "/notifications".into(),
+        },
+    )
+    .await?;
+
+    tx.commit().await?;
     Ok(row.0)
 }

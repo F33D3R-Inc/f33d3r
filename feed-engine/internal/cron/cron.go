@@ -23,6 +23,7 @@ import (
 // Start launches all background cron goroutines. Call once from main after DB is ready.
 func Start(database *sql.DB, cfg *config.Config, client *http.Client) {
 	go sessionCleanup(database)
+	go notificationMonitor(database)
 	go healthMonitor(cfg, client)
 	go pendingScanSweep(database, cfg, client)
 	go publishScheduledPosts(database)

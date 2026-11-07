@@ -9,7 +9,7 @@
        signal the Shell raises when marketplace_purchase_delivered arrives. */}}
   <div id="buyer-library"
        hx-get="/themis/v1/library"
-       hx-trigger="load, refresh"
+       hx-trigger="load, refresh, fa:purchase-delivered from:body"
        hx-swap="innerHTML"
        aria-live="polite">
     {{template "stateLoading" .}}

@@ -51,7 +51,7 @@ src/
   security/          signaling tokens (HMAC), rate limits, input hygiene
   telemetry/         every metric name, described once
   tasks.rs           boot reconcile, presence sweep + host grace, lease renew, prune
-  herald.rs          push with cooldown
+  herald.rs          notifications through the durable outbox
 ```
 
 ## Running the tests
@@ -59,7 +59,7 @@ src/
 ```
 cd frequencies
 cargo fmt --check && cargo clippy --all-targets -- -D warnings
-AURALIS_TEST_DATABASE_URL=postgres://f33d3r:REMOVED_DEV_PASSWORD@localhost:5432/postgres cargo test
+AURALIS_TEST_DATABASE_URL=postgres://f33d3r:$POSTGRES_PASSWORD@localhost:5432/postgres cargo test
 ```
 
 Without `AURALIS_TEST_DATABASE_URL` the database-backed tests print that they
@@ -83,15 +83,14 @@ A test fails if the checked-in files differ from what the code generates.
 | `REDIS_URL` | `redis://redis:6379` | |
 | `KAFKA_BROKERS` | required | `sitra-achra:9092` |
 | `INTERNAL_API_KEY` | required | refuses to boot when empty |
-| `AURALIS_SIGNAL_SECRET` | required, ≥32 chars | signs browser signaling tokens; distinct from the internal key |
+| `LIVEKIT_URL` | `http://livekit:7880` | LiveKit server API on the container network |
+| `LIVEKIT_API_KEY` | required | LiveKit key name |
+| `LIVEKIT_API_SECRET` | required, ≥32 chars | signs join tokens and server API calls |
 | `MANHATTAN_URL` | | |
-| `HERALD_URL` | `http://herald:8105` | |
 | `AURALIS_NODE_ID` | hostname | media-lease owner id |
 | `AURALIS_PUBLIC_HOST` | `localhost` | advertised media host (Phase 3) |
-| `AURALIS_MEDIA_UDP_PORT` | 40000 | media socket (Phase 3) |
 | `AURALIS_PRESENCE_TTL_SECS` | 45 | presence key TTL |
 | `AURALIS_PRESENCE_SWEEP_SECS` | 10 | sweeper cadence |
 | `AURALIS_HOST_GRACE_SECS` | 120 | host absence before co-host continues or session ends |
 | `AURALIS_LEASE_TTL_SECS` | 30 | media-node lease; renewed at a third |
-| `AURALIS_NOTIFY_COOLDOWN_SECS` | 300 | Herald cooldown per person per kind |
 | `AURALIS_STARTING_TIMEOUT_SECS` | 60 | `starting` older than this is failed on boot |

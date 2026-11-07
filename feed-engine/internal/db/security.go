@@ -120,7 +120,7 @@ func GetTrustScore(database *sql.DB, pialID string) (trustLevel int, nsfwTier in
 }
 
 // SetTrustScore upserts a PIAL's trust entry.
-func SetTrustScore(database *sql.DB, pialID string, trustLevel, nsfwTier int, state string) error {
+func SetTrustScore(database DBTX, pialID string, trustLevel, nsfwTier int, state string) error {
 	_, err := database.Exec(`
 		INSERT INTO trust_scores (pial_id, trust_level, nsfw_tier, enforcement_state, updated_at)
 		VALUES ($1, $2, $3, $4, NOW())
@@ -134,7 +134,7 @@ func SetTrustScore(database *sql.DB, pialID string, trustLevel, nsfwTier int, st
 }
 
 // LogEnforcementAction appends an immutable entry to the enforcement log.
-func LogEnforcementAction(database *sql.DB, pialID, actionType, reason, actor string, evidence map[string]interface{}) {
+func LogEnforcementAction(database DBTX, pialID, actionType, reason, actor string, evidence map[string]interface{}) {
 	if pialID == "" {
 		return
 	}

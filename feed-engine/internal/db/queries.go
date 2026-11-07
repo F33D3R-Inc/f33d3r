@@ -286,14 +286,18 @@ func OrgMembershipExists(database *sql.DB, userID, orgUserID string) bool {
 }
 
 func CreateOrgMembership(database *sql.DB, userID, orgUserID, initiatedBy string) error {
-	_, err := database.Exec(`
+	_, err := createOrgMembership(database, userID, orgUserID, initiatedBy)
+	return err
+}
+
+func createOrgMembership(q DBTX, userID, orgUserID, initiatedBy string) (sql.Result, error) {
+	return q.Exec(`
 		INSERT INTO org_memberships (user_id, org_user_id, status, initiated_by)
 		VALUES ($1, $2,
 		  CASE WHEN $3='org' THEN 'pending_org' ELSE 'pending_employee' END,
 		  $3)
 		ON CONFLICT (user_id, org_user_id) DO NOTHING
 	`, userID, orgUserID, initiatedBy)
-	return err
 }
 
 func GetOrgMembership(database *sql.DB, membershipID string) (model.OrgMembership, error) {
@@ -616,12 +620,11 @@ func SetIsPrivate(database *sql.DB, userID string, private bool) error {
 	return err
 }
 
-func ClearUnreadCount(database *sql.DB, userID string) {
-	database.Exec(`UPDATE users SET unread_count = 0 WHERE id = $1`, userID)
-}
-
-func IncrementUnreadCount(database *sql.DB, userID string) {
-	database.Exec(`UPDATE users SET unread_count = unread_count + 1 WHERE id = $1`, userID)
+// SetUnreadCount records the unread count Herald announced, for rendering pages
+// without a call to Herald.
+func SetUnreadCount(database *sql.DB, userID string, count int) error {
+	_, err := database.Exec(`UPDATE users SET unread_count = $2 WHERE id = $1`, userID, count)
+	return err
 }
 
 func SaveProfile(database *sql.DB, p *model.ProfileSave) error {
@@ -2481,7 +2484,7 @@ func scanSurfaces(rows *sql.Rows, isPinned bool) ([]model.FeedSurface, error) {
 //
 // works is the only content table: this used to probe posts first and fall through,
 // which meant a lookup miss on an empty table on every single moderation decision.
-func SetPostScanState(database *sql.DB, postID, toState, reason, actor string) error {
+func SetPostScanState(database DBTX, postID, toState, reason, actor string) error {
 	var fromState string
 	err := database.QueryRow(`SELECT COALESCE(scan_state,'clean') FROM works WHERE id = $1`, postID).Scan(&fromState)
 	if err != nil {
@@ -2670,8 +2673,8 @@ func GetHumanReviewPosts(database *sql.DB, limit int) ([]map[string]interface{},
 
 // GetAdminUserIDs returns the IDs of all users with role = 'admin'.
 // Used to fan-out moderation notifications when a post enters human_review.
-func GetAdminUserIDs(database *sql.DB) []string {
-	rows, err := database.Query(`SELECT id FROM users WHERE role = 'admin'`)
+func GetAdminUserIDs(database DBTX) []string {
+	rows, err := database.Query(`SELECT id FROM users WHERE role IN ('admin','founder')`)
 	if err != nil {
 		return nil
 	}

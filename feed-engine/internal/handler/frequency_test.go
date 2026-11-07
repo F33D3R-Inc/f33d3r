@@ -202,36 +202,14 @@ func TestFrequencyTuneInAnswersDockOrStageAndFansOut(t *testing.T) {
 	hostCh, _, hostDone := RegisterSSESession("u-host", freqTestHostPIAL)
 	defer hostDone()
 
-	// From a card or the preview overlay: the answer is the dock.
+	// The answer is empty wherever the form was. An overlay clears on it, and the
+	// stage and dock arrive over FA Live.
 	r := eventRequest(url.Values{"event_type": {"frequency.tune_in"}, "frequency_id": {freqTestID}})
-	r.Header.Set("HX-Current-URL", "https://f33d3r.test/")
 	h.as(t, r, "listener", freqTestListenerPIAL)
 	w := httptest.NewRecorder()
 	h.eventsPost(w, r)
-	if w.Code != 200 {
-		t.Fatalf("tune in: %d %s", w.Code, w.Body.String())
-	}
-	body := w.Body.String()
-	if !strings.Contains(body, `id="frequency-dock"`) || !strings.Contains(body, frequencyFacetID(freqTestID, "dock")) {
-		t.Fatalf("answer from a card must be the dock: %s", body[:min(400, len(body))])
-	}
-	if strings.Contains(body, frequencyFacetID(freqTestID, "stage")) {
-		t.Fatal("a card's Tune In must not answer with the stage")
-	}
-	if strings.Contains(body, freqTestHostPIAL) || strings.Contains(body, freqTestListenerPIAL) {
-		t.Fatal("a PIAL leaked into rendered HTML")
-	}
-
-	// From the stage page: the stage is primary (its form swaps the stage) and
-	// the dock rides along out-of-band.
-	r2 := eventRequest(url.Values{"event_type": {"frequency.tune_in"}, "frequency_id": {freqTestID}})
-	r2.Header.Set("HX-Current-URL", "https://f33d3r.test/frequencies/"+freqTestID)
-	h.as(t, r2, "listener", freqTestListenerPIAL)
-	w2 := httptest.NewRecorder()
-	h.eventsPost(w2, r2)
-	b2 := w2.Body.String()
-	if !strings.Contains(b2, frequencyFacetID(freqTestID, "stage")) || !strings.Contains(b2, `hx-swap-oob="true"`) || !strings.Contains(b2, `id="frequency-dock"`) {
-		t.Fatalf("from the stage: stage + OOB dock expected: %s", b2[:min(400, len(b2))])
+	if w.Code != 200 || w.Body.Len() != 0 {
+		t.Fatalf("tune in must answer an empty 200: %d %s", w.Code, w.Body.String())
 	}
 
 	stub.mu.Lock()
@@ -249,10 +227,10 @@ func TestFrequencyTuneInAnswersDockOrStageAndFansOut(t *testing.T) {
 		case ev := <-hostCh:
 			// One publish, two projections: the fragments for the web and
 			// the JSON room for a phone. Anything else is a defect.
-			if ev.Type != sseFrequencyFacet && ev.Type != sseFrequencyJSON {
+			if ev.Type != sseFacetMutate && ev.Type != sseFrequencyJSON {
 				t.Fatalf("wrong SSE type %q", ev.Type)
 			}
-			if ev.Type == sseFrequencyFacet && strings.Contains(ev.Data, frequencyFacetID(freqTestID, "controls")) {
+			if ev.Type == sseFacetMutate && strings.Contains(ev.Data, frequencyFacetID(freqTestID, "controls")) {
 				gotControls = true
 			}
 		case <-deadline:
@@ -261,17 +239,16 @@ func TestFrequencyTuneInAnswersDockOrStageAndFansOut(t *testing.T) {
 	}
 }
 
-func TestFrequencyLeaveAnswersTheEmptyDock(t *testing.T) {
+func TestFrequencyLeaveAnswersEmpty(t *testing.T) {
 	stub := &auralisStub{view: freqViewJSON("live")}
 	h, _ := frequencyTestHandler(t, stub)
 	requirePartials(t, h, "frequency_dock")
 	r := eventRequest(url.Values{"event_type": {"frequency.leave"}, "frequency_id": {freqTestID}})
-	r.Header.Set("HX-Current-URL", "https://f33d3r.test/explore")
 	h.as(t, r, "listener", freqTestListenerPIAL)
 	w := httptest.NewRecorder()
 	h.eventsPost(w, r)
-	if w.Code != 200 || strings.TrimSpace(w.Body.String()) != frequencyDockEmpty {
-		t.Fatalf("leave must answer the empty dock mount, got %d %q", w.Code, w.Body.String())
+	if w.Code != 200 || w.Body.Len() != 0 {
+		t.Fatalf("leave must answer an empty 200, got %d %q", w.Code, w.Body.String())
 	}
 }
 
@@ -283,11 +260,9 @@ func TestFrequencyApproveByListenerIsForbidden(t *testing.T) {
 	h.as(t, r, "listener", freqTestListenerPIAL)
 	w := httptest.NewRecorder()
 	h.eventsPost(w, r)
-	if w.Code != 403 {
-		t.Fatalf("expected 403, got %d %s", w.Code, w.Body.String())
-	}
-	if !strings.Contains(w.Body.String(), "not allowed") {
-		t.Fatalf("refusal must be rendered for a person: %s", w.Body.String())
+	// A page can't show an error status, so the refusal goes out as a toast.
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected 204 with the refusal on the stream, got %d %s", w.Code, w.Body.String())
 	}
 }
 
@@ -338,11 +313,11 @@ func TestFrequencyTemplatesRenderFromGoTypes(t *testing.T) {
 		t.Fatal(err)
 	}
 	viewer := &model.User{ID: "u-l", Handle: "listener", PIALID: freqTestListenerPIAL, ContentSetting: "default"}
-	stage := h.buildFrequencyStage(&ans.Frequency, freqTestListenerPIAL, viewer, ans.Session, map[string]FrequencyPerson{
+	stage := h.buildFrequencyStage(&ans.Frequency, freqTestListenerPIAL, viewer, map[string]FrequencyPerson{
 		freqTestHostPIAL:     {Handle: "host", DisplayName: "Host"},
 		freqTestListenerPIAL: {Handle: "listener", DisplayName: "Listener"},
 	})
-	if stage.PeopleCount != 2 || stage.RequestCount != 1 || !stage.Heartbeat || stage.Captions == nil {
+	if stage.PeopleCount != 2 || stage.RequestCount != 1 || !stage.Viewer.InFrequency || stage.Captions == nil {
 		t.Fatalf("stage counts: %+v", stage)
 	}
 	for _, slot := range []string{"stage", "dock", "dock_mini", "preview", "header", "speakers", "listener_count", "live_badge", "controls", "request_button", "requests", "status", "recording"} {
@@ -381,8 +356,8 @@ func TestFrequencyTemplatesRenderFromGoTypes(t *testing.T) {
 	if dock := h.frequencyDock(httptest.NewRequest("GET", "/", nil).Context(), viewer); !strings.Contains(string(dock), frequencyFacetID(freqTestID, "dock")) {
 		t.Fatalf("frequencyDock did not render the live dock: %s", dock)
 	}
-	if dock := h.frequencyDock(httptest.NewRequest("GET", "/", nil).Context(), nil); string(dock) != frequencyDockEmpty {
-		t.Fatalf("frequencyDock for nobody must be the empty mount: %s", dock)
+	if dock := h.frequencyDock(httptest.NewRequest("GET", "/", nil).Context(), nil); string(dock) != "" {
+		t.Fatalf("frequencyDock for nobody must be empty: %s", dock)
 	}
 }
 
@@ -394,7 +369,7 @@ func TestFrequencyGoLiveRefusesUntitled(t *testing.T) {
 	h.as(t, r, "host", freqTestHostPIAL)
 	w := httptest.NewRecorder()
 	h.eventsPost(w, r)
-	if w.Code != http.StatusBadRequest {
+	if w.Code != http.StatusOK {
 		t.Fatalf("untitled must be refused with the composer re-rendered, got %d", w.Code)
 	}
 	stub.mu.Lock()
@@ -449,16 +424,6 @@ func TestPublishFrequencyStateRendersPerViewer(t *testing.T) {
 	if ht == "" || lt == "" {
 		t.Fatal("the tally must reach everyone present")
 	}
-	// The tally is the presence beat. A push must never land a participant a
-	// tally without one, or the push itself would silence their presence.
-	for who, f := range map[string]string{"host": ht, "listener": lt} {
-		if !strings.Contains(f, `"event_type":"frequency.heartbeat"`) {
-			t.Fatalf("%s received a tally without a beat: %s", who, f)
-		}
-	}
-	if hh, lh := find(hostFrags, "header"), find(lisFrags, "header"); hh == "" || lh == "" || !strings.Contains(hh, `"event_type":"frequency.heartbeat"`) {
-		t.Fatal("the header embeds the tally and must be pushed per viewer, beat included")
-	}
 	for _, f := range append(hostFrags, lisFrags...) {
 		if strings.Contains(f, freqTestHostPIAL) || strings.Contains(f, freqTestListenerPIAL) {
 			t.Fatal("a PIAL leaked into a pushed fragment")
@@ -466,7 +431,7 @@ func TestPublishFrequencyStateRendersPerViewer(t *testing.T) {
 	}
 }
 
-// The presence beat rides on the tally leaf, never on a dock root. htmx hands
+// The presence beat rides on its own leaf, never on a dock root. htmx hands
 // hx-vals, hx-post and hx-trigger down to every descendant: a beat on the
 // root rewrote the event_type of every form inside the dock — Mute, Lock, End
 // Frequency, Leave — into a heartbeat, and the tally the server answered with
@@ -487,7 +452,7 @@ func TestFrequencyDockRootsCarryNoBeat(t *testing.T) {
 	}
 	for _, who := range []struct{ handle, pial string }{{"host", freqTestHostPIAL}, {"listener", freqTestListenerPIAL}} {
 		viewer := &model.User{ID: "u-" + who.handle, Handle: who.handle, PIALID: who.pial, ContentSetting: "default"}
-		stage := h.buildFrequencyStage(&ans.Frequency, who.pial, viewer, ans.Session, people)
+		stage := h.buildFrequencyStage(&ans.Frequency, who.pial, viewer, people)
 		for _, slot := range []string{freqSlotDock, freqSlotDockMini} {
 			frag, err := h.renderFrequencySlot(slot, stage)
 			if err != nil {
@@ -499,67 +464,43 @@ func TestFrequencyDockRootsCarryNoBeat(t *testing.T) {
 					t.Fatalf("%s %s: the root carries %s, which every form inside would inherit:\n%s", who.handle, slot, attr, root)
 				}
 			}
-			if !strings.Contains(frag, `"event_type":"frequency.heartbeat"`) || !strings.Contains(frag, frequencyFacetID(freqTestID, "listener_count")) {
-				t.Fatalf("%s %s: a participant's dock must beat through its tally:\n%s", who.handle, slot, frag)
+			if !strings.Contains(frag, `"event_type":"frequency.heartbeat"`) || strings.Contains(frag[strings.Index(frag, "freq-listeners"):], `hx-trigger="every 15s"`) {
+				t.Fatalf("%s %s: a participant's dock must beat from a leaf outside the tally:\n%s", who.handle, slot, frag)
 			}
 		}
 	}
 }
 
-// The beat is answered with the tally that posted it: beating again while
-// the person is present; still, with the Shell's dock swapped for the empty
-// mount out-of-band, once they are not. On the stage the status, badge and
-// controls ride along so the page goes dark in the same answer.
-func TestFrequencyHeartbeatAnswersTheTally(t *testing.T) {
-	tally := frequencyFacetID(freqTestID, "listener_count")
-	// One handler per case: frequencyTestHandler changes directory to the
-	// repo root and restores it when the (sub)test ends.
-	beat := func(name string, stub *auralisStub, current string, check func(t *testing.T, body string)) {
+// A beat swaps nothing. Once a person is gone it clears their dock over FA Live.
+func TestFrequencyHeartbeatSwapsNothing(t *testing.T) {
+	beat := func(name string, stub *auralisStub, wantDockGone bool) {
 		t.Run(name, func(t *testing.T) {
 			h, _ := frequencyTestHandler(t, stub)
-			requirePartials(t, h, "frequency_listener_count", "frequency_status", "frequency_live_badge", "frequency_controls")
+			ch, _, done := RegisterSSESession("u-lis", freqTestListenerPIAL)
+			defer done()
 			r := eventRequest(url.Values{"event_type": {"frequency.heartbeat"}, "frequency_id": {freqTestID}})
-			r.Header.Set("HX-Current-URL", current)
 			h.as(t, r, "listener", freqTestListenerPIAL)
 			w := httptest.NewRecorder()
 			h.eventsPost(w, r)
-			if w.Code != 200 {
+			if w.Code != http.StatusNoContent {
 				t.Fatalf("heartbeat answered %d: %s", w.Code, w.Body.String())
 			}
-			check(t, w.Body.String())
+			gotDock := false
+			for drained := false; !drained; {
+				select {
+				case ev := <-ch:
+					if strings.Contains(ev.Data, frequencyFacetID(freqTestID, freqSlotDock)) {
+						gotDock = true
+					}
+				case <-time.After(200 * time.Millisecond):
+					drained = true
+				}
+			}
+			if gotDock != wantDockGone {
+				t.Fatalf("dock removal published = %v, want %v", gotDock, wantDockGone)
+			}
 		})
 	}
-
-	present := &auralisStub{view: freqViewJSON("live"), heartbeat: `{"state":"live","present":true,"role":"listener","muted":false,"counts":{"listeners":3,"speakers":1,"participants":4}}`}
-	beat("present", present, "https://f33d3r.test/", func(t *testing.T, body string) {
-		if !strings.Contains(body, tally) || !strings.Contains(body, "3 listening") || !strings.Contains(body, `"event_type":"frequency.heartbeat"`) {
-			t.Fatalf("a present beat must answer the tally, beating, with the fresh count: %s", body)
-		}
-		if strings.Contains(body, `id="frequency-dock"`) {
-			t.Fatalf("a present beat must leave the dock alone: %s", body)
-		}
-	})
-
-	gone := &auralisStub{view: freqViewJSON("ended"), heartbeat: `{"state":"ended","present":false,"role":"listener","muted":false,"counts":null}`}
-	beat("gone, browsing", gone, "https://f33d3r.test/explore", func(t *testing.T, body string) {
-		if !strings.Contains(body, tally) || strings.Contains(body, `"event_type":"frequency.heartbeat"`) {
-			t.Fatalf("once gone, the tally must be answered without a beat: %s", body)
-		}
-		if !strings.Contains(body, `<div id="frequency-dock" class="freq-dock-slot" data-facet-id="facet:f33d3r:frequency:dock" hx-swap-oob="true">`) {
-			t.Fatalf("once gone, the Shell's dock must be swapped for the empty mount out-of-band: %s", body)
-		}
-		if strings.Contains(body, frequencyFacetID(freqTestID, "status")) {
-			t.Fatalf("off the stage, the stage's slots are nobody's to answer: %s", body)
-		}
-	})
-	beat("gone, on the stage", gone, "https://f33d3r.test/frequencies/"+freqTestID, func(t *testing.T, body string) {
-		for _, slot := range []string{"status", "live_badge", "controls"} {
-			if !strings.Contains(body, frequencyFacetID(freqTestID, slot)) {
-				t.Fatalf("from the stage, the %s slot must ride along out-of-band: %s", slot, body)
-			}
-		}
-		if strings.Count(body, `hx-swap-oob="true"`) < 4 || !strings.Contains(body, `class="freq-dock-slot"`) {
-			t.Fatalf("from the stage: empty dock + status + badge + controls, all out-of-band: %s", body)
-		}
-	})
+	beat("present", &auralisStub{view: freqViewJSON("live"), heartbeat: `{"state":"live","present":true,"role":"listener","muted":false,"counts":{"listeners":3,"speakers":1,"participants":4}}`}, false)
+	beat("gone", &auralisStub{view: freqViewJSON("ended"), heartbeat: `{"state":"ended","present":false,"role":"listener","muted":false,"counts":null}`}, true)
 }

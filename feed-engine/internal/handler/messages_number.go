@@ -264,7 +264,6 @@ func (h *Handler) handleCreateConvoByNumber(w http.ResponseWriter, r *http.Reque
 	}
 	// The one notification pipeline, reached the one way: if a request was
 	// opened, the person it landed on hears about it here and nowhere else.
-	h.notifyContactRequest(user, outcome)
 
 	if outcome.Decision != "allow" || outcome.TargetPIAL == "" {
 		// "request" is the only outcome worth distinguishing to the caller,

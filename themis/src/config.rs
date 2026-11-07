@@ -4,7 +4,7 @@ pub struct Config {
     pub nantar_url: String,
     pub elohim_veni_url: String,
     pub internal_api_key: String,
-    pub mempool_ws_url: String,
+    pub mempool_api_url: String,
     pub xrp_ws_url: String,
     pub themis_privkey_b64: String,
     pub confirmation_threshold_low: u32,
@@ -23,8 +23,8 @@ impl Config {
             elohim_veni_url: std::env::var("ELOHIM_VENI_URL")
                 .unwrap_or_else(|_| "http://elohim-veni:8093".into()),
             internal_api_key: std::env::var("INTERNAL_API_KEY").unwrap_or_default(),
-            mempool_ws_url: std::env::var("MEMPOOL_WS_URL")
-                .unwrap_or_else(|_| "wss://mempool.space/api/v1/ws".into()),
+            mempool_api_url: std::env::var("MEMPOOL_API_URL")
+                .unwrap_or_else(|_| "https://mempool.space/api".into()),
             xrp_ws_url: std::env::var("XRP_WS_URL").unwrap_or_else(|_| "wss://xrpl.ws".into()),
             themis_privkey_b64: std::env::var("THEMIS_ECDH_PRIVKEY_B64").unwrap_or_default(),
             confirmation_threshold_low: std::env::var("CONF_THRESHOLD_LOW")

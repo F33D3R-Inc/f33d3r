@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"database/sql"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -578,13 +579,11 @@ func (h *Handler) fileContentReport(user *model.User, contentID, contentType, re
 		// Reports for adult content or hate speech go straight to the human review
 		// queue — admin must explicitly approve, age-gate, or block them.
 		if contentType == "post" && (reason == "nsfw" || reason == "hate") {
-			if err := dbpkg.SetPostScanState(h.db, contentID, "human_review", "user report: "+reason, "report_system"); err != nil {
+			if err := dbpkg.ApplyScanState(h.db, contentID, "human_review", "user report: "+reason, "report_system",
+				dbpkg.ScanOutcome{NotifyModerators: true}); err != nil {
 				log.Printf("[admin] report on %s (%s): content NOT moved to human_review: %v",
 					contentID, reason, err)
 				return err
-			}
-			for _, adminID := range dbpkg.GetAdminUserIDs(h.db) {
-				h.notifyUser(adminID, "moderation", "", contentID, "post")
 			}
 		}
 	}
@@ -1068,79 +1067,87 @@ func (h *Handler) adminUserAction(w http.ResponseWriter, r *http.Request) {
 	case "warn":
 		// Set enforcement_state = warning; send violation notification.
 		_, nsfwTier, _ := dbpkg.GetTrustScore(h.db, target.PIALID)
-		if err := dbpkg.SetTrustScore(h.db, target.PIALID, 40, nsfwTier, "warning"); err != nil {
+		err := dbpkg.WithTx(h.db, func(tx *sql.Tx) error {
+			if err := dbpkg.SetTrustScore(tx, target.PIALID, 40, nsfwTier, "warning"); err != nil {
+				return err
+			}
+			if _, err := dbpkg.WriteNotice(tx, dbpkg.Notice{Recipient: target.ID, Kind: "violation", TargetType: "moderation"}); err != nil {
+				return err
+			}
+			dbpkg.LogEnforcementAction(tx, target.PIALID, "warning", reason, caller.Handle, nil)
+			dbpkg.LogPIALEvent(tx, target.PIALID, target.ID, "account_warned", map[string]interface{}{
+				"reason": reason, "by": caller.Handle,
+			}, "moderation")
+			return nil
+		})
+		if err != nil {
 			log.Printf("[admin] user-action warn error for @%s: %v", targetHandle, err)
 			w.Write([]byte(`<span style="color:#ef4444;font-size:12px">DB error — check logs.</span>`))
 			return
 		}
-		h.notifyUser(target.ID, "violation", caller.ID, "", "moderation")
-		dbpkg.LogEnforcementAction(h.db, target.PIALID, "warning", reason, caller.Handle, nil)
-		dbpkg.LogPIALEvent(h.db, target.PIALID, target.ID, "account_warned", map[string]interface{}{
-			"reason": reason, "by": caller.Handle,
-		}, "moderation")
 		log.Printf("[admin] %s warned @%s: %s", caller.Handle, targetHandle, reason)
 		fmt.Fprintf(w, `<span style="color:#f59e0b;font-size:12px;font-weight:500">⚠ @%s warned — violation notification sent.</span>`, targetHandle)
 
 	case "suspend":
 		// Set enforcement_state = suspended, cooldown_until = 7 days, revoke posting cap.
+		// The revocation IS the suspension, so the whole action commits or none of it.
 		_, nsfwTier, _ := dbpkg.GetTrustScore(h.db, target.PIALID)
-		if err := dbpkg.SetTrustScore(h.db, target.PIALID, 20, nsfwTier, "suspended"); err != nil {
-			log.Printf("[admin] user-action suspend error for @%s: %v", targetHandle, err)
-			w.Write([]byte(`<span style="color:#ef4444;font-size:12px">DB error — check logs.</span>`))
+		err := dbpkg.WithTx(h.db, func(tx *sql.Tx) error {
+			if err := dbpkg.SetTrustScore(tx, target.PIALID, 20, nsfwTier, "suspended"); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(`
+				UPDATE trust_scores SET cooldown_until = NOW() + INTERVAL '7 days', updated_at = NOW()
+				WHERE pial_id = $1`, target.PIALID); err != nil {
+				return err
+			}
+			if err := dbpkg.SetCapability(tx, target.PIALID, "posting", "revoked", reason, caller.Handle, nil); err != nil {
+				return err
+			}
+			if _, err := dbpkg.WriteNotice(tx, dbpkg.Notice{Recipient: target.ID, Kind: "violation", TargetType: "moderation"}); err != nil {
+				return err
+			}
+			dbpkg.LogEnforcementAction(tx, target.PIALID, "suspension_7d", reason, caller.Handle, nil)
+			dbpkg.LogPIALEvent(tx, target.PIALID, target.ID, "account_suspended", map[string]interface{}{
+				"duration_days": 7, "reason": reason, "by": caller.Handle,
+			}, "moderation")
+			return nil
+		})
+		if err != nil {
+			log.Printf("[admin] user-action suspend failed for @%s: %v", targetHandle, err)
+			w.Write([]byte(`<span style="color:#ef4444;font-size:12px">Suspension failed — check logs.</span>`))
 			return
 		}
-		if _, err := h.db.Exec(`
-			UPDATE trust_scores SET cooldown_until = NOW() + INTERVAL '7 days', updated_at = NOW()
-			WHERE pial_id = $1`, target.PIALID); err != nil {
-			log.Printf("[admin] user-action suspend: cooldown not set for @%s: %v", targetHandle, err)
-			w.Write([]byte(`<span style="color:#ef4444;font-size:12px">DB error — check logs.</span>`))
-			return
-		}
-		// The revocation IS the suspension. Reporting it as done when the write
-		// failed leaves a suspended account still posting and a moderator who
-		// believes otherwise.
-		if err := dbpkg.SetCapability(h.db, target.PIALID, "posting", "revoked", reason, caller.Handle, nil); err != nil {
-			log.Printf("[admin] user-action suspend: posting NOT revoked for @%s: %v", targetHandle, err)
-			w.Write([]byte(`<span style="color:#ef4444;font-size:12px">Posting was not revoked — check logs.</span>`))
-			return
-		}
-		h.notifyUser(target.ID, "violation", caller.ID, "", "moderation")
-		dbpkg.LogEnforcementAction(h.db, target.PIALID, "suspension_7d", reason, caller.Handle, nil)
-		dbpkg.LogPIALEvent(h.db, target.PIALID, target.ID, "account_suspended", map[string]interface{}{
-			"duration_days": 7, "reason": reason, "by": caller.Handle,
-		}, "moderation")
 		log.Printf("[admin] %s suspended @%s (7d): %s", caller.Handle, targetHandle, reason)
 		fmt.Fprintf(w, `<span style="color:#ef4444;font-size:12px;font-weight:500">⛔ @%s suspended for 7 days — posting revoked.</span>`, targetHandle)
 
 	case "ban":
-		// Set role = banned, enforcement_state = terminated, revoke all caps.
-		// A ban that half-applied is the worst of both: the moderator is told the
-		// account is gone and the account keeps whichever capability failed. Every
-		// write is checked, and the first failure stops and says which one.
-		if h.db != nil {
-			if _, err := h.db.Exec(`UPDATE users SET role = 'banned' WHERE handle = $1`, targetHandle); err != nil {
-				log.Printf("[admin] ban: role NOT set to banned for @%s: %v", targetHandle, err)
-				w.Write([]byte(`<span style="color:#ef4444;font-size:12px">Ban failed — check logs.</span>`))
-				return
-			}
-		}
+		// Set role = banned, enforcement_state = terminated, revoke all caps. A ban
+		// that half-applied is the worst of both, so the whole action commits or none of it.
 		_, nsfwTier, _ := dbpkg.GetTrustScore(h.db, target.PIALID)
-		if err := dbpkg.SetTrustScore(h.db, target.PIALID, 0, nsfwTier, "terminated"); err != nil {
-			log.Printf("[admin] ban: enforcement state NOT set to terminated for @%s: %v", targetHandle, err)
-			w.Write([]byte(`<span style="color:#ef4444;font-size:12px">Ban incomplete — check logs.</span>`))
+		err := dbpkg.WithTx(h.db, func(tx *sql.Tx) error {
+			if _, err := tx.Exec(`UPDATE users SET role = 'banned' WHERE handle = $1`, targetHandle); err != nil {
+				return err
+			}
+			if err := dbpkg.SetTrustScore(tx, target.PIALID, 0, nsfwTier, "terminated"); err != nil {
+				return err
+			}
+			for _, cap := range []string{"posting", "messaging", "tipping", "subscribing", "live_streaming"} {
+				if err := dbpkg.SetCapability(tx, target.PIALID, cap, "revoked", reason, caller.Handle, nil); err != nil {
+					return fmt.Errorf("capability %s: %w", cap, err)
+				}
+			}
+			dbpkg.LogEnforcementAction(tx, target.PIALID, "ban", reason, caller.Handle, nil)
+			dbpkg.LogPIALEvent(tx, target.PIALID, target.ID, "account_banned", map[string]interface{}{
+				"reason": reason, "by": caller.Handle,
+			}, "moderation")
+			return nil
+		})
+		if err != nil {
+			log.Printf("[admin] ban failed for @%s: %v", targetHandle, err)
+			w.Write([]byte(`<span style="color:#ef4444;font-size:12px">Ban failed — check logs.</span>`))
 			return
 		}
-		for _, cap := range []string{"posting", "messaging", "tipping", "subscribing", "live_streaming"} {
-			if err := dbpkg.SetCapability(h.db, target.PIALID, cap, "revoked", reason, caller.Handle, nil); err != nil {
-				log.Printf("[admin] ban: capability %q NOT revoked for @%s: %v", cap, targetHandle, err)
-				fmt.Fprintf(w, `<span style="color:#ef4444;font-size:12px">Ban incomplete — %s was not revoked. Check logs.</span>`, cap)
-				return
-			}
-		}
-		dbpkg.LogEnforcementAction(h.db, target.PIALID, "ban", reason, caller.Handle, nil)
-		dbpkg.LogPIALEvent(h.db, target.PIALID, target.ID, "account_banned", map[string]interface{}{
-			"reason": reason, "by": caller.Handle,
-		}, "moderation")
 		log.Printf("[admin] %s banned @%s: %s", caller.Handle, targetHandle, reason)
 		fmt.Fprintf(w, `<span style="color:#ef4444;font-size:12px;font-weight:500">✕ @%s banned — all capabilities revoked.</span>`, targetHandle)
 

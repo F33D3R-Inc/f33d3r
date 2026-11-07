@@ -79,7 +79,7 @@ func (h *Handler) followEvent(w http.ResponseWriter, r *http.Request) {
 	// button that lies about server state.
 	var changed bool
 	if isFollow {
-		changed, err = dbpkg.FollowUser(h.db, user.ID, target.ID)
+		changed, err = dbpkg.FollowUserNotifying(h.db, user.ID, target.ID, user.Handle)
 	} else {
 		changed, err = dbpkg.UnfollowUser(h.db, user.ID, target.ID)
 	}
@@ -96,12 +96,6 @@ func (h *Handler) followEvent(w http.ResponseWriter, r *http.Request) {
 		go dbpkg.TryAwardTrollOnFollow(h.db, target.ID)
 		if isFollow {
 			go realm.AwardXP(h.db, user.ID, "follow", target.ID, realm.XPFollow)
-			go func() {
-				h.notifyUser(target.ID, "follow", user.ID, user.ID, "user")
-				h.HeraldNotify(targetPIAL, "follow",
-					"@"+user.Handle+" followed you", "",
-					"", "/@"+user.Handle)
-			}()
 		}
 	}
 
@@ -109,6 +103,7 @@ func (h *Handler) followEvent(w http.ResponseWriter, r *http.Request) {
 	// re-rendered server-side and pushed as finished fragments — on unfollow as
 	// well as follow, which the old follow-only, PIAL-string event could not do.
 	go h.publishFollowState(user.PIALID, targetPIAL, targetHandle, isFollow)
+	go h.publishFollowCounts(user.ID, target.ID)
 
 	fragment, err := h.renderFollowButton(targetPIAL, targetHandle, isFollow, surface)
 	if err != nil {
@@ -160,7 +155,7 @@ func (h *Handler) followAPI(w http.ResponseWriter, r *http.Request) {
 	isFollow := action != "unfollow"
 	var changed bool
 	if isFollow {
-		changed, err = dbpkg.FollowUser(h.db, user.ID, target.ID)
+		changed, err = dbpkg.FollowUserNotifying(h.db, user.ID, target.ID, user.Handle)
 	} else {
 		changed, err = dbpkg.UnfollowUser(h.db, user.ID, target.ID)
 	}
@@ -174,15 +169,10 @@ func (h *Handler) followAPI(w http.ResponseWriter, r *http.Request) {
 		go dbpkg.TryAwardTrollOnFollow(h.db, target.ID)
 		if isFollow {
 			go realm.AwardXP(h.db, user.ID, "follow", target.ID, realm.XPFollow)
-			go func() {
-				h.notifyUser(target.ID, "follow", user.ID, user.ID, "user")
-				h.HeraldNotify(target.PIALID, "follow",
-					"@"+user.Handle+" followed you", "",
-					"", "/@"+user.Handle)
-			}()
 		}
 	}
 	go h.publishFollowState(user.PIALID, target.PIALID, target.Handle, isFollow)
+	go h.publishFollowCounts(user.ID, target.ID)
 
 	fragment, err := h.renderFollowButton(target.PIALID, target.Handle, isFollow, r.FormValue("source"))
 	if err != nil {

@@ -379,6 +379,7 @@ func (h *Handler) decideContactRequest(w http.ResponseWriter, r *http.Request) {
 		"pial_id":    user.PIALID,
 		"request_id": id,
 		"accept":     accept,
+		"owner_account": user.ID,
 	}
 	var out struct {
 		RequesterPIAL string `json:"requester_pial"`
@@ -391,7 +392,6 @@ func (h *Handler) decideContactRequest(w http.ResponseWriter, r *http.Request) {
 	if accept && out.RequesterPIAL != "" {
 		if requester := dbpkg.AccountForPIAL(h.db, out.RequesterPIAL); requester != "" {
 			h.deliverHeldOnAccept(requester, user)
-			h.notifyUser(requester, "contact_accepted", user.ID, user.ID, "user")
 		}
 	}
 	h.renderNumbers(w, r, user.PIALID, "", "")
@@ -445,7 +445,7 @@ func (h *Handler) deliverHeldOnAccept(requesterAccount string, accepter *model.U
 		return
 	}
 
-	msg, err := gnosis.InsertPlainMessage(h.db, convoID, requesterAccount, held.Body)
+	msg, err := gnosis.InsertPlainMessage(h.db, convoID, requesterAccount, held.Body, dbpkg.MessageAlerts(convoID, requesterAccount))
 	if err != nil {
 		log.Printf("[gnosis] delivering an accepted message into %s: %v", convoID, err)
 		return
@@ -496,7 +496,6 @@ func (h *Handler) resolveNumber(w http.ResponseWriter, r *http.Request) {
 	// A request that nobody is told about is a request nobody answers, so the
 	// person it landed on is notified through the one notification pipeline this
 	// brain has. Nothing about them is rendered back to the caller.
-	h.notifyContactRequest(user, outcome)
 
 	// Deliberately no handle, no display name, no avatar, no account id. A
 	// resolve yields the decision and the Number the caller already typed. The
@@ -537,7 +536,6 @@ func (h *Handler) startContactByNumber(w http.ResponseWriter, r *http.Request) {
 			"PIALID": user.PIALID, "Unavailable": true})
 		return
 	}
-	h.notifyContactRequest(user, outcome)
 	if outcome.Decision != "allow" || outcome.TargetPIAL == "" {
 		holdFloor(started, numberResolveFloor)
 		h.renderPartial(w, "number_resolve", map[string]interface{}{
@@ -620,7 +618,7 @@ type contactOutcome struct {
 // untouched: nothing on this path learns who a Number belongs to unless the
 // policy already allowed contact.
 func (h *Handler) evaluateContact(ctx context.Context, user *model.User, q contactQuery) (contactOutcome, error) {
-	body := map[string]interface{}{"initiator_pial": user.PIALID}
+	body := map[string]interface{}{"initiator_pial": user.PIALID, "initiator_account": user.ID}
 	if q.Number != "" {
 		// The check digit, before any I/O — and here that means before the HTTP
 		// hop to the policy authority, not merely before its database read.
@@ -670,71 +668,6 @@ func (h *Handler) evaluateContact(ctx context.Context, user *model.User, q conta
 		BudgetAlert:      out.BudgetAlert,
 		BudgetOwnerPIAL:  out.BudgetOwnerPIAL,
 	}, nil
-}
-
-// notifyContactRequest delivers everything one contact decision owes to somebody
-// other than the person who caused it, through the one notification pipeline
-// this brain has.
-//
-// It is called on every path that evaluates contact, which is why both deliveries
-// live behind it rather than beside it: a second call somebody has to remember to
-// add is a notification somebody eventually does not get. Each part is a no-op
-// unless the authority actually said something, so a repeated resolve against a
-// still-pending request does not re-notify.
-//
-//	a contact request → the person it landed on
-//	a budget warning  → the owner of the Number that is running out
-func (h *Handler) notifyContactRequest(user *model.User, o contactOutcome) {
-	h.notifyNumberBudget(o)
-	if o.RequestID == "" || o.RequestOwnerPIAL == "" {
-		return
-	}
-	owner := dbpkg.AccountForPIAL(h.db, o.RequestOwnerPIAL)
-	if owner == "" || owner == user.ID {
-		return
-	}
-	h.notifyUser(owner, "contact_request", user.ID, user.ID, "user")
-}
-
-// notifyNumberBudget tells the owner of a Number that its budget is running out,
-// or has just run out, through the one notification pipeline this brain has.
-//
-// This is the other half of a property that would otherwise be a trap. A spent
-// budget is INVISIBLE to whoever presents the Number — byte-identical and
-// time-identical to unknown, retired and expired — which is exactly right, and
-// which means that without this the owner's Number would stop working and
-// nobody, on either side, would be able to tell why. So the moment it stops is
-// the moment its owner is told, and they are warned once on the way down.
-//
-// The alert names nobody. It is a fact about the owner's own Number, and who
-// spent the last of it is not the owner's business to be handed unasked — the
-// person admitted is now a conversation they can see for themselves.
-func (h *Handler) notifyNumberBudget(o contactOutcome) {
-	if o.BudgetAlert == "" || o.BudgetOwnerPIAL == "" {
-		return
-	}
-	kind := ""
-	switch o.BudgetAlert {
-	case "low":
-		kind = "number_budget_low"
-	case "spent":
-		kind = "number_budget_spent"
-	default:
-		// An alert this build does not recognise is not guessed at. A wrong
-		// sentence in somebody's notifications is worse than a missing one.
-		log.Printf("[numbers] unrecognised budget alert %q", o.BudgetAlert)
-		return
-	}
-	owner := dbpkg.AccountForPIAL(h.db, o.BudgetOwnerPIAL)
-	if owner == "" {
-		return
-	}
-	// The notification has NO actor. Nothing about the person who was admitted
-	// travels here, and naming the owner as their own actor would be a
-	// self-notification — which is dropped, which is how this alert came to be
-	// written and never delivered. It is the platform stating a fact about the
-	// owner's own Number, and it points at the surface that can act on it.
-	h.notifyUser(owner, kind, "", owner, "user")
 }
 
 // ── Rendering ────────────────────────────────────────────────────────────────
@@ -1010,7 +943,6 @@ func (h *Handler) numberKeyBundle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "contact policy authority unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	h.notifyContactRequest(user, outcome)
 	if outcome.Decision != "allow" || outcome.TargetPIAL == "" {
 		// Identical for unknown, retired, malformed and refused.
 		holdFloor(started, numberResolveFloor)

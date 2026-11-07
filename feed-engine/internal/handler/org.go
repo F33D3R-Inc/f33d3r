@@ -72,11 +72,12 @@ func (h *Handler) orgEvent(w http.ResponseWriter, r *http.Request, eventType str
 			htmxError(w, r, "Application already exists", http.StatusConflict)
 			return
 		}
-		if err := dbpkg.CreateOrgMembership(h.db, user.ID, org.ID, "employee"); err != nil {
+		if err := dbpkg.CreateOrgMembershipNotifying(h.db, user.ID, org.ID, "employee", dbpkg.Notice{
+			Recipient: org.ID, Kind: "org_apply", Actor: user.ID, TargetType: "org",
+		}); err != nil {
 			htmxError(w, r, "Could not submit application", http.StatusInternalServerError)
 			return
 		}
-		go h.notifyUser(org.ID, "org_apply", user.ID, "", "org")
 		h.renderOrgSection(w, r)
 
 	case "org_invite":
@@ -106,11 +107,12 @@ func (h *Handler) orgEvent(w http.ResponseWriter, r *http.Request, eventType str
 			htmxError(w, r, "Invite already sent", http.StatusConflict)
 			return
 		}
-		if err := dbpkg.CreateOrgMembership(h.db, target.ID, user.ID, "org"); err != nil {
+		if err := dbpkg.CreateOrgMembershipNotifying(h.db, target.ID, user.ID, "org", dbpkg.Notice{
+			Recipient: target.ID, Kind: "org_invite", Actor: user.ID, TargetType: "org",
+		}); err != nil {
 			htmxError(w, r, "Could not send invite", http.StatusInternalServerError)
 			return
 		}
-		go h.notifyUser(target.ID, "org_invite", user.ID, "", "org")
 		if r.Header.Get("HX-Target") == orgPendingInvitesTarget {
 			h.renderOrgPendingInvites(w, user)
 			return

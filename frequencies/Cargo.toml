@@ -10,8 +10,9 @@ path = "src/main.rs"
 
 [dependencies]
 manhattan-client = { path = "../libs/manhattan-client" }
+notification-outbox = { path = "../libs/notification-outbox" }
 manhattan-outbox = { path = "../libs/manhattan-outbox" }
-axum = { version = "0.7", features = ["json", "ws"] }
+axum = { version = "0.7", features = ["json"] }
 tokio = { version = "1", features = ["full"] }
 tower-http = { version = "0.6", features = ["trace"] }
 serde = { version = "1", features = ["derive"] }
@@ -39,7 +40,6 @@ redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
 # Sitra Achra. Same client abraxas-shield consumes with; here it only produces,
 # draining the frequency_events outbox table.
 rdkafka = { version = "0.39", features = ["cmake-build"] }
-str0m = { version = "0.23", default-features = false }
 
 [profile.release]
 opt-level = 3

@@ -280,28 +280,20 @@ async fn main() {
                     }
                 }
 
+                // The author hears about a decision that limits their work.
+                if matches!(next_state, "blocked" | "flagged" | "age_gated")
+                    && content_source.target_type() == "work"
+                {
+                    if let Some(author) = db::get_work_author_id(&pool, &content_id).await {
+                        db::notify_user_durable(&pool, &author, "moderation_result", &content_id, "work").await;
+                    }
+                }
+
                 // 7. If human_review, notify admin users. target_type names the lane
                 //    so the admin surface resolves the id against the right table.
                 if next_state == "human_review" {
-                    let admin_ids = db::get_admin_user_ids(&pool).await;
-                    for admin_id in &admin_ids {
-                        if let Err(e) = db::notify_user(
-                            &pool,
-                            admin_id,
-                            "moderation",
-                            &content_id,
-                            content_source.target_type(),
-                        )
-                        .await
-                        {
-                            warn!(
-                                admin_id = %admin_id,
-                                content_id = %content_id,
-                                lane,
-                                err = %e,
-                                "Failed to notify admin (non-fatal)"
-                            );
-                        }
+                    for admin_id in &db::get_admin_user_ids(&pool).await {
+                        db::notify_user_durable(&pool, admin_id, "moderation", &content_id, content_source.target_type()).await;
                     }
                 }
 

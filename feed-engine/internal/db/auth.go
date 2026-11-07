@@ -1,12 +1,15 @@
 package db
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/base32"
 	"encoding/hex"
 	"fmt"
+	"github.com/f33d3r/feed-engine/internal/herald"
+	"log"
 	"strings"
 	"time"
 
@@ -410,33 +413,11 @@ type Notification struct {
 	Payload     map[string]interface{}
 	IsRead      bool
 	TimeAgo     string
+	Others      int    // other people in this grouped entry
+	Preview     string // the words the notification is about
+	AmountAET   string // formatted tip amount, "" when there is none
+	Href        string // where the entry leads, "" when nowhere
 	CreatedAt   time.Time
-}
-
-// CreateNotification writes one notification, reporting whether a row was
-// actually created.
-//
-// The bool is not decoration. A notification about somebody's own action is
-// dropped here, and a caller that then went on to raise the unread badge would
-// be pointing a person at a notification that does not exist. The badge is a
-// count of rows, so only a caller told a row landed may raise it.
-//
-// An actorID of "" means the notification has no actor: it is the platform
-// telling this account a fact about itself. That is not a self-notification and
-// is not dropped — the self-notify rule exists so a person is not told they
-// liked their own post, not to prevent the system from speaking.
-func CreateNotification(db *sql.DB, userID, nType, actorID, targetID, targetType string) (bool, error) {
-	if actorID != "" && userID == actorID {
-		return false, nil // never self-notify
-	}
-	_, err := db.Exec(`
-		INSERT INTO notifications (user_id, type, actor_id, target_id, target_type)
-		VALUES ($1, $2, $3, $4, $5)
-	`, userID, nType, nullIfEmpty(actorID), targetID, targetType)
-	if err != nil {
-		return false, err
-	}
-	return true, nil
 }
 
 func nullIfEmpty(s string) interface{} {
@@ -447,45 +428,38 @@ func nullIfEmpty(s string) interface{} {
 }
 
 func GetNotifications(db *sql.DB, userID string, limit int) ([]Notification, error) {
-	rows, err := db.Query(`
-		SELECT
-		    n.id, n.type, n.target_id, n.target_type, n.is_read, n.created_at,
-		    COALESCE(u.id::text, ''), COALESCE(p.display_name, COALESCE(u.handle, '')),
-		    COALESCE(u.handle, ''), COALESCE(p.avatar_url, '')
-		FROM notifications n
-		LEFT JOIN users u      ON u.id = n.actor_id
-		LEFT JOIN user_profiles p ON p.user_id = n.actor_id
-		WHERE n.user_id = $1
-		ORDER BY n.created_at DESC
-		LIMIT $2
-	`, userID, limit)
+	ctx, cancel := context.WithTimeout(context.Background(), heraldTimeout)
+	defer cancel()
+	rows, err := herald.List(ctx, userID, limit, time.Now())
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	var notifs []Notification
-	for rows.Next() {
-		var n Notification
-		if err := rows.Scan(
-			&n.ID, &n.Type, &n.TargetID, &n.TargetType, &n.IsRead, &n.CreatedAt,
-			&n.ActorID, &n.ActorName, &n.ActorHandle, &n.ActorAvatar,
-		); err != nil {
-			continue
-		}
-		notifs = append(notifs, n)
+	notifs := make([]Notification, 0, len(rows))
+	for _, r := range rows {
+		notifs = append(notifs, Notification{
+			ID: r.ID, Type: r.Kind, ActorID: r.ActorAccount, TargetID: r.TargetID,
+			TargetType: r.TargetType, IsRead: r.IsRead, CreatedAt: r.CreatedAt,
+		})
 	}
-	return notifs, rows.Err()
+	return notifs, nil
 }
 
 func MarkAllNotificationsRead(db *sql.DB, userID string) error {
-	_, err := db.Exec(`UPDATE notifications SET is_read = TRUE WHERE user_id = $1`, userID)
-	return err
+	ctx, cancel := context.WithTimeout(context.Background(), heraldTimeout)
+	defer cancel()
+	return herald.MarkRead(ctx, userID, nil, true)
 }
 
+// CountUnreadNotifications asks Herald, which owns the rows. While Herald cannot
+// answer, the last count it announced stands in.
 func CountUnreadNotifications(db *sql.DB, userID string) int {
-	var count int
-	db.QueryRow(`SELECT COUNT(*) FROM notifications WHERE user_id = $1 AND is_read = FALSE`, userID).Scan(&count)
+	ctx, cancel := context.WithTimeout(context.Background(), heraldTimeout)
+	defer cancel()
+	count, err := herald.Unread(ctx, userID)
+	if err != nil {
+		log.Printf("[notifications] unread for %s: %v", userID, err)
+		_ = db.QueryRow(`SELECT COALESCE(unread_count, 0) FROM users WHERE id = $1`, userID).Scan(&count)
+	}
 	return count
 }
 
@@ -512,3 +486,16 @@ func GetUserEmail(db *sql.DB, userID string) string {
 	db.QueryRow(`SELECT COALESCE(email, '') FROM users WHERE id = $1`, userID).Scan(&email)
 	return email
 }
+
+// PrimaryAccountForPIAL returns the account a person's notifications belong to.
+func PrimaryAccountForPIAL(db *sql.DB, pial string) (string, error) {
+	var account string
+	err := db.QueryRow(`
+		SELECT u.id::text FROM users u
+		LEFT JOIN pial_account_bindings b ON b.account_id = u.id AND b.is_primary
+		WHERE u.pial_id = $1::uuid
+		ORDER BY (b.account_id IS NOT NULL) DESC, u.created_at
+		LIMIT 1`, pial).Scan(&account)
+	return account, err
+}
+

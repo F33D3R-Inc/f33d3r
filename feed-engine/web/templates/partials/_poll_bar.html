@@ -27,8 +27,8 @@ FACET poll_bar
 {{define "poll_bar"}}
 <div class="poll-bar{{if .Voted}} poll-voted{{end}}{{if .IsWinner}} poll-winner{{end}}"
      aria-label="{{.Label}}: {{.Pct}}% ({{.Count}} vote{{if ne .Count 1}}s{{end}})">
-  <div class="poll-bar-fill" style="width:{{.Pct}}%"></div>
+  {{template "poll_fill" (dict "PostID" .PostID "Surface" .Surface "Index" .Index "Pct" .Pct)}}
   <span class="poll-bar-label">{{.Label}}</span>
-  <span class="poll-bar-pct">{{.Pct}}%</span>
+  {{template "poll_pct" (dict "PostID" .PostID "Surface" .Surface "Index" .Index "Pct" .Pct)}}
 </div>
 {{end}}

@@ -168,7 +168,8 @@ class FaLive(
 
         // Signals: the payload is text for the Shell's own chrome, not a facet.
         when (type) {
-            "notify" -> return Mutation.Signal(SignalKind.NOTIFY, data.trim())
+            // The badge arrives as a rendered Facet; this Shell draws its own from the text.
+            "notify" -> return Mutation.Signal(SignalKind.NOTIFY, data.replace(Regex("<[^>]*>"), "").trim())
             "notif_new" -> return Mutation.Signal(SignalKind.NOTIFY_ARRIVED, data.trim())
             "balance" -> return Mutation.Signal(SignalKind.BALANCE, data.trim())
             "post_deleted" -> {

@@ -201,7 +201,9 @@ window.F33D3R = window.F33D3R || {};
 // No polling. No fetch(). No JSON.
 (function() {
   var pialMeta = document.querySelector('meta[name="f33d3r:pial"]');
-  if (!pialMeta) return; // not logged in
+  // The tag is always in the Shell and is empty when logged out. Connecting then
+  // only earns a redirect, and EventSource would retry it forever.
+  if (!pialMeta || !pialMeta.content) return;
 
   // Single owner of /api/events for the whole app. A duplicate inline EventSource used to
   // live in base.html; two connections meant every event (notify/balance/…) could be delivered
@@ -209,11 +211,52 @@ window.F33D3R = window.F33D3R || {};
   // exponential backoff.
   var reconnectDelay = 1000;
   var reconnectTimer = null;
+  // Where this page has reached in the live sequence. A new EventSource sends no
+  // Last-Event-ID, so it is passed back in the URL on reconnect.
+  var lastLiveId = 0;
+  var opened = false;
 
   // bind attaches every FA Live listener to a connection. Called on first connect and on
   // each reconnect (a fresh EventSource needs its listeners re-bound).
   function bind(es) {
-    es.onopen = function() { reconnectDelay = 1000; };
+    var listen = es.addEventListener.bind(es);
+    es.addEventListener = function(type, fn) {
+      listen(type, function(e) {
+        var id = Number(e.lastEventId);
+        if (id > lastLiveId) lastLiveId = id;
+        fn(e);
+      });
+    };
+
+    es.onopen = function() {
+      reconnectDelay = 1000;
+      // Watches live on the connection, so each new one has to be told again. A watch
+      // sent before the stream connected was lost too, so the first open re-sends them.
+      if (window._faRewatch) window._faRewatch(opened);
+      opened = true;
+    };
+
+    es.addEventListener('fa.cursor', function() {});
+    // Updates may have been missed. Facets that can re-read declare
+    // hx-trigger="fa:resync from:body", so nobody's scroll position moves.
+    es.addEventListener('resync', function() {
+      document.body.dispatchEvent(new CustomEvent('fa:resync'));
+      if (window._faReloadTxHistory && document.getElementById('tx-list')) window._faReloadTxHistory();
+    });
+
+
+    // The one general FA Live event: apply a rendered Facet by data-facet-id.
+    es.addEventListener('facet.mutate', function(e) { window._applyFacetMutation(e.data); });
+
+    // A video finished processing: whoever is waiting on it asks now.
+    es.addEventListener('upload_done', function(e) {
+      document.dispatchEvent(new CustomEvent('fa:upload-done', { detail: e.data }));
+    });
+
+    // A purchase arrived: the status line and the library each ask for themselves.
+    es.addEventListener('marketplace_purchase_delivered', function() {
+      document.body.dispatchEvent(new CustomEvent('fa:purchase-delivered'));
+    });
 
     es.addEventListener('notify', function(e) {
       // Update badge counter in sidebar/nav
@@ -227,6 +270,7 @@ window.F33D3R = window.F33D3R || {};
     // on the /notifications page without a full reload.
     es.addEventListener('notif_new', function(e) {
       window._onSSENotifNew && window._onSSENotifNew(e);
+      document.body.dispatchEvent(new CustomEvent('fa:engagement'));
       var list = document.getElementById('notification-list');
       if (list && typeof htmx !== 'undefined') {
         htmx.trigger(list, 'refresh');
@@ -244,6 +288,8 @@ window.F33D3R = window.F33D3R || {};
       if (px) px.textContent = e.data.replace(' AET', '');
       var m = document.getElementById('mobile-aet-bal');
       if (m) m.textContent = e.data;
+      // The balance moved, so the wallet's transaction list is out of date too.
+      if (window._faReloadTxHistory && document.getElementById('tx-list')) window._faReloadTxHistory();
     });
 
     es.addEventListener('achievement.unlocked', function(e) {
@@ -295,7 +341,6 @@ window.F33D3R = window.F33D3R || {};
     // (viewer tally, LIVE badge, player, feed card). live-chat.js applies them.
     es.addEventListener('live_chat',       function(e) { window._onSSELiveChat       && window._onSSELiveChat(e);       });
     es.addEventListener('live_facet',      function(e) { window._onSSELiveFacet      && window._onSSELiveFacet(e);      });
-    es.addEventListener('frequency_facet', function(e) { window._onSSEFrequencyFacet && window._onSSEFrequencyFacet(e); });
     // Sports lane: a re-rendered game Facet (strip, card, score, clock, rail).
     es.addEventListener('sports_facet',    function(e) { window._onSSESportsFacet    && window._onSSESportsFacet(e);    });
     // Gnosis: a new message bubble arrived. Append it live if its thread is open,
@@ -357,7 +402,7 @@ window.F33D3R = window.F33D3R || {};
     // server fans every event to ALL of a PIAL's sessions, so a stray second one double-delivers.
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
     if (window.__F33D3R_SSE__) { try { window.__F33D3R_SSE__.close(); } catch (e) {} }
-    var es = new EventSource('/api/events');
+    var es = new EventSource(lastLiveId ? '/api/events?after=' + lastLiveId : '/api/events');
     // Expose globally so video-player.js can close on pagehide (memory hygiene).
     window.__F33D3R_SSE__ = es;
     bind(es);
@@ -418,6 +463,53 @@ window._onSSEPostEngagement = function(e) {
 // swap it for the fragment. It parses no score, derives no clock and decides
 // nothing about the game — if the page does not mount that facet, nothing
 // happens. Rendering stays on the server; this is a projection surface.
+// Applies one facet.mutate event. The server has already rendered the fragment;
+// this only finds where it goes. A Facet that is not on this page is not an
+// error, because a person's stream carries changes for surfaces they are not on.
+window._applyFacetMutation = function(raw) {
+  var m;
+  try { m = JSON.parse(raw); } catch (err) { console.error('[fa-live] unreadable mutation', err); return; }
+  if (!m || !m.facet_id || !m.fragment) return;
+
+  var tpl = document.createElement('template');
+  tpl.innerHTML = m.fragment.trim();
+  var incoming = tpl.content.firstElementChild;
+  if (!incoming) return;
+
+  function settle(el) {
+    if (typeof htmx !== 'undefined') htmx.process(el);
+    if (window._faObserve) window._faObserve(el);
+    var ms = Number(el.getAttribute('data-expires-ms'));
+    if (ms > 0) setTimeout(function() { el.remove(); }, ms);
+  }
+  var sel = '[data-facet-id="' + CSS.escape(m.facet_id) + '"]';
+  var surface = incoming.getAttribute('data-surface');
+  if (surface) sel += '[data-surface="' + CSS.escape(surface) + '"]';
+
+  // A row already on screen is replaced, so a redelivered insert cannot duplicate it.
+  var targets = document.querySelectorAll(sel);
+  if (targets.length) {
+    targets.forEach(function(old) {
+      var frag = incoming.cloneNode(true);
+      old.replaceWith(frag);
+      settle(frag);
+    });
+    return;
+  }
+  if (m.mode !== 'prepend' && m.mode !== 'append') return;
+
+  // A new row can wrap a card that is already here, such as an author's own reply.
+  var inner = incoming.querySelector('[data-facet-id]');
+  if (inner && document.querySelector('[data-facet-id="' + CSS.escape(inner.getAttribute('data-facet-id')) + '"]')) return;
+
+  var parentSel = '[data-facet-id="' + CSS.escape(m.parent_facet_id || '') + '"]';
+  document.querySelectorAll(parentSel).forEach(function(parent) {
+    var frag = incoming.cloneNode(true);
+    if (m.mode === 'prepend') parent.prepend(frag); else parent.append(frag);
+    settle(frag);
+  });
+};
+
 window._onSSESportsFacet = function(e) {
   if (!e.data) return;
   var tmp = document.createElement('div');
@@ -504,10 +596,14 @@ window._onSSEAnalyticsTick = function(e) {
 (function() {
   if (typeof IntersectionObserver === 'undefined') return;
 
-  function _watch(type, id, action) {
+  var visiblePosts = {};
+  var visibleTickers = {};
+
+  function _watch(type, id, action, resync) {
     var body = 'type=' + encodeURIComponent(type) +
                '&id=' + encodeURIComponent(id) +
-               '&action=' + encodeURIComponent(action);
+               '&action=' + encodeURIComponent(action) +
+               (resync ? '&resync=1' : '');
     fetch('/api/events/watch', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -518,27 +614,39 @@ window._onSSEAnalyticsTick = function(e) {
 
   var postObs = new IntersectionObserver(function(entries) {
     entries.forEach(function(entry) {
-      var id = entry.target.dataset.contentId;
-      if (id) _watch('post', id, entry.isIntersecting ? 'watch' : 'unwatch');
+      var id = entry.target.dataset.contentId || entry.target.dataset.watchId;
+      if (!id) return;
+      if (entry.isIntersecting) visiblePosts[id] = true; else delete visiblePosts[id];
+      _watch('post', id, entry.isIntersecting ? 'watch' : 'unwatch');
     });
   }, { threshold: 0.2 });
 
   var tickerObs = new IntersectionObserver(function(entries) {
     entries.forEach(function(entry) {
       var ticker = entry.target.dataset.ticker;
-      if (ticker) _watch('ticker', ticker, entry.isIntersecting ? 'watch' : 'unwatch');
+      if (!ticker) return;
+      if (entry.isIntersecting) visibleTickers[ticker] = true; else delete visibleTickers[ticker];
+      _watch('ticker', ticker, entry.isIntersecting ? 'watch' : 'unwatch');
     });
   }, { threshold: 0.2 });
 
+  window._faRewatch = function(resync) {
+    Object.keys(visiblePosts).forEach(function(id) { _watch('post', id, 'watch', resync); });
+    Object.keys(visibleTickers).forEach(function(t) { _watch('ticker', t, 'watch', resync); });
+  };
+
   function _observeAll(root) {
     var ctx = root || document;
-    ctx.querySelectorAll('article.post-card[data-content-id]').forEach(function(el) {
+    ctx.querySelectorAll('article.post-card[data-content-id], [data-watch-id]').forEach(function(el) {
       postObs.observe(el);
     });
     ctx.querySelectorAll('[data-ticker]').forEach(function(el) {
       tickerObs.observe(el);
     });
   }
+
+  // A Facet applied from the stream can carry a watch of its own.
+  window._faObserve = _observeAll;
 
   document.addEventListener('DOMContentLoaded', function() { _observeAll(document); });
   document.addEventListener('htmx:afterSwap', function(e) {
@@ -2588,10 +2696,25 @@ window.onMediaSelect = async function(input) {
   input.value = '';
 };
 
+// Quiet hours run on the person's own clock, which only the browser knows.
+document.addEventListener('htmx:configRequest', function(e) {
+  if (!e.detail || !e.detail.elt || e.detail.elt.id !== 'notif-prefs-form') return;
+  try { e.detail.parameters['timezone'] = Intl.DateTimeFormat().resolvedOptions().timeZone; } catch (_) {}
+});
+
 async function _pollTusStatus(uploadId, wrap, modal, postBtn, filename) {
   var maxTries = 360; // 30 minutes at 5s intervals
   for (var i = 0; i < maxTries; i++) {
-    await new Promise(function(r) { setTimeout(r, 5000); });
+    await new Promise(function(r) {
+      var timer = setTimeout(done, 5000);
+      function done() {
+        clearTimeout(timer);
+        document.removeEventListener('fa:upload-done', onDone);
+        r();
+      }
+      function onDone(ev) { if (ev.detail === uploadId) done(); }
+      document.addEventListener('fa:upload-done', onDone);
+    });
     // Only catch network/parse errors — never swallow post-processing errors
     var job = null;
     try {
@@ -2703,6 +2826,21 @@ function _renderVideoTile(wrap, data, modal) {
   }));
   _syncAltBtn();
 }
+
+// Opens the compose box with a finished video already attached.
+window.attachVideoToCompose = function (data) {
+  window.openCompose();
+  var modal = document.getElementById('compose-modal');
+  var prev = document.getElementById('media-previews');
+  if (!modal || !prev) return;
+  prev.querySelectorAll('.compose-media-item').forEach(function (n) { n.remove(); });
+  var wrap = document.createElement('div');
+  wrap.className = 'compose-media-item';
+  prev.appendChild(wrap);
+  _stashVideoFields(modal, data);
+  _renderVideoTile(wrap, data, modal);
+  _updateMediaGrid();
+};
 
 function _updateMediaGrid() {
   var prev = document.getElementById('media-previews');

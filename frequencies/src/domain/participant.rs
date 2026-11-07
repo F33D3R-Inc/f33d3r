@@ -23,6 +23,8 @@ pub struct Participant {
     pub role: FrequencyRole,
     pub state: ParticipantState,
     pub muted: bool,
+    /// Set by a host or co-host. Only one of them can lift it.
+    pub moderator_muted: bool,
     pub joined_at: DateTime<Utc>,
     pub left_at: Option<DateTime<Utc>>,
     pub removed_at: Option<DateTime<Utc>>,

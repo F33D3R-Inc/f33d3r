@@ -19,14 +19,6 @@ F33D3R.page('marketplace', function (root) {
   // Malkuth signing + ECDH keys are initialised globally in malkuth.js on every
   // page load — no per-page init needed here. PIAL carries all keys at login.
   F33D3R.once('marketplace:listeners', function () {
-    // FA Live: marketplace_purchase_delivered — the library Facet is asked for
-    // again; the purchase modal's status Facet reaches its final state on its
-    // own next poll.
-    document.addEventListener('sse:marketplace_purchase_delivered', function () {
-      var library = document.getElementById('buyer-library');
-      if (library && window.htmx) htmx.trigger(library, 'refresh');
-    });
-
     // Payment-window countdown on any purchase modal the Shell places.
     document.addEventListener('htmx:afterSwap', function () {
       startTimers(document);

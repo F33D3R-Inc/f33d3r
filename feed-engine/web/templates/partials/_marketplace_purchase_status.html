@@ -24,7 +24,7 @@ FACET marketplace_purchase_status
 {{define "marketplace_purchase_status"}}
 <div class="marketplace-purchase-modal__status-slot"
      data-facet-id="facet:f33d3r:purchase:{{.PurchaseID}}:status"
-     {{if .Polling}}hx-get="/facets/marketplace/purchase/{{.PurchaseID}}/status" hx-trigger="every 10s" hx-swap="outerHTML"{{end}}>
+     {{if .Polling}}hx-get="/facets/marketplace/purchase/{{.PurchaseID}}/status" hx-trigger="every 10s, fa:purchase-delivered from:body" hx-swap="outerHTML"{{end}}>
   {{if eq .Status "pending"}}
   <p class="marketplace-purchase-modal__waiting" aria-live="polite">Waiting for payment&hellip;</p>
   {{else if eq .Status "confirmed"}}

@@ -24,7 +24,7 @@ import (
 // a role allowed to CREATE DATABASE. Unset, the tests report themselves skipped
 // and pass; they never fake a database. Same convention as PURGE_TEST_DATABASE_URL.
 //
-//	OUTBOX_TEST_DATABASE_URL=postgres://f33d3r:REMOVED_DEV_PASSWORD@localhost:5432/postgres?sslmode=disable \
+//	OUTBOX_TEST_DATABASE_URL=postgres://f33d3r:$POSTGRES_PASSWORD@localhost:5432/postgres?sslmode=disable \
 //	    go test ./internal/manhattan/
 
 var outboxTestSeq atomic.Int64

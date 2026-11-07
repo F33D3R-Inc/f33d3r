@@ -41,6 +41,12 @@ f33d3r.com {
     # is not proxied.
     respond /metrics 404
 
+    # Frequency audio signaling. The server API under /twirp is never published.
+    @livekit path /rtc /rtc/*
+    handle @livekit {
+      reverse_proxy livekit:7880
+    }
+
     handle @live_media {
       reverse_proxy live-edge:80
     }

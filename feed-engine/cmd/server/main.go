@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"github.com/f33d3r/feed-engine/internal/herald"
 	"net/http"
 	"os"
 	"os/signal"
@@ -93,6 +94,7 @@ func main() {
 	go backfill.Run(backfillCtx, database, startupLog)
 
 	// Background cron jobs — session cleanup, health monitor, subscription expiry
+	herald.Configure(cfg.HeraldURL, cfg.InternalAPIKey)
 	cron.Start(database, cfg, &http.Client{Timeout: 15 * time.Second})
 
 	// Live lane — media server control plane, stream reconciliation, safety sampler.
@@ -109,15 +111,43 @@ func main() {
 		startupLog.Fatal("live lane failed to start", zap.Error(err))
 	}
 
-	// Frequencies — the Sitra Achra consumer that turns Auralis's events into
-	// Facet mutations for everyone present. Each Nantar instance consumes on
-	// its own group so every replica sees every event; the SSE sessions it
-	// pushes to are its own.
+	// FA Live relay — carries live updates between replicas, because a person's
+	// connection sits on only one of them.
+	if cfg.KafkaBrokers != "" {
+		relayCtx, relayCancel := context.WithCancel(context.Background())
+		defer relayCancel()
+		stopRelay, rerr := handler.StartLiveRelay(relayCtx, cfg.KafkaBrokers)
+		if rerr != nil {
+			startupLog.Fatal("live relay failed to start", zap.Error(rerr))
+		}
+		defer stopRelay()
+
+		// Notifications: this brain's outbox to Herald, and Herald's counts back.
+		stopNotifRelay, nerr := sitra.StartNotificationRelay(relayCtx, database, cfg.KafkaBrokers)
+		if nerr != nil {
+			startupLog.Fatal("notification relay failed to start", zap.Error(nerr))
+		}
+		defer stopNotifRelay()
+		stopNotifUpdates, uerr := h.StartNotificationUpdates(relayCtx, cfg.KafkaBrokers)
+		if uerr != nil {
+			startupLog.Fatal("notification updates failed to start", zap.Error(uerr))
+		}
+		defer stopNotifUpdates()
+		h.StartFanoutWorker(relayCtx)
+		h.StartWorkNoticeWorker(relayCtx)
+		h.StartVideoJobWorker(relayCtx)
+	} else {
+		startupLog.Warn("KAFKA_BROKERS is empty: live updates reach this replica's connections only")
+	}
+
+	// Frequencies — the Sitra Achra consumer that marks rooms changed so their
+	// Facets are re-rendered. Replicas share one group, so one replica owns each
+	// room's events, and FA Live relays its output to the others' connections.
 	if cfg.KafkaBrokers != "" {
 		freqCtx, freqCancel := context.WithCancel(context.Background())
 		defer freqCancel()
-		stopFreq, ferr := sitra.StartFrequencyConsumer(freqCtx, cfg.KafkaBrokers, func(ctx context.Context, ev sitra.FrequencyEvent) {
-			h.PublishFrequencyState(ctx, ev.FrequencyID)
+		stopFreq, ferr := sitra.StartFrequencyConsumer(freqCtx, cfg.KafkaBrokers, func(_ context.Context, ev sitra.FrequencyEvent) {
+			h.FrequencyEvent(ev)
 		})
 		if ferr != nil {
 			startupLog.Fatal("frequency consumer failed to start", zap.Error(ferr))

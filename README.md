@@ -206,7 +206,7 @@ Fiat deposit → Aethyr Credit (1:1 cents) → AET (1 AET = 1,000,000 µAET)
 | Alertmanager | http://localhost:9093 | Alert routing (BrainDown, HighErrorRate, DiskHigh) |
 | MinIO Console | http://localhost:9001 | Object storage (media-raw, media-derived, backups) |
 
-Grafana: `admin` / `REMOVED_DEV_PASSWORD_change_in_prod`
+Grafana: `GRAFANA_ADMIN_USER` / `GRAFANA_ADMIN_PASSWORD` from `.env.local`
 
 ---
 
@@ -229,15 +229,9 @@ Other devices on the LAN: `https://<this machine's IP>:8443` (`LIVE_PUBLIC_HOST`
 There is deliberately no plain-HTTP port: the app sits behind Caddy locally exactly as in
 production, and live video only plays through that edge.
 
-### Dev accounts (password: `REMOVED_DEV_PASSWORD`)
+### Founder account (password: `FOUNDER_PASSWORD` in `.env.local`)
 
-| Handle | Role |
-|---|---|
-| @tehanibentley | Founder / Admin |
-| @admin | Admin |
-| @miiyazuko | Creator |
-| @dev | Engineer |
-| @guest | User |
+`bootstrap-local.sh` seeds one account, @tehanibentley.
 
 Grant admin: `UPDATE users SET role = 'admin' WHERE handle = 'x';`
 

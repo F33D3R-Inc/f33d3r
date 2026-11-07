@@ -546,6 +546,7 @@ pub async fn record_admission(
     pool: &PgPool,
     number_node: Uuid,
     initiator: Uuid,
+    owner: Uuid,
 ) -> Result<Admission> {
     let mut tx = pool.begin().await?;
 
@@ -599,14 +600,43 @@ pub async fn record_admission(
     .execute(&mut *tx)
     .await?;
 
-    tx.commit().await?;
     // Computed from the count read under the same lock that authorised the
     // insert, so two admissions racing cannot both believe they were the last
     // one and warn twice — or both believe they were not, and warn never.
     let remaining = max_admissions
         .map(|max| i64::from(max) - (admitted.0 + 1))
         .unwrap_or(i64::MAX);
-    Ok(Admission::Recorded(budget_alert(max_admissions, remaining)))
+    let alert = budget_alert(max_admissions, remaining);
+
+    // The alert names nobody: it is a fact about the owner's own Number. A Number
+    // that quietly stopped working is the worst failure this feature has, so the
+    // warning commits with the admission that caused it.
+    if let Some(name) = alert.as_str() {
+        let (kind, title) = match name {
+            "low" => ("number_budget_low", "One of your Numbers is nearly full"),
+            _ => ("number_budget_spent", "One of your Numbers is full"),
+        };
+        crate::notifications::enqueue(
+            &mut *tx,
+            &crate::notifications::Event {
+                event_id: format!("elohim:{kind}:{number_node}"),
+                recipient_account: None,
+                recipient_pial: owner.to_string(),
+                actor_account: None,
+                kind: kind.into(),
+                target_id: number_node.to_string(),
+                target_type: "number".into(),
+                payload: serde_json::json!({}),
+                push_title: title.into(),
+                push_body: String::new(),
+                push_url: "/settings/contact".into(),
+            },
+        )
+        .await?;
+    }
+
+    tx.commit().await?;
+    Ok(Admission::Recorded(alert))
 }
 
 /// One Number's lease as the OWNER sees it. Nothing in here ever crosses to a

@@ -549,6 +549,7 @@ func (h *Handler) apiContactDecideEvent(w http.ResponseWriter, r *http.Request, 
 		"pial_id":    user.PIALID,
 		"request_id": id,
 		"accept":     accept,
+		"owner_account": user.ID,
 	}
 	var out struct {
 		RequesterPIAL string `json:"requester_pial"`
@@ -562,7 +563,6 @@ func (h *Handler) apiContactDecideEvent(w http.ResponseWriter, r *http.Request, 
 	if accept && out.RequesterPIAL != "" {
 		if requester := dbpkg.AccountForPIAL(h.db, out.RequesterPIAL); requester != "" {
 			h.deliverHeldOnAccept(requester, user)
-			h.notifyUser(requester, "contact_accepted", user.ID, user.ID, "user")
 		}
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -690,7 +690,6 @@ func (h *Handler) startByNumber(w http.ResponseWriter, r *http.Request, user *mo
 	}
 	// The one notification pipeline, reached the one way: if a request was
 	// opened, the person it landed on hears about it here and nowhere else.
-	h.notifyContactRequest(user, outcome)
 
 	switch startStateFor(outcome.Decision) {
 	case StartHeld:
@@ -818,7 +817,6 @@ func (h *Handler) releaseHeldByNumber(w http.ResponseWriter, r *http.Request, us
 		gate(gnosis.PendingUnavailable)
 		return
 	}
-	h.notifyContactRequest(user, outcome)
 
 	if state := contactGateState(outcome.Decision); state != "" {
 		// Recorded as one of the three words the recipient's own surfaces

@@ -11,6 +11,7 @@ package handler
 //   6. Moderator approves/blocks → SetPostScanState
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -47,8 +48,12 @@ type scanCompletePayload struct {
 }
 
 // scanCompleteEvent receives the async content-scan result and transitions scan_state.
-// Called only by the content-scan brain (validated via X-Internal-Key in eventsPost dispatcher).
+// Called only by the content-scan brain, with X-Internal-Key.
 func (h *Handler) scanCompleteEvent(w http.ResponseWriter, r *http.Request) {
+	if !h.internalCallerOK(r) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
 	if h.db == nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		return
@@ -108,23 +113,31 @@ func (h *Handler) scanCompleteEvent(w http.ResponseWriter, r *http.Request) {
 		nextState = "human_review"
 	}
 
-	if err := dbpkg.SetPostScanState(h.db, payload.PostID, nextState, "content-scan: "+payload.RiskLevel, "system"); err != nil {
+	// Abraxas Shield and moderators also give verdicts. This one applies only while
+	// the work has none, so a late scan can never overrule a block or a human decision.
+	var currentState string
+	if err := h.db.QueryRow(`SELECT COALESCE(scan_state,'') FROM works WHERE id = $1`, payload.PostID).Scan(&currentState); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			http.Error(w, "work not found", http.StatusNotFound)
+			return
+		}
+		log.Printf("[scan-complete] reading work %s: %v", payload.PostID, err)
 		http.Error(w, "db_error", http.StatusInternalServerError)
 		return
 	}
-
-	// Notify all admin users when a post enters human_review so they don't have
-	// to manually poll the admin panel to discover the queue has items.
-	if nextState == "human_review" {
-		for _, adminID := range dbpkg.GetAdminUserIDs(h.db) {
-			h.notifyUser(adminID, "moderation", "", payload.PostID, "post")
-		}
+	if currentState != "pending" {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"ok":true,"state":"` + currentState + `"}`))
+		return
 	}
 
-	// If age_gated, also set is_nsfw = true on the post/work so the content_gate
-	// overlay fires without needing a separate check.
-	if nextState == "age_gated" {
-		h.db.Exec(`UPDATE works SET is_nsfw = TRUE WHERE id = $1`, payload.PostID)
+	if err := dbpkg.ApplyScanState(h.db, payload.PostID, nextState, "content-scan: "+payload.RiskLevel, "system", dbpkg.ScanOutcome{
+		NotifyModerators: nextState == "human_review",
+		NotifyAuthor:     nextState == "blocked" || nextState == "age_gated",
+	}); err != nil {
+		log.Printf("[scan-complete] applying %s to %s: %v", nextState, payload.PostID, err)
+		http.Error(w, "db_error", http.StatusInternalServerError)
+		return
 	}
 
 	// Duplicate lineage: set attribution and redirect the duplicate post to serve
@@ -210,7 +223,6 @@ func (h *Handler) ModerationActionPost(w http.ResponseWriter, r *http.Request) {
 		nextState = "blocked"
 	case "age_gate":
 		nextState = "age_gated"
-		h.db.Exec(`UPDATE works SET is_nsfw = TRUE WHERE id = $1`, req.PostID)
 	default:
 		http.Error(w, "unknown action", http.StatusBadRequest)
 		return
@@ -221,7 +233,9 @@ func (h *Handler) ModerationActionPost(w http.ResponseWriter, r *http.Request) {
 		reason = "moderator: " + req.Action
 	}
 
-	if err := dbpkg.SetPostScanState(h.db, req.PostID, nextState, reason, user.Handle); err != nil {
+	if err := dbpkg.ApplyScanState(h.db, req.PostID, nextState, reason, user.Handle, dbpkg.ScanOutcome{
+		NotifyAuthor: nextState == "blocked" || nextState == "age_gated",
+	}); err != nil {
 		http.Error(w, "db_error", http.StatusInternalServerError)
 		return
 	}
@@ -261,7 +275,6 @@ func (h *Handler) ModerationActionPost(w http.ResponseWriter, r *http.Request) {
 	if (nextState == "blocked" || nextState == "age_gated") && h.db != nil {
 		var authorID string
 		if err := h.db.QueryRow(`SELECT author_id FROM works WHERE id = $1`, req.PostID).Scan(&authorID); err == nil && authorID != "" {
-			h.notifyUser(authorID, "violation", "", req.PostID, "post")
 			if nextState == "age_gated" {
 				var pialID string
 				h.db.QueryRow(`SELECT pial_id FROM users WHERE id = $1`, authorID).Scan(&pialID)

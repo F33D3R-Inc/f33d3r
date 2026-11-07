@@ -1,8 +1,10 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
+	"github.com/f33d3r/feed-engine/internal/herald"
 	"time"
 
 	"github.com/lib/pq"
@@ -145,30 +147,6 @@ func GetWorkBodyPreview(db *sql.DB, workID string) string {
 	return body
 }
 
-// CreateNotificationWithPayload is CreateNotification with a payload: the tip
-// amount, or the preview a notification carries. The same self-notify rule
-// applies and the same bool tells the caller whether a row landed.
-func CreateNotificationWithPayload(db *sql.DB, userID, nType, actorID, targetID, targetType string, payload map[string]interface{}) (bool, error) {
-	if actorID != "" && userID == actorID {
-		return false, nil
-	}
-	if payload == nil {
-		payload = map[string]interface{}{}
-	}
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		return false, err
-	}
-	_, err = db.Exec(`
-		INSERT INTO notifications (user_id, type, actor_id, target_id, target_type, payload)
-		VALUES ($1, $2, $3, $4, $5, $6::jsonb)
-	`, userID, nType, nullIfEmpty(actorID), targetID, targetType, string(raw))
-	if err != nil {
-		return false, err
-	}
-	return true, nil
-}
-
 // NotificationGroup is what the Inbox draws: one row for a single event, or
 // one row standing for several of the same kind on the same target within an
 // hour.
@@ -199,35 +177,24 @@ func notificationKindGroups(kind string) bool {
 // ListNotificationGroups returns grouped notifications newest first. `before`
 // is the created_at of the last group of the previous page; the next cursor
 // is returned alongside and is "" when the page is the last.
-func ListNotificationGroups(db *sql.DB, userID string, limit int, before time.Time) ([]*NotificationGroup, string, error) {
+func ListNotificationGroups(db *sql.DB, userID string, limit int, before time.Time, kinds ...string) ([]*NotificationGroup, string, error) {
 	// Over-fetch raw rows: grouping shrinks the list and the page is measured
 	// in groups.
-	rows, err := db.Query(`
-		SELECT id::text, type, COALESCE(actor_id::text, ''), target_id, target_type, payload::text, is_read, created_at
-		FROM notifications
-		WHERE user_id = $1 AND created_at < $2
-		ORDER BY created_at DESC
-		LIMIT $3
-	`, userID, before, limit*8)
+	ctx, cancel := context.WithTimeout(context.Background(), heraldTimeout)
+	defer cancel()
+	rows, err := herald.List(ctx, userID, limit*8, before, kinds...)
 	if err != nil {
 		return nil, "", err
 	}
-	defer rows.Close()
 
 	var out []*NotificationGroup
 	open := map[string]*NotificationGroup{}
 	exhausted := true
 	scanned := 0
-	for rows.Next() {
+	for _, r := range rows {
 		scanned++
-		var (
-			id, kind, actorID, targetID, targetType, payload string
-			isRead                                           bool
-			created                                          time.Time
-		)
-		if err := rows.Scan(&id, &kind, &actorID, &targetID, &targetType, &payload, &isRead, &created); err != nil {
-			return nil, "", err
-		}
+		id, kind, actorID, targetID, targetType, payload := r.ID, r.Kind, r.ActorAccount, r.TargetID, r.TargetType, r.Payload
+		isRead, created := r.IsRead, r.CreatedAt
 		key := kind + "|" + targetType + "|" + targetID
 		if g, ok := open[key]; ok && notificationKindGroups(kind) && g.CreatedAt.Sub(created) <= time.Hour {
 			g.MemberIDs = append(g.MemberIDs, id)
@@ -269,9 +236,6 @@ func ListNotificationGroups(db *sql.DB, userID string, limit int, before time.Ti
 		open[key] = g
 		out = append(out, g)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, "", err
-	}
 	// A full raw window may have more below it even when the groups fit.
 	if scanned >= limit*8 {
 		exhausted = false
@@ -288,36 +252,16 @@ func ListNotificationGroups(db *sql.DB, userID string, limit int, before time.Ti
 // target within the hour before it — scoped to userID so one account cannot
 // mark another's rows.
 func NotificationGroupMemberIDs(db *sql.DB, userID, headID string) ([]string, error) {
-	var kind, targetID, targetType string
-	var created time.Time
-	err := db.QueryRow(`
-		SELECT type, target_id, target_type, created_at FROM notifications
-		WHERE id = $1::uuid AND user_id = $2
-	`, headID, userID).Scan(&kind, &targetID, &targetType, &created)
+	ctx, cancel := context.WithTimeout(context.Background(), heraldTimeout)
+	defer cancel()
+	kind, ids, err := herald.Group(ctx, userID, headID)
 	if err != nil {
 		return nil, err
 	}
 	if !notificationKindGroups(kind) {
 		return []string{headID}, nil
 	}
-	rows, err := db.Query(`
-		SELECT id::text FROM notifications
-		WHERE user_id = $1 AND type = $2 AND target_id = $3 AND target_type = $4
-		  AND created_at <= $5 AND created_at > $6
-	`, userID, kind, targetID, targetType, created, created.Add(-time.Hour))
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	return ids, rows.Err()
+	return ids, nil
 }
 
 // MarkNotificationsRead marks the named rows read for userID.
@@ -325,8 +269,9 @@ func MarkNotificationsRead(db *sql.DB, userID string, ids []string) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	_, err := db.Exec(`UPDATE notifications SET is_read = TRUE WHERE user_id = $1 AND id = ANY($2::uuid[])`, userID, pq.Array(ids))
-	return err
+	ctx, cancel := context.WithTimeout(context.Background(), heraldTimeout)
+	defer cancel()
+	return herald.MarkRead(ctx, userID, ids, false)
 }
 
 // GetUsersByIDs loads full user rows for a set of ids, keyed by id. Ids that

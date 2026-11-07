@@ -7,7 +7,7 @@ All services live in `docker-compose.local.yml`. Provisioning is file-based and 
 
 | Component | Local URL | Credentials | Purpose |
 |---|---|---|---|
-| Grafana | http://localhost:3000 | admin / `REMOVED_DEV_PASSWORD_change_in_prod` | Dashboards — F33D3R Overview auto-provisioned |
+| Grafana | http://localhost:3000 | `GRAFANA_ADMIN_USER` / `GRAFANA_ADMIN_PASSWORD` from `.env.local` | Dashboards — F33D3R Overview auto-provisioned |
 | Prometheus | http://localhost:9090 | — | Metrics scraping (15 s, 14-day retention) |
 | Loki | http://localhost:3100 | — | Log aggregation (30-day retention at T0) |
 | Alertmanager | http://localhost:9093 | — | Alert routing (Discord + email) |

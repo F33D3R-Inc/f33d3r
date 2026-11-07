@@ -19,3 +19,18 @@ facet_modules/
 .env
 .env.local
 infra/tor/hs_ed25519_secret_key
+
+# Production secrets
+.env.prod
+
+# Compiled binaries, people's uploads, and this machine's own settings
+feed-engine/server
+feed-engine/web/static/uploads/
+.directory
+mobile/android/local.properties
+
+# Internal notes and agent instructions
+CLAUDE.md
+SPRINT_LOG.md
+DESKTOP_2026_RESKIN_PLAN.md
+journal/

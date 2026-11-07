@@ -4,8 +4,8 @@ FACET frequency_dock
 
   The Frequency you are in, living in the SHELL. Once a person tunes in, the
   audio is theirs wherever they browse: the dock sits outside the Playground,
-  so navigation swaps pages under it and it stays. Phase 3 attaches the audio
-  element here and nowhere else.
+  so navigation swaps pages under it and it stays. The audio itself plays
+  from #frequency-media, which no Fragment ever replaces.
 
   The root carries BOTH id="frequency-dock" and this Frequency's own facet id.
   The Shell ships an empty mount with that id; the first dock replaces it by
@@ -19,13 +19,12 @@ FACET frequency_dock
   End Frequency, Leave) into a heartbeat, and the tally the server answers
   with would replace the whole dock. The root is inert: data attributes only.
 
-  The media bootstrap rides on the root as data attributes, never as visible
-  text: signaling path and the short-lived token Auralis minted for this
-  session (frequency-media.js, Phase 3, reads them and nothing else).
+  frequency-media.js reads this root to know which room to carry audio for. A
+  dock in another state, or no dock, means no audio.
 
   inputs:
     FrequencyStageData — .ID .Title .Host .Speakers .ListenerCount .ListenersLabel
-                         .Recording .Viewer .Session .State .RequestsOpen .Locked .Ctx
+                         .Recording .Viewer .State .RequestsOpen .Locked .Ctx
     PeopleCount int
     Captions    []string — rendered caption lines (Phase 5), may be empty
 
@@ -38,56 +37,58 @@ FACET frequency_dock
 
   signals:
     emits:    frequency.leave; hx-get dock_mini (collapse); the tally inside emits frequency.heartbeat (every 15s)
-    receives: frequency_facet (SSE — this Fragment, or a child, replaced)
+    receives: facet.mutate (SSE — this Fragment, or a child, replaced)
 
   context:
     base.html #frequency-dock → bottom-right floating panel (desktop) / bottom sheet (mobile)
 */}}
 {{define "frequency_dock"}}
 {{$v := .Viewer}}
-<aside id="frequency-dock" class="freq-dock freq-dock--{{.State}}"
+<aside class="freq-dock freq-dock--{{.State}}"
        data-facet-id="{{frequencyFacetID .ID "dock"}}"
        data-frequency-id="{{.ID}}" data-state="{{.State}}"
        data-viewer-role="{{if $v.InFrequency}}{{$v.Role}}{{else}}none{{end}}"
-       {{- with .Session}}
-       data-frequency-signal-path="{{.SignalPath}}"
-       data-frequency-token="{{.Token}}"
-       data-frequency-token-expires="{{.ExpiresAt}}"
-       data-frequency-permissions="{{range $i, $p := .Permissions}}{{if $i}} {{end}}{{$p}}{{end}}"
-       {{- end}}
        role="complementary" aria-label="Frequency you are in: {{.Title}}">
+  {{template "frequency_beat" .}}
+  {{template "frequency_reaction_lane" (dict "ID" .ID)}}
   <header class="freq-dock__bar">
     <button type="button" class="freq-dock__chev" aria-label="Collapse"
-            hx-get="/facets/frequency/{{.ID}}/dock_mini" hx-target="#frequency-dock" hx-swap="outerHTML">
+            hx-get="/facets/frequency/{{.ID}}/dock_mini" hx-target="closest .freq-dock" hx-swap="outerHTML">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
     </button>
     <span class="freq-dock__meta">
       {{template "frequency_live_badge" (dict "ID" .ID "State" .State "ScheduledLabel" "")}}
       {{template "frequency_recording_badge" (dict "ID" .ID "Recording" .Recording)}}
-      {{template "frequency_listener_count" (dict "ID" .ID "Count" .ListenerCount "Label" .ListenersLabel "Heartbeat" (and $v.InFrequency (eq .State "live")))}}
+      {{template "frequency_listener_count" (dict "ID" .ID "Count" .ListenerCount "Label" .ListenersLabel)}}
     </span>
-    <form hx-post="/events" hx-target="#frequency-dock" hx-swap="outerHTML">
+    {{if not $v.CanEnd}}
+    <form hx-post="/events" hx-swap="none">
       <input type="hidden" name="event_type" value="frequency.leave">
       <input type="hidden" name="frequency_id" value="{{.ID}}">
       <button type="submit" class="freq-dock__leave">Leave</button>
     </form>
+    {{end}}
   </header>
 
   <a class="freq-dock__title" href="/frequencies/{{.ID}}">{{.Title}}</a>
 
-  <ul class="freq-tiles freq-tiles--dock" role="list" aria-label="On the mic">
-    {{range .Speakers}}
-      {{template "frequency_speaker_tile" (dict "Person" .Person "Role" .Role "Muted" .Muted "Present" .Present "Speaking" false "Size" "md")}}
-    {{end}}
-  </ul>
-
-  {{template "frequency_captions" (dict "ID" .ID "Lines" .Captions)}}
+  {{template "frequency_dock_speakers" (dict "ID" .ID "Speakers" .Speakers)}}
 
   {{template "frequency_controls" (dict
-      "ID" .ID "State" .State "Viewer" $v "RequestsOpen" .RequestsOpen "Locked" .Locked "Ctx" .Ctx "InDock" true)}}
+      "ID" .ID "State" .State "Viewer" $v "RequestsOpen" .RequestsOpen "Locked" .Locked "Ctx" .Ctx "InDock" true "Surface" "dock" "Recording" .Recording)}}
 
-  {{/* Reactions row — Phase 2b. Server-rendered emoji reactions that fan out
-       as Facet mutations; no behaviour yet, the slot holds the space. */}}
-  <div class="freq-dock__reactions" aria-hidden="true"></div>
 </aside>
+{{end}}
+
+{{define "frequency_dock_speakers"}}
+<ul class="freq-tiles freq-tiles--dock" data-facet-id="{{frequencyFacetID .ID "dock_speakers"}}" role="list" aria-label="On the mic">
+  {{range .Speakers}}
+    {{template "frequency_speaker_tile" (dict "Person" .Person "Role" .Role "Muted" .Muted "Present" .Present "Speaking" false "Size" "md" "MediaIdentity" .MediaIdentity)}}
+  {{end}}
+</ul>
+{{end}}
+
+{{define "frequency_beat"}}
+<span hidden hx-get="/facets/frequency/{{.ID}}/dock" hx-trigger="fa:resync from:body" hx-target="closest .freq-dock" hx-swap="outerHTML"></span>
+{{if and .Viewer.InFrequency (eq .State "live")}}<span class="freq-beat" hidden hx-post="/events" hx-vals='{"event_type":"frequency.heartbeat","frequency_id":"{{.ID}}"}' hx-trigger="every 15s" hx-swap="none"></span>{{end}}
 {{end}}

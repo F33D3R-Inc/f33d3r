@@ -218,6 +218,8 @@ func (h *Handler) uploadAvatar(w http.ResponseWriter, r *http.Request) {
 			ThemeID:   user.ThemeID,
 		}); err != nil {
 			log.Printf("[media] avatar uploaded but not saved to profile for %s: %v", user.Handle, err)
+		} else {
+			go h.publishProfileFacets(user.ID)
 		}
 	}
 	// Bust cache so next page load reflects the new avatar.

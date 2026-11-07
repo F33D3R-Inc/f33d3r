@@ -28,7 +28,7 @@ FACET profile_header
     profile.html → top of main column, always the first section
 */}}
 {{define "profile_header"}}
-<div class="profile-header">
+<div class="profile-header" data-watch-id="profile:{{.ProfileUser.ID}}">
 
   {{/* ── Banner ── */}}
   <div class="profile-banner"
@@ -51,6 +51,7 @@ FACET profile_header
         "IsOnline"    .ProfileIsOnline)}}
       {{else}}
       <div class="vision-profile-ring-slot" id="profile-vision-ring-slot"
+           data-facet-id="facet:f33d3r:profile:{{.ProfileUser.ID}}:avatar"
            hx-get="/facets/vision/ring?handle={{.ProfileUser.Handle}}"
            hx-trigger="load, visionclosed from:body"
            hx-swap="innerHTML">
@@ -84,7 +85,7 @@ FACET profile_header
 
     {{/* ── Identity: name, handle, bio, meta, stats, XP ── */}}
     <div class="profile-name-row">
-      <h1 class="profile-display-name">{{.ProfileUser.DisplayName}}</h1>
+      {{template "profile_display_name" (dict "UserID" .ProfileUser.ID "DisplayName" .ProfileUser.DisplayName)}}
       {{template "badge_pill" (dict "Role" .ProfileUser.Role "OfficialType" .ProfileUser.OfficialType "IsVerified" .ProfileUser.IsVerified "IsCreator" .ProfileUser.IsCreator)}}
       {{if .ProfileUser.IsFoundingCreator}}{{template "badge_founding_creator" .}}{{end}}
       {{range .ProfileUser.OrgMemberships}}{{if eq .Status "approved"}}
@@ -94,7 +95,7 @@ FACET profile_header
 
     <p class="profile-handle">@{{.ProfileUser.Handle}}</p>
 
-    {{if .ProfileUser.Bio}}<p class="profile-bio">{{bioHTML .ProfileUser.Bio}}</p>{{end}}
+    {{template "profile_bio" (dict "UserID" .ProfileUser.ID "Bio" .ProfileUser.Bio)}}
 
     <div class="profile-meta-row">
       {{if .ProfileUser.Pronouns}}<span class="profile-meta-item">{{.ProfileUser.Pronouns}}</span>{{end}}
@@ -132,11 +133,11 @@ FACET profile_header
     <div class="profile-stats">
       <button class="profile-stat" type="button"
               hx-get="/partials/follow-list?handle={{.ProfileUser.Handle}}&type=following" hx-target="#overlay-slot" hx-swap="innerHTML">
-        <strong>{{.ProfileUser.FollowingCount}}</strong> Following
+        {{template "profile_stat_count" (dict "UserID" .ProfileUser.ID "Stat" "following" "Count" .ProfileUser.FollowingCount)}} Following
       </button>
       <button class="profile-stat" type="button"
               hx-get="/partials/follow-list?handle={{.ProfileUser.Handle}}&type=followers" hx-target="#overlay-slot" hx-swap="innerHTML">
-        <strong>{{.ProfileUser.FollowerCount}}</strong> Followers
+        {{template "profile_stat_count" (dict "UserID" .ProfileUser.ID "Stat" "followers" "Count" .ProfileUser.FollowerCount)}} Followers
       </button>
       {{if .ProfileUser.IsCreator}}
       <button class="profile-stat" type="button"

@@ -2,10 +2,9 @@
 //!
 //! Auralis is an internal brain. Every control-plane call arrives from Nantar
 //! (or from a peer brain, or an operator with the shared secret); the browser
-//! never reaches these routes. The one browser-facing path is the signaling
-//! socket, which authenticates with a token this brain minted — see
-//! `security::tokens`. So the convention here is the estate's, in the strict
-//! form:
+//! never reaches these routes. The browser reaches only LiveKit, with a join
+//! token Nantar fetched from this brain — see `media`. So the convention here is
+//! the estate's, in the strict form:
 //!
 //!   * `X-Internal-Key` vs `INTERNAL_API_KEY` is REQUIRED on every route. A
 //!     request without it, or with the wrong one, is refused before a handler

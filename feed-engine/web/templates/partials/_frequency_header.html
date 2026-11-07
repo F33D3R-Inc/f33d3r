@@ -28,7 +28,7 @@ FACET frequency_header
 
   signals:
     emits:    none
-    receives: frequency_facet (SSE)
+    receives: facet.mutate (SSE)
 
   context:
     frequency_stage → top
@@ -40,7 +40,7 @@ FACET frequency_header
     {{template "frequency_recording_badge" (dict "ID" .ID "Recording" .Recording)}}
     {{if .IsNSFW}}<span class="freq-card__nsfw" aria-label="18+ content">18+</span>{{end}}
     <span class="freq-head__spacer"></span>
-    {{template "frequency_listener_count" (dict "ID" .ID "Count" .ListenerCount "Label" .ListenersLabel "Heartbeat" (and .Heartbeat (eq .State "live")))}}
+    {{template "frequency_listener_count" (dict "ID" .ID "Count" .ListenerCount "Label" .ListenersLabel)}}
   </div>
   <h1 class="freq-head__title">{{.Title}}</h1>
   {{if .Description}}<p class="freq-head__desc">{{.Description}}</p>{{end}}

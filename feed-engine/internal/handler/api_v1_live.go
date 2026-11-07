@@ -479,7 +479,16 @@ func (h *Handler) liveStartEvent(w http.ResponseWriter, r *http.Request, user *m
 	}
 	// A native broadcast opens its room at once: there is no media ingest to
 	// wait for, and a room nobody can find is not open.
-	if err := dbpkg.StartStream(h.db, s.ID, 0, 0, "native"); err != nil {
+	var opened error
+	if notify {
+		opened = dbpkg.StartStreamAnnounced(h.db, s.ID, 0, 0, "native", dbpkg.FanoutJob{
+			ActorID: user.ID, ActorHandle: user.Handle, Kind: "live_start",
+			TargetID: s.ID, TargetType: "live", Preview: s.Title,
+		})
+	} else {
+		opened = dbpkg.StartStream(h.db, s.ID, 0, 0, "native")
+	}
+	if err := opened; err != nil {
 		log.Printf("[live] open native room %s: %v", s.ID, err)
 		http.Error(w, "the broadcast could not be opened", http.StatusInternalServerError)
 		return
@@ -493,35 +502,7 @@ func (h *Handler) liveStartEvent(w http.ResponseWriter, r *http.Request, user *m
 	h.startLiveSweeper()
 	h.publishStreamStatus(s)
 
-	if notify {
-		go h.notifyFollowersLive(user, s)
-	}
 	apiJSON(w, http.StatusCreated, h.liveStreamDTO(s, user))
-}
-
-// notifyFollowersLive tells the broadcaster's followers a room opened: an
-// inbox row each, and the live_start signal on the user stream.
-func (h *Handler) notifyFollowersLive(user *model.User, s *model.LiveStream) {
-	rows, err := h.db.Query(`
-		SELECT f.follower_id::text, COALESCE(u.pial_id::text, '')
-		  FROM follows f JOIN users u ON u.id = f.follower_id
-		 WHERE f.following_id = $1::uuid`, user.ID)
-	if err != nil {
-		log.Printf("[live] followers of %s: %v", user.ID, err)
-		return
-	}
-	defer rows.Close()
-	twin := fmt.Sprintf(`{"stream_id":%q}`, s.ID)
-	for rows.Next() {
-		var fid, pial string
-		if err := rows.Scan(&fid, &pial); err != nil {
-			continue
-		}
-		h.notifyUserWithPayload(fid, "live_start", user.ID, s.ID, "live", map[string]interface{}{"preview": s.Title})
-		if pial != "" {
-			PublishToUser(pial, SSEEvent{Type: "live_start", JSON: twin})
-		}
-	}
 }
 
 func (h *Handler) liveEndEvent(w http.ResponseWriter, r *http.Request, user *model.User, raw map[string]json.RawMessage) {
@@ -744,5 +725,4 @@ func (h *Handler) recordLiveTip(s *model.LiveStream, from *model.User, amountUAE
 	}
 	h.appendLiveChat(s, from, "tip", "", amountUAET)
 	h.publishLiveJSON(s, "tips", map[string]int64{"total_uaet": total, "goal_uaet": s.TipGoalUAET})
-	h.notifyUserWithPayload(s.AuthorID, "tip", from.ID, s.ID, "live", map[string]interface{}{"amount_uaet": amountUAET})
 }

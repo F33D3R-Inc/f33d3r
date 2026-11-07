@@ -45,8 +45,8 @@ FACET poll_card
      onclick="event.stopPropagation()">
   {{if or $voted $poll.Closed $ro}}
   <div class="poll-results">
-    {{range $poll.Results}}
-    {{template "poll_bar" (dict "Label" .Label "Pct" .Pct "Count" .Votes "Voted" .Voted "IsWinner" .IsWinner)}}
+    {{range $i, $r := $poll.Results}}
+    {{template "poll_bar" (dict "PostID" $postID "Surface" $surface "Index" $i "Label" .Label "Pct" .Pct "Count" .Votes "Voted" .Voted "IsWinner" .IsWinner)}}
     {{end}}
   </div>
   {{else}}
@@ -61,6 +61,12 @@ FACET poll_card
     {{end}}
   </div>
   {{end}}
-  <p class="poll-total">{{$poll.TotalVotes}} vote{{if ne $poll.TotalVotes 1}}s{{end}}{{if $poll.TimeLeft}} · {{$poll.TimeLeft}}{{end}}</p>
+  {{template "poll_total" (dict "PostID" $postID "Surface" $surface "Poll" $poll)}}
 </div>
 {{end}}
+
+{{/* Atomic poll Facets. Their values are the same for every viewer, so one fragment can
+     go to everyone watching. Who voted for what stays on the poll_bar row around them. */}}
+{{define "poll_fill"}}<div class="poll-bar-fill" data-facet-id="facet:f33d3r:work:{{.PostID}}:poll_fill_{{.Surface}}_{{.Index}}" style="width:{{.Pct}}%"></div>{{end}}
+{{define "poll_pct"}}<span class="poll-bar-pct" data-facet-id="facet:f33d3r:work:{{.PostID}}:poll_pct_{{.Surface}}_{{.Index}}">{{.Pct}}%</span>{{end}}
+{{define "poll_total"}}<p class="poll-total" data-facet-id="facet:f33d3r:work:{{.PostID}}:poll_total_{{.Surface}}">{{.Poll.TotalVotes}} vote{{if ne .Poll.TotalVotes 1}}s{{end}}{{if .Poll.TimeLeft}} · {{.Poll.TimeLeft}}{{end}}</p>{{end}}

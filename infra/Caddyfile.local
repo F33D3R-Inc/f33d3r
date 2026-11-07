@@ -14,7 +14,7 @@
 # Other devices:  https://XXXG-00W0.local:8443  or  https://<LIVE_PUBLIC_HOST>:8443
 # Other devices must trust the Caddy root CA first — see infra/README-CERTS.md.
 # One block, not three: the bodies were duplicated and drifted apart.
-https://localhost:8443, https://XXXG-00W0.local:8443, https://{$LIVE_PUBLIC_HOST:127.0.0.1}:8443 {
+https://dev.f33d3r.com:8443, https://localhost:8443, https://XXXG-00W0.local:8443, https://{$LIVE_PUBLIC_HOST:127.0.0.1}:8443 {
   tls internal
 
   # ── edge hardening ──────────────────────────────────────────────────────────
@@ -53,6 +53,12 @@ https://localhost:8443, https://XXXG-00W0.local:8443, https://{$LIVE_PUBLIC_HOST
     # public edge never serves it. Answered before the catch-all so the path
     # is not proxied.
     respond /metrics 404
+
+    # Frequency audio signaling. The server API under /twirp is never published.
+    @livekit path /rtc /rtc/*
+    handle @livekit {
+      reverse_proxy livekit:7880
+    }
 
     handle @live_media {
       reverse_proxy live-edge:80

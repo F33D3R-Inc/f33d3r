@@ -79,7 +79,7 @@ _PG_DSN = (
     f"port={os.environ.get('DB_PORT','5432')} "
     f"dbname={os.environ.get('DB_NAME','f33d3r_feed')} "
     f"user={os.environ.get('DB_USER','f33d3r')} "
-    f"password={os.environ.get('DB_PASSWORD','REMOVED_DEV_PASSWORD')} "
+    f"password={os.environ['DB_PASSWORD']} "
     # A registry the gate cannot reach must be answered as unreachable, not
     # waited on. Without this the connect blocks on an unreachable Postgres
     # until the caller's own deadline expires — measured, /v1/hashes/check-media

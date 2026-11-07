@@ -428,7 +428,7 @@ pub async fn get_admin_user_ids(pool: &Pool) -> Vec<String> {
     };
 
     let rows = match client
-        .query("SELECT id::TEXT FROM users WHERE role = 'admin'", &[])
+        .query("SELECT id::TEXT FROM users WHERE role IN ('admin', 'founder')", &[])
         .await
     {
         Ok(r) => r,
@@ -457,14 +457,39 @@ pub async fn notify_user(
 
     client
         .execute(
-            "INSERT INTO notifications (user_id, type, actor_id, target_id, target_type)
-             VALUES ($1::text::uuid, $2, NULL, $3, $4)",
+            "WITH e AS (SELECT md5('abraxas|' || $1::text || '|' || $2::text || '|' || $3::text)::uuid AS id)
+             INSERT INTO notification_outbox (event_id, recipient_account, recipient_pial, event)
+             SELECT e.id, u.id, u.pial_id::text, jsonb_build_object(
+                      'event_id', e.id::text,
+                      'recipient_account', u.id::text,
+                      'recipient_pial', u.pial_id::text,
+                      'kind', $2::text,
+                      'target_id', $3::text,
+                      'target_type', $4::text,
+                      'channel', 'inbox',
+                      'payload', '{}'::jsonb)
+               FROM users u, e
+              WHERE u.id = $1::text::uuid AND u.pial_id IS NOT NULL
+             ON CONFLICT (event_id) DO NOTHING",
             &[&user_id, &notif_type, &target_id, &target_type],
         )
         .await
         .map_err(|e| format!("notify_user error: {e}"))?;
 
     Ok(())
+}
+
+/// Writes a notification, holding the consumer until the database takes it. The
+/// verdict is already applied and the offset has not moved, so giving up would lose
+/// the notification for good. The event ID is derived from the verdict, so a message
+/// consumed twice cannot notify twice.
+pub async fn notify_user_durable(pool: &Pool, user_id: &str, notif_type: &str, target_id: &str, target_type: &str) {
+    let mut backoff = std::time::Duration::from_millis(500);
+    while let Err(e) = notify_user(pool, user_id, notif_type, target_id, target_type).await {
+        error!(user_id, target_id, err = %e, "notification not written; retrying");
+        tokio::time::sleep(backoff).await;
+        backoff = (backoff * 2).min(std::time::Duration::from_secs(30));
+    }
 }
 
 /// A signal's accuracy as recorded by admin moderation decisions.
@@ -672,4 +697,15 @@ pub async fn get_account_age_and_content_count(
     let created_at: chrono::DateTime<chrono::Utc> = row.get(0);
     let content_count: i64 = row.get(1);
     Some((created_at, content_count))
+}
+
+/// The author of a work, to tell them about a moderation decision on it.
+pub async fn get_work_author_id(pool: &Pool, work_id: &str) -> Option<String> {
+    let client = pool.get().await.ok()?;
+    client
+        .query_opt("SELECT author_id::TEXT FROM works WHERE id = $1::text::uuid", &[&work_id])
+        .await
+        .ok()
+        .flatten()
+        .map(|r| r.get(0))
 }

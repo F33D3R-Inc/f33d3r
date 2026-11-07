@@ -1,3 +1,4 @@
+mod notifications;
 mod db;
 mod handlers;
 mod identity;
@@ -42,6 +43,7 @@ async fn main() -> anyhow::Result<()> {
     // achievement; this drain is the half that delivers it. Registrations queued
     // while Manhattan is unreachable are delivered whole once it is.
     manhattan_outbox::spawn(database_url.clone(), manhattan.clone());
+    notification_outbox::spawn(database_url.clone());
 
     let state = AppState {
         pool,

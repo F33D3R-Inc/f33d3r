@@ -39,7 +39,7 @@ services:
       -c config_file=/etc/postgresql/postgresql.conf
     environment:
       POSTGRES_USER: "${POSTGRES_USER:-f33d3r}"
-      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-REMOVED_DEV_PASSWORD}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set this in .env.local}"
       POSTGRES_DB: "${POSTGRES_DB:-f33d3r}"
       PGDATA: "/var/lib/postgresql/data/18/docker"
     volumes:
@@ -47,12 +47,51 @@ services:
       - ./postgres-init:/docker-entrypoint-initdb.d:ro
       - ./infra/postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
     ports:
-      - "5432:5432"
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
     healthcheck:
       test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-f33d3r}" ]
       interval: 5s
       timeout: 3s
       retries: 10
+
+  # Creates the FA Live relay topic. Live events are only useful for minutes, so it
+  # is created explicitly with short retention rather than left to auto-creation.
+  sitra-init:
+    image: redpandadata/redpanda:latest
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        set -e
+        B=sitra-achra:9092
+        rpk topic describe fa.live -X brokers=$$B >/dev/null 2>&1 || \
+          rpk topic create fa.live -p 6 -r 1 -c retention.ms=300000 -X brokers=$$B
+        for t in notification.events notification.events.dead; do
+          rpk topic describe $$t -X brokers=$$B >/dev/null 2>&1 || \
+            rpk topic create $$t -p 12 -r 1 -c retention.ms=2592000000 -X brokers=$$B
+        done
+        rpk topic describe notification.updates -X brokers=$$B >/dev/null 2>&1 || \
+          rpk topic create notification.updates -p 6 -r 1 -c retention.ms=300000 -X brokers=$$B
+        rpk topic describe frequency.events -X brokers=$$B >/dev/null 2>&1 || \
+          rpk topic create frequency.events -p 6 -r 1 -c retention.ms=604800000 -X brokers=$$B
+        echo "[sitra-init] topics ready"
+    depends_on:
+      sitra-achra:
+        condition: service_healthy
+    restart: "no"
+
+  # Presence, leases and rate limits that must survive memory pressure and a
+  # restart. The cache instance above evicts by design; this one refuses to.
+  redis-state:
+    image: redis:alpine
+    command: redis-server --maxmemory-policy noeviction --appendonly yes
+    volumes:
+      - redis_state:/data
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   redis:
     image: redis:7-alpine
@@ -73,7 +112,7 @@ services:
       - "8079:8079"
     environment:
       RUST_LOG: "${RUST_LOG:-info}"
-      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:-REMOVED_DEV_PASSWORD}@postgres:5432/f33d3r_registry?sslmode=disable"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:?set this in .env.local}@postgres:5432/f33d3r_registry?sslmode=disable"
       PORT: "8079"
     depends_on:
       postgres:
@@ -96,7 +135,7 @@ services:
       APP__SERVER__PORT: "8080"
       APP__SERVER__HOST: "0.0.0.0"
       SCHEMA_REGISTRY_URL: "http://aethyr-schema-registry:8079"
-      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:-REMOVED_DEV_PASSWORD}@postgres:5432/f33d3r_feed?sslmode=disable"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:?set this in .env.local}@postgres:5432/f33d3r_feed?sslmode=disable"
     depends_on:
       aethyr-schema-registry:
         condition: service_healthy
@@ -147,7 +186,7 @@ services:
     environment:
       PORT: "8081"
       HOST: "0.0.0.0"
-      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:-REMOVED_DEV_PASSWORD}@postgres:5432/f33d3r_feed?sslmode=disable"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:?set this in .env.local}@postgres:5432/f33d3r_feed?sslmode=disable"
       AETHYRRANK_URL: "http://aethyrrank-engine:8080"
       ZIOR_URL: "http://zior-engine:8082"
       AIN_SOPH_URL: "http://ain-soph:8089"
@@ -229,9 +268,12 @@ services:
     volumes:
       - ./feed-engine/web/static:/app/web/static    # live CSS/JS/brand — git pull = instant update
       - ./feed-engine/web/templates:/app/web/templates:ro  # live templates — restart to pick up
+      - frequency_replays:/app/replays:ro
       - f33d3r_media:/app/web/static/media          # user media — named volume overlays bind mount
       - f33d3r_live_scan:/app/live-scan             # sampled live keyframes — never served
     depends_on:
+      sitra-init:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       aethyrrank-engine:
@@ -267,7 +309,7 @@ services:
       INTERNAL_API_KEY: "${INTERNAL_API_KEY:-dev_internal_key_change_in_production}"
       RUST_LOG: "${RUST_LOG:-info}"
       PORT: "8088"
-      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:-REMOVED_DEV_PASSWORD}@postgres:5432/f33d3r_feed?sslmode=disable"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:?set this in .env.local}@postgres:5432/f33d3r_feed?sslmode=disable"
     depends_on:
       postgres:
         condition: service_healthy
@@ -294,7 +336,7 @@ services:
       MANHATTAN_URL: "http://manhattan:8107"
       RUST_LOG: "${RUST_LOG:-info}"
       PORT: "8089"
-      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:-REMOVED_DEV_PASSWORD}@postgres:5432/f33d3r_wallet?sslmode=disable"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:?set this in .env.local}@postgres:5432/f33d3r_wallet?sslmode=disable"
       AETHYRRANK_URL: "http://aethyrrank-engine:8080"
       FEED_ENGINE_URL: "http://feed-engine:8081"
       INTERNAL_API_KEY: "${INTERNAL_API_KEY:-dev_internal_key_change_in_production}"
@@ -322,7 +364,7 @@ services:
       MANHATTAN_URL: "http://manhattan:8107"
       RUST_LOG: "${RUST_LOG:-info}"
       PORT: "8093"
-      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:-REMOVED_DEV_PASSWORD}@postgres:5432/f33d3r_security?sslmode=disable"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:?set this in .env.local}@postgres:5432/f33d3r_security?sslmode=disable"
       VERITY_URL: "http://verity:8095"
       INTERNAL_API_KEY: "${INTERNAL_API_KEY:-dev_internal_key_change_in_production}"
       # Ed25519 seed (base64, 32 bytes) signing contact key bundles. Unset means
@@ -352,7 +394,7 @@ services:
       INTERNAL_API_KEY: "${INTERNAL_API_KEY:-dev_internal_key_change_in_production}"
       RUST_LOG: "${RUST_LOG:-info}"
       PORT: "8090"
-      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:-REMOVED_DEV_PASSWORD}@postgres:5432/f33d3r_safety?sslmode=disable"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:?set this in .env.local}@postgres:5432/f33d3r_safety?sslmode=disable"
       ELOHIM_VENI_URL: "http://elohim-veni:8093"
     depends_on:
       postgres:
@@ -373,17 +415,20 @@ services:
     ports:
       - "8105:8105"
     environment:
+      KAFKA_BROKERS: "sitra-achra:9092"
       MANHATTAN_URL: "http://manhattan:8107"
       # Authenticates every call to Manhattan; the brain refuses to boot without it.
       INTERNAL_API_KEY: "${INTERNAL_API_KEY:-dev_internal_key_change_in_production}"
       RUST_LOG: "${RUST_LOG:-info}"
       PORT: "8105"
-      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:-REMOVED_DEV_PASSWORD}@postgres:5432/f33d3r_herald?sslmode=disable"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:?set this in .env.local}@postgres:5432/f33d3r_herald?sslmode=disable"
       VAPID_PUBLIC_KEY: "${VAPID_PUBLIC_KEY:-not-configured}"
       VAPID_PRIVATE_KEY: "${VAPID_PRIVATE_KEY:-}"
       VAPID_SUBJECT: "${VAPID_SUBJECT:-mailto:admin@f33d3r.com}"
     mem_limit: 512m
     depends_on:
+      sitra-init:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
     healthcheck:
@@ -405,7 +450,7 @@ services:
       INTERNAL_API_KEY: "${INTERNAL_API_KEY:-dev_internal_key_change_in_production}"
       RUST_LOG: "${RUST_LOG:-info}"
       PORT: "8106"
-      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:-REMOVED_DEV_PASSWORD}@postgres:5432/f33d3r_lore?sslmode=disable"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:?set this in .env.local}@postgres:5432/f33d3r_lore?sslmode=disable"
       HERALD_URL: "http://herald:8105"
     mem_limit: 512m
     depends_on:
@@ -420,8 +465,54 @@ services:
       retries: 5
       start_period: 30s
 
+  # ── LiveKit — carries Frequency audio. Auralis decides who may speak ─────────
+  # Browsers reach signaling through Caddy at /rtc on the site's own origin. Media
+  # arrives on 7882/udp, or 7881/tcp on a network that blocks UDP. Its server API
+  # stays on the container network and only Auralis calls it.
+  livekit:
+    image: livekit/livekit-server:v1.13.11
+    command: ["--config", "/etc/livekit.yaml", "--node-ip", "${LIVE_PUBLIC_HOST:-127.0.0.1}"]
+    ports:
+      - "7881:7881"
+      - "7882:7882/udp"
+    environment:
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY:-dev_frequencies}: ${LIVEKIT_API_SECRET:-dev_livekit_secret_change_in_production_00}"
+    depends_on:
+      redis-state:
+        condition: service_healthy
+    volumes:
+      - ./infra/livekit.yaml:/etc/livekit.yaml:ro
+    mem_limit: 1g
+
+  # ── Egress — records a Frequency when its host opted in ──────────────────────
+  # Shares LiveKit's network so it can reach LiveKit at the address LiveKit
+  # advertises, whatever that is on this machine.
+  livekit-egress:
+    image: livekit/egress:v1.15.0
+    network_mode: "service:livekit"
+    environment:
+      EGRESS_CONFIG_FILE: /etc/egress.yaml
+      LIVEKIT_API_${LIVEKIT_API_KEY:-dev_frequencies}: "${LIVEKIT_API_KEY:-dev_frequencies}"
+      LIVEKIT_API_${LIVEKIT_API_SECRET:-dev_livekit_secret_change_in_production_00}: "${LIVEKIT_API_SECRET:-dev_livekit_secret_change_in_production_00}"
+    volumes:
+      - ./infra/egress.yaml:/etc/egress.yaml:ro
+      - frequency_replays:/home/egress/replays
+    depends_on:
+      replays-init:
+        condition: service_completed_successfully
+      livekit:
+        condition: service_started
+    restart: unless-stopped
+    mem_limit: 2g
+
+  # The replay volume is written by Egress and read and cleaned by other services.
+  replays-init:
+    image: redis:alpine
+    entrypoint: ["sh", "-c", "chmod 0777 /replays"]
+    volumes:
+      - frequency_replays:/replays
+
   # ── Auralis — F33D3R Frequencies, live-audio social object brain (Rust, 8108) ─
-  # Control plane now; the audio SFU joins it in Phase 3 on AURALIS_MEDIA_UDP_PORT.
   auralis:
     build:
       context: .
@@ -435,21 +526,19 @@ services:
       INTERNAL_API_KEY: "${INTERNAL_API_KEY:-dev_internal_key_change_in_production}"
       RUST_LOG: "${RUST_LOG:-info}"
       PORT: "8108"
-      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:-REMOVED_DEV_PASSWORD}@postgres:5432/f33d3r_frequencies?sslmode=disable"
-      REDIS_URL: "redis://redis:6379"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:?set this in .env.local}@postgres:5432/f33d3r_frequencies?sslmode=disable"
+      REDIS_URL: "redis://redis-state:6379"
       KAFKA_BROKERS: "sitra-achra:9092"
-      HERALD_URL: "http://herald:8105"
-      # Signs the short-lived signaling tokens handed to browsers. Auralis's
-      # own secret, not the shared internal key: a peer brain cannot mint a
-      # media session. At least 32 characters; the brain refuses to boot otherwise.
-      AURALIS_SIGNAL_SECRET: "${AURALIS_SIGNAL_SECRET:-dev_auralis_signal_secret_change_in_production_0000}"
-      AURALIS_PUBLIC_HOST: "${LIVE_PUBLIC_HOST:-localhost}"
-      AURALIS_MEDIA_UDP_PORT: "40000"
+      LIVEKIT_URL: "http://livekit:7880"
+      LIVEKIT_API_KEY: "${LIVEKIT_API_KEY:-dev_frequencies}"
+      LIVEKIT_API_SECRET: "${LIVEKIT_API_SECRET:-dev_livekit_secret_change_in_production_00}"
+    volumes:
+      - frequency_replays:/replays
     mem_limit: 512m
     depends_on:
       postgres:
         condition: service_healthy
-      redis:
+      redis-state:
         condition: service_healthy
       sitra-achra:
         condition: service_healthy
@@ -474,7 +563,7 @@ services:
       INTERNAL_API_KEY: "${INTERNAL_API_KEY:-dev_internal_key_change_in_production}"
       RUST_LOG: "${RUST_LOG:-info}"
       PORT: "8094"
-      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:-REMOVED_DEV_PASSWORD}@postgres:5432/f33d3r_handles?sslmode=disable"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:?set this in .env.local}@postgres:5432/f33d3r_handles?sslmode=disable"
     depends_on:
       postgres:
         condition: service_healthy
@@ -498,7 +587,7 @@ services:
       # refuses to boot without it. A brain name in a header is a claim anyone on
       # the network could make — the key is what makes it a fact.
       INTERNAL_API_KEY: "${INTERNAL_API_KEY:-dev_internal_key_change_in_production}"
-      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:-REMOVED_DEV_PASSWORD}@postgres:5432/f33d3r_manhattan?sslmode=disable"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:?set this in .env.local}@postgres:5432/f33d3r_manhattan?sslmode=disable"
     depends_on:
       postgres:
         condition: service_healthy
@@ -523,7 +612,7 @@ services:
       MANHATTAN_URL: "http://manhattan:8107"
       RUST_LOG: "${RUST_LOG:-info}"
       PORT: "8095"
-      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:-REMOVED_DEV_PASSWORD}@postgres:5432/f33d3r_verity?sslmode=disable"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:?set this in .env.local}@postgres:5432/f33d3r_verity?sslmode=disable"
       # Verity decides who may earn money. Every mutating route requires this
       # shared secret and the service refuses to boot without it.
       INTERNAL_API_KEY: "${INTERNAL_API_KEY:-dev_internal_key_change_in_production}"
@@ -550,7 +639,7 @@ services:
       MANHATTAN_URL: "http://manhattan:8107"
       RUST_LOG: "${RUST_LOG:-info}"
       PORT: "8096"
-      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:-REMOVED_DEV_PASSWORD}@postgres:5432/f33d3r_ledger?sslmode=disable"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:?set this in .env.local}@postgres:5432/f33d3r_ledger?sslmode=disable"
       # Ain Soph authenticates the block checkpoint this brain posts after each
       # seal. Without the shared secret that call is refused.
       INTERNAL_API_KEY: "${INTERNAL_API_KEY:-dev_internal_key_change_in_production}"
@@ -576,7 +665,7 @@ services:
       INTERNAL_API_KEY: "${INTERNAL_API_KEY:-dev_internal_key_change_in_production}"
       RUST_LOG: "${RUST_LOG:-info}"
       PORT: "8098"
-      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:-REMOVED_DEV_PASSWORD}@postgres:5432/f33d3r_library?sslmode=disable"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:?set this in .env.local}@postgres:5432/f33d3r_library?sslmode=disable"
     depends_on:
       postgres:
         condition: service_healthy
@@ -645,12 +734,12 @@ services:
     environment:
       MANHATTAN_URL: "http://manhattan:8107"
       RUST_LOG: "${RUST_LOG:-info}"
-      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:-REMOVED_DEV_PASSWORD}@postgres:5432/f33d3r_market?sslmode=disable"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:?set this in .env.local}@postgres:5432/f33d3r_market?sslmode=disable"
       PORT: "8100"
       NANTAR_URL: "http://feed-engine:8081"
       ELOHIM_VENI_URL: "http://elohim-veni:8093"
       INTERNAL_API_KEY: "${INTERNAL_API_KEY:-dev_internal_key_change_in_production}"
-      MEMPOOL_WS_URL: "wss://mempool.space/api/v1/ws"
+      MEMPOOL_API_URL: "https://mempool.space/api"
       XRP_WS_URL: "${XRP_WS_URL:-wss://xrpl.ws}"
       THEMIS_ECDH_PRIVKEY_B64: "${THEMIS_ECDH_PRIVKEY_B64:-}"
       CONF_THRESHOLD_LOW: "1"
@@ -700,7 +789,7 @@ services:
     image: edoburu/pgbouncer:latest
     environment:
       DB_USER: "${POSTGRES_USER:-f33d3r}"
-      DB_PASSWORD: "${POSTGRES_PASSWORD:-REMOVED_DEV_PASSWORD}"
+      DB_PASSWORD: "${POSTGRES_PASSWORD:?set this in .env.local}"
       DB_HOST: "postgres"
       DB_NAME: "*"
       POOL_MODE: "transaction"
@@ -727,11 +816,14 @@ services:
   #   media-derived   — transcoded variants (HLS segments, WebP renditions)
   #   backups         — pg_dump nightly backups
   minio:
-    image: minio/minio:latest
+    build:
+      context: ./infra/minio
+      dockerfile: Dockerfile
+    image: f33d3r-minio:local
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: "${MINIO_ROOT_USER:-f33d3r_minio}"
-      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:-REMOVED_DEV_PASSWORD_change_in_prod_32c}"
+      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:?set this in .env.local}"
       MINIO_BROWSER_REDIRECT_URL: "http://localhost:9001"
       MINIO_PROMETHEUS_AUTH_TYPE: "public"
     ports:
@@ -747,7 +839,10 @@ services:
       start_period: 15s
 
   minio-init:
-    image: minio/mc:latest
+    build:
+      context: ./infra/minio
+      dockerfile: Dockerfile
+    image: f33d3r-minio:local
     depends_on:
       minio:
         condition: service_healthy
@@ -765,7 +860,7 @@ services:
         echo "[minio-init] buckets ready"
     environment:
       MINIO_ROOT_USER: "${MINIO_ROOT_USER:-f33d3r_minio}"
-      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:-REMOVED_DEV_PASSWORD_change_in_prod_32c}"
+      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:?set this in .env.local}"
     restart: "no"
 
   # ── MediaMTX — live ingest ───────────────────────────────────────────────
@@ -874,6 +969,7 @@ services:
       NVIDIA_VISIBLE_DEVICES: "${NVIDIA_VISIBLE_DEVICES:-all}"
       NVIDIA_DRIVER_CAPABILITIES: "compute,utility,video"
     volumes:
+      - frequency_replays:/replays:ro
       - f33d3r_media:/data/media
     # runc is Docker's default runtime and needs no GPU present. A compose file
     # naming a device reservation the host cannot satisfy refuses to schedule the
@@ -954,10 +1050,10 @@ services:
     environment:
       POSTGRES_HOST: "postgres"
       POSTGRES_USER: "${POSTGRES_USER:-f33d3r}"
-      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-REMOVED_DEV_PASSWORD}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set this in .env.local}"
       MINIO_ENDPOINT: "minio:9000"
       MINIO_ACCESS_KEY: "${MINIO_ROOT_USER:-f33d3r_minio}"
-      MINIO_SECRET_KEY: "${MINIO_ROOT_PASSWORD:-REMOVED_DEV_PASSWORD_change_in_prod_32c}"
+      MINIO_SECRET_KEY: "${MINIO_ROOT_PASSWORD:?set this in .env.local}"
       MINIO_BUCKET: "backups"
       BACKUP_RETENTION_DAYS: "7"
     depends_on:
@@ -1006,7 +1102,7 @@ services:
     image: grafana/grafana:latest
     environment:
       GF_SECURITY_ADMIN_USER: "${GRAFANA_ADMIN_USER:-admin}"
-      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD:-REMOVED_DEV_PASSWORD_change_in_prod}"
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD:?set this in .env.local}"
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_INSTALL_PLUGINS: ""
       GF_FEATURE_TOGGLES_ENABLE: "publicDashboards"
@@ -1039,7 +1135,7 @@ services:
     environment:
       RUST_LOG: "${RUST_LOG:-info}"
       KAFKA_BROKERS: "sitra-achra:9092"
-      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:-REMOVED_DEV_PASSWORD}@postgres:5432/f33d3r_feed?sslmode=disable"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:?set this in .env.local}@postgres:5432/f33d3r_feed?sslmode=disable"
       SCAN_VERSION: "3.0"
     depends_on:
       postgres:
@@ -1078,7 +1174,7 @@ services:
       DB_PORT: "5432"
       DB_NAME: "f33d3r_feed"
       DB_USER: "${POSTGRES_USER:-f33d3r}"
-      DB_PASSWORD: "${POSTGRES_PASSWORD:-REMOVED_DEV_PASSWORD}"
+      DB_PASSWORD: "${POSTGRES_PASSWORD:?set this in .env.local}"
       FEED_ENGINE_URL: "http://feed-engine:8081"
       INTERNAL_API_KEY: "${INTERNAL_API_KEY:-dev_internal_key_change_in_production}"
       # cpu | cuda. cuda also needs CONTENT_SCAN_RUNTIME=nvidia below; a cuda
@@ -1139,6 +1235,8 @@ services:
       start_period: 120s
 
 volumes:
+  frequency_replays:
+  redis_state:
   postgres_data:
   caddy_data:
   caddy_config:

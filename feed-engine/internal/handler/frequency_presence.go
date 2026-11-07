@@ -156,6 +156,10 @@ func (p *frequencyPresence) refresh() map[string]string {
 			if s.State != "live" && s.State != "starting" {
 				continue
 			}
+			// A ring links to the room, and an invite-only room is not advertised.
+			if s.Visibility == "private" {
+				continue
+			}
 			hosts[s.HostPialID] = s.ID
 		}
 	}

@@ -22,7 +22,7 @@ FACET frequency_request_button
 
   signals:
     emits:    frequency.request_mic (reason), frequency.withdraw (request_id) — POST /events
-    receives: frequency_facet (SSE)
+    receives: facet.mutate (SSE)
 
   context:
     frequency_controls → listener row
@@ -30,7 +30,7 @@ FACET frequency_request_button
 {{define "frequency_request_button"}}
 <div class="freq-ask" data-facet-id="{{frequencyFacetID .ID "request_button"}}">
   {{- if .Request}}
-  <form class="freq-ask__form" hx-post="/events" hx-target="closest .freq-ask" hx-swap="outerHTML">
+  <form class="freq-ask__form" hx-post="/events" hx-swap="none">
     <input type="hidden" name="event_type" value="frequency.withdraw">
     <input type="hidden" name="frequency_id" value="{{.ID}}">
     <input type="hidden" name="request_id" value="{{.Request.RequestID}}">
@@ -38,7 +38,7 @@ FACET frequency_request_button
     <button type="submit" class="freq-btn freq-btn--ghost">Withdraw</button>
   </form>
   {{- else if .CanRequestMic}}
-  <form class="freq-ask__form freq-ask__form--ask" hx-post="/events" hx-target="closest .freq-ask" hx-swap="outerHTML">
+  <form class="freq-ask__form freq-ask__form--ask" hx-post="/events" hx-swap="none">
     <input type="hidden" name="event_type" value="frequency.request_mic">
     <input type="hidden" name="frequency_id" value="{{.ID}}">
     <label class="freq-ask__label" for="freq-reason-{{.ID}}">Why do you want the mic?</label>

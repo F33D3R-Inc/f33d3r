@@ -98,8 +98,8 @@ var ErrNoPIAL = errors.New("pial: identity has no PIAL root")
 // loadCapabilities reads the capability rows for a PIAL root and reports any
 // failure. Every scan error is surfaced — a row that could not be read must not
 // silently become an absent restriction.
-func loadCapabilities(database *sql.DB, pialID string) (model.PIALCapabilityMap, error) {
-	if database == nil {
+func loadCapabilities(database DBTX, pialID string) (model.PIALCapabilityMap, error) {
+	if nilDB(database) {
 		return nil, errors.New("pial: no database")
 	}
 	rows, err := database.Query(`
@@ -123,7 +123,7 @@ func loadCapabilities(database *sql.DB, pialID string) (model.PIALCapabilityMap,
 // GetCapabilities returns the full capability map for a PIAL root, empty when it
 // cannot be read. Display surfaces only: an authorization decision must use
 // CheckCapability, which distinguishes "no grant" from "could not look".
-func GetCapabilities(database *sql.DB, pialID string) model.PIALCapabilityMap {
+func GetCapabilities(database DBTX, pialID string) model.PIALCapabilityMap {
 	m, err := loadCapabilities(database, pialID)
 	if err != nil {
 		return model.PIALCapabilityMap{}
@@ -170,7 +170,7 @@ func HasCapability(database *sql.DB, pialID, cap string) bool {
 }
 
 // SetCapability grants, restricts, or revokes a capability on a PIAL root.
-func SetCapability(database *sql.DB, pialID, capability, state, reason, grantedBy string, expiresAt *time.Time) error {
+func SetCapability(database DBTX, pialID, capability, state, reason, grantedBy string, expiresAt *time.Time) error {
 	_, err := database.Exec(`
 		INSERT INTO pial_capabilities (pial_id, capability, state, expires_at, reason, granted_by, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, NOW())
@@ -189,7 +189,7 @@ func SetCapability(database *sql.DB, pialID, capability, state, reason, grantedB
 
 // recomputeStateHash rebuilds PIAL state_hash from capabilities + identity attributes.
 // Any change to capabilities, kyc_tier, or age_verified invalidates cached PIAL state.
-func recomputeStateHash(database *sql.DB, pialID string) error {
+func recomputeStateHash(database DBTX, pialID string) error {
 	caps := GetCapabilities(database, pialID)
 	keys := make([]string, 0, len(caps))
 	for k := range caps {
@@ -313,7 +313,7 @@ func syncRoleProjection(database *sql.DB, pialID, role string) {
 // SetPIALVerified records a documented age verification on the PIAL root — the manual
 // admin/KYC override path. Stamps the tier, verification time, locks the DOB, and records
 // provenance (grantedBy = "admin:<handle>" | "ekyc" | "ekyc:mrz"). tier: basic|soft|full.
-func SetPIALVerified(database *sql.DB, pialID, tier, grantedBy string) error {
+func SetPIALVerified(database DBTX, pialID, tier, grantedBy string) error {
 	allowed := map[string]bool{"basic": true, "soft": true, "full": true}
 	if !allowed[tier] {
 		tier = "soft"
@@ -435,7 +435,7 @@ func GetPIALRoot(database *sql.DB, pialID string) (*model.PIALRoot, error) {
 // ── Event Ledger ──────────────────────────────────────────────────────────────
 
 // LogPIALEvent appends an immutable event to the ledger. Never call UPDATE/DELETE on this table.
-func LogPIALEvent(database *sql.DB, pialID, accountID, eventType string, payload map[string]interface{}, source string) {
+func LogPIALEvent(database DBTX, pialID, accountID, eventType string, payload map[string]interface{}, source string) {
 	if pialID == "" {
 		return
 	}

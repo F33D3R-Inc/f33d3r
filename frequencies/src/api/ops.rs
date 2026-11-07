@@ -129,6 +129,85 @@ where
     Err(AuralisError::VersionConflict)
 }
 
+/// [`cas`] inside a transaction, so the caller's event commits with the change.
+pub async fn cas_tx<'a, F>(
+    state: &'a AppState,
+    id: Uuid,
+    op: &'static str,
+    mut decide: F,
+) -> Result<(sqlx::Transaction<'a, sqlx::Postgres>, Frequency)>
+where
+    F: FnMut(&Frequency) -> Result<Patch>,
+{
+    for _ in 0..CAS_ATTEMPTS {
+        let mut tx = state.pool.begin().await?;
+        let freq = load(&mut tx, id).await?;
+        let patch = decide(&freq)?;
+        if let Some(updated) = pg::cas_update(&mut tx, id, freq.version, &patch).await? {
+            return Ok((tx, updated));
+        }
+        tx.rollback().await?;
+        counter!(m::VERSION_CONFLICT_TOTAL, "op" => op).increment(1);
+    }
+    Err(AuralisError::VersionConflict)
+}
+
+/// Counts for a card, in the terms the room view uses: the host is neither a
+/// speaker nor a listener, and is counted once among participants.
+pub async fn card_counts(state: &AppState, freq: &Frequency) -> Result<(i64, i64, i64)> {
+    if !freq.state.is_open() {
+        return Ok((0, 0, 0));
+    }
+    let (listeners, on_mic) = state.hot.counts(freq.id).await?;
+    let host = i64::from(state.hot.present(freq.id, &freq.host_pial).await?);
+    Ok((listeners, (on_mic - host).max(0), listeners + on_mic))
+}
+
+/// Hand a live Frequency to someone else. The old host stays on as a co-host if
+/// they come back. Answers `None` when the new host is already running a
+/// Frequency of their own, because a person hosts one at a time.
+pub async fn transfer_host(
+    state: &AppState,
+    freq: &Frequency,
+    to: &str,
+    cause: &Cause,
+) -> Result<Option<Frequency>> {
+    let mut tx = state.pool.begin().await?;
+    if pg::open_for_host(&mut tx, to).await?.is_some() {
+        return Ok(None);
+    }
+    let patch = Patch {
+        host_pial: Some(to.to_string()),
+        ..Default::default()
+    };
+    let Some(updated) = pg::cas_update(&mut tx, freq.id, freq.version, &patch).await? else {
+        return Err(AuralisError::VersionConflict);
+    };
+    let by = cause.actor.clone();
+    let from = freq.host_pial.as_str();
+    pg::revoke_role(&mut tx, freq.id, to, from).await?;
+    pg::set_role(&mut tx, freq.id, to, FrequencyRole::Host).await?;
+    pg::grant_role(&mut tx, freq.id, from, FrequencyRole::CoHost, to).await?;
+    pg::set_role(&mut tx, freq.id, from, FrequencyRole::CoHost).await?;
+    pg::insert_event(
+        &mut tx,
+        &cause.event(
+            freq.id,
+            EventType::HostChanged,
+            json!({ "from": bare_value(from), "to": bare_value(to), "by": bare_value(&by) }),
+        ),
+    )
+    .await?;
+    tx.commit().await?;
+    state.hot.touch(freq.id, to, FrequencyRole::Host).await?;
+    if state.hot.present(freq.id, from).await? {
+        state.hot.touch(freq.id, from, FrequencyRole::CoHost).await?;
+    }
+    state.hot.mark_host_seen(freq.id).await?;
+    info!(frequency_id = %freq.id, "host changed");
+    Ok(Some(updated))
+}
+
 /// Mark a participant left, in PostgreSQL and Redis, and record the event.
 /// `cause_label` is for the leave counter: "leave", "presence_expired",
 /// "ended", "removed".

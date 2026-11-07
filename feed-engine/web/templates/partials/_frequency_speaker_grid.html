@@ -20,13 +20,13 @@ FACET frequency_speaker_grid
 
   signals:
     emits:    none
-    receives: frequency_facet (SSE — this Fragment replaced)
+    receives: facet.mutate (this Fragment replaced)
 
   context:
     frequency_stage → main area
 */}}
 {{define "frequency_speaker_grid"}}
-<section class="freq-grid" data-facet-id="{{frequencyFacetID .ID "speakers"}}" aria-label="On the mic">
+<section class="freq-grid" data-facet-id="{{frequencyFacetID .ID "speakers"}}" data-surface="{{.Surface}}" aria-label="On the mic">
   <h2 class="freq-grid__h">On the mic</h2>
   <ul class="freq-grid__list" role="list">
     {{range .Speakers}}{{template "frequency_speaker" .}}{{end}}

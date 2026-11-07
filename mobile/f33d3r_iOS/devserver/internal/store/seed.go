@@ -21,7 +21,7 @@ import (
 // payload rather than invented.
 
 // DevPassword is the password every seeded account uses.
-const DevPassword = "REMOVED_DEV_PASSWORD"
+const DevPassword = "devserver-only"
 
 type seedAccount struct {
 	NewUserParams

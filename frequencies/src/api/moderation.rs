@@ -129,6 +129,8 @@ pub async fn approve(
     )
     .await?;
     let seated = pg::set_role(&mut tx, id, &resolved.pial, FrequencyRole::Speaker).await?;
+    // A new speaker starts with the mic closed and opens it themself.
+    pg::set_moderator_muted(&mut tx, id, &resolved.pial, false).await?;
     pg::insert_event(
         &mut tx,
         &moderator.cause.event(
@@ -136,6 +138,16 @@ pub async fn approve(
             EventType::SpeakerApproved,
             json!({ "request_id": resolved.id, "pial_id": bare_value(&resolved.pial), "by_role": moderator.role }),
         ),
+    )
+    .await?;
+    herald::notify(
+        &mut tx,
+        &resolved.pial,
+        herald::KIND_SPEAKER_ACCEPTED,
+        &resolved.id.to_string(),
+        &format!("You have the mic in {}", freq.title),
+        "Your request to speak was accepted.",
+        &format!("/frequencies/{id}"),
     )
     .await?;
     tx.commit().await?;
@@ -148,17 +160,6 @@ pub async fn approve(
     }
     counter!(m::SPEAKER_PROMOTIONS_TOTAL).increment(1);
     counter!(m::SPEAKER_REQUESTS_TOTAL, "outcome" => "approved").increment(1);
-
-    let title = format!("You have the mic in {}", freq.title);
-    herald::notify(
-        &s,
-        &resolved.pial,
-        herald::KIND_SPEAKER_ACCEPTED,
-        &title,
-        "Your request to speak was accepted.",
-        &format!("/frequencies/{id}"),
-    )
-    .await;
 
     respond(&s, &freq, &actor).await
 }
@@ -233,7 +234,18 @@ async fn set_mute(
         }
     }
     let cause = Cause::person(&actor.pial, &actor.correlation_id);
-    let Some(row) = pg::set_muted(&mut tx, id, &target, muted).await? else {
+    let row = if is_self {
+        let current = pg::joined_one(&mut tx, id, &target)
+            .await?
+            .ok_or(AuralisError::Conflict("not_joined"))?;
+        if !muted && current.moderator_muted {
+            return Err(AuralisError::Conflict("muted_by_moderator"));
+        }
+        pg::set_muted(&mut tx, id, &target, muted).await?
+    } else {
+        pg::set_moderator_muted(&mut tx, id, &target, muted).await?
+    };
+    let Some(row) = row else {
         return Err(AuralisError::Conflict("not_joined"));
     };
     pg::insert_event(
@@ -257,6 +269,43 @@ async fn set_mute(
         .await?;
         counter!(m::MODERATION_ACTIONS_TOTAL, "action" => if muted { "mute" } else { "unmute" })
             .increment(1);
+    }
+    tx.commit().await?;
+    respond(&s, &freq, &actor).await
+}
+
+/// Invite someone: it admits them to a room that would otherwise refuse them,
+/// and tells them it is happening.
+pub async fn invite(
+    State(s): State<AppState>,
+    actor: Actor,
+    Path((id, pial)): Path<(Uuid, String)>,
+) -> Result<Json<Value>> {
+    ops::limit(&s, rate_limit::MODERATION, &actor.pial).await?;
+    let mut tx = s.pool.begin().await?;
+    let (freq, moderator) = moderator(&s, &mut tx, id, &actor, Action::InviteSpeaker).await?;
+    ops::require_open(&freq)?;
+    let target = identity::resolve(&s.manhattan, &pial).await?;
+    if let Some(invite_id) = pg::invite(&mut tx, id, &target, &actor.pial).await? {
+        pg::log_moderation(
+            &mut tx,
+            id,
+            &moderator.cause.actor,
+            Some(&target),
+            "invite",
+            "",
+        )
+        .await?;
+        herald::notify(
+            &mut tx,
+            &target,
+            herald::KIND_INVITE,
+            &invite_id.to_string(),
+            &format!("You are invited to {}", freq.title),
+            "Tune in when you are ready.",
+            &format!("/frequencies/{id}"),
+        )
+        .await?;
     }
     tx.commit().await?;
     respond(&s, &freq, &actor).await
@@ -316,6 +365,161 @@ pub async fn demote(
         s.hot.touch(id, &target, FrequencyRole::Listener).await?;
     }
     counter!(m::MODERATION_ACTIONS_TOTAL, "action" => "demote").increment(1);
+    respond(&s, &freq, &actor).await
+}
+
+#[derive(Deserialize)]
+pub struct PinBody {
+    pub work_id: Uuid,
+    pub on: bool,
+}
+
+/// Pinning a work to a room. Anyone on the mic can pin. A pin comes off by whoever
+/// pinned it or by a moderator. Nantar has already checked the work may be shown.
+pub async fn pin(
+    State(s): State<AppState>,
+    actor: Actor,
+    Path(id): Path<Uuid>,
+    Json(body): Json<PinBody>,
+) -> Result<Json<Value>> {
+    ops::limit(&s, rate_limit::MODERATION, &actor.pial).await?;
+    let cause = Cause::person(&actor.pial, &actor.correlation_id);
+    let mut tx = s.pool.begin().await?;
+    let freq = ops::load(&mut tx, id).await?;
+    ops::require_open(&freq)?;
+    let role = ops::role_of(&mut tx, &freq, &actor.pial)
+        .await?
+        .ok_or_else(|| AuralisError::Forbidden("not in this frequency".into()))?;
+    if body.on {
+        if !may(role, Action::Speak) {
+            return Err(AuralisError::Forbidden(format!("{role} may not pin")));
+        }
+        if !pg::add_pin(&mut tx, id, body.work_id, &actor.pial).await? {
+            return Err(AuralisError::Conflict("pins_full"));
+        }
+    } else {
+        let owner = pg::pinned_by(&mut tx, id, body.work_id).await?;
+        if !role.moderates() && owner.as_deref() != Some(actor.pial.as_str()) {
+            return Err(AuralisError::Forbidden(format!("{role} may not unpin this")));
+        }
+        pg::remove_pin(&mut tx, id, body.work_id).await?;
+    }
+    pg::insert_event(
+        &mut tx,
+        &cause.event(id, EventType::PinsChanged, json!({ "work_id": body.work_id, "on": body.on })),
+    )
+    .await?;
+    tx.commit().await?;
+    respond(&s, &freq, &actor).await
+}
+
+/// A speaker going back to the audience by their own choice.
+pub async fn step_down(
+    State(s): State<AppState>,
+    actor: Actor,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Value>> {
+    let cause = Cause::person(&actor.pial, &actor.correlation_id);
+    let mut tx = s.pool.begin().await?;
+    let freq = ops::load(&mut tx, id).await?;
+    ops::require_live(&freq)?;
+    let row = pg::joined_one(&mut tx, id, &actor.pial)
+        .await?
+        .ok_or(AuralisError::Conflict("not_joined"))?;
+    if row.role != FrequencyRole::Speaker {
+        return Err(AuralisError::Conflict("not_a_speaker"));
+    }
+    pg::revoke_role(&mut tx, id, &actor.pial, &actor.pial).await?;
+    pg::set_role(&mut tx, id, &actor.pial, FrequencyRole::Listener).await?;
+    pg::insert_event(
+        &mut tx,
+        &cause.event(
+            id,
+            EventType::SpeakerLeft,
+            json!({ "pial_id": bare_value(&actor.pial), "role": FrequencyRole::Speaker, "cause": "stepped_down" }),
+        ),
+    )
+    .await?;
+    tx.commit().await?;
+    s.hot.touch(id, &actor.pial, FrequencyRole::Listener).await?;
+    respond(&s, &freq, &actor).await
+}
+
+/// A moderator handing a listener the mic without waiting for a request. Their mic
+/// stays closed until they open it, so nobody is put on air without choosing to.
+pub async fn promote(
+    State(s): State<AppState>,
+    actor: Actor,
+    Path((id, pial)): Path<(Uuid, String)>,
+) -> Result<Json<Value>> {
+    let mut tx = s.pool.begin().await?;
+    let (freq, moderator) = moderator(&s, &mut tx, id, &actor, Action::InviteSpeaker).await?;
+    ops::require_live(&freq)?;
+    let (target, _) = target_of(&s, &mut tx, &freq, moderator.role, &pial).await?;
+    let row = pg::joined_one(&mut tx, id, &target)
+        .await?
+        .ok_or(AuralisError::Conflict("not_joined"))?;
+    if row.role != FrequencyRole::Listener {
+        return Err(AuralisError::Conflict("not_a_listener"));
+    }
+    let (_, speakers_now) = s.hot.counts(id).await?;
+    if !permissions::can_add_speaker(&freq, speakers_now) {
+        return Err(AuralisError::Conflict("speakers_full"));
+    }
+    if let Some(r) = pg::pending_request_for(&mut tx, id, &target).await? {
+        pg::resolve_request(&mut tx, r.id, RequestStatus::Approved, Some(&actor.pial)).await?;
+    }
+    pg::grant_role(&mut tx, id, &target, FrequencyRole::Speaker, &actor.pial).await?;
+    pg::set_role(&mut tx, id, &target, FrequencyRole::Speaker).await?;
+    pg::set_moderator_muted(&mut tx, id, &target, false).await?;
+    let given = moderator.cause.event(
+        id,
+        EventType::SpeakerApproved,
+        json!({ "request_id": null, "pial_id": bare_value(&target), "by_role": moderator.role }),
+    );
+    pg::insert_event(&mut tx, &given).await?;
+    pg::log_moderation(&mut tx, id, &moderator.cause.actor, Some(&target), "promote", "").await?;
+    herald::notify(
+        &mut tx,
+        &target,
+        herald::KIND_SPEAKER_ACCEPTED,
+        &given.event_id.to_string(),
+        &format!("You have the mic in {}", freq.title),
+        "A host gave you the mic. Unmute when you are ready.",
+        &format!("/frequencies/{id}"),
+    )
+    .await?;
+    tx.commit().await?;
+    if s.hot.present(id, &target).await? {
+        s.hot.touch(id, &target, FrequencyRole::Speaker).await?;
+    }
+    counter!(m::MODERATION_ACTIONS_TOTAL, "action" => "promote").increment(1);
+    respond(&s, &freq, &actor).await
+}
+
+/// The host hands the room to one of their co-hosts and stays on as a co-host.
+pub async fn transfer(
+    State(s): State<AppState>,
+    actor: Actor,
+    Path((id, pial)): Path<(Uuid, String)>,
+) -> Result<Json<Value>> {
+    ops::limit(&s, rate_limit::ROLE_TOGGLE, &actor.pial).await?;
+    let mut conn = s.pool.acquire().await?;
+    let (freq, moderator) = moderator(&s, &mut conn, id, &actor, Action::TransferHost).await?;
+    ops::require_live(&freq)?;
+    let target = identity::resolve(&s.manhattan, &pial).await?;
+    if pg::granted_role(&mut conn, id, &target).await? != Some(FrequencyRole::CoHost) {
+        return Err(AuralisError::Conflict("not_a_cohost"));
+    }
+    if pg::joined_one(&mut conn, id, &target).await?.is_none() {
+        return Err(AuralisError::Conflict("not_joined"));
+    }
+    if ops::transfer_host(&s, &freq, &target, &moderator.cause).await?.is_none() {
+        return Err(AuralisError::Conflict("host_already_live"));
+    }
+    pg::log_moderation(&mut conn, id, &moderator.cause.actor, Some(&target), "transfer_host", "").await?;
+    drop(conn);
+    counter!(m::MODERATION_ACTIONS_TOTAL, "action" => "transfer_host").increment(1);
     respond(&s, &freq, &actor).await
 }
 
@@ -452,15 +656,12 @@ pub async fn add_cohost(
     if let Some(r) = pg::pending_request_for(&mut tx, id, &target).await? {
         pg::resolve_request(&mut tx, r.id, RequestStatus::Approved, Some(&actor.pial)).await?;
     }
-    pg::insert_event(
-        &mut tx,
-        &moderator.cause.event(
-            id,
-            EventType::CohostAdded,
-            json!({ "pial_id": bare_value(&target) }),
-        ),
-    )
-    .await?;
+    let added = moderator.cause.event(
+        id,
+        EventType::CohostAdded,
+        json!({ "pial_id": bare_value(&target) }),
+    );
+    pg::insert_event(&mut tx, &added).await?;
     pg::log_moderation(
         &mut tx,
         id,
@@ -470,20 +671,21 @@ pub async fn add_cohost(
         "",
     )
     .await?;
+    herald::notify(
+        &mut tx,
+        &target,
+        herald::KIND_COHOST,
+        &added.event_id.to_string(),
+        &format!("You are co-hosting {}", freq.title),
+        "The host made you a co-host.",
+        &format!("/frequencies/{id}"),
+    )
+    .await?;
     tx.commit().await?;
     if seated.is_some() && s.hot.present(id, &target).await? {
         s.hot.touch(id, &target, FrequencyRole::CoHost).await?;
     }
     counter!(m::MODERATION_ACTIONS_TOTAL, "action" => "cohost_added").increment(1);
-    herald::notify(
-        &s,
-        &target,
-        herald::KIND_COHOST,
-        &format!("You are co-hosting {}", freq.title),
-        "The host made you a co-host.",
-        &format!("/frequencies/{id}"),
-    )
-    .await;
     respond(&s, &freq, &actor).await
 }
 

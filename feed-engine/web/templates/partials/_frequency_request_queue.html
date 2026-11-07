@@ -22,13 +22,13 @@ FACET frequency_request_queue
 
   signals:
     emits:    none
-    receives: frequency_facet (SSE — this Fragment replaced)
+    receives: facet.mutate (this Fragment replaced)
 
   context:
     frequency_stage → below the speaker grid
 */}}
 {{define "frequency_request_queue"}}
-<section class="freq-queue" data-facet-id="{{frequencyFacetID .ID "requests"}}" aria-labelledby="freq-queue-h-{{.ID}}">
+<section class="freq-queue" data-facet-id="{{frequencyFacetID .ID "requests"}}" data-surface="{{.Surface}}"{{if and (not .CanModerate) (not .Requests)}} hidden{{end}} aria-labelledby="freq-queue-h-{{.ID}}">
   <h2 class="freq-queue__h" id="freq-queue-h-{{.ID}}">
     {{if .CanModerate}}Asking for the mic{{else}}Waiting to speak{{end}}
     {{if .Requests}}<span class="freq-queue__n">{{len .Requests}}</span>{{end}}

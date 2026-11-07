@@ -561,16 +561,11 @@ func (h *Handler) workEvent(w http.ResponseWriter, r *http.Request, rawBody map[
 		go h.learnFromCitation(user, citedCID, sessionCacheKeys(r, user))
 	}
 
-	// Everyone this work owes a word to: the person replied to or quoted, then
-	// everyone named in the body. One goroutine, in that order, so a person who
-	// is both is told once. This also republishes the cited work's engagement
-	// counts to anyone watching it — a reply that appears without the reply
-	// count moving is a card arguing with itself.
-	//
-	// A scheduled work has not happened yet, so it owes nobody anything until
-	// the scheduler publishes it — the same condition the fan-out above reads.
+	// Republishes the cited work's counts to anyone watching it — a reply that
+	// appears without the reply count moving is a card arguing with itself. A
+	// scheduled work has not happened yet.
 	if scheduledAt == nil || !scheduledAt.After(time.Now()) {
-		go h.notifyNewWork(user, workID, kind, env.Payload.Body, citedCID)
+		go h.publishCitedWork(workID, kind, citedCID)
 	}
 
 	w.Header().Set("Content-Type", "application/json")

@@ -1,6 +1,8 @@
 package handler
 
 import (
+	dbpkg "github.com/f33d3r/feed-engine/internal/db"
+	"database/sql"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
@@ -234,4 +236,27 @@ func balanceJSON(balanceAET string) string {
 		return ""
 	}
 	return fmt.Sprintf(`{"balance_uaet":%d,"pending_uaet":0}`, int64(math.Round(f*1_000_000)))
+}
+
+// primaryAccountForPIAL answers which account a person's notifications belong to,
+// for brains that know the person but not the persona.
+// GET /api/internal/pial/{id}/primary-account
+// Auth: X-Internal-Key header
+func (h *Handler) primaryAccountForPIAL(w http.ResponseWriter, r *http.Request) {
+	if !h.internalCallerOK(r) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	account, err := dbpkg.PrimaryAccountForPIAL(h.db, r.PathValue("id"))
+	if errors.Is(err, sql.ErrNoRows) {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		log.Printf("[internal] primary account: %v", err)
+		http.Error(w, "lookup failed", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"account": account})
 }

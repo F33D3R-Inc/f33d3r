@@ -31,7 +31,6 @@ FACET frequency_stage
     Recording      bool
     IsNSFW         bool
     Viewer         FrequencyViewer — .Role .InFrequency .Muted .Blocked .CanRequestMic .CanModerate .CanEnd .CanSpeak .Request
-    Session        *FrequencySession — .Token .SignalPath .ExpiresAt .Permissions; nil unless the viewer is a participant
     TimeLabel      string
     EndedLabel     string
     EndReason      string
@@ -46,7 +45,7 @@ FACET frequency_stage
 
   signals:
     emits:    none directly (children emit)
-    receives: frequency_facet (SSE — this Fragment or any child replaced)
+    receives: facet.mutate (SSE — this Fragment or any child replaced)
 
   context:
     frequency.html → centre column
@@ -58,34 +57,31 @@ FACET frequency_stage
          data-frequency-id="{{.ID}}"
          data-state="{{.State}}"
          data-viewer-role="{{if $v.InFrequency}}{{$v.Role}}{{else}}none{{end}}"
-         {{- with .Session}}
-         data-frequency-signal-path="{{.SignalPath}}"
-         data-frequency-token="{{.Token}}"
-         data-frequency-token-expires="{{.ExpiresAt}}"
-         data-frequency-permissions="{{range $i, $p := .Permissions}}{{if $i}} {{end}}{{$p}}{{end}}"
-         {{- end}}
          aria-label="Frequency: {{.Title}}">
+  <span hidden hx-get="/facets/frequency/{{.ID}}/stage" hx-trigger="fa:resync from:body" hx-target="closest .freq-stage" hx-swap="outerHTML"></span>
+  {{if not $v.InFrequency}}<span class="freq-watch" data-watch-id="frequency:{{.ID}}" aria-hidden="true"></span>{{end}}
 
+  {{template "frequency_reaction_lane" (dict "ID" .ID)}}
   {{template "frequency_header" (dict
       "ID" .ID "Title" .Title "Description" .Description "State" .State "Host" .Host
       "ListenerCount" .ListenerCount "ListenersLabel" .ListenersLabel
-      "Recording" .Recording "IsNSFW" .IsNSFW
-      "Heartbeat" (and $v.InFrequency (eq .State "live")) "Ctx" .Ctx)}}
+      "Recording" .Recording "IsNSFW" .IsNSFW "Ctx" .Ctx)}}
 
   {{template "frequency_status" (dict
       "ID" .ID "State" .State "TimeLabel" .TimeLabel "EndedLabel" .EndedLabel "EndReason" .EndReason
-      "Locked" .Locked "RequestsOpen" .RequestsOpen)}}
+      "Locked" .Locked "RequestsOpen" .RequestsOpen "ScheduledISO" .ScheduledISO "ReminderCount" .ReminderCount)}}
 
-  {{if or (eq .State "ended") (eq .State "moderation_terminated") (eq .State "processing_replay") (eq .State "archived")}}
+  {{if eq .State "cancelled"}}
+  {{else if or (eq .State "ended") (eq .State "moderation_terminated") (eq .State "processing_replay") (eq .State "archived")}}
     {{template "frequency_ended" (dict "ID" .ID "Title" .Title "State" .State "EndReason" .EndReason "Host" .Host "SpeakerCount" .SpeakerCount)}}
   {{else}}
-    {{template "frequency_speaker_grid" (dict "ID" .ID "Speakers" .Speakers "Ctx" .Ctx)}}
-    {{if or $v.CanModerate .Requests}}
-    {{template "frequency_request_queue" (dict "ID" .ID "Requests" .Requests "CanModerate" $v.CanModerate "Ctx" .Ctx)}}
-    {{end}}
+    {{template "frequency_speaker_grid" (dict "ID" .ID "Speakers" .Speakers "Surface" (frequencyGridSurface $v) "Ctx" .Ctx)}}
+    {{template "frequency_request_queue" (dict "ID" .ID "Requests" .Requests "CanModerate" $v.CanModerate "Surface" (frequencyQueueSurface $v) "Ctx" .Ctx)}}
   {{end}}
 
+  {{template "frequency_pins" (dict "ID" .ID "Pins" .Pins "Surface" (frequencyQueueSurface $v))}}
+
   {{template "frequency_controls" (dict
-      "ID" .ID "State" .State "Viewer" $v "RequestsOpen" .RequestsOpen "Locked" .Locked "Ctx" .Ctx "InDock" false)}}
+      "ID" .ID "State" .State "Viewer" $v "RequestsOpen" .RequestsOpen "Locked" .Locked "Ctx" .Ctx "InDock" false "Surface" (frequencyControlsSurface $v) "Recording" .Recording)}}
 </section>
 {{end}}

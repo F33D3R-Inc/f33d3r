@@ -345,8 +345,21 @@ func (h *Handler) apiV1VisionEvent(w http.ResponseWriter, r *http.Request, event
 		if runes := []rune(text); len(runes) > 500 {
 			text = string(runes[:500])
 		}
-		authorID, _ := dbpkg.GetUserIDFromPIAL(h.db, v.AuthorPIAL)
-		h.notifyUserWithPayload(authorID, "vision_reply", user.ID, ref.String(), "vision", map[string]interface{}{"preview": text})
+		authorID, err := dbpkg.GetUserIDFromPIAL(h.db, v.AuthorPIAL)
+		if err != nil {
+			log.Printf("[vision] reply author for %s: %v", ref.String(), err)
+			http.Error(w, "server error", http.StatusInternalServerError)
+			return true
+		}
+		if _, err := dbpkg.WriteNotice(h.db, dbpkg.Notice{
+			Recipient: authorID, Kind: "vision_reply", Actor: user.ID,
+			TargetID: ref.String(), TargetType: "vision",
+			Payload: map[string]interface{}{"preview": text},
+		}); err != nil {
+			log.Printf("[vision] reply to %s: %v", ref.String(), err)
+			http.Error(w, "server error", http.StatusInternalServerError)
+			return true
+		}
 		w.WriteHeader(http.StatusNoContent)
 	case "vision_poll_vote":
 		_, ref, ok := h.visionForViewer(w, r, user, rawBodyMap)

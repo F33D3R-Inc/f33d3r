@@ -748,19 +748,11 @@ func (h *Handler) workReactionEvent(w http.ResponseWriter, r *http.Request, even
 		return
 	}
 
-	if op.add {
-		h.db.Exec(
-			`INSERT INTO work_reactions (work_id, reactor_id, reaction_type)
-             VALUES ($1::uuid, $2::uuid, $3)
-             ON CONFLICT DO NOTHING`,
-			workID, user.ID, op.reactionType,
-		)
-	} else {
-		h.db.Exec(
-			`DELETE FROM work_reactions
-             WHERE work_id = $1::uuid AND reactor_id = $2::uuid AND reaction_type = $3`,
-			workID, user.ID, op.reactionType,
-		)
+	changed, err := dbpkg.SetWorkReaction(h.db, workID, user.ID, user.Handle, op.reactionType, op.add)
+	if err != nil {
+		log.Printf("[reaction] %s by %s on %s: %v", eventType, user.ID, workID, err)
+		http.Error(w, "could not save that", http.StatusInternalServerError)
+		return
 	}
 
 	// The reaction is evidence about the reactor. Move their interest vector
@@ -770,22 +762,12 @@ func (h *Handler) workReactionEvent(w http.ResponseWriter, r *http.Request, even
 	// the viewer's cached session is evicted once the vector has moved.
 	go h.learnFromReaction(user, workID, op.reactionType, op.add, sessionCacheKeys(r, user))
 
-	if op.add {
-		// The author is told that a like or a repost happened — and only on the
-		// add half. Taking a reaction back is not an event anyone is told
-		// about, and a notification that appears and then vanishes is worse
-		// than one that stands. notifyReaction ignores the kinds nobody is owed
-		// a word about (a dislike and a bookmark are the reader's own record of
-		// their own reading) and refuses to tell a person about their own hands.
-		go h.notifyReaction(user, workID, op.reactionType)
-
-		// A repost is a feed item — GetWorksFeedFollowing unions reposts by
-		// followed accounts into the feed at the time of the repost — so a feed
-		// being kept live has to be told about one, or the live feed and the
-		// fetched feed disagree for as long as the reader stays on the page.
-		if op.reactionType == "repost" {
-			go h.publishRepostToFollowers(user.ID, workID)
-		}
+	// A repost is a feed item — GetWorksFeedFollowing unions reposts by
+	// followed accounts into the feed at the time of the repost — so a feed
+	// being kept live has to be told about one, or the live feed and the
+	// fetched feed disagree for as long as the reader stays on the page.
+	if op.add && changed && op.reactionType == "repost" {
+		go h.publishRepostToFollowers(user.ID, workID)
 	}
 
 	// Troll achievement checks on engagement-count milestones (like/dislike/repost)

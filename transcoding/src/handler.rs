@@ -14,7 +14,7 @@ use axum::{
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 use tracing::{error, info};
 use uuid::Uuid;
@@ -181,6 +181,85 @@ pub async fn upload(
     let media_dir = (*state.media_dir).clone();
     tokio::spawn(async move {
         run_pipeline(media_dir, source_path, jid, aid, creator_handle).await;
+    });
+
+    Ok(Json(UploadResponse { job_id, asset_id }))
+}
+
+#[derive(Deserialize)]
+pub struct FrequencyClipRequest {
+    pub file: String,
+    pub start_seconds: u32,
+    pub length_seconds: u32,
+    pub title: String,
+    pub host_handle: String,
+    pub creator_handle: String,
+}
+
+const MAX_CLIP_SECONDS: u32 = 140;
+
+/// POST /v1/frequency/clip
+/// Draws part of a replay as a video, then sends it through the same pipeline as an
+/// upload, so a clip carries the same watermark. Internal: Nantar has already decided
+/// the person may make it.
+pub async fn frequency_clip(
+    State(state): State<AppState>,
+    Json(req): Json<FrequencyClipRequest>,
+) -> Result<Json<UploadResponse>, (StatusCode, String)> {
+    let name = std::path::Path::new(&req.file)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .filter(|n| n.ends_with(".mp4"))
+        .ok_or((StatusCode::BAD_REQUEST, "bad replay file".to_string()))?
+        .to_string();
+    if req.length_seconds == 0 || req.length_seconds > MAX_CLIP_SECONDS {
+        return Err((StatusCode::BAD_REQUEST, "bad clip length".to_string()));
+    }
+    let replay_dir = std::env::var("REPLAY_DIR").unwrap_or_else(|_| "/replays".into());
+    let replay = PathBuf::from(replay_dir).join(name);
+    if !replay.is_file() {
+        return Err((StatusCode::NOT_FOUND, "no such replay".to_string()));
+    }
+
+    let asset_id = Uuid::new_v4().to_string();
+    let job_id = Uuid::new_v4().to_string();
+    let now = Utc::now();
+    JOBS.insert(
+        job_id.clone(),
+        Job {
+            job_id: job_id.clone(),
+            asset_id: asset_id.clone(),
+            status: JobStatus::Queued,
+            created_at: now,
+            updated_at: now,
+            error: None,
+            output: None,
+        },
+    );
+
+    let jid = job_id.clone();
+    let aid = asset_id.clone();
+    let media_dir = (*state.media_dir).clone();
+    tokio::spawn(async move {
+        let dir = std::env::temp_dir();
+        let source = dir.join(format!("{jid}-clip.mp4"));
+        let made = transcode::make_audiogram(
+            &replay,
+            &source,
+            &dir.join(format!("{jid}-title.txt")),
+            req.start_seconds,
+            req.length_seconds,
+            &req.title,
+            &req.host_handle,
+        )
+        .await;
+        match made {
+            Ok(()) => run_pipeline(media_dir, source, jid, aid, req.creator_handle).await,
+            Err(e) => {
+                error!(job_id = %jid, error = %e, "audiogram failed");
+                set_failed(&jid, format!("{e:#}"));
+            }
+        }
     });
 
     Ok(Json(UploadResponse { job_id, asset_id }))

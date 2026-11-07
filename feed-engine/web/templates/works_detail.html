@@ -66,6 +66,7 @@
 
   {{/* Reply stream — microconversation containers + lone reply cards, merged by recency */}}
   <div id="work-replies"
+       data-facet-id="facet:f33d3r:work:{{.Work.ID}}:replies"
        hx-get="/facets/works/replies/{{.Work.ID}}"
        hx-trigger="refreshFeed"
        hx-swap="innerHTML"

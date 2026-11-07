@@ -27,7 +27,7 @@ wait_ready() {
   for _ in $(seq 1 45); do curl -sf "$AURALIS_URL/ready" >/dev/null 2>&1 && return 0; sleep 2; done
   fail "auralis did not become ready"
 }
-db() { PGPASSWORD=REMOVED_DEV_PASSWORD psql -h localhost -U f33d3r -d f33d3r_frequencies -tAc "$1"; }
+db() { PGPASSWORD="${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}" psql -h localhost -U f33d3r -d f33d3r_frequencies -tAc "$1"; }
 
 echo "── 1. SIGKILL Auralis mid-session"
 C=$(call POST /v1/frequencies "$HOST_PIAL" '{"title":"Kill test"}'); FID=$(echo "$C" | jq -r .frequency.frequency.id)

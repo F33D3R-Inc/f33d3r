@@ -6,7 +6,6 @@
 //! freq:{id}:speakers          SET     same, for speaking roles
 //! freq:{id}:host_seen         STRING  unix seconds the host last touched
 //! freq:{id}:lease             STRING  node_id, PX = lease_ttl
-//! freq:notify:{pial}:{type}   STRING  Herald cooldown, EX = notify_cooldown
 //! freq:rl:{scope}:{key}       STRING  fixed-window counter
 //! freq:nonce:{nonce}          STRING  a signaling token that has been used
 //! ```
@@ -78,11 +77,12 @@ pub fn key_lease(id: Uuid) -> String {
 }
 /// Present while the sweeper has run recently. Its absence means Redis was
 /// cold (restart, flush, eviction storm) and every presence key with it.
+pub fn key_sweeper_holdoff() -> String {
+    "freq:sweeper:holdoff".to_string()
+}
+
 pub fn key_sweeper_armed() -> String {
     "freq:sweeper:armed".to_string()
-}
-pub fn key_notify(pial: &str, kind: &str) -> String {
-    format!("freq:notify:{pial}:{kind}")
 }
 pub fn key_rate(scope: &str, key: &str) -> String {
     format!("freq:rl:{scope}:{key}")
@@ -214,11 +214,11 @@ impl Hot {
         Ok(pipe.query_async(&mut c).await?)
     }
 
-    /// Re-arm the sweeper and report whether it was armed before. `false`
-    /// means Redis lost its keys since the last sweep: nobody's absence can
-    /// be trusted this round, so the caller departs no one and lets one
-    /// presence window pass (§26). The key outlives a presence TTL by one
-    /// sweep so a healthy Redis never reads as cold.
+    /// Re-arm the sweeper and report whether absences can be trusted. `false`
+    /// means Redis lost its keys within the last presence window, so anyone who
+    /// has not had time to beat again looks absent. The caller departs no one
+    /// until a full window has passed (§26). The armed key outlives a presence
+    /// TTL so a healthy Redis never reads as cold.
     pub async fn arm_sweeper(&self, sweep_interval: Duration) -> Result<bool> {
         let _t = Timed::redis("arm_sweeper");
         let mut c = self.conn.clone();
@@ -231,7 +231,13 @@ impl Hot {
             .arg("GET")
             .query_async(&mut c)
             .await?;
-        Ok(previous.is_some())
+        if previous.is_none() {
+            let _: () = c
+                .set_ex(key_sweeper_holdoff(), 1, self.presence_ttl.as_secs().max(1))
+                .await?;
+            return Ok(false);
+        }
+        Ok(!c.exists::<_, bool>(key_sweeper_holdoff()).await?)
     }
 
     /// Start the host-absence clock now. Used when there is no record of when
@@ -342,22 +348,6 @@ impl Hot {
         Ok(n)
     }
 
-    /// True if a notification of this kind may go to this person now; sets the
-    /// cooldown as a side effect so the next one within `ttl` is refused.
-    pub async fn notify_allowed(&self, pial: &str, kind: &str, ttl: Duration) -> Result<bool> {
-        let _t = Timed::redis("notify_allowed");
-        let mut c = self.conn.clone();
-        let set: Option<String> = redis::cmd("SET")
-            .arg(key_notify(pial, kind))
-            .arg(1)
-            .arg("NX")
-            .arg("EX")
-            .arg(ttl.as_secs().max(1))
-            .query_async(&mut c)
-            .await?;
-        Ok(set.is_some())
-    }
-
     /// Burn a signaling nonce. True the first time, false ever after. Called
     /// by the signaling socket (Phase 3).
     #[allow(dead_code)]
@@ -392,9 +382,5 @@ mod tests {
             "freq:00000000-0000-0000-0000-000000000000:lease"
         );
         assert_eq!(key_rate("join", "pial:x"), "freq:rl:join:pial:x");
-        assert_eq!(
-            key_notify("pial:x", "frequency_invite"),
-            "freq:notify:pial:x:frequency_invite"
-        );
     }
 }

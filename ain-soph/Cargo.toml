@@ -9,6 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 manhattan-client = { path = "../libs/manhattan-client" }
+notification-outbox = { path = "../libs/notification-outbox" }
 # The sqlx-0.7 build of the shared drain; same code, same library name. See libs/manhattan-outbox/src/lib.rs.
 manhattan-outbox = { package = "manhattan-outbox-sqlx07", path = "../libs/manhattan-outbox-sqlx07" }
 axum               = { version = "0.7", features = ["json"] }

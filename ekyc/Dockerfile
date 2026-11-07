@@ -1,6 +1,6 @@
-FROM python:latest
+FROM python:3.14
 
-# Python 3.11 required: insightface/onnxruntime don't support 3.14 yet
+# Python 3.14 is the newest release onnxruntime ships wheels for (none for 3.15 yet)
 # build-essential + cmake needed to compile insightface Cython extensions
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \

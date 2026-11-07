@@ -45,6 +45,8 @@ type NotificationPrefsDTO struct {
 	AchievementsEnabled bool    `json:"achievements_enabled"`
 	MentionsEnabled     bool    `json:"mentions_enabled"`
 	FrequenciesEnabled  bool    `json:"frequencies_enabled"`
+	TipsEnabled         bool    `json:"tips_enabled"`
+	SubscribersEnabled  bool    `json:"subscribers_enabled"`
 	QuietHoursEnabled   bool    `json:"quiet_hours_enabled"`
 	QuietHoursStart     *string `json:"quiet_hours_start"`
 	QuietHoursEnd       *string `json:"quiet_hours_end"`
@@ -115,6 +117,8 @@ type heraldPrefs struct {
 	AchievementsEnabled *bool   `json:"achievements_enabled,omitempty"`
 	MentionsEnabled     *bool   `json:"mentions_enabled,omitempty"`
 	FrequenciesEnabled  *bool   `json:"frequencies_enabled,omitempty"`
+	TipsEnabled         *bool   `json:"tips_enabled,omitempty"`
+	SubscribersEnabled  *bool   `json:"subscribers_enabled,omitempty"`
 	QuietHoursEnabled   *bool   `json:"quiet_hours_enabled,omitempty"`
 	QuietHoursStart     *int    `json:"quiet_hours_start,omitempty"`
 	QuietHoursEnd       *int    `json:"quiet_hours_end,omitempty"`
@@ -135,6 +139,8 @@ func (p *heraldPrefs) boolFields() map[string]**bool {
 		"achievements_enabled": &p.AchievementsEnabled,
 		"mentions_enabled":     &p.MentionsEnabled,
 		"frequencies_enabled":  &p.FrequenciesEnabled,
+		"tips_enabled":         &p.TipsEnabled,
+		"subscribers_enabled":  &p.SubscribersEnabled,
 		"quiet_hours_enabled":  &p.QuietHoursEnabled,
 	}
 }
@@ -186,6 +192,8 @@ func (p *heraldPrefs) dto() NotificationPrefsDTO {
 		AchievementsEnabled: boolOr(p.AchievementsEnabled, true),
 		MentionsEnabled:     boolOr(p.MentionsEnabled, true),
 		FrequenciesEnabled:  boolOr(p.FrequenciesEnabled, true),
+		TipsEnabled:         boolOr(p.TipsEnabled, true),
+		SubscribersEnabled:  boolOr(p.SubscribersEnabled, true),
 		QuietHoursEnabled:   boolOr(p.QuietHoursEnabled, false),
 		QuietHoursStart:     hourLabel(p.QuietHoursStart),
 		QuietHoursEnd:       hourLabel(p.QuietHoursEnd),
@@ -229,6 +237,7 @@ func (h *Handler) notificationPrefs(ctx context.Context, pialID string) *heraldP
 	if err != nil {
 		return p
 	}
+	req.Header.Set("X-Internal-Key", h.cfg.InternalAPIKey)
 	resp, err := h.httpClient.Do(req)
 	if err != nil {
 		return p
@@ -260,6 +269,7 @@ func (h *Handler) saveNotificationPrefsTo(ctx context.Context, pialID string, pa
 		return NotificationPrefsDTO{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Internal-Key", h.cfg.InternalAPIKey)
 	resp, err := h.httpClient.Do(req)
 	if err != nil {
 		return NotificationPrefsDTO{}, err

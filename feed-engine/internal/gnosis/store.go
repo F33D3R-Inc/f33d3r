@@ -236,13 +236,25 @@ func ListMessagesBefore(database *sql.DB, convoID, viewerAccount string, limit i
 	return page, more, nil
 }
 
-// InsertPlainMessage stores a server-readable plaintext message.
-func InsertPlainMessage(database *sql.DB, convoID, sender, body string) (Message, error) {
+// InsertPlainMessage stores a server-readable plaintext message. alert runs in the
+// same transaction, so a stored message always has its push queued.
+func InsertPlainMessage(database *sql.DB, convoID, sender, body string, alert func(*sql.Tx) error) (Message, error) {
+	tx, err := database.Begin()
+	if err != nil {
+		return Message{}, err
+	}
+	defer tx.Rollback()
 	m := Message{ConversationID: convoID, SenderAccount: sender, Mode: ModePlain, Body: body}
-	if err := database.QueryRow(`
+	if err := tx.QueryRow(`
 		INSERT INTO gnosis_messages (conversation_id, sender_account, mode, body)
 		VALUES ($1, $2, 'plain', $3) RETURNING id, created_at`,
 		convoID, sender, body).Scan(&m.ID, &m.CreatedAt); err != nil {
+		return Message{}, err
+	}
+	if err := alert(tx); err != nil {
+		return Message{}, err
+	}
+	if err := tx.Commit(); err != nil {
 		return Message{}, err
 	}
 	touchConversation(database, convoID)
@@ -251,7 +263,7 @@ func InsertPlainMessage(database *sql.DB, convoID, sender, body string) (Message
 
 // InsertSealedMessage stores an opaque ciphertext envelope plus its per-recipient
 // wrapped keys in one transaction. The server never sees plaintext.
-func InsertSealedMessage(database *sql.DB, convoID, sender, bodyCtB64, bodyNonceB64 string, keys []SealedKey) (Message, error) {
+func InsertSealedMessage(database *sql.DB, convoID, sender, bodyCtB64, bodyNonceB64 string, keys []SealedKey, alert func(*sql.Tx) error) (Message, error) {
 	tx, err := database.Begin()
 	if err != nil {
 		return Message{}, err
@@ -273,6 +285,9 @@ func InsertSealedMessage(database *sql.DB, convoID, sender, bodyCtB64, bodyNonce
 			m.ID, k.RecipientAccount, k.EphPubB64, k.SealedB64, k.SealedNonceB64); err != nil {
 			return Message{}, err
 		}
+	}
+	if err = alert(tx); err != nil {
+		return Message{}, err
 	}
 	if err = tx.Commit(); err != nil {
 		return Message{}, err

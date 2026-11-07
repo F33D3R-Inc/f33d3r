@@ -349,7 +349,7 @@ func TestFrequencyLockAndAdmission(t *testing.T) {
 
 	// Somebody who has never been in the room.
 	status, body := h.do("POST", "/api/v1/auth/signup", "", map[string]string{
-		"handle": "newcomer", "password": "REMOVED_DEV_PASSWORD", "display_name": "Newcomer",
+		"handle": "newcomer", "password": "devserver-only", "display_name": "Newcomer",
 	}, "")
 	if status != 201 && status != 200 {
 		t.Fatalf("signup: %d %s", status, body)

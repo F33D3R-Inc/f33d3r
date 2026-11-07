@@ -15,6 +15,7 @@ import (
 //	type:   "post" | "ticker"
 //	id:     post UUID or ticker symbol (e.g. "AAPL")
 //	action: "watch" | "unwatch"
+//	resync: "1" when the client is re-registering after a reconnect
 func (h *Handler) watchHandler(w http.ResponseWriter, r *http.Request) {
 	_ = r.ParseForm()
 	watchType := strings.TrimSpace(r.FormValue("type"))
@@ -32,10 +33,34 @@ func (h *Handler) watchHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A room's participant list is registered by the server alone, and looking at
+	// a room is subject to the same gates as opening it.
+	if strings.HasPrefix(id, frequencyRoomPrefix) {
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
+	if frequencyID, isFrequency := strings.CutPrefix(id, frequencyWatchPrefix); isFrequency && action == "watch" {
+		if !h.frequencyMayWatch(r.Context(), user, frequencyID) {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		AddPostWatcher(user.PIALID, id)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
 	switch watchType {
 	case "post":
 		if action == "watch" {
 			AddPostWatcher(user.PIALID, id)
+			// After a reconnect the counts on screen may be stale, so send them fresh.
+			if r.FormValue("resync") == "1" {
+				if profileID, isProfile := strings.CutPrefix(id, liveWatchProfilePrefix); isProfile {
+					go h.publishFollowCounts(profileID)
+				} else {
+					go h.publishWorkEngagement(id)
+				}
+			}
 		} else {
 			RemovePostWatcher(user.PIALID, id)
 		}

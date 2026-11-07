@@ -68,3 +68,8 @@ func MetricsHandler() http.Handler {
 func Registry() *prometheus.Registry {
 	return registry
 }
+
+// MustRegister adds collectors to this service's metrics.
+func MustRegister(cs ...prometheus.Collector) {
+	registry.MustRegister(cs...)
+}

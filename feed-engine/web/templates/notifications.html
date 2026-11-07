@@ -7,19 +7,20 @@
 
   {{/* Tab strip */}}
   <div class="notif-tabs" style="display:flex;border-bottom:1px solid var(--border);">
-    <button class="notif-tab active" onclick="filterNotifs('all',this)">All</button>
-    <button class="notif-tab" onclick="filterNotifs('mention',this)">Mentions</button>
-    <button class="notif-tab" onclick="filterNotifs('like',this)">Likes</button>
-    <button class="notif-tab" onclick="filterNotifs('follow',this)">Follows</button>
-    <button class="notif-tab" onclick="filterNotifs('repost',this)">Reposts</button>
-    <button class="notif-tab" onclick="filterNotifs('tip',this)">Earnings</button>
+    <button class="notif-tab{{if not .Filter}} active{{end}}" onclick="filterNotifs('all',this)">All</button>
+    <button class="notif-tab{{if eq .Filter "mention"}} active{{end}}" onclick="filterNotifs('mention',this)">Mentions</button>
+    <button class="notif-tab{{if eq .Filter "reply"}} active{{end}}" onclick="filterNotifs('reply',this)">Replies</button>
+    <button class="notif-tab{{if eq .Filter "like"}} active{{end}}" onclick="filterNotifs('like',this)">Likes</button>
+    <button class="notif-tab{{if eq .Filter "follow"}} active{{end}}" onclick="filterNotifs('follow',this)">Follows</button>
+    <button class="notif-tab{{if eq .Filter "repost"}} active{{end}}" onclick="filterNotifs('repost',this)">Reposts</button>
+    <button class="notif-tab{{if eq .Filter "tip"}} active{{end}}" onclick="filterNotifs('tip',this)">Earnings</button>
   </div>
 
   {{/* Notification list — shell. HTMX populates on load and refreshes live
        whenever the SSE notify or notif_new event fires (JS triggers 'refresh'). */}}
   <div id="notification-list" aria-live="polite"
-       hx-get="/facets/notifications"
-       hx-trigger="load, refresh"
+       hx-get="/facets/notifications{{if .Filter}}?filter={{.Filter}}{{end}}"
+       hx-trigger="load, refresh, fa:resync from:body"
        hx-swap="innerHTML">
     {{/* Loading skeleton — replaced immediately by HTMX */}}
     <div class="notif-skeleton">
@@ -35,12 +36,12 @@
 function filterNotifs(type, btn) {
   document.querySelectorAll('.notif-tab').forEach(function(t){t.classList.remove('active')});
   btn.classList.add('active');
-  document.querySelectorAll('#notification-list .notif-item').forEach(function(el) {
-    el.style.display = (type === 'all' || el.dataset.notifType === type) ? '' : 'none';
-  });
-  var url = type === 'all' ? '/notifications' : '/notifications?filter=' + encodeURIComponent(type);
-  history.pushState({filter: type}, '', url);
+  var query = type === 'all' ? '' : '?filter=' + encodeURIComponent(type);
+  var list = document.getElementById('notification-list');
+  list.setAttribute('hx-get', '/facets/notifications' + query);
+  htmx.process(list);
+  htmx.trigger(list, 'refresh');
+  history.pushState({filter: type}, '', '/notifications' + query);
 }
 </script>
-<script src="/static/js/pages/notifications.js?v={{assetVer}}" defer></script>
 {{end}}

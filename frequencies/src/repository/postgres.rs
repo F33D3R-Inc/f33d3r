@@ -97,7 +97,9 @@ pub struct Patch {
     pub max_listeners: Option<i32>,
     pub requests_open: Option<bool>,
     pub locked: Option<bool>,
+    pub clips_enabled: Option<bool>,
     pub media_node: Option<Option<String>>,
+    pub host_pial: Option<String>,
 }
 
 impl Patch {
@@ -151,6 +153,7 @@ pub async fn cas_update(
             ReplayStatus::Processing => "processing",
             ReplayStatus::Ready => "ready",
             ReplayStatus::Failed => "failed",
+            ReplayStatus::Deleted => "deleted",
         };
         qb.push(", replay_status = ").push_bind(s);
     }
@@ -158,7 +161,9 @@ pub async fn cas_update(
     set!(p.max_listeners, "max_listeners");
     set!(p.requests_open, "requests_open");
     set!(p.locked, "locked");
+    set!(p.clips_enabled, "clips_enabled");
     set!(p.media_node, "media_node");
+    set!(p.host_pial, "host_pial");
 
     qb.push(" WHERE id = ")
         .push_bind(id)
@@ -232,6 +237,44 @@ pub async fn list_ended(pool: &PgPool, limit: i64) -> Result<Vec<Frequency>> {
           WHERE state IN ('ended', 'processing_replay', 'archived')
           ORDER BY ended_at DESC LIMIT $1",
     )
+    .bind(limit)
+    .fetch_all(pool)
+    .await?)
+}
+
+/// Rooms a person is hosting now or has coming up.
+pub async fn list_upcoming_by_host(pool: &PgPool, host_pial: &str, limit: i64) -> Result<Vec<Frequency>> {
+    let _t = Timed::db("list_upcoming_by_host");
+    Ok(sqlx::query_as::<_, Frequency>(
+        "SELECT * FROM frequencies
+          WHERE host_pial = $1 AND (state = 'live'
+                OR (state = 'scheduled' AND scheduled_at >= NOW() - INTERVAL '1 hour')
+                OR (state = 'archived' AND replay_status = 'ready'))
+          ORDER BY state = 'live' DESC, state = 'scheduled' DESC, scheduled_at ASC, ended_at DESC LIMIT $2",
+    )
+    .bind(host_pial)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?)
+}
+
+/// Rooms whose title or description holds the words, live first.
+pub async fn search(pool: &PgPool, query: &str, limit: i64) -> Result<Vec<Frequency>> {
+    let _t = Timed::db("search");
+    let pattern = format!(
+        "%{}%",
+        query.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+    );
+    Ok(sqlx::query_as::<_, Frequency>(
+        "SELECT * FROM frequencies
+          WHERE (title ILIKE $1 OR description ILIKE $1)
+            AND (state = 'live'
+                 OR (state = 'scheduled' AND scheduled_at >= NOW() - INTERVAL '1 hour')
+                 OR state IN ('ended', 'processing_replay', 'archived'))
+          ORDER BY state = 'live' DESC, state = 'scheduled' DESC, COALESCE(ended_at, scheduled_at, created_at) DESC
+          LIMIT $2",
+    )
+    .bind(pattern)
     .bind(limit)
     .fetch_all(pool)
     .await?)
@@ -314,8 +357,13 @@ pub async fn join(
 ) -> Result<(Participant, bool)> {
     let _t = Timed::db("join");
     let inserted = sqlx::query_as::<_, Participant>(
-        "INSERT INTO frequency_participants (frequency_id, pial, role)
-         VALUES ($1, $2, $3)
+        // Everyone who can speak enters with the mic closed. A mute a host set on
+        // an earlier visit is still in force.
+        "INSERT INTO frequency_participants (frequency_id, pial, role, muted, moderator_muted)
+         VALUES ($1, $2, $3, $3 <> 'listener', COALESCE((
+             SELECT moderator_muted FROM frequency_participants
+              WHERE frequency_id = $1 AND pial = $2
+              ORDER BY joined_at DESC, id DESC LIMIT 1), FALSE))
          ON CONFLICT (frequency_id, pial) WHERE state = 'joined' DO NOTHING
          RETURNING *",
     )
@@ -323,7 +371,14 @@ pub async fn join(
     .bind(pial)
     .bind(role.as_str())
     .fetch_optional(&mut *conn)
-    .await?;
+    .await
+    .map_err(|e| match &e {
+        // Two Tune Ins raced and this person is now joined to another room.
+        sqlx::Error::Database(d) if d.constraint() == Some("uq_frequency_participants_one_room") => {
+            AuralisError::Conflict("in_another_room")
+        }
+        _ => AuralisError::from(e),
+    })?;
     if let Some(p) = inserted {
         return Ok((p, true));
     }
@@ -362,7 +417,7 @@ pub async fn joined(conn: &mut PgConnection, id: Uuid) -> Result<Vec<Participant
 
 pub async fn leave(conn: &mut PgConnection, id: Uuid, pial: &str) -> Result<Option<Participant>> {
     let _t = Timed::db("leave");
-    Ok(sqlx::query_as::<_, Participant>(
+    let left = sqlx::query_as::<_, Participant>(
         "UPDATE frequency_participants
             SET state = 'left', left_at = NOW()
           WHERE frequency_id = $1 AND pial = $2 AND state = 'joined'
@@ -370,8 +425,78 @@ pub async fn leave(conn: &mut PgConnection, id: Uuid, pial: &str) -> Result<Opti
     )
     .bind(id)
     .bind(pial)
+    .fetch_optional(&mut *conn)
+    .await?;
+    expire_requests_of(conn, id, pial).await?;
+    Ok(left)
+}
+
+/// A person who is no longer in the room is no longer asking for its mic.
+pub async fn expire_requests_of(conn: &mut PgConnection, id: Uuid, pial: &str) -> Result<u64> {
+    let _t = Timed::db("expire_requests_of");
+    Ok(sqlx::query(
+        "UPDATE frequency_speaker_requests SET status = 'expired', resolved_at = NOW()
+          WHERE frequency_id = $1 AND pial = $2 AND status = 'pending'",
+    )
+    .bind(id)
+    .bind(pial)
+    .execute(conn)
+    .await?
+    .rows_affected())
+}
+
+/// The room this person is joined to other than `id`, if any.
+pub async fn other_room(
+    conn: &mut PgConnection,
+    id: Uuid,
+    pial: &str,
+) -> Result<Option<Frequency>> {
+    let _t = Timed::db("other_room");
+    Ok(sqlx::query_as::<_, Frequency>(
+        "SELECT f.* FROM frequencies f
+           JOIN frequency_participants p ON p.frequency_id = f.id
+          WHERE p.pial = $1 AND p.state = 'joined' AND f.id <> $2",
+    )
+    .bind(pial)
+    .bind(id)
     .fetch_optional(conn)
     .await?)
+}
+
+/// Record an invitation. True when a new one was created.
+pub async fn invite(
+    conn: &mut PgConnection,
+    id: Uuid,
+    pial: &str,
+    by: &str,
+) -> Result<Option<Uuid>> {
+    let _t = Timed::db("invite");
+    let row: Option<(Uuid,)> = sqlx::query_as(
+        "INSERT INTO frequency_invites (frequency_id, pial, role, invited_by)
+         VALUES ($1, $2, 'listener', $3)
+         ON CONFLICT (frequency_id, pial) WHERE accepted_at IS NULL AND declined_at IS NULL
+         DO NOTHING
+         RETURNING id",
+    )
+    .bind(id)
+    .bind(pial)
+    .bind(by)
+    .fetch_optional(conn)
+    .await?;
+    Ok(row.map(|r| r.0))
+}
+
+pub async fn is_invited(conn: &mut PgConnection, id: Uuid, pial: &str) -> Result<bool> {
+    let _t = Timed::db("is_invited");
+    let r: Option<(i32,)> = sqlx::query_as(
+        "SELECT 1 FROM frequency_invites
+          WHERE frequency_id = $1 AND pial = $2 AND declined_at IS NULL LIMIT 1",
+    )
+    .bind(id)
+    .bind(pial)
+    .fetch_optional(conn)
+    .await?;
+    Ok(r.is_some())
 }
 
 pub async fn remove(
@@ -382,7 +507,7 @@ pub async fn remove(
     reason: &str,
 ) -> Result<Option<Participant>> {
     let _t = Timed::db("remove");
-    Ok(sqlx::query_as::<_, Participant>(
+    let removed = sqlx::query_as::<_, Participant>(
         "UPDATE frequency_participants
             SET state = 'removed', removed_at = NOW(), removed_by = $3, remove_reason = $4
           WHERE frequency_id = $1 AND pial = $2 AND state = 'joined'
@@ -392,8 +517,10 @@ pub async fn remove(
     .bind(pial)
     .bind(by)
     .bind(reason)
-    .fetch_optional(conn)
-    .await?)
+    .fetch_optional(&mut *conn)
+    .await?;
+    expire_requests_of(conn, id, pial).await?;
+    Ok(removed)
 }
 
 pub async fn set_role(
@@ -404,7 +531,11 @@ pub async fn set_role(
 ) -> Result<Option<Participant>> {
     let _t = Timed::db("set_role");
     Ok(sqlx::query_as::<_, Participant>(
-        "UPDATE frequency_participants SET role = $3
+        // Coming up from the audience, the mic starts closed: being given the
+        // ability to speak must never put someone on air before they choose to.
+        "UPDATE frequency_participants
+            SET muted = CASE WHEN role = 'listener' AND $3 <> 'listener' THEN TRUE ELSE muted END,
+                role = $3
           WHERE frequency_id = $1 AND pial = $2 AND state = 'joined'
          RETURNING *",
     )
@@ -424,6 +555,27 @@ pub async fn set_muted(
     let _t = Timed::db("set_muted");
     Ok(sqlx::query_as::<_, Participant>(
         "UPDATE frequency_participants SET muted = $3
+          WHERE frequency_id = $1 AND pial = $2 AND state = 'joined'
+         RETURNING *",
+    )
+    .bind(id)
+    .bind(pial)
+    .bind(muted)
+    .fetch_optional(conn)
+    .await?)
+}
+
+/// A host or co-host mutes or unmutes someone. Lifting it leaves the mic closed:
+/// only the person themself opens their own microphone.
+pub async fn set_moderator_muted(
+    conn: &mut PgConnection,
+    id: Uuid,
+    pial: &str,
+    muted: bool,
+) -> Result<Option<Participant>> {
+    let _t = Timed::db("set_moderator_muted");
+    Ok(sqlx::query_as::<_, Participant>(
+        "UPDATE frequency_participants SET moderator_muted = $3, muted = TRUE
           WHERE frequency_id = $1 AND pial = $2 AND state = 'joined'
          RETURNING *",
     )
@@ -640,6 +792,286 @@ pub async fn upvote_request(conn: &mut PgConnection, req_id: Uuid, pial: &str) -
 }
 
 // ── blocks and moderation log ────────────────────────────────────────────────
+
+pub async fn blocked(conn: &mut PgConnection, id: Uuid) -> Result<Vec<String>> {
+    let _t = Timed::db("blocked");
+    let rows: Vec<(String,)> =
+        sqlx::query_as("SELECT pial FROM frequency_blocks WHERE frequency_id = $1 ORDER BY pial")
+            .bind(id)
+            .fetch_all(conn)
+            .await?;
+    Ok(rows.into_iter().map(|(p,)| p).collect())
+}
+
+// ── pins ─────────────────────────────────────────────────────────────────────
+
+/// A room shows a short list, not a reading list.
+pub const MAX_PINS: i64 = 10;
+
+pub async fn pins(conn: &mut PgConnection, id: Uuid) -> Result<Vec<(Uuid, String)>> {
+    let _t = Timed::db("pins");
+    Ok(sqlx::query_as(
+        "SELECT work_id, pinned_by FROM frequency_pins WHERE frequency_id = $1 ORDER BY created_at",
+    )
+    .bind(id)
+    .fetch_all(conn)
+    .await?)
+}
+
+/// False when the room already has its limit. Pinning a work twice changes nothing.
+pub async fn add_pin(conn: &mut PgConnection, id: Uuid, work: Uuid, by: &str) -> Result<bool> {
+    let _t = Timed::db("add_pin");
+    let (held,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM frequency_pins WHERE frequency_id = $1")
+        .bind(id)
+        .fetch_one(&mut *conn)
+        .await?;
+    if held >= MAX_PINS {
+        return Ok(false);
+    }
+    sqlx::query(
+        "INSERT INTO frequency_pins (frequency_id, work_id, pinned_by) VALUES ($1, $2, $3)
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(id)
+    .bind(work)
+    .bind(by)
+    .execute(conn)
+    .await?;
+    Ok(true)
+}
+
+/// Who pinned this work, if it is pinned.
+pub async fn pinned_by(conn: &mut PgConnection, id: Uuid, work: Uuid) -> Result<Option<String>> {
+    let _t = Timed::db("pinned_by");
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT pinned_by FROM frequency_pins WHERE frequency_id = $1 AND work_id = $2")
+            .bind(id)
+            .bind(work)
+            .fetch_optional(conn)
+            .await?;
+    Ok(row.map(|(p,)| p))
+}
+
+pub async fn remove_pin(conn: &mut PgConnection, id: Uuid, work: Uuid) -> Result<()> {
+    let _t = Timed::db("remove_pin");
+    sqlx::query("DELETE FROM frequency_pins WHERE frequency_id = $1 AND work_id = $2")
+        .bind(id)
+        .bind(work)
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
+// ── recordings ───────────────────────────────────────────────────────────────
+
+/// The recording in progress for a room: id, egress id, file.
+pub async fn active_recording(pool: &PgPool, id: Uuid) -> Result<Option<(Uuid, String, String)>> {
+    let _t = Timed::db("active_recording");
+    Ok(sqlx::query_as(
+        "SELECT id, egress_id, object_key FROM frequency_recordings
+          WHERE frequency_id = $1 AND processing_state = 'recording'",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?)
+}
+
+pub async fn failed_recordings(pool: &PgPool, id: Uuid) -> Result<i64> {
+    let _t = Timed::db("failed_recordings");
+    let (n,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM frequency_recordings WHERE frequency_id = $1 AND processing_state = 'failed'",
+    )
+    .bind(id)
+    .fetch_one(pool)
+    .await?;
+    Ok(n)
+}
+
+/// False when the room already has a recording in progress.
+pub async fn insert_recording(pool: &PgPool, id: Uuid, room: Uuid, egress: &str, file: &str) -> Result<bool> {
+    let _t = Timed::db("insert_recording");
+    Ok(sqlx::query(
+        "INSERT INTO frequency_recordings (id, frequency_id, egress_id, object_key, codec)
+         VALUES ($1, $2, $3, $4, 'aac')
+         ON CONFLICT (frequency_id) WHERE processing_state = 'recording' DO NOTHING",
+    )
+    .bind(id)
+    .bind(room)
+    .bind(egress)
+    .bind(file)
+    .execute(pool)
+    .await?
+    .rows_affected()
+        == 1)
+}
+
+/// Every recording in progress: recording id, room, egress id, file.
+pub async fn recordings_in_progress(pool: &PgPool) -> Result<Vec<(Uuid, Uuid, String, String)>> {
+    let _t = Timed::db("recordings_in_progress");
+    Ok(sqlx::query_as(
+        "SELECT id, frequency_id, egress_id, object_key FROM frequency_recordings
+          WHERE processing_state = 'recording'",
+    )
+    .fetch_all(pool)
+    .await?)
+}
+
+pub async fn finish_recording(
+    pool: &PgPool,
+    id: Uuid,
+    state: &str,
+    duration_ms: Option<i64>,
+    failure: Option<&str>,
+) -> Result<()> {
+    let _t = Timed::db("finish_recording");
+    sqlx::query(
+        "UPDATE frequency_recordings
+            SET processing_state = $2, duration_ms = $3, failure_reason = $4,
+                ended_at = NOW(), updated_at = NOW()
+          WHERE id = $1",
+    )
+    .bind(id)
+    .bind(state)
+    .bind(duration_ms)
+    .bind(failure)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Finished rooms that opted into recording and whose replay is not settled. A room
+/// removed by moderation is not among them: it never gets a public replay.
+pub async fn rooms_awaiting_replay(pool: &PgPool) -> Result<Vec<Frequency>> {
+    let _t = Timed::db("rooms_awaiting_replay");
+    Ok(sqlx::query_as::<_, Frequency>(
+        "SELECT * FROM frequencies
+          WHERE recording_enabled AND state IN ('ended', 'processing_replay')",
+    )
+    .fetch_all(pool)
+    .await?)
+}
+
+/// The file of a room's newest finished recording.
+pub async fn latest_ready_recording(pool: &PgPool, id: Uuid) -> Result<Option<String>> {
+    let _t = Timed::db("latest_ready_recording");
+    let row: Option<(String,)> = sqlx::query_as(
+        "SELECT object_key FROM frequency_recordings
+          WHERE frequency_id = $1 AND processing_state = 'ready'
+          ORDER BY started_at DESC LIMIT 1",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|(f,)| f))
+}
+
+/// Marks a room's finished recordings deleted and answers their files.
+pub async fn delete_recordings(conn: &mut PgConnection, id: Uuid) -> Result<Vec<String>> {
+    let _t = Timed::db("delete_recordings");
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "UPDATE frequency_recordings SET processing_state = 'deleted', updated_at = NOW()
+          WHERE frequency_id = $1 AND processing_state = 'ready'
+         RETURNING object_key",
+    )
+    .bind(id)
+    .fetch_all(conn)
+    .await?;
+    Ok(rows.into_iter().map(|(f,)| f).collect())
+}
+
+// ── reminders ────────────────────────────────────────────────────────────────
+
+pub async fn set_reminder(conn: &mut PgConnection, id: Uuid, pial: &str, on: bool) -> Result<()> {
+    let _t = Timed::db("set_reminder");
+    let query = if on {
+        "INSERT INTO frequency_reminders (frequency_id, pial) VALUES ($1, $2) ON CONFLICT DO NOTHING"
+    } else {
+        "DELETE FROM frequency_reminders WHERE frequency_id = $1 AND pial = $2"
+    };
+    sqlx::query(query).bind(id).bind(pial).execute(conn).await?;
+    Ok(())
+}
+
+pub async fn reminders(conn: &mut PgConnection, id: Uuid) -> Result<Vec<String>> {
+    let _t = Timed::db("reminders");
+    let rows: Vec<(String,)> =
+        sqlx::query_as("SELECT pial FROM frequency_reminders WHERE frequency_id = $1")
+            .bind(id)
+            .fetch_all(conn)
+            .await?;
+    Ok(rows.into_iter().map(|(p,)| p).collect())
+}
+
+pub async fn reminder_count(conn: &mut PgConnection, id: Uuid) -> Result<i64> {
+    let _t = Timed::db("reminder_count");
+    let (n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM frequency_reminders WHERE frequency_id = $1")
+        .bind(id)
+        .fetch_one(conn)
+        .await?;
+    Ok(n)
+}
+
+pub async fn has_reminder(conn: &mut PgConnection, id: Uuid, pial: &str) -> Result<bool> {
+    let _t = Timed::db("has_reminder");
+    let r: Option<(i32,)> =
+        sqlx::query_as("SELECT 1 FROM frequency_reminders WHERE frequency_id = $1 AND pial = $2")
+            .bind(id)
+            .bind(pial)
+            .fetch_optional(conn)
+            .await?;
+    Ok(r.is_some())
+}
+
+/// A new time owes everyone a new "starts soon" and the host a new nudge.
+pub async fn clear_schedule_notices(conn: &mut PgConnection, id: Uuid) -> Result<()> {
+    let _t = Timed::db("clear_schedule_notices");
+    sqlx::query("UPDATE frequencies SET soon_notified_at = NULL, start_due_notified_at = NULL WHERE id = $1")
+        .bind(id)
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
+/// Scheduled rooms starting within the window that have not had their notice. The
+/// marks are set here, in the caller's transaction, with whatever the notice writes.
+pub async fn take_soon(conn: &mut PgConnection, window_secs: i64) -> Result<Vec<Uuid>> {
+    let _t = Timed::db("take_soon");
+    let rows: Vec<(Uuid,)> = sqlx::query_as(
+        "UPDATE frequencies SET soon_notified_at = NOW()
+          WHERE state = 'scheduled' AND soon_notified_at IS NULL
+            AND scheduled_at <= NOW() + make_interval(secs => $1::double precision)
+         RETURNING id",
+    )
+    .bind(window_secs)
+    .fetch_all(conn)
+    .await?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
+/// Scheduled rooms whose time has come and whose host has not been nudged.
+pub async fn take_start_due(conn: &mut PgConnection) -> Result<Vec<(Uuid, String, String)>> {
+    let _t = Timed::db("take_start_due");
+    Ok(sqlx::query_as(
+        "UPDATE frequencies SET start_due_notified_at = NOW()
+          WHERE state = 'scheduled' AND start_due_notified_at IS NULL AND scheduled_at <= NOW()
+         RETURNING id, host_pial, title",
+    )
+    .fetch_all(conn)
+    .await?)
+}
+
+/// Scheduled rooms the host never started, long past their time.
+pub async fn list_missed(pool: &PgPool, grace_secs: i64) -> Result<Vec<Uuid>> {
+    let _t = Timed::db("list_missed");
+    let rows: Vec<(Uuid,)> = sqlx::query_as(
+        "SELECT id FROM frequencies
+          WHERE state = 'scheduled' AND scheduled_at < NOW() - make_interval(secs => $1::double precision)",
+    )
+    .bind(grace_secs)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
+}
 
 pub async fn is_blocked(conn: &mut PgConnection, id: Uuid, pial: &str) -> Result<bool> {
     let _t = Timed::db("is_blocked");

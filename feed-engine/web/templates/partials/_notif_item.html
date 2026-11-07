@@ -25,7 +25,7 @@ FACET notif_item
     notifications → notification list
 */}}
 {{define "notif_item"}}
-<div class="notif-item{{if not .IsRead}} unread{{end}}" data-notif-type="{{.Type}}"
+<div class="notif-item{{if not .IsRead}} unread{{end}}" data-facet-id="facet:f33d3r:notification:{{.ID}}:item" data-notif-type="{{.Type}}"
      hx-post="/events"
      hx-vals='{"event_type":"notif_read","notif_id":"{{.ID}}"}'
      hx-swap="none" hx-trigger="click once">
@@ -64,6 +64,7 @@ FACET notif_item
   <div class="notif-body">
     <p class="notif-text">
       {{if .ActorHandle}}<a href="/{{.ActorHandle}}" class="notif-actor" onclick="event.stopPropagation()"><strong>@{{.ActorHandle}}</strong></a>{{end}}
+      {{if gt .Others 0}} and {{.Others}} other{{if gt .Others 1}}s{{end}}{{end}}
       {{/* One chain with a terminating else: an unrecognised type must never
            render an actor handle followed by an empty sentence. */}}
       {{if eq .Type "like"}} liked your post
@@ -71,8 +72,37 @@ FACET notif_item
       {{else if eq .Type "reply"}} replied to your post
       {{else if eq .Type "mention"}} mentioned you
       {{else if eq .Type "repost"}} reposted your post
-      {{else if eq .Type "tip"}} sent you a tip
+      {{else if eq .Type "tip"}} sent you a tip{{if .AmountAET}} of {{.AmountAET}} AET{{end}}
+      {{else if eq .Type "quote"}} quoted your post
+      {{else if eq .Type "deposit"}} Deposit received
+      {{else if eq .Type "withdrawal"}} Withdrawal completed
+      {{else if eq .Type "payment_received"}} Payment received
+      {{else if eq .Type "wallet_funded"}} AET added to your wallet
+      {{else if eq .Type "relay_reward"}} Relay reward earned
+      {{else if eq .Type "subscribe"}} New subscriber
+      {{else if eq .Type "ppv_sale"}} Pay-per-view sale
+      {{else if eq .Type "sale"}} You made a sale
+      {{else if eq .Type "purchase_delivered"}} Your purchase is ready
+      {{else if eq .Type "achievement"}} Achievement unlocked
+      {{else if eq .Type "enforcement"}} A moderation action was applied to your account
+      {{else if eq .Type "moderation_result"}} A moderation decision was made on your post
+      {{else if eq .Type "verification"}} Your identity verification is complete
+      {{else if eq .Type "frequency_speaker_accepted"}} You were given the mic
+      {{else if eq .Type "frequency_cohost"}} You were made a co-host
+      {{else if eq .Type "frequency_invite"}} invited you to a Frequency
+      {{else if eq .Type "frequency_live"}} started a Frequency
+      {{else if eq .Type "frequency_reminder"}} has a Frequency starting soon
+      {{else if eq .Type "frequency_cancelled"}} cancelled a Frequency you were waiting for
+      {{else if eq .Type "frequency_rescheduled"}} changed the time of a Frequency
+      {{else if eq .Type "frequency_replay_ready"}} Your Frequency replay is ready
+      {{else if eq .Type "frequency_host_start"}} Your Frequency is scheduled to start now
+      {{else if eq .Type "vision_reply"}} replied to your Vision
+      {{else if eq .Type "live_start"}} went live
+      {{else if eq .Type "org_apply"}} applied to your organization
+      {{else if eq .Type "org_invite"}} invited you to an organization
       {{else if eq .Type "milestone"}} Milestone reached
+      {{else if eq .Type "video_ready"}} Your video finished processing and is ready to post
+      {{else if eq .Type "video_failed"}} Your video could not be processed. Please upload it again
       {{else if eq .Type "system"}} System notification
       {{else if eq .Type "contact_request"}} asked to reach you — <a href="/settings/contact" class="notif-link" onclick="event.stopPropagation()">decide ↗</a>
       {{else if eq .Type "contact_accepted"}} accepted your contact request
@@ -86,6 +116,8 @@ FACET notif_item
       {{else}} sent you a notification
       {{end}}
     </p>
+    {{if .Preview}}<p class="notif-preview">{{.Preview}}</p>{{end}}
+    {{if .Href}}<a class="notif-open" href="{{.Href}}">View</a>{{end}}
     <time class="notif-time" data-ts="{{.CreatedAt.Unix}}">{{.TimeAgo}}</time>
   </div>
 

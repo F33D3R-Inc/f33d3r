@@ -21,6 +21,50 @@ services:
       timeout: 3s
       retries: 10
 
+  # Creates the FA Live relay topic. Live events are only useful for minutes, so it
+  # is created explicitly with short retention rather than left to auto-creation.
+  sitra-init:
+    image: redpandadata/redpanda:latest
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        set -e
+        B=sitra-achra:9092,sitra-achra-2:9092,sitra-achra-3:9092
+        rpk topic describe fa.live -X brokers=$$B >/dev/null 2>&1 || \
+          rpk topic create fa.live -p 6 -r 3 -c retention.ms=300000 -X brokers=$$B
+        for t in notification.events notification.events.dead; do
+          rpk topic describe $$t -X brokers=$$B >/dev/null 2>&1 || \
+            rpk topic create $$t -p 12 -r 3 -c retention.ms=2592000000 -X brokers=$$B
+        done
+        rpk topic describe notification.updates -X brokers=$$B >/dev/null 2>&1 || \
+          rpk topic create notification.updates -p 6 -r 3 -c retention.ms=300000 -X brokers=$$B
+        rpk topic describe frequency.events -X brokers=$$B >/dev/null 2>&1 || \
+          rpk topic create frequency.events -p 6 -r 3 -c retention.ms=604800000 -X brokers=$$B
+        echo "[sitra-init] topics ready"
+    depends_on:
+      sitra-achra:
+        condition: service_healthy
+      sitra-achra-2:
+        condition: service_healthy
+      sitra-achra-3:
+        condition: service_healthy
+    restart: "no"
+
+  # Presence, leases and rate limits that must survive memory pressure and a
+  # restart. The cache instance above evicts by design; this one refuses to.
+  redis-state:
+    image: redis:alpine
+    restart: unless-stopped
+    command: redis-server --maxmemory-policy noeviction --appendonly yes
+    volumes:
+      - redis_state:/data
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   redis:
     image: redis:7-alpine
     restart: unless-stopped
@@ -122,7 +166,7 @@ services:
       INTERNAL_API_KEY: "${INTERNAL_API_KEY}"
       MEDIA_TOKEN_SECRET: "${MEDIA_TOKEN_SECRET}"
       METRICS_TOKEN: "${METRICS_TOKEN:-}"
-      KAFKA_BROKERS: "sitra-achra:9092"
+      KAFKA_BROKERS: "sitra-achra:9092,sitra-achra-2:9092,sitra-achra-3:9092"
       TIINGO_API_KEY: "${TIINGO_API_KEY:-}"
       GIPHY_API: "${GIPHY_API:-}"
       # Sports lane — always on. BBS_API set → Big Balls; empty → ESPN (keyless).
@@ -164,10 +208,13 @@ services:
     volumes:
       - ./feed-engine/web/static:/app/web/static    # live CSS/JS/brand — git pull = instant update
       - ./feed-engine/web/templates:/app/web/templates:ro  # live templates — restart to pick up
+      - frequency_replays:/app/replays:ro
       - f33d3r_media:/app/web/static/media          # user media — named volume overlays bind mount
       - f33d3r_live_scan:/app/live-scan             # sampled live keyframes — never served
       - tor_hostname:/run/tor:ro                    # .onion hostname written by the tor service
     depends_on:
+      sitra-init:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       aethyrrank-engine:
@@ -471,6 +518,7 @@ services:
       PORT: "8085"
       MEDIA_DIR: "/data/media"
     volumes:
+      - frequency_replays:/replays:ro
       - f33d3r_media:/data/media
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8085/health"]
@@ -532,6 +580,7 @@ services:
       dockerfile: herald/docker/Dockerfile
     restart: unless-stopped
     environment:
+      KAFKA_BROKERS: "sitra-achra:9092,sitra-achra-2:9092,sitra-achra-3:9092"
       MANHATTAN_URL: "http://manhattan:8107"
       # Authenticates every call to Manhattan; the brain refuses to boot without it.
       INTERNAL_API_KEY: "${INTERNAL_API_KEY}"
@@ -543,6 +592,8 @@ services:
       VAPID_SUBJECT: "${VAPID_SUBJECT:-mailto:admin@f33d3r.com}"
     mem_limit: 512m
     depends_on:
+      sitra-init:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
     healthcheck:
@@ -580,9 +631,55 @@ services:
       start_period: 30s
 
   # ── Help Center — docs site served at help.f33d3r.com ──────────────────────
+  # ── LiveKit — carries Frequency audio. Auralis decides who may speak ─────────
+  # Browsers reach signaling through Caddy at /rtc on the site's own origin. Media
+  # arrives on 7882/udp, or 7881/tcp on a network that blocks UDP. Its server API
+  # stays on the container network and only Auralis calls it.
+  livekit:
+    image: livekit/livekit-server:v1.13.11
+    restart: unless-stopped
+    command: ["--config", "/etc/livekit.yaml", "--node-ip", "${LIVE_PUBLIC_HOST}"]
+    ports:
+      - "7881:7881"
+      - "7882:7882/udp"
+    environment:
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}"
+    depends_on:
+      redis-state:
+        condition: service_healthy
+    volumes:
+      - ./infra/livekit.yaml:/etc/livekit.yaml:ro
+    mem_limit: 2g
+
+  # ── Egress — records a Frequency when its host opted in ──────────────────────
+  # Shares LiveKit's network so it can reach LiveKit at the address LiveKit
+  # advertises, whatever that is on this machine.
+  livekit-egress:
+    image: livekit/egress:v1.15.0
+    network_mode: "service:livekit"
+    environment:
+      EGRESS_CONFIG_FILE: /etc/egress.yaml
+      LIVEKIT_API_${LIVEKIT_API_KEY}: "${LIVEKIT_API_KEY}"
+      LIVEKIT_API_${LIVEKIT_API_SECRET}: "${LIVEKIT_API_SECRET}"
+    volumes:
+      - ./infra/egress.yaml:/etc/egress.yaml:ro
+      - frequency_replays:/home/egress/replays
+    depends_on:
+      replays-init:
+        condition: service_completed_successfully
+      livekit:
+        condition: service_started
+    restart: unless-stopped
+    mem_limit: 4g
+
+  # The replay volume is written by Egress and read and cleaned by other services.
+  replays-init:
+    image: redis:alpine
+    entrypoint: ["sh", "-c", "chmod 0777 /replays"]
+    volumes:
+      - frequency_replays:/replays
+
   # ── Auralis — F33D3R Frequencies, live-audio social object brain (Rust, 8108) ─
-  # Control plane now; the audio SFU joins it in Phase 3 on AURALIS_MEDIA_UDP_PORT
-  # (published then, with the matching ufw rule in provision-server.sh).
   auralis:
     build:
       context: .
@@ -596,17 +693,18 @@ services:
       RUST_LOG: "${RUST_LOG:-info}"
       PORT: "8108"
       DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD}@postgres:5432/f33d3r_frequencies?sslmode=disable"
-      REDIS_URL: "redis://redis:6379"
-      KAFKA_BROKERS: "sitra-achra:9092"
-      HERALD_URL: "http://herald:8105"
-      AURALIS_SIGNAL_SECRET: "${AURALIS_SIGNAL_SECRET}"
-      AURALIS_PUBLIC_HOST: "${LIVE_PUBLIC_HOST}"
-      AURALIS_MEDIA_UDP_PORT: "40000"
+      REDIS_URL: "redis://redis-state:6379"
+      KAFKA_BROKERS: "sitra-achra:9092,sitra-achra-2:9092,sitra-achra-3:9092"
+      LIVEKIT_URL: "http://livekit:7880"
+      LIVEKIT_API_KEY: "${LIVEKIT_API_KEY}"
+      LIVEKIT_API_SECRET: "${LIVEKIT_API_SECRET}"
+    volumes:
+      - frequency_replays:/replays
     mem_limit: 512m
     depends_on:
       postgres:
         condition: service_healthy
-      redis:
+      redis-state:
         condition: service_healthy
       sitra-achra:
         condition: service_healthy
@@ -662,10 +760,65 @@ services:
       - --advertise-kafka-addr PLAINTEXT://sitra-achra:9092
       - --pandaproxy-addr sitra-achra:8082
       - --advertise-pandaproxy-addr sitra-achra:8082
+      - --rpc-addr 0.0.0.0:33145
+      - --advertise-rpc-addr sitra-achra:33145
+      - --seeds sitra-achra:33145,sitra-achra-2:33145,sitra-achra-3:33145
       - --set redpanda.auto_create_topics_enabled=true
     restart: unless-stopped
     volumes:
       - sitra_achra_data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster info --brokers localhost:9092 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  sitra-achra-2:
+    image: redpandadata/redpanda:latest
+    command:
+      - redpanda
+      - start
+      - --smp 2
+      - --memory 1G
+      - --overprovisioned
+      - --kafka-addr PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr PLAINTEXT://sitra-achra-2:9092
+      - --pandaproxy-addr sitra-achra-2:8082
+      - --advertise-pandaproxy-addr sitra-achra-2:8082
+      - --rpc-addr 0.0.0.0:33145
+      - --advertise-rpc-addr sitra-achra-2:33145
+      - --seeds sitra-achra:33145,sitra-achra-2:33145,sitra-achra-3:33145
+      - --set redpanda.auto_create_topics_enabled=true
+    restart: unless-stopped
+    volumes:
+      - sitra_achra_2_data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster info --brokers localhost:9092 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  sitra-achra-3:
+    image: redpandadata/redpanda:latest
+    command:
+      - redpanda
+      - start
+      - --smp 2
+      - --memory 1G
+      - --overprovisioned
+      - --kafka-addr PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr PLAINTEXT://sitra-achra-3:9092
+      - --pandaproxy-addr sitra-achra-3:8082
+      - --advertise-pandaproxy-addr sitra-achra-3:8082
+      - --rpc-addr 0.0.0.0:33145
+      - --advertise-rpc-addr sitra-achra-3:33145
+      - --seeds sitra-achra:33145,sitra-achra-2:33145,sitra-achra-3:33145
+      - --set redpanda.auto_create_topics_enabled=true
+    restart: unless-stopped
+    volumes:
+      - sitra_achra_3_data:/var/lib/redpanda/data
     healthcheck:
       test: ["CMD-SHELL", "rpk cluster info --brokers localhost:9092 || exit 1"]
       interval: 10s
@@ -684,7 +837,7 @@ services:
     restart: unless-stopped
     environment:
       RUST_LOG: "${RUST_LOG:-info}"
-      KAFKA_BROKERS: "sitra-achra:9092"
+      KAFKA_BROKERS: "sitra-achra:9092,sitra-achra-2:9092,sitra-achra-3:9092"
       DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD}@postgres:5432/f33d3r_feed?sslmode=disable"
       SCAN_VERSION: "3.0"
     depends_on:
@@ -764,7 +917,7 @@ services:
       NANTAR_URL: "http://feed-engine:8081"
       ELOHIM_VENI_URL: "http://elohim-veni:8093"
       INTERNAL_API_KEY: "${INTERNAL_API_KEY}"
-      MEMPOOL_WS_URL: "wss://mempool.space/api/v1/ws"
+      MEMPOOL_API_URL: "https://mempool.space/api"
       XRP_WS_URL: "${XRP_WS_URL:-wss://xrpl.ws}"
       THEMIS_ECDH_PRIVKEY_B64: "${THEMIS_ECDH_PRIVKEY_B64}"
       CONF_THRESHOLD_LOW: "1"
@@ -834,6 +987,8 @@ services:
         condition: service_started
 
 volumes:
+  frequency_replays:
+  redis_state:
   postgres_data:
   caddy_data:
   caddy_config:
@@ -841,6 +996,8 @@ volumes:
   f33d3r_live_scan:
   libretranslate_data:
   sitra_achra_data:
+  sitra_achra_2_data:
+  sitra_achra_3_data:
   # Hidden-service identity (key + hostname tor derives from it). Deleting this
   # volume changes the .onion address unless TOR_HS_KEY_DIR holds the key.
   tor_hs:

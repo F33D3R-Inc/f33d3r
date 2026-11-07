@@ -11,19 +11,19 @@ use manhattan_client::Manhattan;
 
 use crate::auth::{ActorContext, InternalApiKey};
 use crate::config::Config;
+use crate::media::Media;
 use crate::repository::redis::Hot;
-use crate::security::tokens::Signer;
 
 #[derive(Clone)]
 pub struct AppState {
     pub pool: sqlx::PgPool,
-    /// Redis: presence, live sets, leases, rate limits, cooldowns.
+    /// Redis: presence, live sets, leases, rate limits.
     pub hot: Hot,
     /// The naming plane. Auralis resolves identities through it and owns none.
     pub manhattan: Manhattan,
-    pub herald_client: reqwest::Client,
     pub internal_api_key: InternalApiKey,
-    pub signer: Signer,
+    /// LiveKit, which carries the audio this brain authorises.
+    pub media: Media,
     pub config: Arc<Config>,
 }
 

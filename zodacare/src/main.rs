@@ -1,3 +1,4 @@
+mod notifications;
 mod db;
 mod handlers;
 mod identity;
@@ -49,6 +50,7 @@ async fn main() -> anyhow::Result<()> {
     // transaction as the row that caused them; this loop delivers them in
     // order and never drops one.
     outbox::spawn(database_url.clone(), manhattan.clone());
+    notification_outbox::spawn(database_url.clone());
 
     let state = AppState {
         pool,

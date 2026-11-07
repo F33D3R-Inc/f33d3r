@@ -5,6 +5,7 @@
 //! and (from Phase 3) the audio SFU. Nantar is the only thing that renders
 //! it; the browser never speaks to these routes.
 
+mod notifications;
 mod api;
 mod auth;
 mod config;
@@ -14,8 +15,10 @@ mod events;
 mod herald;
 mod identity;
 mod manhattan_outbox;
+mod media;
 mod migrate;
 mod observ;
+mod replay;
 mod repository;
 mod security;
 mod state;
@@ -35,7 +38,6 @@ use tracing::info;
 use auth::InternalApiKey;
 use config::Config;
 use repository::redis::Hot;
-use security::tokens::Signer;
 use state::AppState;
 
 #[tokio::main]
@@ -56,14 +58,18 @@ async fn main() -> anyhow::Result<()> {
 
     let config = Config::from_env();
 
-    // Two secrets, two refusals. Without the internal key every route is
-    // open; without the signal secret no session can be minted. Neither is a
-    // degraded mode this brain will run in.
+    // Two secrets, two refusals. Without the internal key every route is open;
+    // without the LiveKit secret no room can be authorised. Neither is a degraded
+    // mode this brain will run in.
     let internal_api_key = InternalApiKey::from_env();
     if internal_api_key.is_empty() {
         anyhow::bail!("INTERNAL_API_KEY is not set: auralis refuses to start with its control plane unauthenticated");
     }
-    let signer = Signer::new(&config.signal_secret)?;
+    let (media, media_wake) = media::Media::new(
+        &config.livekit_url,
+        &config.livekit_api_key,
+        &config.livekit_api_secret,
+    )?;
 
     let pool = sqlx::PgPool::connect(&config.database_url).await?;
     migrate::run(&pool).await?;
@@ -78,13 +84,6 @@ async fn main() -> anyhow::Result<()> {
     .await?;
     hot.ping().await?;
     info!(node_id = %config.node_id, "redis reachable");
-    // The media socket is Phase 3; its address is part of the compose and
-    // firewall contract now, so it is read and stated at every boot.
-    info!(
-        public_host = %config.public_host,
-        media_udp_port = config.media_udp_port,
-        "media socket contract (bound from Phase 3)"
-    );
 
     // Auralis owns Frequencies. It owns no identity: elohim-veni does, and
     // every host and participant row here references a name this client
@@ -94,29 +93,26 @@ async fn main() -> anyhow::Result<()> {
         configured = manhattan.configured(),
         "Manhattan naming plane"
     );
+    notification_outbox::spawn(config.database_url.clone());
     manhattan_outbox::spawn(config.database_url.clone(), manhattan.clone());
 
     // The event fabric. The drain is the only producer in this brain.
     events::drain::Drain::new(pool.clone(), &config.kafka_brokers, config.drain_interval)?.spawn();
     info!(brokers = %config.kafka_brokers, topic = events::TOPIC, "event drain running");
 
-    let herald_client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()?;
-
     let state = AppState {
         pool,
         hot,
         manhattan,
-        herald_client,
         internal_api_key,
-        signer,
+        media,
         config: Arc::new(config),
     };
 
     // Look at what was open when the last process died before serving anyone.
     tasks::reconcile_on_boot(&state).await?;
     tasks::spawn_all(state.clone());
+    media::spawn(state.clone(), media_wake);
 
     let addr = format!("0.0.0.0:{}", state.config.port);
     let app = api::router(state);

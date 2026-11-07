@@ -410,9 +410,24 @@ func (h *Handler) tusJobStatus(w http.ResponseWriter, r *http.Request) {
 // tusTriggerTranscode reads the assembled temp file, runs a pre-transcoding
 // duplicate check, and only queues transcoding if the content is original.
 func (h *Handler) tusTriggerTranscode(upload *tusUpload) {
+	var videoJob *dbpkg.VideoJob
+	if h.db != nil && upload.UploaderHandle != "" {
+		job, err := dbpkg.OpenVideoJob(h.db, upload.ID, upload.UploaderHandle, upload.UploaderPIAL, upload.Filename)
+		if err != nil {
+			log.Printf("[tus] recording video job %s: %v", upload.ID, err)
+		}
+		videoJob = job
+	}
+	failHandoff := func() {
+		if videoJob != nil {
+			h.finishVideoJob(*videoJob, false)
+		}
+	}
+
 	fileBytes, err := os.ReadFile(upload.path)
 	if err != nil {
 		log.Printf("[tus] read assembled file error for %s: %v", upload.ID, err)
+		failHandoff()
 		return
 	}
 
@@ -438,6 +453,11 @@ func (h *Handler) tusTriggerTranscode(upload *tusUpload) {
 		globalTusStore.mu.Lock()
 		upload.DupInfo = dupInfo
 		globalTusStore.mu.Unlock()
+		if videoJob != nil {
+			if err := dbpkg.CloseVideoJob(h.db, upload.ID); err != nil {
+				log.Printf("[tus] closing video job %s: %v", upload.ID, err)
+			}
+		}
 		return
 	}
 
@@ -460,7 +480,13 @@ func (h *Handler) tusTriggerTranscode(upload *tusUpload) {
 	jobID, err := h.transcodingVideoQueue(fileBytes, upload.Filename, upload.UploaderHandle)
 	if err != nil {
 		log.Printf("[tus] transcodingVideoQueue error for %s: %v", upload.ID, err)
+		failHandoff()
 		return
+	}
+	if videoJob != nil {
+		if err := dbpkg.SetVideoJobID(h.db, upload.ID, jobID); err != nil {
+			log.Printf("[tus] recording transcoder job for %s: %v", upload.ID, err)
+		}
 	}
 
 	globalTusStore.mu.Lock()

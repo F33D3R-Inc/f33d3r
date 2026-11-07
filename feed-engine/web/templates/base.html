@@ -65,15 +65,16 @@
     </aside>
   </div>
 
-  {{/* Frequency dock — the Frequency a person is tuned in to lives in the
-       Shell, not the Playground, so navigation swaps pages under it and the
-       audio (Phase 3) never stops. Empty until Tune In answers with
-       frequency_dock, which replaces this element by id and carries the same
-       id back. Leave answers with this empty mount again. */}}
-  {{- /* Frequencies dock: the person's live Frequency, rendered by the server
-       for this document load (render() fills FrequencyDock), else the empty
-       mount every dock answer replaces by id. */ -}}
-  {{if .FrequencyDock}}{{.FrequencyDock}}{{else}}<div id="frequency-dock" class="freq-dock-slot" data-facet-id="facet:f33d3r:frequency:dock" aria-hidden="true"></div>{{end}}
+  {{/* Frequency dock mount. The room a person is in lives in the Shell, not the
+       Playground, so navigation swaps pages under it. This element is never
+       replaced: the server adds the room's dock Facet inside it over FA Live and
+       renders it here on a document load. */}}
+  <div id="frequency-dock" class="freq-dock-slot" data-facet-id="facet:f33d3r:shell:global:frequency_dock">{{.FrequencyDock}}</div>
+
+  {{/* Frequency audio plays here. No Fragment ever replaces these, so sound keeps
+       playing through navigation and every room change. */}}
+  <div id="frequency-media" hidden></div>
+  <button id="frequency-audio-unlock" class="freq-audio-unlock" type="button" hidden>Tap to hear this Frequency</button>
 
 </div>
 
@@ -98,7 +99,7 @@
 {{/* Portal modal — push prompt and permission dialogs inject here via HTMX */}}
 <div id="portal-modal"></div>
 {{/* Toast container — toast() JS function appends toasts here */}}
-<div id="toast-container" class="toast-container"></div>
+<div id="toast-container" class="toast-container" data-facet-id="facet:f33d3r:shell:global:toasts"></div>
 
 {{/* SSE real-time push is owned solely by f33d3r.js (single EventSource for the whole app).
      The duplicate inline connection that used to live here was removed — two connections
@@ -108,6 +109,7 @@
 <script src="/static/js/malkuth.js?v={{assetVer}}" defer></script>
 {{/* Core app runtime — loads on every page */}}
 <script src="/static/js/f33d3r.js?v={{assetVer}}"></script>
+<script src="/static/js/frequency-media.js?v={{assetVer}}" defer></script>
 {{/* feed_items.js: goToPost(), openRepostSheet() — needed wherever post cards appear */}}
 <script src="/static/js/pages/feed_items.js?v={{assetVer}}" defer></script>
 <script src="/static/js/video-player.js?v={{assetVer}}" defer></script>

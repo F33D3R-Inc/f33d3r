@@ -63,7 +63,6 @@ FACET frequency_preview
     <ul class="freq-preview__facts" role="list">
       <li>{{.PeopleCount}} {{if eq .PeopleCount 1}}person{{else}}people{{end}} here</li>
       {{if gt .RequestCount 0}}<li>{{.RequestCount}} asking for the mic</li>{{end}}
-      <li>Your mic will be off to start</li>
       {{if .Recording}}<li class="freq-preview__fact--rec">{{template "frequency_recording_badge" (dict "ID" .ID "Recording" true)}} — this Frequency is being recorded</li>{{end}}
     </ul>
 
@@ -73,7 +72,7 @@ FACET frequency_preview
       {{else if not .Ctx.User}}
       <a class="freq-cta" href="/login">Sign in to Tune In</a>
       {{else}}
-      <form hx-post="/events" hx-target="#frequency-dock" hx-swap="outerHTML">
+      <form hx-post="/events" hx-target="#overlay-slot" hx-swap="innerHTML">
         <input type="hidden" name="event_type" value="frequency.tune_in">
         <input type="hidden" name="frequency_id" value="{{.ID}}">
         <button type="submit" class="freq-cta">
@@ -83,9 +82,9 @@ FACET frequency_preview
       </form>
       {{end}}
     {{else if eq .State "scheduled"}}
-      <a class="freq-cta freq-cta--quiet" href="/frequencies/{{.ID}}">Open · starts {{.TimeLabel}}</a>
+      <a class="freq-cta freq-cta--quiet" href="/frequencies/{{.ID}}">Open</a>
     {{else}}
-      <a class="freq-cta freq-cta--quiet" href="/frequencies/{{.ID}}">Ended · Replay soon</a>
+      <a class="freq-cta freq-cta--quiet" href="/frequencies/{{.ID}}">{{if eq .State "archived"}}Listen to the replay{{else}}Ended{{end}}</a>
     {{end}}
     <a class="freq-preview__full" href="/frequencies/{{.ID}}">Open the full stage</a>
   </div>

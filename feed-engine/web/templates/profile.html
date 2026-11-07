@@ -79,6 +79,7 @@
        hx-swap="innerHTML">
   </div>
   {{end}}
+  <div hx-get="/facets/frequency-host/{{.ProfileUser.Handle}}" hx-trigger="load" hx-swap="outerHTML"></div>
   <div id="profile-feed"
        hx-get="/facets/works/feed?surface=profile_posts&handle={{.ProfileUser.Handle}}{{if .PinnedPostID}}&exclude_id={{.PinnedPostID}}{{end}}"
        hx-trigger="load, refreshFeed"

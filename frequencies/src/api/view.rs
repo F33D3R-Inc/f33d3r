@@ -42,6 +42,7 @@ pub struct FrequencySummary {
     pub max_listeners: i32,
     pub requests_open: bool,
     pub locked: bool,
+    pub clips_enabled: bool,
     pub media_node: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -70,6 +71,7 @@ impl From<&Frequency> for FrequencySummary {
             max_listeners: f.max_listeners,
             requests_open: f.requests_open,
             locked: f.locked,
+            clips_enabled: f.clips_enabled,
             media_node: f.media_node.clone(),
             created_at: f.created_at,
             updated_at: f.updated_at,
@@ -90,6 +92,8 @@ pub struct Counts {
 #[derive(Debug, Serialize)]
 pub struct ParticipantView {
     pub pial_id: String,
+    /// The name this person goes by in the room's audio.
+    pub media_identity: String,
     pub role: FrequencyRole,
     pub muted: bool,
     pub present: bool,
@@ -125,6 +129,8 @@ pub struct ViewerView {
     pub muted: bool,
     pub present: bool,
     pub blocked: bool,
+    pub invited: bool,
+    pub reminded: bool,
     pub request: Option<RequestView>,
     /// What the viewer may do, computed here so Nantar renders controls from
     /// the same rule Auralis enforces.
@@ -149,6 +155,16 @@ pub struct FrequencyView {
     pub present_pial_ids: Vec<String>,
     pub lease_node: Option<String>,
     pub viewer: Option<ViewerView>,
+    /// How many people asked to be told when it starts. Scheduled rooms only.
+    pub reminder_count: i64,
+    /// Works pinned to the room, oldest first.
+    pub pins: Vec<PinView>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PinView {
+    pub work_id: Uuid,
+    pub pinned_by_pial_id: String,
 }
 
 /// Build the read model. `viewer` is a canonical `pial:` name or None.
@@ -192,6 +208,7 @@ pub async fn build(
         if p.role.speaks() {
             speakers.push(ParticipantView {
                 pial_id: bare_value(&p.pial).to_string(),
+                media_identity: crate::media::identity(freq.id, &p.pial),
                 role: p.role,
                 muted: p.muted,
                 present,
@@ -214,17 +231,26 @@ pub async fn build(
                 .and_then(|i| alive.get(i).copied())
                 .unwrap_or(false);
             let blocked = pg::is_blocked(conn, freq.id, v).await?;
+            let invited = pg::is_invited(conn, freq.id, v).await?;
             let request = pg::pending_request_for(conn, freq.id, v)
                 .await?
                 .as_ref()
                 .map(RequestView::from);
-            let role = me.map(|p| p.role);
+            // A host has not joined a room that has not started, and still runs it.
+            let waiting = matches!(freq.state, FrequencyState::Scheduled | FrequencyState::Draft);
+            let role = me
+                .map(|p| p.role)
+                .or_else(|| (waiting && v == freq.host_pial).then_some(FrequencyRole::Host));
+            let reminded = freq.state == FrequencyState::Scheduled
+                && pg::has_reminder(conn, freq.id, v).await?;
             Some(ViewerView {
                 pial_id: bare_value(v).to_string(),
                 role,
                 muted: me.map(|p| p.muted).unwrap_or(false),
                 present,
                 blocked,
+                invited,
+                reminded,
                 can_request_mic: role.map(|r| may(r, Action::RequestMic)).unwrap_or(false)
                     && freq.requests_open
                     && freq.state == FrequencyState::Live
@@ -238,6 +264,21 @@ pub async fn build(
                 request,
             })
         }
+    };
+
+    let pins = pg::pins(conn, freq.id)
+        .await?
+        .into_iter()
+        .map(|(work_id, by)| PinView {
+            work_id,
+            pinned_by_pial_id: bare_value(&by).to_string(),
+        })
+        .collect();
+
+    let reminder_count = if freq.state == FrequencyState::Scheduled {
+        pg::reminder_count(conn, freq.id).await?
+    } else {
+        0
     };
 
     let lease_node = if freq.state.is_open() {
@@ -259,5 +300,7 @@ pub async fn build(
         present_pial_ids,
         lease_node,
         viewer: viewer_view,
+        reminder_count,
+        pins,
     })
 }

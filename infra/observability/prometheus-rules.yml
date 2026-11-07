@@ -9,7 +9,7 @@ groups:
     rules:
 
       - alert: BrainDown
-        expr: up{job=~"nantar|aethyrrank|zior|caeor|ain-soph|aethyr-ledger|verity|elohim-veni|zodacare|schema-registry|registrar|ekyc|auralis"} == 0
+        expr: up{job=~"herald|nantar|aethyrrank|zior|caeor|ain-soph|aethyr-ledger|verity|elohim-veni|zodacare|schema-registry|registrar|ekyc|auralis"} == 0
         for: 2m
         labels: { severity: critical }
         annotations:
@@ -84,3 +84,84 @@ groups:
         annotations:
           summary: "Disk usage > 85% on {{ $labels.mountpoint }}"
           description: "Run cleanup or expand disk. CCX23 has 160 GB total."
+
+  - name: notifications
+    interval: 30s
+    rules:
+
+      - alert: NotificationOutboxStuck
+        expr: notification_outbox_oldest_seconds > 60
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "Notifications are not reaching Sitra Achra"
+          description: "The oldest undelivered notification is {{ $value }} seconds old."
+
+      - alert: WorkNotificationsStuck
+        expr: notification_work_jobs_oldest_seconds > 120
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "New works are not telling the people they name"
+          description: "The oldest overdue job is {{ $value }} seconds old. Check the naming plane and feed-engine logs."
+
+      - alert: NotificationQuarantined
+        expr: notification_outbox_blocked > 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $value }} notifications are quarantined in the outbox"
+          description: "SELECT id, blocked_reason FROM notification_outbox WHERE blocked_at IS NOT NULL."
+
+      - alert: NotificationDeadEvents
+        expr: increase(herald_notifications_dead_total[10m]) > 0
+        labels: { severity: critical }
+        annotations:
+          summary: "Herald sent notification events to the dead topic"
+          description: "Read notification.events.dead for the reason."
+
+      - alert: NotificationsNotStored
+        expr: notification_reconcile_missing > 0
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "Delivered notifications are not in Herald"
+          description: "{{ $value }} were missing at the last reconciliation."
+
+      - alert: NotificationsLost
+        expr: increase(notification_reconcile_lost_total[1h]) > 0
+        labels: { severity: critical }
+        annotations:
+          summary: "Notifications were lost"
+          description: "Herald never stored them after every republish. The event IDs are in the feed-engine log."
+
+      - alert: NotificationStoreSlow
+        expr: max(herald_notification_store_delay_seconds{quantile="0.99"}) > 10
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Notifications are taking over 10 seconds to reach the inbox"
+          description: "Check the notification.events consumer lag."
+
+      - alert: NotificationBadgeSlow
+        expr: histogram_quantile(0.99, sum(rate(notification_store_to_badge_seconds_bucket[5m])) by (le)) > 2
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "The live badge is missing its 2 second target"
+          description: "99th percentile from stored to badge is {{ $value }} seconds."
+
+      - alert: PushFailing
+        expr: increase(herald_push_attempts_total{outcome="failed"}[10m]) > 10
+        labels: { severity: warning }
+        annotations:
+          summary: "Push delivery is failing"
+          description: "Check VAPID keys and push service reachability."
+
+      - alert: LiveEventsDropped
+        expr: rate(sse_dropped_total[5m]) > 1
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Live events are being dropped on full connection buffers"
+          description: "Clients re-read after a drop, but this means connections are falling behind."

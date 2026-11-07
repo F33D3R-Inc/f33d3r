@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -31,11 +32,11 @@ import (
 func (h *Handler) frequencyActor(w http.ResponseWriter, r *http.Request) *model.User {
 	user := liveActor(h.userFromRequest(w, r))
 	if user == nil {
-		frequencyProblem(w, r, http.StatusUnauthorized, "unauthenticated", "Sign in to take part in a Frequency.")
+		h.frequencyProblem(w, r, http.StatusUnauthorized, "unauthenticated", "Sign in to take part in a Frequency.")
 		return nil
 	}
 	if user.PIALID == "" {
-		frequencyProblem(w, r, http.StatusForbidden, "identity_incomplete", "Your identity is not fully set up yet — finish onboarding first.")
+		h.frequencyProblem(w, r, http.StatusForbidden, "identity_incomplete", "Your identity is not fully set up yet — finish onboarding first.")
 		return nil
 	}
 	return user
@@ -44,7 +45,7 @@ func (h *Handler) frequencyActor(w http.ResponseWriter, r *http.Request) *model.
 // frequencyReady answers 503 when this deployment has no Frequencies brain.
 func (h *Handler) frequencyReady(w http.ResponseWriter, r *http.Request) bool {
 	if h.auralis == nil || !h.auralis.Configured() {
-		frequencyProblem(w, r, http.StatusServiceUnavailable, "frequencies_unavailable", "Frequencies are not available on this deployment.")
+		h.frequencyProblem(w, r, http.StatusServiceUnavailable, "frequencies_unavailable", "Frequencies are not available on this deployment.")
 		return false
 	}
 	return true
@@ -61,17 +62,31 @@ func (h *Handler) frequencyRefuse(w http.ResponseWriter, r *http.Request, id str
 	if code >= 500 {
 		log.Printf("[frequency] %s: %v", id, err)
 	}
-	htmxError(w, r, msg, code)
+	h.frequencyTellWeb(w, r, msg, code)
 }
 
 // frequencyProblem answers a refusal this lane raises itself — a missing
 // field, a gate, a person who does not exist — in whichever form the caller
 // reads: the {code,message} envelope for a native client, the inline notice
 // for the web. Auralis's own refusals go through frequencyRefuse.
-func frequencyProblem(w http.ResponseWriter, r *http.Request, status int, code, msg string) {
+func (h *Handler) frequencyProblem(w http.ResponseWriter, r *http.Request, status int, code, msg string) {
 	if apiWantsJSON(r) {
 		apiError(w, status, code, msg)
 		return
+	}
+	h.frequencyTellWeb(w, r, msg, status)
+}
+
+// frequencyTellWeb shows a refusal to a person who acted from a page. htmx does
+// not swap an error status, so a signed-in person receives it as a toast on
+// their stream and the request answers 204.
+func (h *Handler) frequencyTellWeb(w http.ResponseWriter, r *http.Request, msg string, status int) {
+	if r.Header.Get("HX-Request") == "true" {
+		if user := liveActor(h.userFromRequest(w, r)); user != nil && user.PIALID != "" {
+			frequencyToast(user.PIALID, msg)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 	}
 	htmxError(w, r, msg, status)
 }
@@ -124,6 +139,9 @@ func (h *Handler) frequenciesPage(w http.ResponseWriter, r *http.Request) {
 				data["Unavailable"] = true
 				break
 			}
+			if lane != "ended" {
+				h.frequencyFollowedFirst(ans.Items, viewer)
+			}
 			cards := h.buildFrequencyCards(ans.Items, viewer)
 			switch lane {
 			case "live":
@@ -151,11 +169,10 @@ func (h *Handler) frequencyPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	user := h.frequencyActor(w, r)
-	if user == nil {
-		return
-	}
-	ans, err := h.auralis.Get(r.Context(), id, user.PIALID)
+	// The link is shareable: anyone can look, and joining asks them to sign in.
+	viewer := h.userFromRequest(w, r)
+	viewerPIAL := viewerPIALOf(viewer)
+	ans, err := h.auralis.Get(r.Context(), id, viewerPIAL)
 	if err != nil {
 		if auralis.IsNotFound(err) {
 			http.NotFound(w, r)
@@ -164,18 +181,23 @@ func (h *Handler) frequencyPage(w http.ResponseWriter, r *http.Request) {
 		h.frequencyRefuse(w, r, id, err)
 		return
 	}
-	if ans.Frequency.Frequency.AdultContent && excludeNSFW(user) {
-		frequencyProblem(w, r, http.StatusForbidden, "adult_content_disabled", "This Frequency is for adult-enabled accounts.")
+	if code, msg, refused := h.frequencyGate(viewer, &ans.Frequency); refused {
+		// Someone signed out may be able to see it once they sign in.
+		if viewerPIAL == "" {
+			http.Redirect(w, r, "/login", http.StatusSeeOther)
+			return
+		}
+		h.frequencyProblem(w, r, http.StatusForbidden, code, msg)
 		return
 	}
-	stage := h.buildFrequencyStage(&ans.Frequency, user.PIALID, user, nil, nil)
+	stage := h.buildFrequencyStage(&ans.Frequency, viewerPIAL, viewer, nil)
 	data := map[string]interface{}{
-		"User":      user,
+		"User":      viewer,
 		"PageTitle": ans.Frequency.Frequency.Title + " · Frequency · F33D3R",
 		"Mode":      "frequency",
 		"Stage":     stage,
 	}
-	for k, val := range h.railData(user, "default") {
+	for k, val := range h.railData(viewer, "default") {
 		data[k] = val
 	}
 	h.render(w, r, "frequency.html", data)
@@ -238,12 +260,16 @@ func (h *Handler) facetFrequencySlot(w http.ResponseWriter, r *http.Request) {
 		h.frequencyRefuse(w, r, id, err)
 		return
 	}
+	if code, msg, refused := h.frequencyGate(viewer, &ans.Frequency); refused {
+		h.frequencyProblem(w, r, http.StatusForbidden, code, msg)
+		return
+	}
 	var frag string
 	if slot == freqSlotCard {
 		people := h.frequencyPeople([]string{ans.Frequency.Frequency.HostPialID})
 		frag, err = h.renderFrequencyFragment(name, h.buildFrequencyCard(&ans.Frequency.Frequency, ans.Frequency.Counts, people[ans.Frequency.Frequency.HostPialID], viewer))
 	} else {
-		frag, err = h.renderFrequencySlot(slot, h.buildFrequencyStage(&ans.Frequency, viewerPIAL, viewer, nil, nil))
+		frag, err = h.renderFrequencySlot(slot, h.buildFrequencyStage(&ans.Frequency, viewerPIAL, viewer, nil))
 	}
 	if err != nil {
 		log.Printf("[frequency] %v", err)
@@ -293,7 +319,11 @@ func (h *Handler) apiV1FrequencyEvent(w http.ResponseWriter, r *http.Request, ev
 		if s := eventField(r, raw, "scheduled_at"); s != "" {
 			t, err := time.Parse(time.RFC3339, s)
 			if err != nil {
-				frequencyProblem(w, r, http.StatusBadRequest, "invalid_scheduled_at", "scheduled_at must be an RFC 3339 time")
+				h.frequencyProblem(w, r, http.StatusBadRequest, "invalid_scheduled_at", "scheduled_at must be an RFC 3339 time")
+				return true
+			}
+			if problem := frequencyScheduleProblem(t); problem != "" {
+				h.frequencyProblem(w, r, http.StatusBadRequest, "invalid_scheduled_at", problem)
 				return true
 			}
 			at = &t
@@ -315,7 +345,7 @@ func (h *Handler) apiV1FrequencyEvent(w http.ResponseWriter, r *http.Request, ev
 		h.frequencyTuneIn(w, r, user, id, raw)
 	case "frequency.leave":
 		if id == "" {
-			frequencyProblem(w, r, http.StatusBadRequest, "frequency_id_required", "frequency_id required")
+			h.frequencyProblem(w, r, http.StatusBadRequest, "frequency_id_required", "frequency_id required")
 			return true
 		}
 		ans, err := h.auralis.Leave(r.Context(), user.PIALID, id)
@@ -323,8 +353,8 @@ func (h *Handler) apiV1FrequencyEvent(w http.ResponseWriter, r *http.Request, ev
 			h.frequencyRefuse(w, r, id, err)
 			return true
 		}
-		go h.publishFrequencyView(&ans.Frequency)
-		h.writeDockOrStage(w, r, user, ans, true)
+		h.frequencyDirty(id)
+		h.frequencyDone(w, r, user, ans)
 	case "frequency.heartbeat":
 		h.frequencyHeartbeat(w, r, user, id)
 	case "frequency.request_mic":
@@ -335,14 +365,16 @@ func (h *Handler) apiV1FrequencyEvent(w http.ResponseWriter, r *http.Request, ev
 			h.frequencyRefuse(w, r, id, err)
 			return true
 		}
-		h.frequencyRespondSlots(w, r, user, id, freqSlotRequestButton)
+		h.frequencyDirty(id)
+		h.frequencyMutated(w, r, user, id)
 	case "frequency.upvote":
 		rid := eventField(r, raw, "request_id")
 		if _, err := h.auralis.Upvote(r.Context(), user.PIALID, id, rid); err != nil {
 			h.frequencyRefuse(w, r, id, err)
 			return true
 		}
-		h.frequencyRespondSlots(w, r, user, id, freqSlotRequests)
+		h.frequencyDirty(id)
+		h.frequencyMutated(w, r, user, id)
 	case "frequency.approve":
 		rid := eventField(r, raw, "request_id")
 		h.frequencyAnswer(w, r, user, id, func() (*auralis.Answer, error) {
@@ -354,14 +386,69 @@ func (h *Handler) apiV1FrequencyEvent(w http.ResponseWriter, r *http.Request, ev
 			return h.auralis.Decline(r.Context(), user.PIALID, id, rid)
 		})
 	case "frequency.mute", "frequency.unmute", "frequency.demote", "frequency.remove",
-		"frequency.block", "frequency.unblock", "frequency.cohost", "frequency.uncohost":
+		"frequency.block", "frequency.unblock", "frequency.cohost", "frequency.uncohost", "frequency.invite",
+		"frequency.promote", "frequency.transfer":
 		h.frequencyParticipantAction(w, r, user, id, eventType, raw)
+	case "frequency.mic_denied":
+		// The browser could not open the microphone: the person is not speaking,
+		// so the room stops saying they are.
+		if _, err := h.auralis.Mute(r.Context(), user.PIALID, id, user.PIALID); err != nil {
+			h.frequencyRefuse(w, r, id, err)
+			return true
+		}
+		h.frequencyDirty(id)
+		frequencyToast(user.PIALID, "Your browser blocked the microphone. Allow it for this site, then Unmute.")
+		w.WriteHeader(http.StatusNoContent)
 	case "frequency.report":
 		h.frequencyReport(w, r, user, id, raw)
+	case "frequency.delete_replay":
+		h.frequencyAnswer(w, r, user, id, func() (*auralis.Answer, error) {
+			return h.auralis.DeleteReplay(r.Context(), user.PIALID, id)
+		})
+	case "frequency.pin":
+		h.frequencyPin(w, r, user, id, raw)
+	case "frequency.unpin":
+		h.frequencyUnpin(w, r, user, id, raw)
+	case "frequency.clip":
+		h.frequencyClip(w, r, user, id, raw)
+	case "frequency.clips_enabled":
+		h.frequencyClipsEnabled(w, r, user, id, raw)
+	case "frequency.remind":
+		h.frequencyRemind(w, r, user, id, raw)
+	case "frequency.react":
+		h.frequencyReact(w, r, user, id, raw)
+	case "frequency.step_down":
+		h.frequencyAnswer(w, r, user, id, func() (*auralis.Answer, error) {
+			return h.auralis.StepDown(r.Context(), user.PIALID, id)
+		})
 	default:
 		http.Error(w, "unknown event_type: "+eventType, http.StatusNotFound)
 	}
 	return true
+}
+
+// frequencyMediaToken — POST /frequencies/{id}/media-token
+// The audio connection's credential. It is minted for whoever is asking at this
+// moment and is never rendered into a page.
+func (h *Handler) frequencyMediaToken(w http.ResponseWriter, r *http.Request) {
+	user := h.userFromRequest(w, r)
+	if user == nil || user.PIALID == "" {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	token, err := h.auralis.MediaToken(r.Context(), user.PIALID, r.PathValue("id"))
+	switch {
+	case auralis.IsOutage(err):
+		log.Printf("[frequency] media token: %v", err)
+		http.Error(w, "audio unavailable", http.StatusBadGateway)
+		return
+	case err != nil:
+		http.Error(w, "not in this Frequency", http.StatusConflict)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	_ = json.NewEncoder(w).Encode(map[string]string{"token": token})
 }
 
 // idemKey is the caller's idempotency key, when it sent one.
@@ -372,11 +459,11 @@ func idemKey(r *http.Request, raw map[string]json.RawMessage) string {
 	return eventField(r, raw, "idempotency_key")
 }
 
-// frequencyAnswer runs one Auralis mutation and answers with the actor's
-// stage, then fans the new state out to everyone else.
+// frequencyAnswer runs one Auralis mutation. The page learns the result from FA
+// Live, the same way everyone else does; a native caller gets the room DTO.
 func (h *Handler) frequencyAnswer(w http.ResponseWriter, r *http.Request, user *model.User, id string, do func() (*auralis.Answer, error)) {
 	if id == "" {
-		frequencyProblem(w, r, http.StatusBadRequest, "frequency_id_required", "frequency_id required")
+		h.frequencyProblem(w, r, http.StatusBadRequest, "frequency_id_required", "frequency_id required")
 		return
 	}
 	ans, err := do()
@@ -384,52 +471,32 @@ func (h *Handler) frequencyAnswer(w http.ResponseWriter, r *http.Request, user *
 		h.frequencyRefuse(w, r, id, err)
 		return
 	}
-	go h.publishFrequencyView(&ans.Frequency)
-	h.writeFrequencyStage(w, r, user, ans)
+	h.frequencyDirty(id)
+	h.frequencyDone(w, r, user, ans)
 }
 
-// writeFrequencyStage answers with the whole stage for this actor — the
-// simplest correct Fragment after a mutation that can change several slots.
-// A native caller gets the room DTO instead, session included.
-func (h *Handler) writeFrequencyStage(w http.ResponseWriter, r *http.Request, user *model.User, ans *auralis.Answer) {
+// frequencyDone answers an accepted mutation. An empty 200 lets a form inside an
+// overlay clear it; every other form on these surfaces declares hx-swap="none".
+func (h *Handler) frequencyDone(w http.ResponseWriter, r *http.Request, user *model.User, ans *auralis.Answer) {
 	if apiWantsJSON(r) {
 		h.writeFrequencyRoomJSON(w, user, ans)
 		return
 	}
-	stage := h.buildFrequencyStage(&ans.Frequency, user.PIALID, user, ans.Session, nil)
-	frag, err := h.renderFrequencyFragment("frequency_stage", stage)
-	if err != nil {
-		log.Printf("[frequency] %v", err)
-		http.Error(w, "fragment unavailable", http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(frag))
+	w.WriteHeader(http.StatusOK)
 }
 
-// frequencyRespondSlots re-reads and answers with the named slots for this
-// actor, and fans out.
-func (h *Handler) frequencyRespondSlots(w http.ResponseWriter, r *http.Request, user *model.User, id string, slots ...string) {
+// frequencyMutated answers a mutation whose Auralis call returned no room.
+func (h *Handler) frequencyMutated(w http.ResponseWriter, r *http.Request, user *model.User, id string) {
+	if !apiWantsJSON(r) {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
 	ans, err := h.auralis.Get(r.Context(), id, user.PIALID)
 	if err != nil {
 		h.frequencyRefuse(w, r, id, err)
 		return
 	}
-	go h.publishFrequencyView(&ans.Frequency)
-	if apiWantsJSON(r) {
-		h.writeFrequencyRoomJSON(w, user, ans)
-		return
-	}
-	stage := h.buildFrequencyStage(&ans.Frequency, user.PIALID, user, nil, nil)
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	for _, slot := range slots {
-		frag, err := h.renderFrequencySlot(slot, stage)
-		if err != nil {
-			log.Printf("[frequency] %v", err)
-			continue
-		}
-		_, _ = w.Write([]byte(frag))
-	}
+	h.writeFrequencyRoomJSON(w, user, ans)
 }
 
 // frequencyCreateInput reads the creation fields. adult_content is refused
@@ -463,6 +530,9 @@ func frequencyCreateInput(r *http.Request, user *model.User, raw map[string]json
 		if err != nil {
 			return in, "scheduled_at must be an RFC 3339 time"
 		}
+		if problem := frequencyScheduleProblem(t); problem != "" {
+			return in, problem
+		}
 		in.ScheduledAt = &t
 	}
 	return in, ""
@@ -475,7 +545,7 @@ func (h *Handler) frequencyGoLive(w http.ResponseWriter, r *http.Request, user *
 	in, problem := frequencyCreateInput(r, user, raw)
 	draft := frequencyGoDraft{Title: in.Title, Description: in.Description, AdultContent: in.AdultContent, Recording: in.RecordingEnabled}
 	if problem != "" {
-		h.renderGoComposerWith(w, r, user, goComposerDraft{}, "", http.StatusBadRequest, draft.withError(problem))
+		h.frequencyGoRefused(w, r, user, http.StatusBadRequest, draft.withError(problem))
 		return
 	}
 	created, err := h.auralis.Create(r.Context(), user.PIALID, idemKey(r, raw), in)
@@ -484,20 +554,28 @@ func (h *Handler) frequencyGoLive(w http.ResponseWriter, r *http.Request, user *
 		if code >= 500 {
 			log.Printf("[frequency] go_live create: %v", err)
 		}
-		h.renderGoComposerWith(w, r, user, goComposerDraft{}, "", code, draft.withError(msg))
+		h.frequencyGoRefused(w, r, user, code, draft.withError(msg))
 		return
 	}
 	id := created.Frequency.Frequency.ID
-	started, err := h.auralis.Start(r.Context(), user.PIALID, "", id)
-	if err != nil {
-		msg, code := frequencyErrorMessage(err)
-		if code >= 500 {
-			log.Printf("[frequency] go_live start %s: %v", id, err)
+	// With a time, the room waits for it. Otherwise it starts now.
+	started := created
+	if in.ScheduledAt == nil {
+		started, err = h.auralis.Start(r.Context(), user.PIALID, "", id)
+		if err != nil {
+			msg, code := frequencyErrorMessage(err)
+			if code >= 500 {
+				log.Printf("[frequency] go_live start %s: %v", id, err)
+			}
+			// Nothing started, so the draft made a moment ago must not linger.
+			if _, cerr := h.auralis.Cancel(r.Context(), user.PIALID, id); cerr != nil {
+				log.Printf("[frequency] go_live cancelling draft %s: %v", id, cerr)
+			}
+			h.frequencyGoRefused(w, r, user, code, draft.withError(msg))
+			return
 		}
-		h.renderGoComposerWith(w, r, user, goComposerDraft{}, "", code, draft.withError(msg))
-		return
 	}
-	go h.publishFrequencyView(&started.Frequency)
+	h.frequencyDirty(id)
 	if apiWantsJSON(r) {
 		h.writeFrequencyRoomJSON(w, user, started)
 		return
@@ -506,9 +584,10 @@ func (h *Handler) frequencyGoLive(w http.ResponseWriter, r *http.Request, user *
 		http.Redirect(w, r, "/frequencies/"+id, http.StatusSeeOther)
 		return
 	}
-	// The composer targets #main-col: answer with the stage body and push the
-	// stage URL so the Shell lands where a document load would have.
-	stage := h.buildFrequencyStage(&started.Frequency, user.PIALID, user, started.Session, nil)
+	// The composer targets the inside of #main-col. The stage replaces that
+	// element itself, and the stage URL is pushed so the Shell lands where a
+	// document load would have. The dock arrives over FA Live.
+	stage := h.buildFrequencyStage(&started.Frequency, user.PIALID, user, nil)
 	frag, err := h.renderFrequencyFragment("frequency_stage", stage)
 	if err != nil {
 		log.Printf("[frequency] %v", err)
@@ -516,62 +595,27 @@ func (h *Handler) frequencyGoLive(w http.ResponseWriter, r *http.Request, user *
 		return
 	}
 	w.Header().Set("HX-Push-Url", "/frequencies/"+id)
+	w.Header().Set("HX-Reswap", "outerHTML")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write([]byte(`<main class="f33d3r-main freq-main freq-main--` + stage.State + `" id="main-col">` + frag + `</main>`))
-	// The host is in their Frequency now: the Shell's dock follows.
-	if dock, derr := h.renderFrequencySlot(freqSlotDock, stage); derr == nil {
-		_, _ = w.Write([]byte(oobSwap(dock)))
-	} else {
-		log.Printf("[frequency] %v", derr)
-	}
 }
 
-// fromStage reports whether the caller is looking at this Frequency's stage
-// page (HX-Current-URL), which decides whether an answer is the stage or the
-// Shell's dock.
-func fromStage(r *http.Request, id string) bool {
-	return strings.HasPrefix(hxCurrentPath(r), "/frequencies/"+id)
-}
-
-// writeDockOrStage answers a join/leave. On the stage page the primary
-// target is the stage (its forms swap `closest .freq-stage`), and the dock
-// rides along out-of-band by its id. Anywhere else — the preview overlay, a
-// card — the target is #frequency-dock and the dock is the answer. `over`
-// forces the empty mount.
-func (h *Handler) writeDockOrStage(w http.ResponseWriter, r *http.Request, user *model.User, ans *auralis.Answer, over bool) {
-	if apiWantsJSON(r) {
-		h.writeFrequencyRoomJSON(w, user, ans)
-		return
+// frequencyGoRefused re-renders the composer with the host's words in it. htmx
+// does not swap an error status and the form pushes its URL, so a page request
+// answers 200 and pushes nothing.
+func (h *Handler) frequencyGoRefused(w http.ResponseWriter, r *http.Request, user *model.User, status int, draft frequencyGoDraft) {
+	if r.Header.Get("HX-Request") == "true" {
+		status = http.StatusOK
+		w.Header().Set("HX-Push-Url", "false")
 	}
-	stage := h.buildFrequencyStage(&ans.Frequency, user.PIALID, user, ans.Session, nil)
-	dock := frequencyDockEmpty
-	if !over && stage.Viewer.InFrequency && stage.State == "live" {
-		if frag, err := h.renderFrequencySlot(freqSlotDock, stage); err == nil {
-			dock = frag
-		} else {
-			log.Printf("[frequency] %v", err)
-		}
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if fromStage(r, stage.ID) {
-		frag, err := h.renderFrequencyFragment("frequency_stage", stage)
-		if err != nil {
-			log.Printf("[frequency] %v", err)
-			http.Error(w, "fragment unavailable", http.StatusInternalServerError)
-			return
-		}
-		_, _ = w.Write([]byte(frag))
-		_, _ = w.Write([]byte(oobSwap(dock)))
-		return
-	}
-	_, _ = w.Write([]byte(dock))
+	h.renderGoComposerWith(w, r, user, goComposerDraft{}, "", status, draft)
 }
 
 // frequencyCreate creates without starting (a draft or a scheduled one).
 func (h *Handler) frequencyCreate(w http.ResponseWriter, r *http.Request, user *model.User, raw map[string]json.RawMessage, _ bool) {
 	in, problem := frequencyCreateInput(r, user, raw)
 	if problem != "" {
-		frequencyProblem(w, r, http.StatusBadRequest, "invalid_frequency", problem)
+		h.frequencyProblem(w, r, http.StatusBadRequest, "invalid_frequency", problem)
 		return
 	}
 	ans, err := h.auralis.Create(r.Context(), user.PIALID, idemKey(r, raw), in)
@@ -579,15 +623,14 @@ func (h *Handler) frequencyCreate(w http.ResponseWriter, r *http.Request, user *
 		h.frequencyRefuse(w, r, "", err)
 		return
 	}
-	go h.publishFrequencyView(&ans.Frequency)
-	h.writeFrequencyStage(w, r, user, ans)
+	h.frequencyDirty(ans.Frequency.Frequency.ID)
+	h.frequencyDone(w, r, user, ans)
 }
 
-// frequencyTuneIn admits the actor and answers with the stage that carries
-// their session token.
+// frequencyTuneIn admits the actor. Their stage and dock arrive over FA Live.
 func (h *Handler) frequencyTuneIn(w http.ResponseWriter, r *http.Request, user *model.User, id string, raw map[string]json.RawMessage) {
 	if id == "" {
-		frequencyProblem(w, r, http.StatusBadRequest, "frequency_id_required", "frequency_id required")
+		h.frequencyProblem(w, r, http.StatusBadRequest, "frequency_id_required", "frequency_id required")
 		return
 	}
 	// The adult gate is this brain's to apply before asking: Auralis does not
@@ -598,16 +641,17 @@ func (h *Handler) frequencyTuneIn(w http.ResponseWriter, r *http.Request, user *
 		return
 	}
 	if pre.Frequency.Frequency.AdultContent && excludeNSFW(user) {
-		frequencyProblem(w, r, http.StatusForbidden, "adult_content_disabled", "This Frequency is for adult-enabled accounts.")
+		h.frequencyProblem(w, r, http.StatusForbidden, "adult_content_disabled", "This Frequency is for adult-enabled accounts.")
 		return
 	}
-	ans, err := h.auralis.TuneIn(r.Context(), user.PIALID, idemKey(r, raw), id)
+	facts := h.frequencyAudienceFacts(user, pre.Frequency.Frequency.HostPialID)
+	ans, err := h.auralis.TuneIn(r.Context(), user.PIALID, idemKey(r, raw), id, facts)
 	if err != nil {
 		h.frequencyRefuse(w, r, id, err)
 		return
 	}
-	go h.publishFrequencyView(&ans.Frequency)
-	h.writeDockOrStage(w, r, user, ans, false)
+	h.frequencyDirty(id)
+	h.frequencyDone(w, r, user, ans)
 }
 
 // frequencyHeartbeatDTO is the beat's answer in the native envelope: the
@@ -621,75 +665,62 @@ func frequencyHeartbeatDTO(hb *auralis.HeartbeatAnswer) FrequencyHeartbeatDTO {
 	return out
 }
 
-// frequencyHeartbeat is the presence beat. The tally Facet posts it and swaps
-// itself for the answer, on the stage header and in the Shell's dock alike,
-// so the answer is always that tally: beating again while the person is
-// present, still when they are not.
+// frequencyHeartbeat is the presence beat. On the web it comes from the dock,
+// swaps nothing, and renews the person's place in the room's audience. A beat
+// that finds the person gone is how a page learns it after any missed update:
+// the room re-renders for them and they are told.
 func (h *Handler) frequencyHeartbeat(w http.ResponseWriter, r *http.Request, user *model.User, id string) {
 	if id == "" {
-		frequencyProblem(w, r, http.StatusBadRequest, "frequency_id_required", "frequency_id required")
+		h.frequencyProblem(w, r, http.StatusBadRequest, "frequency_id_required", "frequency_id required")
 		return
 	}
 	hb, err := h.auralis.Heartbeat(r.Context(), user.PIALID, id)
-	if err != nil {
+	if err != nil && auralis.Code(err) != "not_joined" {
 		h.frequencyRefuse(w, r, id, err)
 		return
 	}
 	if apiWantsJSON(r) {
+		if err != nil {
+			h.frequencyRefuse(w, r, id, err)
+			return
+		}
 		apiJSON(w, http.StatusOK, frequencyHeartbeatDTO(hb))
 		return
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if !hb.Present {
-		// The Frequency is over, or this person is no longer in it. The beat
-		// stops: the tally is answered without one, the Shell's dock leaves
-		// out-of-band by its id, and on the stage the status, badge and
-		// controls follow so the page goes dark with it.
-		stage := FrequencyStageData{ID: id, State: hb.State, ListenersLabel: frequencyListenersLabel(0), Ctx: h.workCardCtx(user, "frequency")}
-		onStage := fromStage(r, id)
-		if ans, gerr := h.auralis.Get(r.Context(), id, user.PIALID); gerr == nil {
-			stage = h.buildFrequencyStage(&ans.Frequency, user.PIALID, user, nil, nil)
-		} else if onStage {
-			log.Printf("[frequency] heartbeat %s: read after departure: %v", id, gerr)
-		}
-		stage.Heartbeat = false
-		frag, rerr := h.renderFrequencySlot(freqSlotListenerCount, stage)
-		if rerr != nil {
-			log.Printf("[frequency] %v", rerr)
-			http.Error(w, "fragment unavailable", http.StatusInternalServerError)
-			return
-		}
-		_, _ = w.Write([]byte(frag))
-		_, _ = w.Write([]byte(oobSwap(frequencyDockEmpty)))
-		if onStage {
-			for _, slot := range []string{freqSlotStatus, freqSlotLiveBadge, freqSlotControls} {
-				if sf, serr := h.renderFrequencySlot(slot, stage); serr == nil {
-					_, _ = w.Write([]byte(oobSwap(sf)))
-				}
-			}
-		}
+	if err == nil && hb.Present {
+		AddPostWatcher(user.PIALID, frequencyRoomPrefix+id)
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	count := 0
-	if hb.Counts != nil {
-		count = hb.Counts.Listeners
-	}
-	// The listener count is the only slot a beat can change; the host's
-	// requests, the speaker grid and the rest arrive over FA Live.
-	stage := FrequencyStageData{ID: id, State: hb.State, ListenerCount: count, ListenersLabel: frequencyListenersLabel(count), Heartbeat: true, Viewer: FrequencyViewer{InFrequency: true}, Ctx: h.workCardCtx(user, "frequency")}
-	frag, err := h.renderFrequencySlot(freqSlotListenerCount, stage)
+	h.frequencyDeparted(r.Context(), user, id)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// frequencyDeparted brings one person's page in line after they were found to
+// be out of a room their dock still shows.
+func (h *Handler) frequencyDeparted(ctx context.Context, user *model.User, id string) {
+	RemovePostWatcher(user.PIALID, frequencyRoomPrefix+id)
+	PublishFacetToUser(user.PIALID, FacetMutation{FacetID: frequencyFacetID(id, freqSlotDock), Fragment: frequencyDockGone(id)})
+	ans, err := h.auralis.Get(ctx, id, user.PIALID)
 	if err != nil {
-		log.Printf("[frequency] %v", err)
-		http.Error(w, "fragment unavailable", http.StatusInternalServerError)
+		log.Printf("[frequency] departed %s: read: %v", id, err)
 		return
 	}
-	_, _ = w.Write([]byte(frag))
+	stage := h.buildFrequencyStage(&ans.Frequency, user.PIALID, user, nil)
+	if frag, rerr := h.renderFrequencySlot(freqSlotStage, stage); rerr == nil {
+		PublishFacetToUser(user.PIALID, FacetMutation{FacetID: frequencyFacetID(id, freqSlotStage), Fragment: frag})
+	} else {
+		log.Printf("[frequency] %v", rerr)
+	}
+	if !ans.Frequency.Frequency.IsOver() {
+		frequencyToast(user.PIALID, "You were disconnected from this Frequency. Tune In to come back.")
+	}
 }
 
 // frequencyRequestMic queues the actor's request with the reason they typed.
 func (h *Handler) frequencyRequestMic(w http.ResponseWriter, r *http.Request, user *model.User, id string, raw map[string]json.RawMessage) {
 	if id == "" {
-		frequencyProblem(w, r, http.StatusBadRequest, "frequency_id_required", "frequency_id required")
+		h.frequencyProblem(w, r, http.StatusBadRequest, "frequency_id_required", "frequency_id required")
 		return
 	}
 	reason := truncate(strings.TrimSpace(eventField(r, raw, "reason")), 140)
@@ -697,7 +728,8 @@ func (h *Handler) frequencyRequestMic(w http.ResponseWriter, r *http.Request, us
 		h.frequencyRefuse(w, r, id, err)
 		return
 	}
-	h.frequencyRespondSlots(w, r, user, id, freqSlotRequestButton)
+	h.frequencyDirty(id)
+	h.frequencyMutated(w, r, user, id)
 }
 
 // frequencyParticipantAction is every host/co-host control aimed at a person.
@@ -705,7 +737,7 @@ func (h *Handler) frequencyRequestMic(w http.ResponseWriter, r *http.Request, us
 // because Auralis speaks PIAL and never handle.
 func (h *Handler) frequencyParticipantAction(w http.ResponseWriter, r *http.Request, user *model.User, id, eventType string, raw map[string]json.RawMessage) {
 	if id == "" {
-		frequencyProblem(w, r, http.StatusBadRequest, "frequency_id_required", "frequency_id required")
+		h.frequencyProblem(w, r, http.StatusBadRequest, "frequency_id_required", "frequency_id required")
 		return
 	}
 	target, ok := h.frequencyTargetPIAL(w, r, raw)
@@ -715,11 +747,8 @@ func (h *Handler) frequencyParticipantAction(w http.ResponseWriter, r *http.Requ
 	reason := truncate(strings.TrimSpace(eventField(r, raw, "reason")), 140)
 	ctx := r.Context()
 	me := user.PIALID
-	if eventType == "frequency.remove" || eventType == "frequency.block" {
-		// The fan-out cannot reach someone who is no longer present; their
-		// dock is cleared here, after the answer.
-		defer frequencyDepartedDock(target)
-	}
+	// An open people sheet refreshes at once instead of on its next tick.
+	w.Header().Set("HX-Trigger", "fa:people-changed")
 	h.frequencyAnswer(w, r, user, id, func() (*auralis.Answer, error) {
 		switch eventType {
 		case "frequency.mute":
@@ -729,13 +758,39 @@ func (h *Handler) frequencyParticipantAction(w http.ResponseWriter, r *http.Requ
 		case "frequency.demote":
 			return h.auralis.Demote(ctx, me, id, target)
 		case "frequency.remove":
-			return h.auralis.Remove(ctx, me, id, target, reason)
+			ans, err := h.auralis.Remove(ctx, me, id, target, reason)
+			if err == nil {
+				frequencyToast(target, "A host removed you from this Frequency.")
+			}
+			return ans, err
 		case "frequency.block":
-			return h.auralis.Block(ctx, me, id, target, reason)
+			ans, err := h.auralis.Block(ctx, me, id, target, reason)
+			if err == nil {
+				frequencyToast(target, "A host blocked you from this Frequency.")
+			}
+			return ans, err
 		case "frequency.unblock":
 			return h.auralis.Unblock(ctx, me, id, target)
+		case "frequency.invite":
+			ans, err := h.auralis.Invite(ctx, me, id, target)
+			if err == nil {
+				publishToast(me, "frequency-invite", "Invite sent.")
+			}
+			return ans, err
 		case "frequency.cohost":
 			return h.auralis.AddCohost(ctx, me, id, target)
+		case "frequency.promote":
+			ans, err := h.auralis.Promote(ctx, me, id, target)
+			if err == nil {
+				publishToast(target, "frequency-promote", "A host gave you the mic. Unmute when you are ready.")
+			}
+			return ans, err
+		case "frequency.transfer":
+			ans, err := h.auralis.TransferHost(ctx, me, id, target)
+			if err == nil {
+				publishToast(target, "frequency-transfer", "You are now the host of this Frequency.")
+			}
+			return ans, err
 		default:
 			return h.auralis.RemoveCohost(ctx, me, id, target)
 		}
@@ -750,7 +805,7 @@ func (h *Handler) frequencyTargetPIAL(w http.ResponseWriter, r *http.Request, ra
 	}
 	handle := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(eventField(r, raw, "target_handle", "handle"))), "@")
 	if handle == "" {
-		frequencyProblem(w, r, http.StatusBadRequest, "target_handle_required", "target_handle required")
+		h.frequencyProblem(w, r, http.StatusBadRequest, "target_handle_required", "target_handle required")
 		return "", false
 	}
 	// The viewer naming themself (self mute/unmute posts their own handle):
@@ -759,12 +814,12 @@ func (h *Handler) frequencyTargetPIAL(w http.ResponseWriter, r *http.Request, ra
 		return me.PIALID, true
 	}
 	if h.db == nil {
-		frequencyProblem(w, r, http.StatusServiceUnavailable, "db_unavailable", "database unavailable")
+		h.frequencyProblem(w, r, http.StatusServiceUnavailable, "db_unavailable", "database unavailable")
 		return "", false
 	}
 	target, err := dbpkg.GetUserByHandle(h.db, handle)
 	if err != nil || target == nil || target.PIALID == "" {
-		frequencyProblem(w, r, http.StatusNotFound, "not_found", "No such person.")
+		h.frequencyProblem(w, r, http.StatusNotFound, "not_found", "No such person.")
 		return "", false
 	}
 	return target.PIALID, true
@@ -774,14 +829,14 @@ func (h *Handler) frequencyTargetPIAL(w http.ResponseWriter, r *http.Request, ra
 // through the same funnel every other report takes.
 func (h *Handler) frequencyReport(w http.ResponseWriter, r *http.Request, user *model.User, id string, raw map[string]json.RawMessage) {
 	if id == "" {
-		frequencyProblem(w, r, http.StatusBadRequest, "frequency_id_required", "frequency_id required")
+		h.frequencyProblem(w, r, http.StatusBadRequest, "frequency_id_required", "frequency_id required")
 		return
 	}
 	reason := eventField(r, raw, "reason")
 	switch reason {
 	case "spam", "harassment", "hate", "nsfw", "violence", "illegal", "other":
 	default:
-		frequencyProblem(w, r, http.StatusBadRequest, "reason_required", "reason required")
+		h.frequencyProblem(w, r, http.StatusBadRequest, "reason_required", "reason required")
 		return
 	}
 	detail := truncate(eventField(r, raw, "detail"), 500)
@@ -789,13 +844,23 @@ func (h *Handler) frequencyReport(w http.ResponseWriter, r *http.Request, user *
 	if handle := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(eventField(r, raw, "target_handle"))), "@"); handle != "" && h.db != nil {
 		target, err := dbpkg.GetUserByHandle(h.db, handle)
 		if err != nil || target == nil {
-			frequencyProblem(w, r, http.StatusNotFound, "not_found", "No such person.")
+			h.frequencyProblem(w, r, http.StatusNotFound, "not_found", "No such person.")
+			return
+		}
+		if target.ID == user.ID {
+			h.frequencyProblem(w, r, http.StatusBadRequest, "report_self", "You cannot report yourself.")
 			return
 		}
 		contentID, contentType = id+":"+target.ID, "frequency_participant"
 	}
 	if err := h.fileContentReport(user, contentID, contentType, reason, detail); err != nil {
-		frequencyProblem(w, r, http.StatusInternalServerError, "server_error", "Could not file the report.")
+		h.frequencyProblem(w, r, http.StatusInternalServerError, "server_error", "Could not file the report.")
+		return
+	}
+	// The report sheet swaps this answer into the overlay, which closes it.
+	if r.Header.Get("HX-Request") == "true" {
+		publishToast(user.PIALID, "frequency-report", "Report sent. Thanks for telling us.")
+		w.WriteHeader(http.StatusOK)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

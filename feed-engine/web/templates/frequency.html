@@ -14,7 +14,9 @@
 {{define "head-extra"}}
 <meta property="og:type" content="website">
 <meta property="og:title" content="{{.Stage.Title}} · Frequency by @{{.Stage.Host.Handle}}">
-{{if .Stage.Description}}<meta property="og:description" content="{{.Stage.Description}}">{{end}}
+<meta property="og:description" content="{{if .Stage.Description}}{{.Stage.Description}}{{else}}Live audio on f33d3r.{{end}}">
+<meta property="og:url" content="https://f33d3r.com/frequencies/{{.Stage.ID}}">
+<meta name="twitter:card" content="summary">
 <meta property="og:site_name" content="f33d3r">
 {{end}}
 {{define "body"}}

@@ -5,6 +5,7 @@ mod follow_graph;
 mod handlers;
 mod manhattan_outbox;
 mod models;
+mod notifications;
 mod number_lease;
 mod observ;
 
@@ -42,6 +43,7 @@ async fn main() -> anyhow::Result<()> {
     // go through the transactional outbox, which the drain below delivers.
     let manhattan = manhattan_client::Manhattan::from_env("elohim-veni")?;
     manhattan_outbox::spawn(database_url.clone(), manhattan.clone());
+    notification_outbox::spawn(database_url.clone());
 
     // Expired Numbers stop admitting new contact at the decision, in SQL,
     // against this database's own clock — that enforcement does not depend on

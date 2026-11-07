@@ -5,7 +5,7 @@ FACET frequency_go_form
   The audio mode of Go Live. The form is the whole flow: the server creates the
   Frequency, starts it, seats the host, and answers with the stage. Nothing is
   provisioned in the browser; the microphone is not opened here — the stage's
-  media runtime (Phase 3) asks for it only after the server says this person
+  media runtime asks for it only after the server says this person
   is on the mic.
 
   inputs:
@@ -14,6 +14,7 @@ FACET frequency_go_form
     Error       string — server-side rejection, rendered back into the form
     Title       string — title already typed, on a rejection
     Description string — description already typed, on a rejection
+    Recording   bool   — recording already chosen, on a rejection
 
   states:
     default | error | nsfw-allowed
@@ -51,8 +52,8 @@ FACET frequency_go_form
   </select>
 
   <label class="live-go__check">
-    <input type="checkbox" name="recording_enabled" value="1">
-    <span>Record this Frequency for a replay. Everyone who tunes in is told it is being recorded.</span>
+    <input type="checkbox" name="recording_enabled" value="1"{{if .Recording}} checked{{end}}>
+    <span>Record this Frequency. Everyone sees it is being recorded, and the replay stays public until you delete it.</span>
   </label>
 
   {{if .CanNSFW}}
@@ -62,10 +63,15 @@ FACET frequency_go_form
   </label>
   {{end}}
 
+  <label class="live-go__label" for="freq-go-when">Schedule for later <span class="live-go__optional">optional, up to 14 days</span></label>
+  <input class="live-go__input" id="freq-go-when" type="datetime-local" data-utc-into="scheduled_at">
+  <input type="hidden" name="scheduled_at" value="">
+
   <button class="live-go__submit freq-go__submit" type="submit">
     <span class="freq-badge__wave freq-go__wave" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
     Start Frequency
   </button>
-  <p class="live-go__note">Hosting as @{{.Handle}}. Your mic opens on the stage, not here. You can end the Frequency at any time.</p>
+  <p class="live-go__note">With a time set, this schedules it and you start it when the time comes. Without one, it starts now.</p>
+  <p class="live-go__note">Hosting as @{{.Handle}}. You can end the Frequency at any time.</p>
 </form>
 {{end}}

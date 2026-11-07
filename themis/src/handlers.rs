@@ -507,125 +507,58 @@ pub async fn events(
             let use_xrp = requested_currency == "xrp";
 
             if use_xrp {
-                // XRP payment path
                 if shop.xrp_address.is_empty() {
                     return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error":"xrp_not_supported","message":"This seller does not accept XRP."}))).into_response();
                 }
-                let drops = listing.price_xrp_drops;
-                if drops <= 0 {
+                if listing.price_xrp_drops <= 0 {
                     return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error":"xrp_price_not_set","message":"No XRP price set for this listing."}))).into_response();
                 }
-                // Create purchase record — store drops in expected_sats for XRP
-                let purchase = match db::purchase_create(
-                    &state.pool,
-                    listing_id,
-                    requester,
-                    "", // btc_address unused for XRP
-                    drops,
-                    "xrp",
-                    &shop.xrp_address,
-                )
-                .await
-                {
-                    Ok(p) => p,
-                    Err(e) => {
-                        tracing::error!("{e}");
-                        return (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            Json(serde_json::json!({"error":"db_error"})),
-                        )
-                            .into_response();
-                    }
-                };
-                // Subscribe XRP address in watcher
-                watcher::subscribe_xrp_address(
-                    &state.xrp_watch_map,
-                    watcher::XrpWatchEntry {
-                        purchase_id: purchase.id,
-                        buyer_pial: requester,
-                        listing_id,
-                        expected_drops: drops,
-                        xrp_address: shop.xrp_address.clone(),
-                    },
-                )
-                .await;
+            }
+            let currency = if use_xrp { "xrp" } else { "btc" };
+            let opened = match db::purchase_open_for_buyer(&state.pool, requester, listing_id, currency).await {
+                Ok(Some(open)) => Ok(Some(open)),
+                Ok(None) if use_xrp => {
+                    db::purchase_open_xrp(&state.pool, listing_id, requester, &shop.xrp_address, listing.price_xrp_drops).await
+                }
+                Ok(None) => {
+                    db::purchase_open_btc(&state.pool, listing_id, requester, &shop.btc_address, listing.price_sats).await
+                }
+                Err(e) => Err(e),
+            };
+            let purchase = match opened {
+                Ok(Some(p)) => p,
+                Ok(None) => {
+                    return (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({"error":"shop_busy","message":"This shop has too many payments waiting. Try again shortly."}))).into_response();
+                }
+                Err(e) => {
+                    tracing::error!("{e}");
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({"error":"db_error"})),
+                    )
+                        .into_response();
+                }
+            };
 
-                // Start expiry timer
-                let pool = state.pool.clone();
-                let purchase_id = purchase.id;
-                let expires_at = purchase.expires_at;
-                tokio::spawn(async move {
-                    let now = chrono::Utc::now();
-                    let delay = (expires_at - now).to_std().unwrap_or_default();
-                    tokio::time::sleep(delay).await;
-                    let _ = db::purchase_mark_expired(&pool, purchase_id).await;
-                });
-
-                let amount_xrp = drops as f64 / 1_000_000.0;
+            if use_xrp {
                 Json(serde_json::json!({
-                    "ok":          true,
-                    "purchase_id": purchase.id,
-                    "currency":    "xrp",
-                    "xrp_address": shop.xrp_address,
-                    "amount_drops": drops,
-                    "amount_xrp":  amount_xrp,
-                    "expires_at":  purchase.expires_at,
+                    "ok":              true,
+                    "purchase_id":     purchase.id,
+                    "currency":        "xrp",
+                    "xrp_address":     purchase.xrp_address,
+                    "destination_tag": purchase.payment_tag,
+                    "amount_drops":    purchase.expected_sats,
+                    "amount_xrp":      purchase.expected_sats as f64 / 1_000_000.0,
+                    "expires_at":      purchase.expires_at,
                 }))
                 .into_response()
             } else {
-                // BTC payment path (default)
-                let purchase = match db::purchase_create(
-                    &state.pool,
-                    listing_id,
-                    requester,
-                    &shop.btc_address,
-                    listing.price_sats,
-                    "btc",
-                    "",
-                )
-                .await
-                {
-                    Ok(p) => p,
-                    Err(e) => {
-                        tracing::error!("{e}");
-                        return (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            Json(serde_json::json!({"error":"db_error"})),
-                        )
-                            .into_response();
-                    }
-                };
-                // Subscribe BTC address in watcher
-                watcher::subscribe_address(
-                    &state.watch_map,
-                    watcher::WatchEntry {
-                        purchase_id: purchase.id,
-                        buyer_pial: requester, // buyer is the requesting PIAL
-                        listing_id,
-                        expected_sats: listing.price_sats,
-                        btc_address: shop.btc_address.clone(),
-                        confirmations: 0,
-                    },
-                )
-                .await;
-
-                // Start expiry timer
-                let pool = state.pool.clone();
-                let purchase_id = purchase.id;
-                let expires_at = purchase.expires_at;
-                tokio::spawn(async move {
-                    let now = chrono::Utc::now();
-                    let delay = (expires_at - now).to_std().unwrap_or_default();
-                    tokio::time::sleep(delay).await;
-                    let _ = db::purchase_mark_expired(&pool, purchase_id).await;
-                });
-
                 Json(serde_json::json!({
                     "ok":          true,
                     "purchase_id": purchase.id,
                     "currency":    "btc",
-                    "btc_address": shop.btc_address,
-                    "amount_sats": listing.price_sats,
+                    "btc_address": purchase.btc_address,
+                    "amount_sats": purchase.expected_sats,
                     "expires_at":  purchase.expires_at,
                 }))
                 .into_response()
@@ -981,6 +914,7 @@ async fn settle_intent(
     domain_status: &str,
     reference_id: Uuid,
     outcome: Result<&str, &str>,
+    notice: Option<&crate::notifications::Event>,
 ) -> Result<(), sqlx::Error> {
     let (ledger_status, domain_state, tx_id, reason) = match outcome {
         Ok(tx_id) => ("completed", domain_status, Some(tx_id), None),
@@ -991,7 +925,7 @@ async fn settle_intent(
     // after something else moved the row — a cancellation, a sweep — would
     // silently overwrite that decision and resurrect the payment.
     let mut tx = pool.begin().await?;
-    sqlx::query(&format!(
+    let settled = sqlx::query(&format!(
         "UPDATE {domain_table} SET status = $2, ain_soph_tx_id = $3, failure_reason = $4 \
           WHERE id = $1 AND status = 'pending'"
     ))
@@ -1000,7 +934,11 @@ async fn settle_intent(
     .bind(tx_id)
     .bind(reason)
     .execute(&mut *tx)
-    .await?;
+    .await?
+    .rows_affected();
+    if let (true, Some(notice)) = (settled > 0, notice) {
+        crate::notifications::enqueue(&mut *tx, notice).await?;
+    }
     sqlx::query(
         "UPDATE commerce_transactions \
             SET status = $2, ain_soph_tx_id = $3, failure_reason = $4 \
@@ -1355,14 +1293,14 @@ pub async fn subscribe(
 
     let tx_id = match transfer {
         Ok(tx_id) => {
-            settle_intent(&state.pool, "subscriptions", "active", sub_id, Ok(&tx_id))
+            settle_intent(&state.pool, "subscriptions", "active", sub_id, Ok(&tx_id), Some(&sale_notice(format!("themis:subscribe:{sub_id}"), req.creator_pial_id.text(), "subscribe", "New subscriber", sub_id.to_string(), units_to_aet(price_units).to_string())))
                 .await
                 .map_err(|e| settlement_unrecorded(sub_id, &tx_id, e))?;
             tx_id
         }
         Err(e) => {
             let why = e.to_string();
-            let _ = settle_intent(&state.pool, "subscriptions", "active", sub_id, Err(&why)).await;
+            let _ = settle_intent(&state.pool, "subscriptions", "active", sub_id, Err(&why), None).await;
             return Err(cerr(StatusCode::PAYMENT_REQUIRED, &why));
         }
     };
@@ -1616,6 +1554,7 @@ pub async fn purchase_ppv(
                 "completed",
                 purchase_id,
                 Ok(&tx_id),
+                Some(&sale_notice(format!("themis:ppv:{purchase_id}"), creator_pial.text(), "ppv_sale", "Pay-per-view sale", purchase_id.to_string(), units_to_aet(price_units).to_string())),
             )
             .await
             .map_err(|e| settlement_unrecorded(purchase_id, &tx_id, e))?;
@@ -1629,6 +1568,7 @@ pub async fn purchase_ppv(
                 "completed",
                 purchase_id,
                 Err(&why),
+                None,
             )
             .await;
             return Err(cerr(StatusCode::PAYMENT_REQUIRED, &why));
@@ -1753,14 +1693,14 @@ pub async fn send_tip(
 
     let tx_id = match transfer {
         Ok(tx_id) => {
-            settle_intent(&state.pool, "tips", "completed", tip_id, Ok(&tx_id))
+            settle_intent(&state.pool, "tips", "completed", tip_id, Ok(&tx_id), Some(&sale_notice(format!("themis:tip:{tip_id}"), req.recipient_pial_id.text(), "tip", "You received a tip", tip_id.to_string(), req.amount_aet.to_string())))
                 .await
                 .map_err(|e| settlement_unrecorded(tip_id, &tx_id, e))?;
             tx_id
         }
         Err(e) => {
             let why = e.to_string();
-            let _ = settle_intent(&state.pool, "tips", "completed", tip_id, Err(&why)).await;
+            let _ = settle_intent(&state.pool, "tips", "completed", tip_id, Err(&why), None).await;
             return Err(cerr(StatusCode::PAYMENT_REQUIRED, &why));
         }
     };
@@ -1888,4 +1828,21 @@ pub async fn creator_earnings(
         "tips_aet":          tips_aet,
         "tx_count":          tx_count,
     })))
+}
+
+/// What a creator is told about a sale. It is written when the sale settles.
+fn sale_notice(event_id: String, pial: String, kind: &str, title: &str, target_id: String, amount_aet: String) -> crate::notifications::Event {
+    crate::notifications::Event {
+        actor_account: None,
+        recipient_account: None,
+        event_id,
+        recipient_pial: pial,
+        kind: kind.into(),
+        target_id,
+        target_type: "commerce".into(),
+        payload: serde_json::json!({ "amount_aet": amount_aet }),
+        push_body: format!("{amount_aet} AET"),
+        push_title: title.into(),
+        push_url: "/wallet".into(),
+    }
 }

@@ -353,7 +353,7 @@ pub async fn apply_user_action(
     )
     .await
     {
-        Ok(_action_id) => {
+        Ok(action_id) => {
             info!(pial_id = %pial_id, action = %action_type, "moderation action applied");
 
             // Notify Elohim Veni to enforce capabilities.

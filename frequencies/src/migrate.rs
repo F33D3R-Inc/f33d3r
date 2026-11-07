@@ -63,6 +63,30 @@ const MIGRATIONS: &[Migration] = &[
         filename: "0005_recordings.sql",
         body: include_str!("../migrations/0005_recordings.sql"),
     },
+    Migration {
+        version: 6,
+        name: "room_rules",
+        filename: "0006_room_rules.sql",
+        body: include_str!("../migrations/0006_room_rules.sql"),
+    },
+    Migration {
+        version: 7,
+        name: "reminders",
+        filename: "0007_reminders.sql",
+        body: include_str!("../migrations/0007_reminders.sql"),
+    },
+    Migration {
+        version: 8,
+        name: "replays",
+        filename: "0008_replays.sql",
+        body: include_str!("../migrations/0008_replays.sql"),
+    },
+    Migration {
+        version: 9,
+        name: "pins_and_clips",
+        filename: "0009_pins_and_clips.sql",
+        body: include_str!("../migrations/0009_pins_and_clips.sql"),
+    },
 ];
 
 fn checksum(body: &str) -> String {

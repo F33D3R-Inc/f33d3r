@@ -27,6 +27,7 @@ F33D3R.page('bulk-upload', function () {
   var batchID = null;
   var uploadSlots = [];     // [{upload_id, tus_url, filename}]
   var pollTimer = null;
+  var uploadDoneListening = false;
 
   // ── LISTEN: wire drop zone and file input ───────────────────────────────────
   (function () {
@@ -291,6 +292,13 @@ F33D3R.page('bulk-upload', function () {
       if (!batchID) return;
       fetchBatchStatus(batchID);
     }, POLL_INTERVAL_MS);
+    // The stream says when a video finished, so nothing waits for the next poll.
+    if (!uploadDoneListening) {
+      uploadDoneListening = true;
+      document.addEventListener('fa:upload-done', function () {
+        if (batchID && pollTimer) fetchBatchStatus(batchID);
+      });
+    }
   }
 
   function fetchBatchStatus(bid) {

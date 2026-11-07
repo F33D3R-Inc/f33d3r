@@ -24,95 +24,6 @@ var mentionExtractRe = regexp.MustCompile(`@([A-Za-z0-9_]{1,50})`)
 // spray, and the bound belongs on the resolver call rather than on the caller.
 const maxMentionsPerWork = 20
 
-// fireMentionNotifications scans body for @handles and sends mention notifications.
-// Runs as a goroutine — never blocks the HTTP response.
-//
-// The handles are resolved through Manhattan, in one batch, because an @mention
-// is a name and a name is what the naming plane is for. This used to join
-// users.handle: that answered with whoever held the handle when the row was
-// written, so a mention of a transferred handle notified the previous holder and
-// nothing anywhere could tell. Resolution now yields a PIAL, and only then does
-// this brain look up its own account for that identity.
-func (h *Handler) fireMentionNotifications(body, postID, actorID, actorHandle string) {
-	h.fireMentionNotificationsExcept(body, postID, actorID, actorHandle, nil)
-}
-
-// fireMentionNotificationsExcept is fireMentionNotifications with the set of
-// account ids this work has already notified by another kind.
-//
-// The set exists because a reply that opens with "@them" names the same person
-// twice — once as the person replied to, once as a name in the text — and two
-// rows for one act is a list that lies about how much happened. The caller that
-// wrote the first row owns the set, so the two decisions are made in order
-// rather than raced between goroutines.
-func (h *Handler) fireMentionNotificationsExcept(body, postID, actorID, actorHandle string, told map[string]bool) {
-	if h.db == nil {
-		return
-	}
-	matches := mentionExtractRe.FindAllStringSubmatch(body, -1)
-	if len(matches) == 0 {
-		return
-	}
-	seen := make(map[string]bool)
-	var handles []string
-	for _, m := range matches {
-		lc := strings.ToLower(m[1])
-		if seen[lc] {
-			continue
-		}
-		seen[lc] = true
-		handles = append(handles, lc)
-		if len(handles) == maxMentionsPerWork {
-			break
-		}
-	}
-
-	// Detached from the request that produced it: nobody is waiting on a mention
-	// notification, so the budget is generous enough that a slow plane delays
-	// delivery rather than dropping it.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	pialByHandle, err := h.resolveHandlesToPIALs(ctx, handles)
-	if err != nil {
-		// The plane being unreachable is not "nobody was mentioned". Falling back
-		// to the local handle join here is exactly the drift Manhattan exists to
-		// end, so this reports and delivers nothing.
-		log.Printf("[mention] resolving %d handle(s) for work %s through the naming plane failed: %v",
-			len(handles), postID, err)
-		return
-	}
-	if len(pialByHandle) == 0 {
-		return
-	}
-
-	pials := make([]string, 0, len(pialByHandle))
-	for _, pial := range pialByHandle {
-		pials = append(pials, pial)
-	}
-	targets, err := dbpkg.AccountsByPIAL(h.db, pials)
-	if err != nil {
-		log.Printf("[mention] loading accounts for %d mentioned identity(ies) on work %s: %v",
-			len(pials), postID, err)
-		return
-	}
-
-	preview := body
-	if len(preview) > 80 {
-		preview = preview[:80]
-	}
-	for _, pial := range pials {
-		target, ok := targets[pial]
-		if !ok || target.UserID == actorID || told[target.UserID] {
-			continue
-		}
-		h.notifyUser(target.UserID, "mention", actorID, postID, "work")
-		go h.HeraldNotify(pial, "mention",
-			"@"+actorHandle+" mentioned you", preview,
-			"", "/work/"+postID)
-	}
-}
-
 // facetPostReplies: TODO_WORKS — superseded by facetWorkReplies at /facets/works/replies/{id}.
 func (h *Handler) facetPostReplies(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/facets/works/replies/"+r.PathValue("id"), http.StatusMovedPermanently)
@@ -163,8 +74,13 @@ func (h *Handler) searchPage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	works = filterAdultForViewer(user, works)
+	var frequencyResults []FrequencyCardData
+	if searchType == "top" {
+		frequencyResults = h.frequencySearchCards(r.Context(), strings.TrimPrefix(query, "#"), user)
+	}
 	h.render(w, r, "search.html", h.withRail(map[string]interface{}{
 		"User":              user,
+		"FrequencyResults":  frequencyResults,
 		"Surface":           "search",
 		"SessionID":         uuid.New().String(),
 		"ShowScores":        h.cfg.ShowScores,
@@ -275,6 +191,8 @@ func (h *Handler) castPollVote(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "vote failed", 500)
 		return
 	}
+
+	go h.publishPollTally(postID, user.ID)
 
 	// Render the ballot back over #poll-{surface}-{postID} via outerHTML swap.
 	poll, err := dbpkg.GetPollResults(h.db, postID, user.ID)

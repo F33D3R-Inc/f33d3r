@@ -20,6 +20,8 @@ pub const ACTOR_SERVICE: &str = "service";
 pub enum EventType {
     Created,
     Scheduled,
+    RemindersDue,
+    PinsChanged,
     Started,
     Ended,
     Cancelled,
@@ -46,9 +48,11 @@ pub enum EventType {
 }
 
 impl EventType {
-    pub const ALL: [EventType; 25] = [
+    pub const ALL: [EventType; 27] = [
         Self::Created,
         Self::Scheduled,
+        Self::RemindersDue,
+        Self::PinsChanged,
         Self::Started,
         Self::Ended,
         Self::Cancelled,
@@ -81,6 +85,8 @@ impl EventType {
         match self {
             Self::Created => "frequency.created",
             Self::Scheduled => "frequency.scheduled",
+            Self::RemindersDue => "frequency.reminders_due",
+            Self::PinsChanged => "frequency.pins_changed",
             Self::Started => "frequency.started",
             Self::Ended => "frequency.ended",
             Self::Cancelled => "frequency.cancelled",

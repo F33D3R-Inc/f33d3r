@@ -1,148 +1,130 @@
 use crate::{
     cek, db,
+    models::Purchase,
     pial_ref::{require_identity, IdentityError, PialRef},
     AppState,
 };
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::Mutex;
-use tokio::time::{sleep, Duration};
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio::time::{timeout, Duration};
+use tokio_tungstenite::{connect_async, tungstenite::Message, WebSocketStream};
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
-#[derive(Debug, Clone)]
-pub struct WatchEntry {
-    pub purchase_id: Uuid,
-    pub buyer_pial: PialRef,
-    pub listing_id: Uuid,
-    pub expected_sats: i64,
-    pub btc_address: String,
-    pub confirmations: u32,
-}
+/// How often the chains are read while a purchase is waiting.
+const BTC_SWEEP: Duration = Duration::from_secs(30);
+const XRP_SWEEP: Duration = Duration::from_secs(10);
+const DELIVERY_RETRY_TICK: Duration = Duration::from_secs(60);
+const NETWORK_TIMEOUT: Duration = Duration::from_secs(20);
+/// Block timestamps may run behind real time by up to about two hours.
+const BLOCK_TIME_TOLERANCE_SECS: i64 = 7_200;
+/// A busy shop address is read back no further than this many pages per sweep.
+const MAX_HISTORY_PAGES: usize = 8;
+const ESPLORA_CONFIRMED_PAGE: usize = 25;
 
-pub type WatchMap = Arc<Mutex<HashMap<String, WatchEntry>>>;
-
-pub async fn run_watcher(state: Arc<AppState>, watch_map: WatchMap) {
-    // Load pending purchases from DB on startup
-    if let Ok(pending) = db::purchases_pending(&state.pool).await {
-        let mut map = watch_map.lock().await;
-        for p in pending {
-            map.insert(
-                p.btc_address.clone(),
-                WatchEntry {
-                    purchase_id: p.id,
-                    buyer_pial: p.buyer_pial,
-                    listing_id: p.listing_id,
-                    expected_sats: p.expected_sats,
-                    btc_address: p.btc_address.clone(),
-                    confirmations: 0,
-                },
-            );
-        }
-        info!("Loaded {} pending purchases to watch", map.len());
-    }
-
+/// Reads Bitcoin for every purchase still waiting. The database holds what is
+/// being waited for and the chain holds what was paid, so a restart or an outage
+/// loses nothing: the next sweep finds the payment.
+pub async fn run_btc_watcher(state: Arc<AppState>) {
+    let mut tick = tokio::time::interval(BTC_SWEEP);
     loop {
-        match connect_watcher(state.clone(), watch_map.clone()).await {
-            Ok(_) => info!("watcher exited cleanly"),
-            Err(e) => {
-                error!("watcher error: {e} — reconnecting in 5s");
-                sleep(Duration::from_secs(5)).await;
-            }
+        tick.tick().await;
+        if let Err(e) = sweep_btc(&state).await {
+            warn!("Bitcoin sweep failed, retrying next tick: {e}");
         }
     }
 }
 
-async fn connect_watcher(state: Arc<AppState>, watch_map: WatchMap) -> Result<()> {
-    info!(
-        "Connecting to mempool WebSocket: {}",
-        state.cfg.mempool_ws_url
-    );
-    let (ws_stream, _) = connect_async(&state.cfg.mempool_ws_url).await?;
-    let (mut write, mut read) = ws_stream.split();
-
-    // Subscribe to all currently watched addresses
-    {
-        let map = watch_map.lock().await;
-        for addr in map.keys() {
-            let msg = serde_json::json!({ "track-address": addr });
-            write.send(Message::Text(msg.to_string())).await?;
+/// Reads the XRP Ledger for every purchase still waiting.
+pub async fn run_xrp_watcher(state: Arc<AppState>) {
+    let mut tick = tokio::time::interval(XRP_SWEEP);
+    loop {
+        tick.tick().await;
+        if let Err(e) = sweep_xrp(&state).await {
+            warn!("XRP sweep failed, retrying next tick: {e}");
         }
     }
+}
 
-    while let Some(msg) = read.next().await {
-        let msg = msg?;
-        if let Message::Text(text) = msg {
-            if let Ok(v) = serde_json::from_str::<Value>(&text) {
-                handle_ws_message(&state, &watch_map, &mut write, v).await;
+async fn sweep_btc(state: &Arc<AppState>) -> Result<()> {
+    db::purchases_lapse(&state.pool).await?;
+    let pending = db::purchases_pending(&state.pool).await?;
+    if pending.is_empty() {
+        return Ok(());
+    }
+    let tip = btc_tip_height(state).await?;
+    let mut by_address: HashMap<String, Vec<Purchase>> = HashMap::new();
+    for p in pending {
+        by_address.entry(p.btc_address.clone()).or_default().push(p);
+    }
+    for (address, purchases) in by_address {
+        let oldest = purchases.iter().map(|p| p.created_at.timestamp()).min().unwrap_or(0);
+        let txs = btc_address_history(state, &address, oldest).await?;
+        for p in purchases {
+            let threshold = if p.expected_sats < 50_000 {
+                state.cfg.confirmation_threshold_low
+            } else {
+                state.cfg.confirmation_threshold_high
+            };
+            if let Some(txid) = btc_settlement(&txs, &address, p.expected_sats, p.created_at.timestamp(), tip, threshold) {
+                settle(state, p, txid).await;
             }
         }
     }
     Ok(())
 }
 
-async fn handle_ws_message(
-    state: &Arc<AppState>,
-    watch_map: &WatchMap,
-    write: &mut (impl SinkExt<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin),
-    v: Value,
-) {
-    // mempool.space fires "address-transactions" events with tx data
-    if let Some(address) = v.get("address").and_then(|a| a.as_str()) {
-        let entry = {
-            let map = watch_map.lock().await;
-            map.get(address).cloned()
-        };
-        if let Some(entry) = entry {
-            // mempool-transactions = unconfirmed; transactions = confirmed
-            if let Some(txns) = v
-                .get("mempool-transactions")
-                .or_else(|| v.get("transactions"))
-            {
-                if let Some(arr) = txns.as_array() {
-                    for tx in arr {
-                        let sats_received = sum_vout_to_address(tx, address);
-                        if sats_received >= entry.expected_sats {
-                            let confirmations = tx
-                                .get("status")
-                                .and_then(|s| s.get("block_height"))
-                                .map(|_| 1u32)
-                                .unwrap_or(0);
-                            let threshold = if entry.expected_sats < 50_000 {
-                                state.cfg.confirmation_threshold_low
-                            } else {
-                                state.cfg.confirmation_threshold_high
-                            };
-                            if confirmations >= threshold {
-                                handle_payment_confirmed(state, watch_map, entry).await;
-                                return;
-                            }
-                        }
-                    }
-                }
-            }
-            // confirmed-transactions (block confirmed)
-            if let Some(txns) = v.get("confirmed-transactions") {
-                if let Some(arr) = txns.as_array() {
-                    for tx in arr {
-                        let sats_received = sum_vout_to_address(tx, address);
-                        if sats_received >= entry.expected_sats {
-                            handle_payment_confirmed(state, watch_map, entry).await;
-                            return;
-                        }
-                    }
-                }
-            }
+async fn btc_tip_height(state: &Arc<AppState>) -> Result<i64> {
+    let url = format!("{}/blocks/tip/height", state.cfg.mempool_api_url);
+    let body = state.http.get(&url).timeout(NETWORK_TIMEOUT).send().await?.error_for_status()?.text().await?;
+    Ok(body.trim().parse()?)
+}
+
+/// The address's transactions back to the oldest purchase waiting on it.
+async fn btc_address_history(state: &Arc<AppState>, address: &str, oldest: i64) -> Result<Vec<Value>> {
+    let mut all = Vec::new();
+    let mut url = format!("{}/address/{address}/txs", state.cfg.mempool_api_url);
+    for _ in 0..MAX_HISTORY_PAGES {
+        let page: Vec<Value> = state.http.get(&url).timeout(NETWORK_TIMEOUT).send().await?.error_for_status()?.json().await?;
+        let confirmed: Vec<&Value> = page.iter().filter(|t| t["status"]["confirmed"].as_bool() == Some(true)).collect();
+        let next = confirmed.last().and_then(|last| {
+            let reached = last["status"]["block_time"].as_i64().unwrap_or(0) + BLOCK_TIME_TOLERANCE_SECS < oldest;
+            let full = confirmed.len() >= ESPLORA_CONFIRMED_PAGE;
+            (full && !reached).then(|| last["txid"].as_str().map(str::to_string)).flatten()
+        });
+        all.extend(page.iter().cloned());
+        match next {
+            Some(txid) => url = format!("{}/address/{address}/txs/chain/{txid}", state.cfg.mempool_api_url),
+            None => break,
         }
     }
+    Ok(all)
+}
 
-    // Suppress unused variable warning — write is needed for future subscribe_address channel
-    let _ = write;
+/// The transaction that pays this purchase: confirmed deeply enough, no older than
+/// the purchase, and carrying exactly the amount reserved for it at this address.
+fn btc_settlement(txs: &[Value], address: &str, expected_sats: i64, created_at: i64, tip: i64, threshold: u32) -> Option<String> {
+    txs.iter().find_map(|tx| {
+        let status = &tx["status"];
+        if status["confirmed"].as_bool() != Some(true) {
+            return None;
+        }
+        let height = status["block_height"].as_i64()?;
+        if tip - height + 1 < i64::from(threshold) {
+            return None;
+        }
+        if status["block_time"].as_i64()? + BLOCK_TIME_TOLERANCE_SECS < created_at {
+            return None;
+        }
+        if sum_vout_to_address(tx, address) != expected_sats {
+            return None;
+        }
+        tx["txid"].as_str().map(str::to_string)
+    })
 }
 
 fn sum_vout_to_address(tx: &Value, address: &str) -> i64 {
@@ -158,23 +140,134 @@ fn sum_vout_to_address(tx: &Value, address: &str) -> i64 {
         .unwrap_or(0)
 }
 
-async fn handle_payment_confirmed(state: &Arc<AppState>, watch_map: &WatchMap, entry: WatchEntry) {
-    info!("Payment confirmed for purchase {}", entry.purchase_id);
-
-    // Remove from watch map
-    watch_map.lock().await.remove(&entry.btc_address);
-
-    // Mark confirmed in DB
-    if let Err(e) = db::purchase_mark_confirmed(&state.pool, entry.purchase_id).await {
-        error!("Failed to mark purchase confirmed: {e}");
-        return;
+async fn sweep_xrp(state: &Arc<AppState>) -> Result<()> {
+    db::purchases_lapse(&state.pool).await?;
+    let pending = db::purchases_pending_xrp(&state.pool).await?;
+    if pending.is_empty() {
+        return Ok(());
     }
+    let mut by_address: HashMap<String, Vec<Purchase>> = HashMap::new();
+    for p in pending {
+        by_address.entry(p.xrp_address.clone()).or_default().push(p);
+    }
+    let (mut ws, _) = timeout(NETWORK_TIMEOUT, connect_async(&state.cfg.xrp_ws_url)).await??;
+    for (address, purchases) in by_address {
+        let txs = xrp_account_history(&mut ws, &address).await?;
+        for p in purchases {
+            let Some(tag) = p.payment_tag else { continue };
+            if let Some(hash) = xrp_settlement(&txs, &address, tag, p.expected_sats) {
+                settle(state, p, hash).await;
+            }
+        }
+    }
+    let _ = ws.close(None).await;
+    Ok(())
+}
 
-    // Fetch listing to get cek_encrypted
-    let listing = match db::listing_get(&state.pool, entry.listing_id).await {
+async fn xrp_account_history<S>(ws: &mut WebSocketStream<S>, address: &str) -> Result<Vec<Value>>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let mut all = Vec::new();
+    let mut marker = Value::Null;
+    for page in 0..MAX_HISTORY_PAGES {
+        let mut req = serde_json::json!({
+            "id": page,
+            "command": "account_tx",
+            "account": address,
+            "api_version": 1,
+            "ledger_index_min": -1,
+            "ledger_index_max": -1,
+            "limit": 200,
+            "forward": false,
+        });
+        if !marker.is_null() {
+            req["marker"] = marker.clone();
+        }
+        ws.send(Message::Text(req.to_string())).await?;
+        let reply = loop {
+            let msg = timeout(NETWORK_TIMEOUT, ws.next()).await?.ok_or_else(|| anyhow!("XRPL connection closed"))??;
+            if let Message::Text(text) = msg {
+                let v: Value = serde_json::from_str(&text)?;
+                if v["id"].as_u64() == Some(page as u64) {
+                    break v;
+                }
+            }
+        };
+        if reply["status"].as_str() != Some("success") {
+            return Err(anyhow!("account_tx refused: {}", reply["error"]));
+        }
+        if let Some(txs) = reply["result"]["transactions"].as_array() {
+            all.extend(txs.iter().cloned());
+        }
+        marker = reply["result"]["marker"].clone();
+        if marker.is_null() {
+            break;
+        }
+    }
+    Ok(all)
+}
+
+/// The validated payment that settles this purchase. The amount is what the ledger
+/// says was delivered, never the Amount field, which a partial payment can inflate
+/// to any figure while delivering almost nothing.
+fn xrp_settlement(txs: &[Value], address: &str, tag: i64, expected_drops: i64) -> Option<String> {
+    txs.iter().find_map(|item| {
+        let (tx, meta) = (&item["tx"], &item["meta"]);
+        if item["validated"].as_bool() != Some(true)
+            || tx["TransactionType"].as_str() != Some("Payment")
+            || tx["Destination"].as_str() != Some(address)
+            || tx["DestinationTag"].as_i64() != Some(tag)
+            || meta["TransactionResult"].as_str() != Some("tesSUCCESS")
+        {
+            return None;
+        }
+        // Native XRP is a string of drops; issued currencies are objects and do not count.
+        let delivered: i64 = meta["delivered_amount"].as_str()?.parse().ok()?;
+        if delivered < expected_drops {
+            return None;
+        }
+        tx["hash"].as_str().map(str::to_string)
+    })
+}
+
+/// Records the payment, then delivers. Delivery runs only for the attempt that
+/// recorded it; a transaction already used for another purchase settles nothing.
+async fn settle(state: &Arc<AppState>, purchase: Purchase, tx: String) {
+    match db::purchase_settle(&state.pool, purchase.id, &tx).await {
+        Ok(true) => {
+            info!("Purchase {} settled by {tx}", purchase.id);
+            deliver_purchase(state, purchase.id, purchase.buyer_pial, purchase.listing_id).await;
+        }
+        Ok(false) => warn!("Transaction {tx} did not settle purchase {}: already settled or already used", purchase.id),
+        Err(e) => error!("Failed to record settlement of purchase {}: {e}", purchase.id),
+    }
+}
+
+/// Retries paid purchases that are not yet delivered. A buyer with no key yet, or an
+/// outage at the key authority, delays delivery instead of stranding the buyer.
+pub async fn run_delivery_retry(state: Arc<AppState>) {
+    let mut tick = tokio::time::interval(DELIVERY_RETRY_TICK);
+    loop {
+        tick.tick().await;
+        match db::purchases_undelivered(&state.pool).await {
+            Ok(purchases) => {
+                for p in purchases {
+                    deliver_purchase(&state, p.id, p.buyer_pial, p.listing_id).await;
+                }
+            }
+            Err(e) => error!("Failed to load undelivered purchases: {e}"),
+        }
+    }
+}
+
+/// Wraps the content key for the buyer and marks the purchase delivered. A purchase
+/// left 'confirmed' by any failure here is picked up by [`run_delivery_retry`].
+async fn deliver_purchase(state: &Arc<AppState>, purchase_id: Uuid, buyer_pial: PialRef, listing_id: Uuid) {
+    let listing = match db::listing_get(&state.pool, listing_id).await {
         Ok(Some(l)) => l,
         Ok(None) => {
-            error!("Listing not found for purchase {}", entry.purchase_id);
+            error!("Listing not found for purchase {purchase_id}");
             return;
         }
         Err(e) => {
@@ -194,30 +287,24 @@ async fn handle_payment_confirmed(state: &Arc<AppState>, watch_map: &WatchMap, e
     // merely unreachable does not halt anything — the payment has already
     // settled on chain, and stranding a paid buyer over a transient outage
     // would be the worse failure.
-    match require_identity(&state.manhattan, &entry.buyer_pial).await {
+    match require_identity(&state.manhattan, &buyer_pial).await {
         Ok(()) => {}
         Err(e @ (IdentityError::NotActive | IdentityError::NotAnIdentity(_))) => {
-            error!(
-                "INCIDENT: CEK delivery halted for purchase {}: {e}",
-                entry.purchase_id
-            );
+            error!("INCIDENT: CEK delivery halted for purchase {purchase_id}: {e}");
             return;
         }
         Err(e) => warn!(
-            "CEK delivery for purchase {} proceeding on the identity resolved at purchase time: {e}",
-            entry.purchase_id
+            "CEK delivery for purchase {purchase_id} proceeding on the identity resolved at purchase time: {e}"
         ),
     }
 
-    // Fetch buyer's ECDH public key from Nantar
-    let buyer_pubkey_b64 = match fetch_buyer_ecdh_pubkey(state, &entry.buyer_pial.text()).await {
+    let buyer_pubkey_b64 = match fetch_buyer_ecdh_pubkey(state, &buyer_pial.text()).await {
         Ok(k) => k,
         Err(e) => {
-            error!("Failed to fetch buyer ECDH pubkey: {e}");
+            warn!("Purchase {purchase_id} waiting on the buyer's ECDH key: {e}");
             return;
         }
     };
-
     let buyer_pub = match cek::pubkey_from_b64(&buyer_pubkey_b64) {
         Ok(k) => k,
         Err(e) => {
@@ -234,7 +321,6 @@ async fn handle_payment_confirmed(state: &Arc<AppState>, watch_map: &WatchMap, e
             return;
         }
     };
-
     let cek_for_buyer = match cek::wrap_cek_for(&buyer_pub, &plaintext_cek) {
         Ok(k) => k,
         Err(e) => {
@@ -244,18 +330,21 @@ async fn handle_payment_confirmed(state: &Arc<AppState>, watch_map: &WatchMap, e
     };
     // plaintext_cek drops here
 
-    // Store in DB
-    if let Err(e) =
-        db::purchase_mark_delivered(&state.pool, entry.purchase_id, cek_for_buyer.clone()).await
-    {
-        error!("Failed to mark purchase delivered: {e}");
-        return;
+    let notices = delivery_notices(&purchase_id.to_string(), buyer_pial.text(), listing.shop_pial.text());
+    match db::purchase_mark_delivered(&state.pool, purchase_id, &cek_for_buyer, &notices).await {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(e) => {
+            error!("Failed to mark purchase delivered: {e}");
+            return;
+        }
     }
 
-    // Notify Nantar → SSE to buyer
+    // Refreshes the buyer's open library. The notification above is the durable record.
     if let Err(e) = notify_nantar_delivered(
         state,
-        entry,
+        purchase_id,
+        &buyer_pial.text(),
         &listing.content_url,
         &listing.content_hash,
         &cek_for_buyer,
@@ -288,7 +377,8 @@ async fn fetch_buyer_ecdh_pubkey(state: &Arc<AppState>, pial_id: &str) -> Result
 
 async fn notify_nantar_delivered(
     state: &Arc<AppState>,
-    entry: WatchEntry,
+    purchase_id: Uuid,
+    buyer_pial: &str,
     content_url: &str,
     content_hash: &str,
     cek_for_buyer: &[u8],
@@ -302,8 +392,8 @@ async fn notify_nantar_delivered(
         .post(&url)
         .header("X-Internal-Key", &state.cfg.internal_api_key)
         .json(&serde_json::json!({
-            "buyer_pial":    entry.buyer_pial.text(),
-            "purchase_id":   entry.purchase_id.to_string(),
+            "buyer_pial":    buyer_pial,
+            "purchase_id":   purchase_id.to_string(),
             "content_url":   content_url,
             "content_hash":  content_hash,
             "cek_for_buyer": B64.encode(cek_for_buyer),
@@ -314,255 +404,93 @@ async fn notify_nantar_delivered(
     Ok(())
 }
 
-/// Add a new purchase to the watch map and subscribe its address.
-/// Called from the purchase initiate handler.
-pub async fn subscribe_address(watch_map: &WatchMap, entry: WatchEntry) {
-    watch_map
-        .lock()
-        .await
-        .insert(entry.btc_address.clone(), entry);
-    // The watcher loop picks it up on next reconnect (max 5s delay).
+/// What the buyer and seller are told when a purchase is delivered.
+fn delivery_notices(purchase_id: &str, buyer: String, seller: String) -> Vec<crate::notifications::Event> {
+    [
+        (buyer, "purchase_delivered", "Your purchase is ready", "/buyer-library"),
+        (seller, "sale", "You made a sale", "/wallet"),
+    ]
+    .into_iter()
+    .map(|(who, kind, title, url)| crate::notifications::Event {
+        actor_account: None,
+        recipient_account: None,
+        event_id: format!("themis:{kind}:{purchase_id}"),
+        recipient_pial: who,
+        kind: kind.into(),
+        target_id: purchase_id.to_string(),
+        target_type: "commerce".into(),
+        payload: serde_json::json!({}),
+        push_title: title.into(),
+        push_body: String::new(),
+        push_url: url.into(),
+    })
+    .collect()
 }
 
-// ── XRP watcher ────────────────────────────────────────────────────────────────
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
 
-#[derive(Debug, Clone)]
-pub struct XrpWatchEntry {
-    pub purchase_id: Uuid,
-    pub buyer_pial: PialRef,
-    pub listing_id: Uuid,
-    pub expected_drops: i64,
-    pub xrp_address: String,
-}
+    const ADDR: &str = "bc1qshop";
+    const XRP: &str = "rShop";
 
-pub type XrpWatchMap = Arc<Mutex<HashMap<String, XrpWatchEntry>>>;
-
-pub async fn run_xrp_watcher(state: Arc<AppState>, xrp_watch_map: XrpWatchMap) {
-    // Load pending XRP purchases from DB on startup
-    if let Ok(pending) = db::purchases_pending_xrp(&state.pool).await {
-        let mut map = xrp_watch_map.lock().await;
-        for p in pending {
-            if !p.xrp_address.is_empty() {
-                map.insert(
-                    p.xrp_address.clone(),
-                    XrpWatchEntry {
-                        purchase_id: p.id,
-                        buyer_pial: p.buyer_pial,
-                        listing_id: p.listing_id,
-                        expected_drops: p.expected_sats, // stored as drops in expected_sats for XRP
-                        xrp_address: p.xrp_address.clone(),
-                    },
-                );
-            }
-        }
-        info!("Loaded {} pending XRP purchases to watch", map.len());
+    fn btc_tx(txid: &str, sats: i64, height: i64, time: i64) -> Value {
+        json!({
+            "txid": txid,
+            "status": { "confirmed": true, "block_height": height, "block_time": time },
+            "vout": [{ "scriptpubkey_address": ADDR, "value": sats }, { "scriptpubkey_address": "other", "value": 999 }],
+        })
     }
 
-    loop {
-        match connect_xrp_watcher(state.clone(), xrp_watch_map.clone()).await {
-            Ok(_) => info!("XRP watcher exited cleanly"),
-            Err(e) => {
-                error!("XRP watcher error: {e} — reconnecting in 5s");
-                sleep(Duration::from_secs(5)).await;
-            }
-        }
-    }
-}
-
-async fn connect_xrp_watcher(state: Arc<AppState>, xrp_watch_map: XrpWatchMap) -> Result<()> {
-    info!("Connecting to XRPL WebSocket: {}", state.cfg.xrp_ws_url);
-    let (ws_stream, _) = connect_async(&state.cfg.xrp_ws_url).await?;
-    let (mut write, mut read) = ws_stream.split();
-
-    // Subscribe to all currently watched XRP addresses
-    {
-        let map = xrp_watch_map.lock().await;
-        if !map.is_empty() {
-            let accounts: Vec<&str> = map.keys().map(|s| s.as_str()).collect();
-            let msg = serde_json::json!({
-                "command": "subscribe",
-                "accounts": accounts,
-            });
-            write.send(Message::Text(msg.to_string())).await?;
-        }
+    fn xrp_tx(hash: &str, tag: i64, amount: &str, delivered: &str, result: &str) -> Value {
+        json!({
+            "validated": true,
+            "meta": { "TransactionResult": result, "delivered_amount": delivered },
+            "tx": { "TransactionType": "Payment", "Destination": XRP, "DestinationTag": tag, "Amount": amount, "hash": hash },
+        })
     }
 
-    while let Some(msg) = read.next().await {
-        let msg = msg?;
-        if let Message::Text(text) = msg {
-            if let Ok(v) = serde_json::from_str::<Value>(&text) {
-                handle_xrp_ws_message(&state, &xrp_watch_map, v).await;
-            }
-        }
-    }
-    Ok(())
-}
-
-async fn handle_xrp_ws_message(state: &Arc<AppState>, xrp_watch_map: &XrpWatchMap, v: Value) {
-    // XRPL fires: {"type":"transaction","transaction":{...},"validated":true}
-    if v.get("type").and_then(|t| t.as_str()) != Some("transaction") {
-        return;
-    }
-    if v.get("validated").and_then(|b| b.as_bool()) != Some(true) {
-        return;
-    }
-    let tx = match v.get("transaction") {
-        Some(t) => t,
-        None => return,
-    };
-    if tx.get("TransactionType").and_then(|t| t.as_str()) != Some("Payment") {
-        return;
-    }
-    let destination = match tx.get("Destination").and_then(|d| d.as_str()) {
-        Some(d) => d,
-        None => return,
-    };
-    // Amount must be a string (native XRP drops); IOU amounts are objects — skip those
-    let drops_str = match tx.get("Amount").and_then(|a| a.as_str()) {
-        Some(s) => s,
-        None => return,
-    };
-    let drops_received: i64 = match drops_str.parse() {
-        Ok(n) => n,
-        Err(_) => return,
-    };
-
-    let entry = {
-        let map = xrp_watch_map.lock().await;
-        map.get(destination).cloned()
-    };
-    if let Some(entry) = entry {
-        if drops_received >= entry.expected_drops {
-            handle_xrp_payment_confirmed(state, xrp_watch_map, entry).await;
-        }
-    }
-}
-
-async fn handle_xrp_payment_confirmed(
-    state: &Arc<AppState>,
-    xrp_watch_map: &XrpWatchMap,
-    entry: XrpWatchEntry,
-) {
-    info!("XRP payment confirmed for purchase {}", entry.purchase_id);
-
-    // Remove from watch map
-    xrp_watch_map.lock().await.remove(&entry.xrp_address);
-
-    // Mark confirmed in DB
-    if let Err(e) = db::purchase_mark_confirmed(&state.pool, entry.purchase_id).await {
-        error!("Failed to mark XRP purchase confirmed: {e}");
-        return;
+    #[test]
+    fn btc_needs_the_exact_reserved_amount() {
+        let txs = [btc_tx("near", 10_001, 100, 1_000), btc_tx("paid", 10_042, 100, 1_000)];
+        assert_eq!(btc_settlement(&txs, ADDR, 10_042, 1_000, 100, 1).as_deref(), Some("paid"));
+        assert_eq!(btc_settlement(&txs, ADDR, 10_043, 1_000, 100, 1), None);
     }
 
-    // Fetch listing to get cek_encrypted
-    let listing = match db::listing_get(&state.pool, entry.listing_id).await {
-        Ok(Some(l)) => l,
-        Ok(None) => {
-            error!("Listing not found for XRP purchase {}", entry.purchase_id);
-            return;
-        }
-        Err(e) => {
-            error!("DB error fetching listing for XRP purchase: {e}");
-            return;
-        }
-    };
-
-    // The content key is about to be wrapped for whoever this PIAL resolves to,
-    // so the identity is checked one last time before it is used. The buyer was
-    // already resolved when the purchase was created; what this catches is an
-    // identity that stopped being active in between.
-    //
-    // A revoked identity halts delivery: the purchase stays 'confirmed', which
-    // is visible and recoverable, rather than having a content key unwrapped
-    // for an identity the naming plane no longer vouches for. A plane that is
-    // merely unreachable does not halt anything — the payment has already
-    // settled on chain, and stranding a paid buyer over a transient outage
-    // would be the worse failure.
-    match require_identity(&state.manhattan, &entry.buyer_pial).await {
-        Ok(()) => {}
-        Err(e @ (IdentityError::NotActive | IdentityError::NotAnIdentity(_))) => {
-            error!(
-                "INCIDENT: CEK delivery halted for purchase {}: {e}",
-                entry.purchase_id
-            );
-            return;
-        }
-        Err(e) => warn!(
-            "CEK delivery for purchase {} proceeding on the identity resolved at purchase time: {e}",
-            entry.purchase_id
-        ),
+    #[test]
+    fn btc_counts_real_confirmations() {
+        let txs = [btc_tx("paid", 10_042, 100, 1_000)];
+        assert_eq!(btc_settlement(&txs, ADDR, 10_042, 1_000, 101, 3), None);
+        assert_eq!(btc_settlement(&txs, ADDR, 10_042, 1_000, 102, 3).as_deref(), Some("paid"));
     }
 
-    // Fetch buyer's ECDH public key from Nantar
-    let buyer_pubkey_b64 = match fetch_buyer_ecdh_pubkey(state, &entry.buyer_pial.text()).await {
-        Ok(k) => k,
-        Err(e) => {
-            error!("Failed to fetch buyer ECDH pubkey (XRP): {e}");
-            return;
-        }
-    };
-
-    let buyer_pub = match cek::pubkey_from_b64(&buyer_pubkey_b64) {
-        Ok(k) => k,
-        Err(e) => {
-            error!("Invalid buyer pubkey (XRP): {e}");
-            return;
-        }
-    };
-
-    // Unwrap CEK with Themis private key, re-wrap for buyer
-    let plaintext_cek = match cek::unwrap_cek(&state.themis_privkey, &listing.cek_encrypted) {
-        Ok(k) => k,
-        Err(e) => {
-            error!("CEK unwrap failed (XRP): {e}");
-            return;
-        }
-    };
-
-    let cek_for_buyer = match cek::wrap_cek_for(&buyer_pub, &plaintext_cek) {
-        Ok(k) => k,
-        Err(e) => {
-            error!("CEK rewrap failed (XRP): {e}");
-            return;
-        }
-    };
-
-    // Store in DB
-    if let Err(e) =
-        db::purchase_mark_delivered(&state.pool, entry.purchase_id, cek_for_buyer.clone()).await
-    {
-        error!("Failed to mark XRP purchase delivered: {e}");
-        return;
+    #[test]
+    fn btc_ignores_unconfirmed_and_older_transactions() {
+        let unconfirmed = [json!({ "txid": "m", "status": { "confirmed": false }, "vout": [{ "scriptpubkey_address": ADDR, "value": 10_042 }] })];
+        assert_eq!(btc_settlement(&unconfirmed, ADDR, 10_042, 1_000, 100, 0), None);
+        let old = [btc_tx("old", 10_042, 100, 1_000)];
+        assert_eq!(btc_settlement(&old, ADDR, 10_042, 1_000 + BLOCK_TIME_TOLERANCE_SECS + 1, 100, 1), None);
     }
 
-    // Notify Nantar → SSE to buyer (reuse the same WatchEntry-compatible helper)
-    let btc_entry = WatchEntry {
-        purchase_id: entry.purchase_id,
-        buyer_pial: entry.buyer_pial,
-        listing_id: entry.listing_id,
-        expected_sats: entry.expected_drops,
-        btc_address: entry.xrp_address,
-        confirmations: 0,
-    };
-    if let Err(e) = notify_nantar_delivered(
-        state,
-        btc_entry,
-        &listing.content_url,
-        &listing.content_hash,
-        &cek_for_buyer,
-    )
-    .await
-    {
-        warn!("Failed to notify Nantar of XRP delivery (purchase still marked delivered): {e}");
+    #[test]
+    fn xrp_partial_payment_settles_nothing() {
+        let txs = [xrp_tx("partial", 7, "1000000", "1", "tesSUCCESS")];
+        assert_eq!(xrp_settlement(&txs, XRP, 7, 1_000_000), None);
     }
-}
 
-/// Add a new XRP purchase to the XRP watch map and subscribe its address.
-/// Called from the purchase initiate handler when currency = "xrp".
-pub async fn subscribe_xrp_address(xrp_watch_map: &XrpWatchMap, entry: XrpWatchEntry) {
-    xrp_watch_map
-        .lock()
-        .await
-        .insert(entry.xrp_address.clone(), entry);
-    // The watcher loop picks it up on next reconnect (max 5s delay).
+    #[test]
+    fn xrp_binds_to_the_tag() {
+        let txs = [xrp_tx("theirs", 8, "1000000", "1000000", "tesSUCCESS"), xrp_tx("mine", 7, "1000000", "1000000", "tesSUCCESS")];
+        assert_eq!(xrp_settlement(&txs, XRP, 7, 1_000_000).as_deref(), Some("mine"));
+    }
+
+    #[test]
+    fn xrp_ignores_failed_and_issued_currency_payments() {
+        let failed = [xrp_tx("failed", 7, "1000000", "1000000", "tecUNFUNDED_PAYMENT")];
+        assert_eq!(xrp_settlement(&failed, XRP, 7, 1_000_000), None);
+        let mut issued = xrp_tx("iou", 7, "1000000", "1000000", "tesSUCCESS");
+        issued["meta"]["delivered_amount"] = json!({ "currency": "USD", "issuer": "rX", "value": "9999999" });
+        assert_eq!(xrp_settlement(&[issued], XRP, 7, 1_000_000), None);
+    }
 }

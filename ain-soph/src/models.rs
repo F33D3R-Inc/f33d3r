@@ -71,6 +71,17 @@ pub struct TipRequest {
     /// Auto-generated if omitted.
     #[serde(default)]
     pub idempotency_key: String,
+    /// Set by a caller that wants the ledger to announce this tip to the recipient.
+    #[serde(default)]
+    pub from_handle: String,
+    #[serde(default)]
+    pub from_account: Option<String>,
+    #[serde(default)]
+    pub to_account: Option<String>,
+    #[serde(default)]
+    pub target_id: String,
+    #[serde(default)]
+    pub target_type: String,
 }
 
 #[derive(Debug, Deserialize)]

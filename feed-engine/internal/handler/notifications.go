@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -23,6 +24,7 @@ func (h *Handler) notificationsPage(w http.ResponseWriter, r *http.Request) {
 	h.render(w, r, "notifications.html", h.withRail(map[string]interface{}{
 		"User":       user,
 		"Title":      "Notifications",
+		"Filter":     notifFilterName(r.URL.Query().Get("filter")),
 		"SessionID":  uuid.New().String(),
 		"ShowScores": h.cfg.ShowScores,
 		"Themes":     ThemesWithActive(user.ThemeID),
@@ -35,46 +37,95 @@ func (h *Handler) notificationsPage(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) facetNotifications(w http.ResponseWriter, r *http.Request) {
 	user := h.userFromRequest(w, r)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	h.writeNotificationList(w, user)
+	h.writeNotificationList(w, user, r.URL.Query().Get("filter"))
 }
 
 // writeNotificationList writes the viewer's notification items — the body of
 // #notification-list — for the load, the live refresh and the mark-all-read
 // answer alike.
-func (h *Handler) writeNotificationList(w http.ResponseWriter, user *model.User) {
+func (h *Handler) writeNotificationList(w http.ResponseWriter, user *model.User, filter string) {
 	if user == nil || h.db == nil {
 		h.renderPartial(w, "stateEmpty", map[string]interface{}{
 			"Title": "All caught up", "Sub": "No notifications yet",
 		})
 		return
 	}
-	notifs, err := dbpkg.GetNotifications(h.db, user.ID, 50)
+	groups, _, err := dbpkg.ListNotificationGroups(h.db, user.ID, 50, time.Now(), notifFilterKinds[filter]...)
 	if err != nil {
+		// Saying "All caught up" here would be a false statement about the inbox.
 		log.Printf("[notifications] fetch for %s: %v", user.ID, err)
+		h.renderPartial(w, "stateEmpty", map[string]interface{}{
+			"Title": "Notifications are unavailable", "Sub": "They are safe. Try again in a moment.",
+		})
+		return
 	}
-	for i := range notifs {
-		notifs[i].TimeAgo = TimeAgo(notifs[i].CreatedAt)
-	}
-	dbpkg.ClearUnreadCount(h.db, user.ID)
-	if len(notifs) == 0 {
+	if len(groups) == 0 {
 		h.renderPartial(w, "stateEmpty", map[string]interface{}{
 			"Title": "All caught up", "Sub": "No notifications yet",
 		})
 		return
 	}
-	for _, n := range notifs {
-		h.renderPartial(w, "notif_item", n)
+	var actorIDs []string
+	for _, g := range groups {
+		if len(g.ActorIDs) > 0 {
+			actorIDs = append(actorIDs, g.ActorIDs[0])
+		}
 	}
+	actors, err := dbpkg.GetUsersByIDs(h.db, actorIDs)
+	if err != nil {
+		log.Printf("[notifications] actors for %s: %v", user.ID, err)
+	}
+	for _, g := range groups {
+		h.renderPartial(w, "notif_item", notificationEntry(h, g, actors))
+	}
+}
+
+// notifFilterKinds are the kinds each notification tab shows. No entry means all.
+var notifFilterKinds = map[string][]string{
+	"mention": {"mention"},
+	"reply":   {"reply", "quote"},
+	"like":    {"like"},
+	"follow":  {"follow"},
+	"repost":  {"repost"},
+	"tip":     {"tip"},
+}
+
+// notificationEntry shapes one grouped notification for the notif_item Facet.
+func notificationEntry(h *Handler, g *dbpkg.NotificationGroup, actors map[string]*model.User) dbpkg.Notification {
+	n := dbpkg.Notification{
+		ID: g.ID, Type: g.Kind, TargetID: g.TargetID, TargetType: g.TargetType,
+		IsRead: g.IsRead, CreatedAt: g.CreatedAt, TimeAgo: TimeAgo(g.CreatedAt),
+		Others: g.ActorCount - 1, Preview: g.Preview,
+	}
+	if len(g.ActorIDs) > 0 {
+		if a, ok := actors[g.ActorIDs[0]]; ok && a != nil {
+			n.ActorID, n.ActorHandle, n.ActorName, n.ActorAvatar = a.ID, a.Handle, a.DisplayName, a.AvatarURL
+		}
+	}
+	if g.AmountUAET > 0 {
+		n.AmountAET = fmt.Sprintf("%.2f", float64(g.AmountUAET)/1_000_000)
+	}
+	switch g.TargetType {
+	case "work", "post":
+		n.Href = "/work/" + g.TargetID
+		if n.Preview == "" && g.TargetID != "" {
+			n.Preview = strings.TrimSpace(dbpkg.GetWorkBodyPreview(h.db, g.TargetID))
+		}
+	case "live":
+		n.Href = "/live/" + g.TargetID
+	case "user":
+		if n.ActorHandle != "" {
+			n.Href = "/" + n.ActorHandle
+		}
+	}
+	return n
 }
 
 func (h *Handler) notificationsCount(w http.ResponseWriter, r *http.Request) {
 	user := h.userFromRequest(w, r)
 	count := 0
 	if h.db != nil && user != nil {
-		_ = h.db.QueryRow(
-			"SELECT COUNT(*) FROM notifications WHERE user_id = $1 AND is_read = false",
-			user.ID,
-		).Scan(&count)
+		count = dbpkg.CountUnreadNotifications(h.db, user.ID)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	fmt.Fprintf(w, `{"count":%d}`, count)
@@ -115,34 +166,22 @@ func (h *Handler) sseEvents(w http.ResponseWriter, r *http.Request) {
 		registryCleanup = func() {}
 	}
 
-	// lastNotifCount tracks the unread count seen on the previous SSE tick.
-	// When it increases, we emit `notif_new` so the notifications page
-	// re-fetches its list without a full page reload.
-	lastNotifCount := -1
 	sendNotify := func() {
-		count := 0
-		if h.db != nil && user != nil {
-			_ = h.db.QueryRow(
-				"SELECT COUNT(*) FROM notifications WHERE user_id = $1 AND is_read = false",
-				user.ID,
-			).Scan(&count)
+		if h.db == nil || user == nil {
+			return
 		}
-		var badge string
-		if count > 0 {
-			if count > 9 {
-				badge = "9+"
-			} else {
-				badge = fmt.Sprintf("%d", count)
+		count := dbpkg.CountUnreadNotifications(h.db, user.ID)
+		if h.partial != nil {
+			var buf bytes.Buffer
+			if err := h.partial.ExecuteTemplate(&buf, "notif_badge", map[string]interface{}{
+				"PIALID": user.PIALID, "UnreadCount": count,
+			}); err != nil {
+				log.Printf("[notify] rendering notif_badge: %v", err)
+				return
 			}
-		}
-		writeSSEFrame(w, "notify", badge)
-		flusher.Flush()
-		// When unread count grows, signal the notification page to refresh its list.
-		if lastNotifCount >= 0 && count > lastNotifCount {
-			writeSSEFrame(w, "notif_new", fmt.Sprintf("%d", count))
+			writeSSEFrame(w, "notify", buf.String())
 			flusher.Flush()
 		}
-		lastNotifCount = count
 	}
 
 	sendBalance := func() {
@@ -174,6 +213,12 @@ func (h *Handler) sseEvents(w http.ResponseWriter, r *http.Request) {
 	sendNotify()
 	sendBalance()
 
+	replayed := map[int64]bool{}
+	if user != nil && user.ID != "" {
+		replayed = resumeWebStream(w, r, user.ID, user.PIALID)
+		flusher.Flush()
+	}
+
 	// Mark user online while SSE connection is alive
 	if user != nil && user.Handle != "" && user.Handle != "you" {
 		h.onlineUsers.Store(user.Handle, time.Now())
@@ -198,7 +243,7 @@ func (h *Handler) sseEvents(w http.ResponseWriter, r *http.Request) {
 			}
 			// All events now pushed from mutation sources (FA Live).
 			// balance: pushed by Ain Soph via /api/internal/balance-update.
-			// notify:  pushed by notifyUser() at every CreateNotification site.
+			// notify:  pushed when Herald announces a new unread count.
 			// new_post: fan-out from post publish handler.
 			//
 			// The tick still has to put bytes on the wire. A stream that writes
@@ -213,11 +258,19 @@ func (h *Handler) sseEvents(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
+			if replayed[event.ID] {
+				continue
+			}
+			// A JSON-only event has nothing for a web page, and a blank frame would
+			// wipe whatever its listener swaps.
+			if event.Data == "" && event.Type != sseResync {
+				continue
+			}
 			// Immediately-pushed FA Live event from a mutation handler. Data is pre-rendered,
-			// multi-line HTML — writeSSEFrame emits one `data:` line per line so the browser
+			// multi-line HTML — writeSSEFrameID emits one `data:` line per line so the browser
 			// reassembles the exact fragment (a raw single-line write delivers it EMPTY; see
 			// writeSSEFrame for why).
-			writeSSEFrame(w, event.Type, event.Data)
+			writeSSEFrameID(w, event.ID, event.Type, event.Data)
 			flusher.Flush()
 		}
 	}
@@ -297,18 +350,22 @@ func (h *Handler) profilesMini(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) markNotificationsRead(w http.ResponseWriter, r *http.Request) {
 	user := h.userFromRequest(w, r)
-	if h.db != nil {
-		_ = dbpkg.MarkAllNotificationsRead(h.db, user.ID)
-		dbpkg.ClearUnreadCount(h.db, user.ID)
+	if h.db != nil && user != nil {
+		if err := dbpkg.MarkAllNotificationsRead(h.db, user.ID); err != nil {
+			log.Printf("[notifications] mark all read for %s: %v", user.ID, err)
+			http.Error(w, "could not mark notifications read", http.StatusBadGateway)
+			return
+		}
 	}
-	if facetRequest(r) {
-		// The list re-rendered in its read state is the answer: the Shell
-		// swaps it into #notification-list, and no unread mark survives that
-		// the server did not draw.
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Header().Set("Cache-Control", "no-store")
-		h.writeNotificationList(w, user)
-		return
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	h.writeNotificationList(w, user, "")
+}
+
+// notifFilterName keeps only a filter this page knows, because the value is written
+// back into the page.
+func notifFilterName(filter string) string {
+	if _, ok := notifFilterKinds[filter]; ok {
+		return filter
 	}
-	w.WriteHeader(http.StatusOK)
+	return ""
 }

@@ -29,6 +29,10 @@ pub struct AppState {
     /// The naming plane. Herald resolves identities through it and never
     /// asserts one — elohim-veni owns identity, herald owns delivery.
     pub manhattan: Manhattan,
+    pub internal_api_key: String,
+    pub inbox_bus: Option<crate::inbox::InboxBus>,
+    pub feed_engine_url: String,
+    pub http: reqwest::Client,
 }
 
 // ── GET /health ───────────────────────────────────────────────────────────────
@@ -138,8 +142,10 @@ pub async fn subscribe(
 pub async fn unsubscribe(
     State(state): State<AppState>,
     Path(device_id): Path<String>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
-    match db::deactivate_subscription(&state.pool, &device_id).await {
+    let pial = q.get("pial").cloned().unwrap_or_default();
+    match db::deactivate_subscription(&state.pool, &pial, &device_id).await {
         Ok(true) => {
             info!(device_id = %device_id, "push subscription deactivated");
             (StatusCode::OK, Json(json!({ "unsubscribed": true }))).into_response()
@@ -282,25 +288,19 @@ pub async fn notify(
             .into_response();
     }
 
-    // Check user preferences
-    let prefs = db::get_preferences(&state.pool, &req.pial_shard_id)
-        .await
-        .unwrap_or_else(|_| crate::models::NotificationPreferences {
-            pial_shard_id: req.pial_shard_id.clone(),
-            push_enabled: true,
-            messages_enabled: true,
-            likes_enabled: true,
-            reposts_enabled: true,
-            replies_enabled: true,
-            follows_enabled: true,
-            achievements_enabled: true,
-            mentions_enabled: true,
-            frequencies_enabled: true,
-            quiet_hours_enabled: false,
-            quiet_hours_start: 22,
-            quiet_hours_end: 8,
-            timezone: "UTC".into(),
-        });
+    // Without the person's preferences nothing can be decided, so this is retried
+    // rather than sent against what they may have asked for.
+    let prefs = match db::get_preferences(&state.pool, &req.pial_shard_id).await {
+        Ok(p) => p,
+        Err(e) => {
+            warn!(error = %e, "get_preferences failed");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "preferences_unavailable"})),
+            )
+                .into_response();
+        }
+    };
 
     if !prefs.push_enabled {
         return (
@@ -313,16 +313,26 @@ pub async fn notify(
     let type_enabled = match req.notification_type.as_str() {
         "like" => prefs.likes_enabled,
         "repost" => prefs.reposts_enabled,
-        "reply" | "mention" => prefs.replies_enabled,
+        "reply" | "quote" => prefs.replies_enabled,
+        "mention" => prefs.mentions_enabled,
         "follow" => prefs.follows_enabled,
         "dm" => prefs.messages_enabled,
         "achievement" => prefs.achievements_enabled,
         // Frequencies (Auralis): you were given the mic, made a co-host, or
         // invited. One preference covers the three.
-        "frequency_speaker_accepted" | "frequency_cohost" | "frequency_invite" => {
+        "frequency_speaker_accepted"
+        | "frequency_cohost"
+        | "frequency_invite"
+        | "frequency_live"
+        | "frequency_reminder"
+        | "frequency_cancelled"
+        | "frequency_rescheduled"
+        | "frequency_host_start"
+        | "frequency_replay_ready" => {
             prefs.frequencies_enabled
         }
-        "tip" | "subscribe" => true,
+        "tip" => prefs.tips_enabled,
+        "subscribe" => prefs.subscribers_enabled,
         _ => true,
     };
     if !type_enabled {
@@ -331,6 +341,18 @@ pub async fn notify(
             Json(json!({"sent": 0, "reason": "type_disabled"})),
         )
             .into_response();
+    }
+
+    match db::in_quiet_hours(&state.pool, &prefs).await {
+        Ok(true) => {
+            return (
+                StatusCode::OK,
+                Json(json!({"sent": 0, "reason": "quiet_hours"})),
+            )
+                .into_response();
+        }
+        Ok(false) => {}
+        Err(e) => warn!(error = %e, "quiet hours check failed; sending"),
     }
 
     // Get active subscriptions
@@ -367,27 +389,23 @@ pub async fn notify(
         }
     };
 
-    // Log notification attempt
-    let log_id = db::log_notification(
-        &state.pool,
-        &req.pial_shard_id,
-        &req.notification_type,
-        &req.title,
-        &req.body,
-        req.icon_url.as_deref(),
-        req.action_url.as_deref(),
-    )
-    .await
-    .ok();
-
     // Build payload JSON — matches sw.js push handler expectations
     let payload = json!({
         "title": req.title,
         "body":  req.body,
         "icon":  req.icon_url.clone().unwrap_or_else(|| "/static/brand/logo.png".into()),
         "badge": "/static/brand/favicon.png",
-        "tag":   format!("f33d3r-{}", req.notification_type),
-        "data":  { "url": req.action_url.clone().unwrap_or_else(|| "/notifications".into()) },
+        // Grouped kinds share a tag, so a device shows the newest one. Everything else
+        // stands on its own, so a second tip does not replace the first.
+        "tag":   match (req.notification_type.as_str(), req.notification_id.as_deref()) {
+            ("like" | "repost" | "follow", _) | (_, None) => format!("f33d3r-{}", req.notification_type),
+            (_, Some(id)) => format!("f33d3r-{id}"),
+        },
+        "timestamp": chrono::Utc::now().timestamp_millis(),
+        "data":  {
+            "url": req.action_url.clone().unwrap_or_else(|| "/notifications".into()),
+            "id": req.notification_id,
+        },
         "vibrate": [200, 100, 200],
     })
     .to_string();
@@ -418,11 +436,32 @@ pub async fn notify(
         }
     };
 
+    // Log notification attempt. A message alert keeps no text in the log.
+    let private = req.notification_type == "dm";
+    let (title_for_log, body_for_log) = if private {
+        ("", "")
+    } else {
+        (req.title.as_str(), req.body.as_str())
+    };
+    let log_id = db::log_notification(
+        &state.pool,
+        &req.pial_shard_id,
+        &req.notification_type,
+        title_for_log,
+        body_for_log,
+        req.icon_url.as_deref(),
+        req.action_url.as_deref(),
+    )
+    .await
+    .ok();
+
     // Send to each subscription
     let mut sent = 0usize;
     for sub in &subscriptions {
         let sub_info = SubscriptionInfo::new(&sub.endpoint, &sub.p256dh_key, &sub.auth_key);
-        let sig = match partial_sig_builder.clone().add_sub_info(&sub_info).build() {
+        let mut sig_builder = partial_sig_builder.clone().add_sub_info(&sub_info);
+        sig_builder.add_claim("sub", state.vapid_subject.as_str());
+        let sig = match sig_builder.build() {
             Ok(s) => s,
             Err(e) => {
                 warn!(error = %e, device_id = %sub.device_id, "VAPID sig build failed");
@@ -446,9 +485,21 @@ pub async fn notify(
             }
             Err(e) => {
                 warn!(error = %e, device_id = %sub.device_id, "push send failed");
-                let msg = e.to_string();
-                if msg.contains("410") || msg.contains("Gone") {
-                    let _ = db::deactivate_subscription(&state.pool, &sub.device_id).await;
+                // The push service says this device is gone for good.
+                let detail = format!("{e:?} {e}");
+                if ["EndpointNotValid", "EndpointNotFound", "410", "404", "Gone"]
+                    .iter()
+                    .any(|m| detail.contains(m))
+                {
+                    if let Err(e) = db::deactivate_subscription(
+                        &state.pool,
+                        &req.pial_shard_id,
+                        &sub.device_id,
+                    )
+                    .await
+                    {
+                        warn!(error = %e, "deactivate_subscription failed");
+                    }
                 }
             }
         }
@@ -458,9 +509,12 @@ pub async fn notify(
         let _ = db::mark_delivered(&state.pool, id, sent > 0).await;
     }
 
-    (
-        StatusCode::OK,
-        Json(json!({ "sent": sent, "total": subscriptions.len() })),
-    )
-        .into_response()
+    // Reaching nobody is a failure the inbox retries. A partial send is not, because
+    // a retry would repeat it on the devices that already have it.
+    let status = if sent == 0 {
+        StatusCode::BAD_GATEWAY
+    } else {
+        StatusCode::OK
+    };
+    (status, Json(json!({ "sent": sent, "total": subscriptions.len() }))).into_response()
 }

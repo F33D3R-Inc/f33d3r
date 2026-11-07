@@ -3,6 +3,7 @@ package handler
 import (
 	"io"
 	"log"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,13 +21,15 @@ type SSEEvent struct {
 	// two projections — the server still renders, the phone still draws
 	// nothing it was not told.
 	JSON string
-	// ID is the person-scoped sequence number this event was published under.
-	// It is stamped by the publish path (never by a caller) so that every
-	// connection of one PIAL sees the SAME number for the same event, and a
-	// client that reconnects with Last-Event-ID names a position in a sequence
-	// the server can still resolve. Zero means unnumbered — a per-connection
-	// snapshot frame, which is not part of the replayable sequence.
+	// ID is this event's place in the live sequence. It is stamped by the publish
+	// path (never by a caller) and travels with the event between replicas, so a
+	// client that reconnects with Last-Event-ID names a position any replica can
+	// resolve. Zero means unnumbered: a per-connection frame that is not part of
+	// the replayable sequence.
 	ID int64
+	// Bulk marks a high-volume event. Bulk events have their own buffer, so a burst
+	// of them cannot crowd out a person's other updates.
+	Bulk bool
 }
 
 // writeSSEFrame writes one SSE event to w using spec-compliant framing. The payload is almost always
@@ -83,7 +86,11 @@ type watchContext struct {
 // sseSession holds one active SSE connection (one browser tab / device). A connection belongs to a
 // specific persona (account) opened by a specific person (PIAL), so it is indexed under both keys.
 type sseSession struct {
-	ch      chan SSEEvent
+	high    chan SSEEvent // updates addressed to this person
+	low     chan SSEEvent // high-volume events, delivered after high
+	out     chan SSEEvent // what the stream handler reads
+	stop    chan struct{} // closed by cleanup
+	lost    chan struct{} // signalled when a delivery was dropped
 	done    chan struct{} // closed when this session is evicted by a newer one for the same account
 	seq     int64         // creation order, for oldest-first eviction
 	account string        // the persona this connection is scoped to (users.id) — messaging key
@@ -201,7 +208,11 @@ func RegisterRoomSSESession(account, pial string) (<-chan SSEEvent, <-chan struc
 
 func registerSSESession(account, pial string, room bool) (<-chan SSEEvent, <-chan struct{}, func()) {
 	s := &sseSession{
-		ch:      make(chan SSEEvent, 64),
+		high:    make(chan SSEEvent, sseBufferSize),
+		low:     make(chan SSEEvent, sseBufferSize),
+		out:     make(chan SSEEvent),
+		stop:    make(chan struct{}),
+		lost:    make(chan struct{}, 1),
 		done:    make(chan struct{}),
 		seq:     atomic.AddInt64(&sseSeq, 1),
 		account: account,
@@ -214,9 +225,7 @@ func registerSSESession(account, pial string, room bool) (<-chan SSEEvent, <-cha
 		_ = addToRegistry(&pialRegistry, pial, s)
 	}
 
-	// A connection opening is the moment to forget the people who have had no
-	// event for long enough that no replay of theirs could still be honest.
-	pruneStreamLogs()
+	go s.pump()
 
 	// Bound the set by evicting the OLDEST session(s) for this ACCOUNT — never refuse the newcomer.
 	// The evicted session's handler observes <-done and returns, running its own cleanup (which
@@ -248,10 +257,10 @@ func registerSSESession(account, pial string, room bool) (<-chan SSEEvent, <-cha
 		acctBucket.mu.Unlock()
 	}
 
-	return s.ch, s.done, func() {
+	return s.out, s.done, func() {
 		removeFromRegistry(&accountRegistry, account, s)
 		removeFromRegistry(&pialRegistry, pial, s)
-		close(s.ch)
+		close(s.stop)
 	}
 }
 
@@ -267,50 +276,113 @@ func withPial(pial string, fn func(us *userSessions)) {
 
 // AddPostWatcher registers that PIAL is viewing a specific post.
 func AddPostWatcher(pial, postID string) {
-	withPial(pial, func(us *userSessions) { us.ctx.postIDs[postID] = true })
+	applyWatch(pial, liveWatchPost, postID, true)
+	relayWatch(pial, liveWatchPost, postID, true)
 }
 
 // RemovePostWatcher deregisters PIAL from watching a post.
 func RemovePostWatcher(pial, postID string) {
-	withPial(pial, func(us *userSessions) { delete(us.ctx.postIDs, postID) })
+	applyWatch(pial, liveWatchPost, postID, false)
+	relayWatch(pial, liveWatchPost, postID, false)
 }
 
 // AddTickerWatcher registers that PIAL has a cashtag card for ticker visible.
 func AddTickerWatcher(pial, ticker string) {
-	withPial(pial, func(us *userSessions) { us.ctx.tickers[ticker] = true })
+	applyWatch(pial, liveWatchTicker, ticker, true)
+	relayWatch(pial, liveWatchTicker, ticker, true)
 }
 
 // RemoveTickerWatcher deregisters PIAL from watching a ticker.
 func RemoveTickerWatcher(pial, ticker string) {
-	withPial(pial, func(us *userSessions) { delete(us.ctx.tickers, ticker) })
+	applyWatch(pial, liveWatchTicker, ticker, false)
+	relayWatch(pial, liveWatchTicker, ticker, false)
 }
 
-// deliver pushes an event to every session in a bucket. Non-blocking per session: a full channel
-// drops that session's event. Caller must hold us.mu (read or write).
-func deliver(us *userSessions, event SSEEvent) {
-	st := newStamper()
-	deliverStamped(us, event, st)
-}
-
-// deliverStamped is deliver with one stamper shared across every bucket a single
-// publish touches, so a person whose sessions sit in two indexes (their account
-// bucket and their PIAL bucket) receives ONE number for the event rather than
-// one per bucket. Caller must hold us.mu (read or write).
-func deliverStamped(us *userSessions, event SSEEvent, st *stamper) {
-	for s := range us.sessions {
-		e := event
-		e.ID = st.stamp(s.pial, event)
-		select {
-		case s.ch <- e:
-		default:
-			// A full 64-slot channel means this connection has not been read
-			// from in a long time: the event is gone for it, and the client
-			// will only notice as missing content. Silence here was the reason
-			// a dropped push looked like a server that never sent one, so the
-			// drop is now on the record — rate-limited, because the condition
-			// that produces one produces thousands.
-			noteSSEDrop(s.account, event.Type)
+// applyWatch updates this replica's watch context for one person.
+func applyWatch(pial, watchType, id string, add bool) {
+	withPial(pial, func(us *userSessions) {
+		set := us.ctx.postIDs
+		if watchType == liveWatchTicker {
+			set = us.ctx.tickers
 		}
+		if add {
+			set[id] = true
+		} else {
+			delete(set, id)
+		}
+	})
+}
+
+// sseBufferSize is how many undelivered events one session holds per buffer.
+const sseBufferSize = 64
+
+// sseResync tells a client it may have missed updates and must re-read its Facets.
+const sseResync = "resync"
+
+// sseCursor gives a new connection a resume point before any event has reached it,
+// so a drop in a quiet moment still has a position to resume from.
+const sseCursor = "fa.cursor"
+
+// bulkEventTypes are the high-volume event names that use the low buffer.
+var bulkEventTypes = map[string]bool{
+	"new_post": true, "post_engagement": true, "work_engagement": true, "price_update": true,
+	"sports_facet": true, "leaderboard_refresh": true, "live_chat": true, "article_view": true,
+}
+
+// offer queues an event without blocking. A full buffer costs this connection the
+// event, so it is counted and the client is told to re-read.
+func (s *sseSession) offer(event SSEEvent) {
+	ch := s.high
+	if event.Bulk || bulkEventTypes[event.Type] {
+		ch = s.low
+	}
+	select {
+	case ch <- event:
+	default:
+		noteSSEDrop(s.account, event.Type)
+		s.markLost()
+	}
+}
+
+// markLost asks the pump to send one resync. Repeats collapse into one.
+func (s *sseSession) markLost() {
+	select {
+	case s.lost <- struct{}{}:
+	default:
+	}
+}
+
+// pump moves events to the stream handler, high buffer first.
+func (s *sseSession) pump() {
+	defer close(s.out)
+	for {
+		var ev SSEEvent
+		select {
+		case <-s.lost:
+			ev = SSEEvent{Type: sseResync}
+		case ev = <-s.high:
+		default:
+			select {
+			case <-s.stop:
+				return
+			case <-s.lost:
+				ev = SSEEvent{Type: sseResync}
+			case ev = <-s.high:
+			case ev = <-s.low:
+			}
+		}
+		select {
+		case s.out <- ev:
+		case <-s.stop:
+			return
+		}
+	}
+}
+
+// deliver pushes an event to every session in a bucket. Caller must hold us.mu.
+func deliver(us *userSessions, event SSEEvent) {
+	for s := range us.sessions {
+		s.offer(event)
 	}
 }
 
@@ -339,215 +411,249 @@ func noteSSEDrop(account, eventType string) {
 		eventType, account, total)
 }
 
-// ── Per-person sequence and replay ring ──────────────────────────────────────
+// ── Live sequence and replay log ─────────────────────────────────────────────
 //
-// One counter and one ring per PIAL. The counter numbers every published event
-// so the `id:` on the wire means something across all of that person's
-// connections; the ring holds the last streamReplayDepth of them so a client
-// that reconnects with Last-Event-ID is handed exactly what it missed instead
-// of being told to reload the world.
+// IDs come from the clock, assigned once by the replica that published the event
+// and carried with it. That keeps a number meaningful across restarts and across
+// replicas, which per-process counters could not do: a counter restarted at 1
+// could replay the wrong events, and two replicas numbered the same event
+// differently. Replica clocks that disagree by a moment can order two events
+// differently, which is safe because a Facet fragment is a complete snapshot.
 //
-// The ring deliberately does NOT live in the session bucket: that bucket is
-// deleted the moment the last connection goes away, which is precisely the
-// moment a gap opens. It lives beside it, and is swept on a timer instead.
+// The log holds every event this replica saw, whoever it was for, so messages and
+// broadcasts to someone offline can still be replayed when they return. Its floor
+// is the point it can vouch for: a resume point below the floor gets a re-read
+// instead of a partial replay it would mistake for the whole gap.
 
-// streamReplayDepth is how many events one person's ring remembers.
-const streamReplayDepth = 64
+const (
+	liveKindUser    = "user"
+	liveKindAccount = "account"
+	liveKindPost    = "post"
+	liveKindTicker  = "ticker"
+	liveKindAll     = "all"
+	liveKindWatch   = "watch"
 
-// streamLogTTL is how long a person's ring outlives their last event. A client
-// that reconnects later than this gets no replay and re-reads instead — a stale
-// ring is worse than none, because it would hand back a prefix of a gap and let
-// the client believe it had caught up.
-const streamLogTTL = 5 * time.Minute
+	liveWatchPost   = "post"
+	liveWatchTicker = "ticker"
+	liveWatchAdd    = "add"
+	liveWatchRemove = "remove"
 
-// replayFrame is one published event, remembered under its number.
+	liveLogMaxFrames = 50_000
+	liveLogMaxBytes  = 64 << 20
+	liveLogTTL       = 5 * time.Minute
+)
+
+// liveLastID is the last ID this replica issued.
+var liveLastID atomic.Int64
+
+// nextLiveID returns a unique, increasing ID based on the clock.
+func nextLiveID() int64 {
+	for {
+		id := time.Now().UnixMicro()
+		last := liveLastID.Load()
+		if id <= last {
+			id = last + 1
+		}
+		if liveLastID.CompareAndSwap(last, id) {
+			return id
+		}
+	}
+}
+
+// replayFrame is one event handed back to a reconnecting client.
 type replayFrame struct {
 	ID    int64
 	Event SSEEvent
 }
 
-type streamLog struct {
-	mu    sync.Mutex
-	next  int64
-	ring  []replayFrame
-	touch time.Time
+type liveFrame struct {
+	Kind  string
+	Key   string
+	Event SSEEvent
+	At    time.Time
 }
 
-// pialStreamLogs maps PIAL → *streamLog.
-var pialStreamLogs sync.Map
-
-func logForPIAL(pial string) *streamLog {
-	v, _ := pialStreamLogs.LoadOrStore(pial, &streamLog{})
-	return v.(*streamLog)
+type liveLog struct {
+	mu     sync.Mutex
+	frames []liveFrame
+	bytes  int
+	floor  int64
 }
 
-// record numbers an event for one person and remembers it for replay.
-func (sl *streamLog) record(event SSEEvent) int64 {
-	sl.mu.Lock()
-	defer sl.mu.Unlock()
-	sl.next++
-	sl.touch = time.Now()
-	sl.ring = append(sl.ring, replayFrame{ID: sl.next, Event: event})
-	if len(sl.ring) > streamReplayDepth {
-		sl.ring = append(sl.ring[:0], sl.ring[len(sl.ring)-streamReplayDepth:]...)
+// liveEvents starts with its floor at boot: nothing earlier can be vouched for.
+var liveEvents = &liveLog{floor: nextLiveID()}
+
+func (l *liveLog) add(kind, key string, event SSEEvent) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := time.Now()
+	l.frames = append(l.frames, liveFrame{Kind: kind, Key: key, Event: event, At: now})
+	l.bytes += len(event.Data) + len(event.JSON)
+
+	drop := 0
+	for drop < len(l.frames) {
+		f := l.frames[drop]
+		if len(l.frames)-drop <= liveLogMaxFrames && l.bytes <= liveLogMaxBytes && now.Sub(f.At) <= liveLogTTL {
+			break
+		}
+		l.bytes -= len(f.Event.Data) + len(f.Event.JSON)
+		if f.Event.ID > l.floor {
+			l.floor = f.Event.ID
+		}
+		drop++
 	}
-	return sl.next
-}
-
-// stamper assigns one number per PIAL per publish. A publish that reaches the
-// same person through two buckets must not consume two numbers, so the first
-// call for a PIAL records the frame and every later call in the same publish
-// returns what it recorded.
-type stamper struct {
-	seen map[string]int64
-}
-
-func newStamper() *stamper { return &stamper{seen: make(map[string]int64, 4)} }
-
-func (st *stamper) stamp(pial string, event SSEEvent) int64 {
-	if pial == "" {
-		return 0
+	if drop > 0 {
+		l.frames = append(l.frames[:0], l.frames[drop:]...)
 	}
-	if id, ok := st.seen[pial]; ok {
-		return id
-	}
-	id := logForPIAL(pial).record(event)
-	st.seen[pial] = id
-	return id
 }
 
-// RecordForPIAL numbers and remembers an event for one person without
-// delivering it, so an event published while that person had no live connection
-// still occupies its place in the sequence and can be replayed on reconnect.
-func RecordForPIAL(pial string, event SSEEvent) int64 {
-	if pial == "" {
-		return 0
+// raiseFloor records that this replica cannot vouch for events before id.
+func (l *liveLog) raiseFloor(id int64) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if id > l.floor {
+		l.floor = id
 	}
-	return logForPIAL(pial).record(event)
 }
 
-// ReplayAfter returns the events one person missed after lastID, oldest first.
-// ok is false when the ring cannot prove it holds everything after lastID —
-// the ring never saw that number, or has already discarded past it — and the
-// caller must then stream live only and let the client re-read.
-func ReplayAfter(pial string, lastID int64) (frames []replayFrame, ok bool) {
-	if pial == "" || lastID <= 0 {
+// ReplayAfter returns the events one connection missed after lastID, oldest first.
+// ok is false when this replica cannot vouch for the whole gap, and the client
+// must then re-read.
+func ReplayAfter(account, pial string, lastID int64) (frames []replayFrame, ok bool) {
+	if lastID <= 0 || lastID > time.Now().Add(time.Minute).UnixMicro() {
 		return nil, false
 	}
-	v, exists := pialStreamLogs.Load(pial)
-	if !exists {
+	posts := map[string]bool{}
+	tickers := map[string]bool{}
+	withPial(pial, func(us *userSessions) {
+		for id := range us.ctx.postIDs {
+			posts[id] = true
+		}
+		for id := range us.ctx.tickers {
+			tickers[id] = true
+		}
+	})
+
+	liveEvents.mu.Lock()
+	defer liveEvents.mu.Unlock()
+	if lastID < liveEvents.floor {
 		return nil, false
 	}
-	sl := v.(*streamLog)
-	sl.mu.Lock()
-	defer sl.mu.Unlock()
-	if lastID > sl.next {
-		// A number from an earlier process, or from another person's stream.
-		return nil, false
-	}
-	if len(sl.ring) == 0 {
-		return nil, lastID == sl.next
-	}
-	if sl.ring[0].ID > lastID+1 {
-		// The gap starts before the oldest frame still held.
-		return nil, false
-	}
-	for _, f := range sl.ring {
-		if f.ID > lastID {
-			frames = append(frames, f)
+	for _, f := range liveEvents.frames {
+		if f.Event.ID <= lastID {
+			continue
+		}
+		match := false
+		switch f.Kind {
+		case liveKindUser:
+			match = pial != "" && f.Key == pial
+		case liveKindAccount:
+			match = f.Key == account
+		case liveKindPost:
+			match = posts[f.Key]
+		case liveKindTicker:
+			match = tickers[f.Key]
+		case liveKindAll:
+			match = true
+		}
+		if match {
+			frames = append(frames, replayFrame{ID: f.Event.ID, Event: f.Event})
 		}
 	}
+	sort.SliceStable(frames, func(i, j int) bool { return frames[i].ID < frames[j].ID })
 	return frames, true
 }
 
-// pruneStreamLogs drops the rings of people who have had no event for
-// streamLogTTL. Called when a connection registers, which is both often enough
-// to bound the map and cheap next to opening a stream.
-func pruneStreamLogs() {
-	cutoff := time.Now().Add(-streamLogTTL)
-	pialStreamLogs.Range(func(k, v interface{}) bool {
-		sl := v.(*streamLog)
-		sl.mu.Lock()
-		stale := sl.touch.Before(cutoff)
-		sl.mu.Unlock()
-		if stale {
-			pialStreamLogs.Delete(k)
+// deliverLive records an event and hands it to this replica's connections.
+func deliverLive(kind, key string, event SSEEvent) {
+	liveEvents.add(kind, key, event)
+	switch kind {
+	case liveKindUser:
+		if v, ok := pialRegistry.Load(key); ok {
+			us := v.(*userSessions)
+			us.mu.RLock()
+			deliver(us, event)
+			us.mu.RUnlock()
 		}
-		return true
-	})
-}
-
-// PublishToAccount pushes an event to every live connection of one specific ACCOUNT (persona).
-// This is the messaging pipe — a DM reaches only the addressed persona's devices, never the
-// person's other personas. Non-blocking: a full connection channel drops the event for it.
-func PublishToAccount(account string, event SSEEvent) {
-	if v, ok := accountRegistry.Load(account); ok {
-		us := v.(*userSessions)
-		us.mu.RLock()
-		deliver(us, event)
-		us.mu.RUnlock()
+	case liveKindAccount:
+		if v, ok := accountRegistry.Load(key); ok {
+			us := v.(*userSessions)
+			us.mu.RLock()
+			deliver(us, event)
+			us.mu.RUnlock()
+		}
+	case liveKindPost, liveKindTicker:
+		pialRegistry.Range(func(_, v interface{}) bool {
+			us := v.(*userSessions)
+			us.mu.RLock()
+			watching := us.ctx.postIDs[key]
+			if kind == liveKindTicker {
+				watching = us.ctx.tickers[key]
+			}
+			if watching {
+				deliver(us, event)
+			}
+			us.mu.RUnlock()
+			return true
+		})
+	case liveKindAll:
+		accountRegistry.Range(func(_, v interface{}) bool {
+			us := v.(*userSessions)
+			us.mu.RLock()
+			deliver(us, event)
+			us.mu.RUnlock()
+			return true
+		})
 	}
 }
 
-// PublishToUser pushes an event to every live connection of one specific PIAL (person) — across all
-// of that person's open personas. This is the person-level pipe (notifications, wallet balance,
-// likes/engagement). Non-blocking: a full connection channel drops the event for it.
-// The number is taken whether or not anyone is listening: a person whose only
-// connection dropped a second ago is exactly the person about to reconnect with
-// a Last-Event-ID, and an event that never took its place in the sequence is a
-// gap nothing can name.
+// publishLive numbers an event, delivers it here, and relays it to other replicas.
+func publishLive(kind, key string, event SSEEvent) {
+	event.ID = nextLiveID()
+	deliverLive(kind, key, event)
+	relayLive(kind, key, event)
+}
+
+// PublishToAccount pushes an event to every live connection of one ACCOUNT (persona).
+// This is the messaging pipe: a message reaches only the addressed persona's devices.
+func PublishToAccount(account string, event SSEEvent) {
+	if account == "" {
+		return
+	}
+	publishLive(liveKindAccount, account, event)
+}
+
+// PublishToUser pushes an event to every live connection of one PIAL (person), across
+// all of that person's open personas. This is the person-level pipe.
 func PublishToUser(pial string, event SSEEvent) {
 	if pial == "" {
 		return
 	}
-	st := newStamper()
-	st.stamp(pial, event)
-	if v, ok := pialRegistry.Load(pial); ok {
-		us := v.(*userSessions)
-		us.mu.RLock()
-		deliverStamped(us, event, st)
-		us.mu.RUnlock()
-	}
+	publishLive(liveKindUser, pial, event)
 }
 
-// PublishToPostWatchers pushes an event to every PIAL currently watching postID
-// (delivered to all of that PIAL's connections).
+// PublishToPostWatchers pushes an event to every person currently watching postID.
 func PublishToPostWatchers(postID string, event SSEEvent) {
-	st := newStamper()
-	pialRegistry.Range(func(_, v interface{}) bool {
-		us := v.(*userSessions)
-		us.mu.RLock()
-		if us.ctx.postIDs[postID] {
-			deliverStamped(us, event, st)
-		}
-		us.mu.RUnlock()
-		return true
-	})
+	publishLive(liveKindPost, postID, event)
 }
 
-// PublishToAllSessions broadcasts an event to every active SSE connection.
-// Used for platform-wide signals (e.g. leaderboard refresh). Ranges the account index, which holds
-// every live connection exactly once (the PIAL index is a subset/duplicate of the same sessions).
+// PublishToAllSessions broadcasts an event to every active connection.
 func PublishToAllSessions(event SSEEvent) {
-	st := newStamper()
+	publishLive(liveKindAll, "", event)
+}
+
+// PublishToTickerWatchers pushes an event to every person watching ticker.
+func PublishToTickerWatchers(ticker string, event SSEEvent) {
+	publishLive(liveKindTicker, ticker, event)
+}
+
+// resyncLocalSessions tells every connection on this replica to re-read.
+func resyncLocalSessions() {
 	accountRegistry.Range(func(_, v interface{}) bool {
 		us := v.(*userSessions)
 		us.mu.RLock()
-		deliverStamped(us, event, st)
-		us.mu.RUnlock()
-		return true
-	})
-}
-
-// PublishToTickerWatchers pushes an event to every PIAL watching ticker
-// (delivered to all of that PIAL's connections).
-func PublishToTickerWatchers(ticker string, event SSEEvent) {
-	st := newStamper()
-	pialRegistry.Range(func(_, v interface{}) bool {
-		us := v.(*userSessions)
-		us.mu.RLock()
-		if us.ctx.tickers[ticker] {
-			deliverStamped(us, event, st)
+		for s := range us.sessions {
+			s.markLost()
 		}
 		us.mu.RUnlock()
 		return true

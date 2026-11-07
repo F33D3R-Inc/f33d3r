@@ -43,6 +43,9 @@ pub struct Purchase {
     pub expected_sats: i64,
     pub currency: String, // "btc" | "xrp"
     pub xrp_address: String,
+    /// XRP: the destination tag. BTC: the sats added to make the amount unique.
+    pub payment_tag: Option<i64>,
+    pub created_at: DateTime<Utc>,
     pub status: String, // "pending" | "confirmed" | "delivered" | "expired"
     pub cek_for_buyer: Option<Vec<u8>>,
     pub expires_at: DateTime<Utc>,

@@ -27,6 +27,10 @@ use serde::{Deserialize, Serialize};
 #[sqlx(type_name = "TEXT", rename_all = "snake_case")]
 pub enum FrequencyRole {
     Host,
+    // One word everywhere: the database CHECK, the event payloads and every
+    // client spell this role "cohost".
+    #[serde(rename = "cohost")]
+    #[sqlx(rename = "cohost")]
     CoHost,
     Speaker,
     Listener,
@@ -88,6 +92,7 @@ impl std::fmt::Display for FrequencyRole {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Action {
     EndFrequency,
+    TransferHost,
     AddCoHost,
     RemoveCoHost,
     LockFrequency,
@@ -101,7 +106,6 @@ pub enum Action {
     MuteSelf,
     /// Invites are a later phase (§16 "Later"); the matrix already answers
     /// for them so the rule is settled before the route exists.
-    #[allow(dead_code)]
     InviteSpeaker,
     RequestMic,
     Speak,
@@ -114,7 +118,9 @@ pub fn may(role: FrequencyRole, action: Action) -> bool {
     use Action::*;
     use FrequencyRole::*;
     match action {
-        EndFrequency | AddCoHost | RemoveCoHost | LockFrequency | ToggleRequests => role == Host,
+        EndFrequency | TransferHost | AddCoHost | RemoveCoHost | LockFrequency | ToggleRequests => {
+            role == Host
+        }
         RemoveParticipant | BlockParticipant | ApproveSpeaker | DeclineSpeaker | DemoteSpeaker
         | MuteOther | InviteSpeaker => role.moderates(),
         MuteSelf | Speak => role.speaks(),

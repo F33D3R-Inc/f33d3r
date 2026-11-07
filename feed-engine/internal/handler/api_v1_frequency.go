@@ -77,15 +77,6 @@ type FrequencyViewerDTO struct {
 	Request       *FrequencyRequestDTO `json:"request"`
 }
 
-// FrequencySessionDTO is the media bootstrap for native WebRTC (Phase 3).
-// Present only on the answer to the Tune In or Start that minted it.
-type FrequencySessionDTO struct {
-	Token       string   `json:"token"`
-	SignalPath  string   `json:"signal_path"`
-	ExpiresAt   int64    `json:"expires_at"`
-	Permissions []string `json:"permissions"`
-}
-
 // FrequencyEndedDTO is the data of the `frequency_ended` frame.
 type FrequencyEndedDTO struct {
 	Reason string `json:"reason"`
@@ -115,7 +106,6 @@ type FrequencyRoomDTO struct {
 	Cohosts   []WorkAuthorDTO       `json:"cohosts"`
 	Requests  []FrequencyRequestDTO `json:"requests"`
 	Viewer    FrequencyViewerDTO    `json:"viewer"`
-	Session   *FrequencySessionDTO  `json:"session"`
 }
 
 // SSE event names on /api/v1/frequencies/{id}/events.
@@ -190,7 +180,7 @@ func frequencyRequestDTO(r *auralis.Request, people map[string]FrequencyPerson) 
 // view. The request queue is the moderators' to see; a listener gets an
 // empty list, never a redacted one. The viewer's own pending request rides on
 // `viewer.request` whatever their role.
-func (h *Handler) frequencyRoomDTO(v *auralis.View, viewerPIAL string, session *auralis.Session, people map[string]FrequencyPerson) FrequencyRoomDTO {
+func (h *Handler) frequencyRoomDTO(v *auralis.View, viewerPIAL string, people map[string]FrequencyPerson) FrequencyRoomDTO {
 	if people == nil {
 		people = h.frequencyPeople(frequencyPIALs(v, viewerPIAL))
 	}
@@ -258,14 +248,6 @@ func (h *Handler) frequencyRoomDTO(v *auralis.View, viewerPIAL string, session *
 		Requests:  requests,
 		Viewer:    viewer,
 	}
-	if session != nil && session.Token != "" {
-		room.Session = &FrequencySessionDTO{
-			Token:       session.Token,
-			SignalPath:  session.SignalPath,
-			ExpiresAt:   session.ExpiresAt,
-			Permissions: session.Permissions,
-		}
-	}
 	return room
 }
 
@@ -313,6 +295,10 @@ func (h *Handler) apiV1Frequencies(w http.ResponseWriter, r *http.Request, u *mo
 		if s.AdultContent && hideAdult {
 			continue
 		}
+		// An invite-only room is reached through its invitation, not a lane.
+		if s.Visibility == "private" && s.HostPialID != u.PIALID {
+			continue
+		}
 		out = append(out, frequencyDTO(s, list.Items[i].Counts, people[s.HostPialID]))
 	}
 	dto := FrequencyListDTO{Frequencies: out, Count: len(out)}
@@ -348,8 +334,8 @@ func (h *Handler) apiLoadFrequency(w http.ResponseWriter, r *http.Request, id st
 		h.apiFrequencyRefuse(w, err)
 		return nil, false
 	}
-	if ans.Frequency.Frequency.AdultContent && excludeNSFW(u) {
-		apiError(w, http.StatusForbidden, "adult_content", "This Frequency is for adult-enabled accounts.")
+	if code, msg, refused := h.frequencyGate(u, &ans.Frequency); refused {
+		apiError(w, http.StatusForbidden, code, msg)
 		return nil, false
 	}
 	return ans, true
@@ -362,7 +348,7 @@ func (h *Handler) apiV1FrequencyRoom(w http.ResponseWriter, r *http.Request, u *
 	if !ok {
 		return
 	}
-	apiJSON(w, http.StatusOK, h.frequencyRoomDTO(&ans.Frequency, u.PIALID, nil, nil))
+	apiJSON(w, http.StatusOK, h.frequencyRoomDTO(&ans.Frequency, u.PIALID, nil))
 }
 
 // apiV1FrequencyEvents — GET /api/v1/frequencies/{id}/events: the room as
@@ -381,7 +367,9 @@ func (h *Handler) apiV1FrequencyEvents(w http.ResponseWriter, r *http.Request, u
 		apiError(w, http.StatusInternalServerError, "no_stream", "SSE not supported.")
 		return
 	}
-	ch, done, cleanup := RegisterSSESession(u.ID, u.PIALID)
+	// A room stream, not an account stream: being in this room must not cost the
+	// person the connection their notifications arrive on.
+	ch, done, cleanup := RegisterRoomSSESession(u.ID, u.PIALID)
 	defer cleanup()
 
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -391,7 +379,7 @@ func (h *Handler) apiV1FrequencyEvents(w http.ResponseWriter, r *http.Request, u
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprint(w, ": connected\n\n")
 
-	room := h.frequencyRoomDTO(&ans.Frequency, u.PIALID, nil, nil)
+	room := h.frequencyRoomDTO(&ans.Frequency, u.PIALID, nil)
 	if raw, err := json.Marshal(room); err == nil {
 		writeSSEFrame(w, sseFrequencyJSON, string(raw))
 	}
@@ -466,7 +454,7 @@ func frequencyEndedJSON(s *auralis.Summary) string {
 // Called by publishFrequencyView beside the fragments, from the same
 // already-fetched view — no extra brain calls.
 func (h *Handler) publishFrequencyJSON(v *auralis.View, pial string, people map[string]FrequencyPerson) {
-	room := h.frequencyRoomDTO(v, pial, nil, people)
+	room := h.frequencyRoomDTO(v, pial, people)
 	if raw, err := json.Marshal(room); err == nil {
 		h.pushFrequencyFrame(v.Frequency.ID, pial, sseFrequencyJSON, raw)
 	} else {
@@ -504,5 +492,5 @@ func (h *Handler) apiFrequencyRefuse(w http.ResponseWriter, err error) {
 // writeFrequencyRoomJSON answers a native mutation with the room the actor
 // now sees, carrying the session Auralis minted when there is one.
 func (h *Handler) writeFrequencyRoomJSON(w http.ResponseWriter, user *model.User, ans *auralis.Answer) {
-	apiJSON(w, http.StatusOK, h.frequencyRoomDTO(&ans.Frequency, user.PIALID, ans.Session, nil))
+	apiJSON(w, http.StatusOK, h.frequencyRoomDTO(&ans.Frequency, user.PIALID, nil))
 }

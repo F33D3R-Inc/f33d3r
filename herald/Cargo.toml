@@ -38,6 +38,9 @@ base64 = "0.22"
 # Naming plane (Manhattan) — HTTP client for src/manhattan_client.rs
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 
+# Sitra Achra — same client and build as frequencies
+rdkafka = { version = "0.39", features = ["cmake-build"] }
+
 # Error handling
 anyhow = "1"
 

@@ -28,9 +28,10 @@ FACET admin_panel_moderation
 <div class="admin-panel-inner"
      id="mod-panel"
      hx-get="/admin/partials/moderation"
-     hx-trigger="every 60s"
+     hx-trigger="every 60s, fa:engagement from:body"
      hx-swap="outerHTML"
      hx-target="this">
+  <div hx-get="/admin/partials/frequencies" hx-trigger="load" hx-swap="outerHTML"></div>
 
   {{/* ── Scan review queue ── */}}
   <div class="admin-panel-section">

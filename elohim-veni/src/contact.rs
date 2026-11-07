@@ -400,7 +400,9 @@ pub async fn open_request(
     requester: Uuid,
     number_node: Option<Uuid>,
     note: &str,
+    requester_account: Option<String>,
 ) -> Result<Option<Uuid>> {
+    let mut tx = pool.begin().await?;
     let row: Option<(Uuid,)> = sqlx::query_as(
         "INSERT INTO contact_requests (owner_pial, requester_pial, number_node_id, note)
          VALUES ($1, $2, $3, $4)
@@ -411,8 +413,28 @@ pub async fn open_request(
     .bind(requester)
     .bind(number_node)
     .bind(note)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *tx)
     .await?;
+    if let Some((id,)) = row {
+        crate::notifications::enqueue(
+            &mut *tx,
+            &crate::notifications::Event {
+                event_id: format!("elohim:contact_request:{id}"),
+                recipient_account: None,
+                recipient_pial: owner.to_string(),
+                actor_account: requester_account.clone(),
+                kind: "contact_request".into(),
+                target_id: requester_account.unwrap_or_default(),
+                target_type: "user".into(),
+                payload: serde_json::json!({}),
+                push_title: "New contact request".into(),
+                push_body: String::new(),
+                push_url: "/settings/contact".into(),
+            },
+        )
+        .await?;
+    }
+    tx.commit().await?;
     Ok(row.map(|r| r.0))
 }
 
@@ -439,6 +461,7 @@ pub async fn decide_request(
     owner: Uuid,
     request_id: Uuid,
     accept: bool,
+    owner_account: Option<String>,
 ) -> Result<Option<Uuid>> {
     let mut tx = pool.begin().await?;
     let row: Option<(Uuid, Option<Uuid>)> = sqlx::query_as(
@@ -470,6 +493,24 @@ pub async fn decide_request(
         .bind(requester)
         .bind(number_node)
         .execute(&mut *tx)
+        .await?;
+
+        crate::notifications::enqueue(
+            &mut *tx,
+            &crate::notifications::Event {
+                event_id: format!("elohim:contact_accepted:{request_id}"),
+                recipient_account: None,
+                recipient_pial: requester.to_string(),
+                actor_account: owner_account.clone(),
+                kind: "contact_accepted".into(),
+                target_id: owner_account.unwrap_or_default(),
+                target_type: "user".into(),
+                payload: serde_json::json!({}),
+                push_title: "Your contact request was accepted".into(),
+                push_body: String::new(),
+                push_url: "/messages".into(),
+            },
+        )
         .await?;
     }
 

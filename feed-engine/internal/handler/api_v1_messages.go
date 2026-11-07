@@ -785,7 +785,6 @@ func (h *Handler) messageStartEvent(w http.ResponseWriter, r *http.Request, user
 		return
 	}
 	// The one notification pipeline, reached the one way.
-	h.notifyContactRequest(user, outcome)
 
 	if state := contactGateState(outcome.Decision); state != "" {
 		gate(state)

@@ -13,14 +13,45 @@ pub mod participants;
 pub mod view;
 
 use axum::{
-    extract::DefaultBodyLimit,
+    extract::{DefaultBodyLimit, Request, State},
+    http::Method,
+    middleware::Next,
+    response::Response,
     routing::{get, post},
     Router,
 };
+use uuid::Uuid;
 
 use crate::observ;
 use crate::security::abuse::MAX_BODY_BYTES;
 use crate::state::AppState;
+
+/// The Frequency a request may have changed. A beat or a token request changes
+/// nothing about who may speak.
+fn changed_frequency(method: &Method, path: &str) -> Option<Uuid> {
+    if method != Method::POST {
+        return None;
+    }
+    let mut segments = path.split('/');
+    segments.find(|s| *s == "frequencies")?;
+    let id = Uuid::parse_str(segments.next()?).ok()?;
+    match segments.next() {
+        Some("heartbeat" | "media_token" | "react" | "remind" | "pins" | "clips_enabled") => None,
+        _ => Some(id),
+    }
+}
+
+/// One place wakes the audio plane, so a new route cannot forget to.
+async fn wake_media(State(s): State<AppState>, req: Request, next: Next) -> Response {
+    let changed = changed_frequency(req.method(), req.uri().path());
+    let res = next.run(req).await;
+    if let Some(id) = changed {
+        if res.status().is_success() {
+            s.media.kick(id);
+        }
+    }
+    res
+}
 
 pub fn router(state: AppState) -> Router {
     Router::new()
@@ -56,6 +87,33 @@ pub fn router(state: AppState) -> Router {
             "/v1/frequencies/:id/heartbeat",
             post(participants::heartbeat),
         )
+        .route("/v1/frequencies/:id/pins", post(moderation::pin))
+        .route(
+            "/v1/frequencies/:id/clips_enabled",
+            post(frequencies::clips_enabled),
+        )
+        .route("/v1/frequencies/:id/replay", get(frequencies::replay_file))
+        .route(
+            "/v1/frequencies/:id/replay/delete",
+            post(frequencies::delete_replay),
+        )
+        .route("/v1/frequencies/:id/remind", post(participants::remind))
+        .route("/v1/frequencies/:id/reminders", get(participants::reminders))
+        .route("/v1/frequencies/:id/react", post(participants::react))
+        .route("/v1/frequencies/:id/people", get(participants::people))
+        .route("/v1/frequencies/:id/step_down", post(moderation::step_down))
+        .route(
+            "/v1/frequencies/:id/participants/:pial/promote",
+            post(moderation::promote),
+        )
+        .route(
+            "/v1/frequencies/:id/participants/:pial/transfer",
+            post(moderation::transfer),
+        )
+        .route(
+            "/v1/frequencies/:id/media_token",
+            post(participants::media_token),
+        )
         .route(
             "/v1/frequencies/:id/request_mic",
             post(participants::request_mic),
@@ -69,6 +127,10 @@ pub fn router(state: AppState) -> Router {
             post(participants::upvote),
         )
         // ── moderation ───────────────────────────────────────────────────
+        .route(
+            "/v1/frequencies/:id/invites/:pial",
+            post(moderation::invite),
+        )
         .route(
             "/v1/frequencies/:id/requests/:rid/approve",
             post(moderation::approve),
@@ -115,6 +177,7 @@ pub fn router(state: AppState) -> Router {
             post(internal::terminate),
         )
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), wake_media))
         .with_state(state)
         .layer(axum::middleware::from_fn(observ::http_middleware))
 }

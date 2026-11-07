@@ -16,6 +16,14 @@
        class="search-tab{{if eq .SearchType "posts"}} active{{end}}">Posts</a>
   </div>
 
+  {{if .FrequencyResults}}
+  <div class="search-section">
+    <h3 class="search-section-title">Frequencies</h3>
+    {{range .FrequencyResults}}{{template "frequency_card" .}}{{end}}
+  </div>
+  {{end}}
+
+
   {{/* ── People tab ── */}}
   {{if eq .SearchType "people"}}
     {{if .PeopleResults}}

@@ -4,9 +4,8 @@ FACET frequency_speaker_tile
 
   The compact speaker tile used by the preview sheet and the dock: avatar
   circle with realm ring, name below, role in muted small caps, mute glyph
-  overlaid bottom-right. `Speaking` is a server-set class (Phase 3, from the
-  RTP audio-level extension) that adds a 2px accent ring; it is never decided
-  in the browser. No moderation menu here — that belongs to the stage's
+  overlaid bottom-right. frequency-media.js sets is-speaking from the audio
+  plane, which adds a 2px accent ring; it is decoration and decides nothing. No moderation menu here — that belongs to the stage's
   frequency_speaker.
 
   inputs:
@@ -14,7 +13,8 @@ FACET frequency_speaker_tile
     Role     string — "host" | "cohost" | "speaker"
     Muted    bool
     Present  bool
-    Speaking bool   — server-set (Phase 3); default false
+    Speaking bool   — default false
+    MediaIdentity string — the name this person goes by in the room's audio; optional
     Size     string — "lg" (56px, preview) | "md" (44px, dock)
 
   states:
@@ -32,7 +32,7 @@ FACET frequency_speaker_tile
     frequency_dock    → compact grid
 */}}
 {{define "frequency_speaker_tile"}}
-<li class="freq-tile freq-tile--{{.Role}}{{if .Muted}} freq-tile--muted{{end}}{{if not .Present}} freq-tile--away{{end}}{{if .Speaking}} is-speaking{{end}}"
+<li{{with .MediaIdentity}} data-media-identity="{{.}}"{{end}} class="freq-tile freq-tile--{{.Role}}{{if .Muted}} freq-tile--muted{{end}}{{if not .Present}} freq-tile--away{{end}}{{if .Speaking}} is-speaking{{end}}"
     aria-label="@{{.Person.Handle}}{{if eq .Role "host"}}, host{{else if eq .Role "cohost"}}, co-host{{else}}, speaker{{end}}{{if .Muted}}, muted{{end}}{{if .Speaking}}, speaking{{end}}">
   <span class="freq-tile__av">
     {{template "user_avatar" (dict "Handle" .Person.Handle "AvatarURL" .Person.AvatarURL "DisplayName" .Person.DisplayName "Size" .Size "IsOnline" false)}}

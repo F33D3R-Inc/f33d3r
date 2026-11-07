@@ -29,9 +29,9 @@ FACET nav_account
 
   {{/* Facet(nav_account_trigger) — identity row: avatar · name · handle · AET · dots */}}
   <button class="sidebar-user nav-account" id="sidebar-user-btn" type="button">
-    {{template "user_avatar" (dict "Handle" .User.Handle "AvatarURL" .User.AvatarURL "DisplayName" .User.DisplayName "Size" "sm")}}
+    {{template "nav_account_avatar" (dict "UserID" .User.ID "Handle" .User.Handle "AvatarURL" .User.AvatarURL "DisplayName" .User.DisplayName)}}
     <div class="sidebar-user-info nav-account-meta">
-      <div class="nav-account-name">{{.User.DisplayName}}</div>
+      {{template "nav_account_name" (dict "UserID" .User.ID "DisplayName" .User.DisplayName)}}
       <div class="nav-account-aet">@{{.User.Handle}} · <b id="sidebar-aet-bal"></b></div>
     </div>
     <svg style="width:14px;height:14px;color:var(--ink-4);flex-shrink:0" fill="currentColor" viewBox="0 0 24 24">

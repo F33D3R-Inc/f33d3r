@@ -1,12 +1,13 @@
 mod db;
 mod handlers;
 mod identity;
+mod inbox;
 mod manhattan_outbox;
 mod models;
 mod observ;
 
 use axum::{
-    routing::{delete, get, patch, post},
+    routing::{delete, get, post},
     Router,
 };
 use tracing::info;
@@ -46,33 +47,64 @@ async fn main() -> anyhow::Result<()> {
         manhattan.clone(),
     ));
 
+    let internal_api_key = std::env::var("INTERNAL_API_KEY").unwrap_or_default();
+    let brokers = std::env::var("KAFKA_BROKERS").unwrap_or_default();
+    let inbox_bus = if brokers.is_empty() {
+        tracing::warn!("KAFKA_BROKERS is empty: the notification inbox will not receive events");
+        None
+    } else {
+        Some(inbox::InboxBus::new(&brokers)?)
+    };
+
     let state = AppState {
         pool,
         vapid_pub_key,
         vapid_private_key,
         vapid_subject,
         manhattan,
+        internal_api_key,
+        inbox_bus: inbox_bus.clone(),
+        feed_engine_url: std::env::var("FEED_ENGINE_URL")
+            .unwrap_or_else(|_| "http://feed-engine:8081".into()),
+        http: reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()?,
     };
 
-    let app = Router::new()
-        .route("/metrics", get(observ::metrics_handler))
-        .route("/health", get(handlers::health))
+    if let Some(bus) = inbox_bus {
+        inbox::spawn(state.clone(), bus, brokers);
+    }
+
+    // Only other brains may reach these. Subscriptions and preferences are private,
+    // and this port is published in local development.
+    let internal = Router::new()
         .route("/v1/stats", get(handlers::stats))
-        .route("/v1/vapid-public-key", get(handlers::vapid_public_key))
         .route("/v1/subscriptions", post(handlers::subscribe))
         .route(
             "/v1/subscriptions/:device_id",
             delete(handlers::unsubscribe),
         )
-        .route("/v1/notify", post(handlers::notify))
         .route(
             "/v1/preferences/:pial_shard_id",
-            get(handlers::get_preferences),
+            get(handlers::get_preferences).patch(handlers::update_preferences),
         )
-        .route(
-            "/v1/preferences/:pial_shard_id",
-            patch(handlers::update_preferences),
-        )
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            inbox::require_internal,
+        ));
+
+    let app = Router::new()
+        .route("/metrics", get(observ::metrics_handler))
+        .route("/health", get(handlers::health))
+        .route("/v1/vapid-public-key", get(handlers::vapid_public_key))
+        .route("/v1/inbox/purge", post(inbox::purge))
+        .route("/v1/inbox/missing", post(inbox::missing))
+        .route("/v1/inbox/:account", get(inbox::list))
+        .route("/v1/inbox/:account/unread", get(inbox::unread))
+        .route("/v1/inbox/:account/group/:id", get(inbox::group))
+        .route("/v1/inbox/:account/read", post(inbox::mark_read))
+        .route("/v1/inbox/:account/actors", get(inbox::actors))
+        .merge(internal)
         .with_state(state)
         .layer(axum::middleware::from_fn(observ::http_middleware));
 

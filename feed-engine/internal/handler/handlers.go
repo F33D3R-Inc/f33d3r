@@ -3,7 +3,9 @@ package handler
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -144,12 +146,13 @@ type sessionEntry struct {
 }
 
 type Handler struct {
-	cfg      *config.Config
-	aethyr   *aethyr.Client
-	db       *sql.DB
-	funcMap  template.FuncMap
-	assetVer string // cache-busting ?v= stamp, hashed from web/static/{css,js} at boot
-	pages    map[string]*template.Template
+	freqFanout frequencyFanout
+	cfg        *config.Config
+	aethyr     *aethyr.Client
+	db         *sql.DB
+	funcMap    template.FuncMap
+	assetVer   string // cache-busting ?v= stamp, hashed from web/static/{css,js} at boot
+	pages      map[string]*template.Template
 	// shellPages names the pages whose shell-class block renders non-empty: they
 	// draw a different Shell (the auth pages) and can never be delivered into the
 	// standing one, so a Playground request for them is answered with HX-Redirect.
@@ -599,6 +602,10 @@ func (h *Handler) loadTemplates() {
 	}
 	// Facet(frequency_*) id builder, same rule.
 	h.funcMap["frequencyFacetID"] = frequencyFacetID
+	h.funcMap["frequencyGridSurface"] = frequencyGridSurface
+	h.funcMap["frequencyReactions"] = frequencyReactions
+	h.funcMap["frequencyQueueSurface"] = frequencyQueueSurface
+	h.funcMap["frequencyControlsSurface"] = frequencyControlsSurface
 
 	// Glob all EventType partial files — every page and partial set gets them all.
 	partialGlob := filepath.Join("web", "templates", "partials", "*.html")
@@ -826,9 +833,20 @@ func (h *Handler) Routes() http.Handler {
 	// Auralis; these routes render it. Mutations go through POST /events
 	// (apiV1FrequencyEvent).
 	mux.HandleFunc("GET /frequencies", h.rlRead.Limit(h.frequenciesPage))
-	mux.HandleFunc("GET /frequencies/{id}", h.rlRead.Limit(h.requireHandle(h.frequencyPage)))
+	mux.HandleFunc("GET /frequencies/{id}", h.rlRead.Limit(h.frequencyPage))
 	mux.HandleFunc("GET /facets/frequency/cards", h.rlRead.Limit(h.facetFrequencyCards))
 	mux.HandleFunc("GET /facets/frequency/{id}/{slot}", h.rlRead.Limit(h.facetFrequencySlot))
+	mux.HandleFunc("GET /frequencies/{id}/replay", h.rlRead.Limit(h.frequencyReplay))
+	mux.HandleFunc("GET /facets/frequency/{id}/replay_controls", h.rlRead.Limit(h.facetFrequencyReplayControls))
+	mux.HandleFunc("GET /facets/frequency/{id}/clip", h.rlRead.Limit(h.facetFrequencyClip))
+	mux.HandleFunc("GET /facets/frequency/{id}/clip/{upload}", h.rlRead.Limit(h.requireHandle(h.facetFrequencyClipStatus)))
+	mux.HandleFunc("GET /facets/frequency/{id}/remind", h.rlRead.Limit(h.facetFrequencyRemind))
+	mux.HandleFunc("GET /facets/frequency-host/{handle}", h.rlRead.Limit(h.facetFrequenciesByHost))
+	mux.HandleFunc("GET /facets/frequency/{id}/people", h.rlRead.Limit(h.requireHandle(h.facetFrequencyPeople)))
+	mux.HandleFunc("GET /facets/frequency/{id}/report", h.rlRead.Limit(h.requireHandle(h.facetFrequencyReport)))
+	mux.HandleFunc("GET /admin/partials/frequencies", h.rlRead.Limit(h.requireHandle(h.adminPanelFrequencies)))
+	mux.HandleFunc("POST /admin/frequencies/{id}/terminate", h.rlWrite.Limit(h.requireHandle(h.adminFrequencyTerminate)))
+	mux.HandleFunc("POST /frequencies/{id}/media-token", h.rlWrite.Limit(h.requireHandle(h.frequencyMediaToken)))
 	// ── Vision lane — the ephemeral compose path ─────────────────────────────
 	// One writer for the whole lane. Every artboard choice is a preset key the
 	// server resolves; the artboard re-render is a server round trip.
@@ -1037,7 +1055,11 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("POST /events", h.rlWrite.Limit(h.requireHandle(h.eventsPost)))
 	// Brain-to-brain: reachable only from the container network, and then only
 	// with INTERNAL_API_KEY (internalCallerOK inside the handler).
+	mux.Handle("GET /api/internal/pial/{id}/primary-account", middleware.InternalOnly(http.HandlerFunc(h.primaryAccountForPIAL)))
 	mux.Handle("POST /api/internal/balance-update", middleware.InternalOnly(http.HandlerFunc(h.balanceUpdateWebhook)))
+	mux.Handle("GET /api/internal/pial/{pial_id}/ecdh-pubkey", middleware.InternalOnly(http.HandlerFunc(h.pialEcdhPubkeyInternal)))
+	mux.Handle("POST /api/internal/themis/purchase-delivered", middleware.InternalOnly(http.HandlerFunc(h.themisPurchaseDeliveredWebhook)))
+	mux.Handle("POST /api/internal/scan-complete", middleware.InternalOnly(http.HandlerFunc(h.scanCompleteEvent)))
 
 	// HTMX partials (write rate limit)
 	mux.HandleFunc("/feed", h.rlRead.Limit(h.feedPartial))
@@ -1094,7 +1116,7 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("/api/track/delete", h.rlWrite.Limit(h.requireHandle(h.deleteTrackAPI)))
 	mux.HandleFunc("/api/follow", h.rlWrite.Limit(h.followAPI))
 	mux.HandleFunc("/api/feedback", h.rlWrite.Limit(h.feedbackAPI))
-	mux.HandleFunc("/api/notifications/read-all", h.rlWrite.Limit(h.requireHandle(h.markNotificationsRead)))
+	mux.HandleFunc("POST /api/notifications/read-all", h.rlWrite.Limit(h.requireHandle(h.markNotificationsRead)))
 	mux.HandleFunc("/api/notifications/count", h.rlRead.Limit(h.requireHandle(h.notificationsCount)))
 	// SSE — real-time push for notifications + wallet balance (no polling, no JSON)
 	mux.HandleFunc("/api/events", h.requireHandle(h.sseEvents))
@@ -1152,6 +1174,7 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("POST /api/vault/recovery", h.rlWrite.Limit(h.requireHandle(h.vaultRecoverySet)))
 	// Malkuth: PIAL signing key registration (ECDSA-P256, browser-generated)
 	mux.HandleFunc("POST /api/pial/signing-key/register", h.rlWrite.Limit(h.requireHandle(h.registerPIALSigningKey)))
+	mux.HandleFunc("POST /api/pial/ecdh-key/register", h.rlWrite.Limit(h.requireHandle(h.registerPIALEcdhKey)))
 	mux.HandleFunc("GET /api/pial/by-handle/{handle}", h.rlRead.Limit(h.requireHandle(h.pialByHandle)))
 	mux.HandleFunc("/api/health", h.healthAPI)
 
@@ -1699,8 +1722,8 @@ func (h *Handler) eventsPost(w http.ResponseWriter, r *http.Request) {
 			if deviceID == "" && rawBodyMap != nil {
 				json.Unmarshal(rawBodyMap["device_id"], &deviceID)
 			}
-			if deviceID != "" {
-				go h.heraldUnsubscribe(deviceID)
+			if user := h.userFromRequest(w, r); deviceID != "" && user != nil && user.PIALID != "" {
+				go h.heraldUnsubscribe(user.PIALID, deviceID)
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -1765,7 +1788,6 @@ func (h *Handler) eventsPost(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "could not mark notification read", http.StatusInternalServerError)
 				return
 			}
-			h.publishUnreadBadge(user.ID)
 		}
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -1782,9 +1804,7 @@ func (h *Handler) eventsPost(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "could not mark notifications read", http.StatusInternalServerError)
 				return
 			}
-			// Every other device this person has open is still showing the old
-			// count. The badge is server-owned state, so the server says so.
-			h.publishUnreadBadge(user.ID)
+			// Herald announces the new count, which reaches every device.
 		}
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -1832,6 +1852,7 @@ func (h *Handler) eventsPost(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "vote failed", http.StatusInternalServerError)
 			return
 		}
+		go h.publishPollTally(workID, user.ID)
 		w.WriteHeader(http.StatusNoContent)
 		return
 
@@ -3031,7 +3052,10 @@ func (h *Handler) heraldSubscribeJSON(pialID string, subRaw json.RawMessage, dev
 		return
 	}
 	if deviceID == "" {
-		deviceID = pialID + "-default"
+		// Named by the endpoint, so one person's browsers each get their own row and a
+		// rotated subscription does not overwrite a different browser's.
+		sum := sha256.Sum256([]byte(sub.Endpoint))
+		deviceID = hex.EncodeToString(sum[:16])
 	}
 	payload, _ := json.Marshal(map[string]string{
 		"pial_shard_id": pialID,
@@ -3045,6 +3069,7 @@ func (h *Handler) heraldSubscribeJSON(pialID string, subRaw json.RawMessage, dev
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, h.cfg.HeraldURL+"/v1/subscriptions", bytes.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Internal-Key", h.cfg.InternalAPIKey)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		log.Printf("[herald] subscribe: %v", err)
@@ -3055,39 +3080,15 @@ func (h *Handler) heraldSubscribeJSON(pialID string, subRaw json.RawMessage, dev
 }
 
 // heraldUnsubscribe calls Herald DELETE /v1/subscriptions/{device_id}.
-func (h *Handler) heraldUnsubscribe(deviceID string) {
+func (h *Handler) heraldUnsubscribe(pialID, deviceID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	req, _ := http.NewRequestWithContext(ctx, http.MethodDelete, h.cfg.HeraldURL+"/v1/subscriptions/"+deviceID, nil)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodDelete,
+		h.cfg.HeraldURL+"/v1/subscriptions/"+url.PathEscape(deviceID)+"?pial="+url.QueryEscape(pialID), nil)
+	req.Header.Set("X-Internal-Key", h.cfg.InternalAPIKey)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		log.Printf("[herald] unsubscribe: %v", err)
-		return
-	}
-	resp.Body.Close()
-}
-
-// HeraldNotify sends a push notification via Herald for a given PIAL.
-// Call this fire-and-forget (go h.HeraldNotify(...)) after creating a DB notification.
-func (h *Handler) HeraldNotify(pialID, notifType, title, body, iconURL, actionURL string) {
-	if h.cfg.HeraldURL == "" || pialID == "" {
-		return
-	}
-	payload, _ := json.Marshal(map[string]string{
-		"pial_shard_id":     pialID,
-		"notification_type": notifType,
-		"title":             title,
-		"body":              body,
-		"icon_url":          iconURL,
-		"action_url":        actionURL,
-	})
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-	defer cancel()
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, h.cfg.HeraldURL+"/v1/notify", bytes.NewReader(payload))
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		log.Printf("[herald] notify: %v", err)
 		return
 	}
 	resp.Body.Close()

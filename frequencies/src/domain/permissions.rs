@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use super::frequency::{Frequency, FrequencyState};
+use super::frequency::{Frequency, FrequencyState, Visibility};
 use super::role::FrequencyRole;
 
 /// Why a Tune In was refused. Each is a stable machine code a caller renders.
@@ -14,6 +14,10 @@ pub enum JoinRefusal {
     Blocked,
     Full,
     SpeakersFull,
+    FollowersOnly,
+    SubscribersOnly,
+    InviteOnly,
+    BlockedByHost,
 }
 
 impl JoinRefusal {
@@ -24,7 +28,47 @@ impl JoinRefusal {
             Self::Blocked => "blocked",
             Self::Full => "full",
             Self::SpeakersFull => "speakers_full",
+            Self::FollowersOnly => "followers_only",
+            Self::SubscribersOnly => "subscribers_only",
+            Self::InviteOnly => "invite_only",
+            Self::BlockedByHost => "blocked_by_host",
         }
+    }
+}
+
+/// What Nantar knows about a viewer and this host. Nantar owns the social graph
+/// and is a trusted service caller; a browser never supplies these. Everything
+/// defaults to false, so a caller that sends nothing gets the narrowest answer.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AudienceFacts {
+    pub follows_host: bool,
+    pub subscribed: bool,
+    pub blocked_either_way: bool,
+}
+
+/// Whether the room's audience includes this person. The host and anyone a host
+/// has given a role are always inside it; a user-level block between the host
+/// and an ordinary listener always keeps them out.
+pub fn audience(
+    freq: &Frequency,
+    role: FrequencyRole,
+    facts: AudienceFacts,
+    invited: bool,
+) -> Result<(), JoinRefusal> {
+    if role.speaks() {
+        return Ok(());
+    }
+    if facts.blocked_either_way {
+        return Err(JoinRefusal::BlockedByHost);
+    }
+    match freq.visibility {
+        Visibility::Public => Ok(()),
+        Visibility::Followers if facts.follows_host || facts.subscribed || invited => Ok(()),
+        Visibility::Followers => Err(JoinRefusal::FollowersOnly),
+        Visibility::Subscribers if facts.subscribed || invited => Ok(()),
+        Visibility::Subscribers => Err(JoinRefusal::SubscribersOnly),
+        Visibility::Private if invited => Ok(()),
+        Visibility::Private => Err(JoinRefusal::InviteOnly),
     }
 }
 
@@ -132,6 +176,20 @@ pub fn reconcile_on_boot(
     }
 }
 
+/// A row left in `starting` or `ending` by a failure while this process runs.
+/// Unlike [`reconcile_on_boot`], an `ending` row gets the same time to finish as
+/// a `starting` one, because a live process may still be completing it.
+pub fn reconcile_while_running(
+    state: FrequencyState,
+    age: Duration,
+    timeout: Duration,
+) -> Reconcile {
+    if age < timeout {
+        return Reconcile::Leave;
+    }
+    reconcile_on_boot(state, age, timeout)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -160,6 +218,7 @@ mod tests {
             max_listeners: 3,
             requests_open: true,
             locked: false,
+            clips_enabled: true,
             media_node: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
@@ -243,6 +302,32 @@ mod tests {
         );
         // The host is not counted against either lane.
         assert!(admit(&f, FrequencyRole::Host, false, 3, 2).is_ok());
+    }
+
+    #[test]
+    fn audience_follows_visibility() {
+        let mut f = freq(FrequencyState::Live);
+        let none = AudienceFacts::default();
+        let follows = AudienceFacts { follows_host: true, ..none };
+        let subscribed = AudienceFacts { subscribed: true, ..none };
+        let blocked = AudienceFacts { blocked_either_way: true, subscribed: true, ..none };
+        let listener = FrequencyRole::Listener;
+
+        assert!(audience(&f, listener, none, false).is_ok());
+        assert_eq!(audience(&f, listener, blocked, true), Err(JoinRefusal::BlockedByHost));
+
+        f.visibility = Visibility::Followers;
+        assert_eq!(audience(&f, listener, none, false), Err(JoinRefusal::FollowersOnly));
+        assert!(audience(&f, listener, follows, false).is_ok());
+
+        f.visibility = Visibility::Subscribers;
+        assert_eq!(audience(&f, listener, follows, false), Err(JoinRefusal::SubscribersOnly));
+        assert!(audience(&f, listener, subscribed, false).is_ok());
+
+        f.visibility = Visibility::Private;
+        assert_eq!(audience(&f, listener, subscribed, false), Err(JoinRefusal::InviteOnly));
+        assert!(audience(&f, listener, none, true).is_ok());
+        assert!(audience(&f, FrequencyRole::Speaker, none, false).is_ok());
     }
 
     #[test]

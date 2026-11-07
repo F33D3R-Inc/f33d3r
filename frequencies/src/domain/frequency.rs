@@ -142,6 +142,7 @@ pub enum ReplayStatus {
     Processing,
     Ready,
     Failed,
+    Deleted,
 }
 
 /// A Frequency as stored. Field names are column names.
@@ -167,6 +168,7 @@ pub struct Frequency {
     pub max_listeners: i32,
     pub requests_open: bool,
     pub locked: bool,
+    pub clips_enabled: bool,
     pub media_node: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,

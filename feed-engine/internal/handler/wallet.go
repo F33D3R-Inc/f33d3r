@@ -313,23 +313,22 @@ func (h *Handler) tipEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	status, msg := h.settleTip(r.Context(), user, targetPIAL, amountAet)
+	tipTargetID, tipTargetType := workID, "profile"
+	if workID != "" {
+		tipTargetType = "work"
+	} else if stream != nil {
+		tipTargetID, tipTargetType = stream.ID, "live"
+	}
+	status, msg := h.settleTip(r.Context(), user, targetPIAL, targetID, tipTargetID, tipTargetType, amountAet)
 	if status != http.StatusOK {
 		h.tipEventError(w, r, targetHandle, msg, status)
 		return
 	}
 
-	// The ledger said yes. What follows is the record of it on this side:
-	// the inbox row, and for a broadcast the room's own account of the tip.
-	amountUAET := int64(amountAet) * 10_000
+	// The ledger said yes and has told the recipient. A broadcast also keeps its
+	// own account of the tip.
 	if stream != nil {
-		h.recordLiveTip(stream, user, amountUAET)
-	} else if targetID != "" {
-		targetType := "profile"
-		if workID != "" {
-			targetType = "work"
-		}
-		h.notifyUserWithPayload(targetID, "tip", user.ID, workID, targetType, map[string]interface{}{"amount_uaet": amountUAET})
+		h.recordLiveTip(stream, user, int64(amountAet)*10_000)
 	}
 
 	aetAmount := float64(amountAet) / 100.0
@@ -351,9 +350,9 @@ func (h *Handler) tipEvent(w http.ResponseWriter, r *http.Request) {
 
 // settleTip moves amountAet (AET hundredths) from the tipper to targetPIAL
 // through Ain Soph, the ledger brain — F33D3R never holds the money. On
-// success it returns 200 and tells the recipient (Herald push, and the toast
-// on their web sessions); otherwise the status and message the ledger gave.
-func (h *Handler) settleTip(ctx context.Context, from *model.User, targetPIAL string, amountAet int) (int, string) {
+// success it returns 200 and shows the toast on the recipient's web sessions;
+// the ledger writes their notification with the payment. Otherwise the status and message the ledger gave.
+func (h *Handler) settleTip(ctx context.Context, from *model.User, targetPIAL, targetAccount, tipTargetID, tipTargetType string, amountAet int) (int, string) {
 	if from == nil || from.PIALID == "" || targetPIAL == "" || amountAet <= 0 {
 		return http.StatusBadRequest, "tip failed"
 	}
@@ -363,6 +362,11 @@ func (h *Handler) settleTip(ctx context.Context, from *model.User, targetPIAL st
 		"to_pial_id":      targetPIAL,
 		"amount_aet":      aetAmount,
 		"idempotency_key": "",
+		"from_account":    from.ID,
+		"from_handle":     from.Handle,
+		"to_account":      targetAccount,
+		"target_id":       tipTargetID,
+		"target_type":     tipTargetType,
 	}
 	body, _ := json.Marshal(payload)
 
@@ -384,10 +388,6 @@ func (h *Handler) settleTip(ctx context.Context, from *model.User, targetPIAL st
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusOK {
-		go h.HeraldNotify(targetPIAL, "tip",
-			"@"+from.Handle+" sent you a tip",
-			fmt.Sprintf("%.2f AET", aetAmount),
-			"", "/wallet")
 		go PublishToUser(targetPIAL, SSEEvent{
 			Type: "tip_received",
 			Data: fmt.Sprintf(`<div class="toast toast--success" role="alert">@%s sent you %.2f AET</div>`,

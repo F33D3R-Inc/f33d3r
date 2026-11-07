@@ -102,6 +102,18 @@ scrape_configs:
       - targets: [ 'ekyc:8099' ]
         labels: { brain: ekyc, lang: python }
 
+  - job_name: themis
+    metrics_path: /metrics
+    static_configs:
+      - targets: [ 'themis:8100' ]
+        labels: { brain: themis, lang: rust }
+
+  - job_name: lore
+    metrics_path: /metrics
+    static_configs:
+      - targets: [ 'lore:8106' ]
+        labels: { brain: lore, lang: rust }
+
   - job_name: auralis
     metrics_path: /metrics
     static_configs:
@@ -114,6 +126,11 @@ scrape_configs:
   #   static_configs:
   #     - targets: [ 'transcoder:8085' ]
   #       labels: { brain: transcoder, lang: rust }
+
+  - job_name: herald
+    static_configs:
+      - targets: [ 'herald:8105' ]
+        labels: { brain: herald, tier: rust }
 
   # ── Infrastructure ─────────────────────────────────────────────────────────
   - job_name: node-exporter

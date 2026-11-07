@@ -98,13 +98,12 @@ pub async fn award_achievement(
 ) -> Reply {
     let identity_name = identity_of(&s, &identity_ref).await?;
 
-    match db::award_achievement(&s.pool, &identity_name, &achievement_id)
+    match db::award_achievement(&s.pool, &identity_name, &achievement_id, |xp| achievement_notice(&identity_name, &achievement_id, xp))
         .await
         .map_err(|e| internal("award_achievement", e))?
     {
         AwardOutcome::Awarded(xp) => {
             info!(identity = %identity_name, achievement = %achievement_id, xp, "achievement awarded");
-            notify_herald(&s, &identity_name, &achievement_id, xp).await;
             Ok(Json(json!({ "awarded": true, "xp_reward": xp })))
         }
         AwardOutcome::AlreadyEarned => Ok(Json(
@@ -154,13 +153,12 @@ pub async fn receive_event(State(s): State<AppState>, Json(event): Json<LoreEven
         ));
     };
 
-    match db::award_achievement(&s.pool, &identity_name, ach_id)
+    match db::award_achievement(&s.pool, &identity_name, ach_id, |xp| achievement_notice(&identity_name, ach_id, xp))
         .await
         .map_err(|e| internal("award from event", e))?
     {
         AwardOutcome::Awarded(xp) => {
             info!(achievement = ach_id, xp, "achievement triggered by event");
-            notify_herald(&s, &identity_name, ach_id, xp).await;
             Ok(Json(
                 json!({ "received": true, "identity": identity_name, "awarded": true }),
             ))
@@ -177,43 +175,20 @@ pub async fn receive_event(State(s): State<AppState>, Json(event): Json<LoreEven
     }
 }
 
-/// Tell Herald to push the grant to the person's devices.
-///
-/// Herald's field is spelled `pial_shard_id`, but what every existing caller
-/// puts in it is a raw PIAL — feed-engine's `HeraldNotify` sends `pialID` under
-/// that key. So lore sends the PIAL too, taken from the name it resolved.
-/// Correcting Herald's spelling is Herald's change to make, not lore's; naming
-/// it wrong here as well would only spread the second vocabulary further.
-///
-/// Delivery is best effort by design — a push that did not go out must never
-/// undo an achievement that was earned — but a failure is logged, never
-/// swallowed.
-async fn notify_herald(s: &AppState, identity_name: &str, achievement_id: &str, xp: i32) {
-    let url = format!("{}/v1/notify/achievement", s.herald_url);
-    let result = s
-        .herald_client
-        .post(&url)
-        .json(&json!({
-            "pial_shard_id": bare_value(identity_name),
-            "achievement_id": achievement_id,
-            "xp_reward": xp,
-        }))
-        .send()
-        .await;
-
-    match result {
-        Ok(resp) if resp.status().is_success() => {}
-        Ok(resp) => warn!(
-            identity = %identity_name,
-            achievement = %achievement_id,
-            status = resp.status().as_u16(),
-            "herald refused the achievement notification"
-        ),
-        Err(e) => warn!(
-            identity = %identity_name,
-            achievement = %achievement_id,
-            error = %e,
-            "herald notification failed"
-        ),
+/// What a person is told when they earn an achievement. It is written in the same
+/// transaction as the award.
+fn achievement_notice(identity_name: &str, achievement_id: &str, xp: i32) -> crate::notifications::Event {
+    crate::notifications::Event {
+        actor_account: None,
+        recipient_account: None,
+        event_id: format!("lore:achievement:{identity_name}:{achievement_id}"),
+        recipient_pial: bare_value(identity_name).to_string(),
+        kind: "achievement".into(),
+        target_id: achievement_id.to_string(),
+        target_type: "achievement".into(),
+        payload: json!({ "xp_reward": xp }),
+        push_title: "Achievement unlocked".into(),
+        push_body: format!("You earned {xp} XP"),
+        push_url: "/achievements".into(),
     }
 }

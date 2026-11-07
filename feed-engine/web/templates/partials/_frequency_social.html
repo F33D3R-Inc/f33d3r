@@ -1,0 +1,261 @@
+{{define "frequency_reaction_bar"}}
+<div class="freq-react" role="group" aria-label="React">
+  {{$id := .ID}}
+  {{range frequencyReactions}}
+  <form hx-post="/events" hx-swap="none">
+    <input type="hidden" name="event_type" value="frequency.react">
+    <input type="hidden" name="frequency_id" value="{{$id}}">
+    <input type="hidden" name="reaction" value="{{.Key}}">
+    <button type="submit" class="freq-react__btn" aria-label="{{.Label}}">{{.Glyph}}</button>
+  </form>
+  {{end}}
+</div>
+{{end}}
+
+{{define "frequency_reaction_lane"}}
+<div class="freq-reactions" data-facet-id="{{frequencyFacetID .ID "reactions"}}" aria-hidden="true"></div>
+{{end}}
+
+{{define "frequency_reaction"}}
+<span class="freq-float freq-float--{{.Lane}}" data-facet-id="{{.FacetID}}" data-expires-ms="3200">{{.Glyph}}</span>
+{{end}}
+
+{{define "frequency_people"}}
+<div class="freq-preview" role="dialog" aria-modal="true" aria-labelledby="freq-people-h-{{.ID}}" data-facet-id="{{frequencyFacetID .ID "people_sheet"}}">
+  <div class="freq-preview__backdrop" hx-get="/facets/overlay/close" hx-target="#overlay-slot" hx-swap="innerHTML" hx-trigger="click"></div>
+  <div class="freq-preview__card">
+    <div class="freq-preview__top">
+      <h2 class="freq-preview__title" id="freq-people-h-{{.ID}}">People here</h2>
+      <button type="button" class="freq-preview__close freq-people__close" aria-label="Close" hx-get="/facets/overlay/close" hx-target="#overlay-slot" hx-swap="innerHTML">
+        <svg fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    {{template "frequency_people_list" .}}
+  </div>
+</div>
+{{end}}
+
+{{define "frequency_people_list"}}
+<div class="freq-people" data-facet-id="{{frequencyFacetID .ID "people"}}">
+  <span hidden hx-get="/facets/frequency/{{.ID}}/people?part=list" hx-trigger="every 15s, fa:people-changed from:body" hx-target="closest .freq-people" hx-swap="outerHTML"></span>
+  <h3 class="freq-people__head">{{.Total}} listening</h3>
+  {{if .Listeners}}
+  <ul class="freq-people__rows" role="list">
+    {{$id := .ID}}{{$mod := .CanModerate}}{{$open := .RequestsPossible}}
+    {{range .Listeners}}
+    <li class="freq-people__row">
+      {{template "user_avatar" (dict "Handle" .Handle "AvatarURL" .AvatarURL "DisplayName" .DisplayName "Size" "sm" "IsOnline" true)}}
+      {{if .Handle}}<a class="freq-people__name" href="/{{.Handle}}">{{if .DisplayName}}{{.DisplayName}}{{else}}@{{.Handle}}{{end}}</a>{{else}}<span class="freq-people__name">someone</span>{{end}}
+      {{if .Handle}}
+      <span class="freq-people__actions">
+        {{if $mod}}
+        {{if $open}}
+        <form hx-post="/events" hx-swap="none">
+          <input type="hidden" name="event_type" value="frequency.promote">
+          <input type="hidden" name="frequency_id" value="{{$id}}">
+          <input type="hidden" name="target_handle" value="{{.Handle}}">
+          <button type="submit" class="freq-people__btn">Give mic</button>
+        </form>
+        {{end}}
+        <form hx-post="/events" hx-swap="none" hx-confirm="Remove @{{.Handle}} from this Frequency?">
+          <input type="hidden" name="event_type" value="frequency.remove">
+          <input type="hidden" name="frequency_id" value="{{$id}}">
+          <input type="hidden" name="target_handle" value="{{.Handle}}">
+          <button type="submit" class="freq-people__btn">Remove</button>
+        </form>
+        <form hx-post="/events" hx-swap="none" hx-confirm="Block @{{.Handle}} from this Frequency? They cannot rejoin.">
+          <input type="hidden" name="event_type" value="frequency.block">
+          <input type="hidden" name="frequency_id" value="{{$id}}">
+          <input type="hidden" name="target_handle" value="{{.Handle}}">
+          <button type="submit" class="freq-people__btn freq-people__btn--danger">Block</button>
+        </form>
+        {{end}}
+        <button type="button" class="freq-people__btn" hx-get="/facets/frequency/{{$id}}/report?handle={{.Handle}}" hx-target="#overlay-slot" hx-swap="innerHTML">Report</button>
+      </span>
+      {{end}}
+    </li>
+    {{end}}
+  </ul>
+  {{if gt .More 0}}<p class="freq-people__more">and {{.More}} more</p>{{end}}
+  {{else}}
+  <p class="freq-people__more">Nobody is listening yet.</p>
+  {{end}}
+
+  {{if .CanModerate}}{{if .Blocked}}
+  <h3 class="freq-people__head">Blocked</h3>
+  <ul class="freq-people__rows" role="list">
+    {{$id := .ID}}
+    {{range .Blocked}}{{if .Handle}}
+    <li class="freq-people__row">
+      {{template "user_avatar" (dict "Handle" .Handle "AvatarURL" .AvatarURL "DisplayName" .DisplayName "Size" "sm" "IsOnline" false)}}
+      <span class="freq-people__name">@{{.Handle}}</span>
+      <span class="freq-people__actions">
+        <form hx-post="/events" hx-swap="none">
+          <input type="hidden" name="event_type" value="frequency.unblock">
+          <input type="hidden" name="frequency_id" value="{{$id}}">
+          <input type="hidden" name="target_handle" value="{{.Handle}}">
+          <button type="submit" class="freq-people__btn">Unblock</button>
+        </form>
+      </span>
+    </li>
+    {{end}}{{end}}
+  </ul>
+  {{end}}{{end}}
+</div>
+{{end}}
+
+{{define "frequency_report"}}
+<div class="freq-preview" role="dialog" aria-modal="true" aria-labelledby="freq-report-h-{{.ID}}" data-facet-id="{{frequencyFacetID .ID "report"}}">
+  <div class="freq-preview__backdrop" hx-get="/facets/overlay/close" hx-target="#overlay-slot" hx-swap="innerHTML" hx-trigger="click"></div>
+  <div class="freq-preview__card">
+    <h2 class="freq-preview__title" id="freq-report-h-{{.ID}}">{{if .Handle}}Report @{{.Handle}}{{else}}Report this Frequency{{end}}</h2>
+    <form class="freq-report" hx-post="/events" hx-target="#overlay-slot" hx-swap="innerHTML">
+      <input type="hidden" name="event_type" value="frequency.report">
+      <input type="hidden" name="frequency_id" value="{{.ID}}">
+      {{if .Handle}}<input type="hidden" name="target_handle" value="{{.Handle}}">{{end}}
+      <label class="freq-ask__label" for="freq-report-reason-{{.ID}}">What is wrong?</label>
+      <select class="freq-ask__reason" id="freq-report-reason-{{.ID}}" name="reason" required>
+        <option value="">Choose a reason</option>
+        <option value="spam">Spam</option>
+        <option value="harassment">Harassment</option>
+        <option value="hate">Hate</option>
+        <option value="nsfw">Adult content</option>
+        <option value="violence">Violence</option>
+        <option value="illegal">Illegal activity</option>
+        <option value="other">Something else</option>
+      </select>
+      <label class="freq-ask__label" for="freq-report-detail-{{.ID}}">Anything to add?</label>
+      <textarea class="freq-ask__reason" id="freq-report-detail-{{.ID}}" name="detail" rows="3" maxlength="500"></textarea>
+      <button type="submit" class="freq-cta">Send report</button>
+    </form>
+  </div>
+</div>
+{{end}}
+
+{{define "admin_panel_frequencies"}}
+<section class="admin-frequencies" id="admin-frequencies">
+  <span hidden hx-get="/admin/partials/frequencies" hx-trigger="every 30s" hx-target="closest .admin-frequencies" hx-swap="outerHTML"></span>
+  <h3 class="freq-people__head">Live Frequencies ({{len .Rooms}})</h3>
+  {{if .Unavailable}}<p class="freq-people__more">Frequencies are unavailable right now.</p>
+  {{else if not .Rooms}}<p class="freq-people__more">None live right now.</p>
+  {{else}}
+  <ul class="freq-people__rows" role="list">
+    {{range .Rooms}}
+    <li class="admin-frequencies__row">
+      <a class="freq-people__name" href="/frequencies/{{.ID}}">{{.Title}}</a>
+      <span class="freq-people__more">@{{.HostHandle}} · {{.People}} here</span>
+      <form class="admin-frequencies__form" hx-post="/admin/frequencies/{{.ID}}/terminate" hx-target="closest .admin-frequencies" hx-swap="outerHTML" hx-confirm="End “{{.Title}}” for everyone? This cannot be undone.">
+        <input class="freq-ask__reason" name="reason" type="text" maxlength="140" placeholder="Policy reason" required aria-label="Policy reason">
+        <button type="submit" class="freq-people__btn freq-people__btn--danger">Terminate</button>
+      </form>
+    </li>
+    {{end}}
+  </ul>
+  {{end}}
+</section>
+{{end}}
+
+{{define "frequency_remind_button"}}
+<form class="freq-remind" data-facet-id="{{frequencyFacetID .ID "remind"}}" hx-post="/events" hx-target="closest .freq-remind" hx-swap="outerHTML">
+  <input type="hidden" name="event_type" value="frequency.remind">
+  <input type="hidden" name="frequency_id" value="{{.ID}}">
+  <input type="hidden" name="on" value="{{if .Reminded}}false{{else}}true{{end}}">
+  <button type="submit" class="freq-btn {{if .Reminded}}freq-btn--ghost{{else}}freq-btn--primary{{end}}" aria-pressed="{{.Reminded}}">{{if .Reminded}}Reminder on{{else}}Remind me{{end}}</button>
+</form>
+{{end}}
+
+{{define "frequency_share_button"}}
+<button type="button" class="freq-btn freq-btn--ghost" data-copy-url="/frequencies/{{.ID}}">Copy link</button>
+{{end}}
+
+{{define "frequency_replay_player"}}
+<div class="freq-replay" data-facet-id="{{frequencyFacetID .ID "replay"}}">
+  <h3 class="freq-people__head">Replay</h3>
+  <audio class="freq-replay__audio" controls preload="metadata" src="/frequencies/{{.ID}}/replay"></audio>
+  <span hx-get="/facets/frequency/{{.ID}}/clip" hx-trigger="load" hx-swap="outerHTML"></span>
+  <span hx-get="/facets/frequency/{{.ID}}/replay_controls" hx-trigger="load" hx-swap="outerHTML"></span>
+</div>
+{{end}}
+
+{{define "frequency_replay_controls"}}
+<div class="freq-replay-host">
+  <form hx-post="/events" hx-target="closest .freq-replay-host" hx-swap="outerHTML">
+    <input type="hidden" name="event_type" value="frequency.clips_enabled">
+    <input type="hidden" name="frequency_id" value="{{.ID}}">
+    <input type="hidden" name="on" value="{{if .ClipsEnabled}}false{{else}}true{{end}}">
+    <button type="submit" class="freq-people__btn">{{if .ClipsEnabled}}Turn off clips{{else}}Allow clips{{end}}</button>
+  </form>
+  <form hx-post="/events" hx-swap="none" hx-confirm="Delete this replay for good? This cannot be undone.">
+    <input type="hidden" name="event_type" value="frequency.delete_replay">
+    <input type="hidden" name="frequency_id" value="{{.ID}}">
+    <button type="submit" class="freq-people__btn freq-people__btn--danger">Delete replay</button>
+  </form>
+</div>
+{{end}}
+
+{{define "frequency_pins"}}
+<section class="freq-pins" data-facet-id="{{frequencyFacetID .ID "pins"}}" data-surface="{{.Surface}}" aria-label="Pinned works">
+  {{if .Pins}}<h3 class="freq-people__head">Pinned</h3>{{end}}
+  {{range .Pins}}
+  <article class="freq-pin">
+    <a class="freq-pin__link" href="/work/{{.WorkID}}">
+      {{if .Thumb}}<img class="freq-pin__thumb" src="{{.Thumb}}" alt="" loading="lazy">{{end}}
+      <span class="freq-pin__text">
+        <span class="freq-pin__who">@{{.AuthorHandle}}</span>
+        <span class="freq-pin__body">{{.Preview}}</span>
+      </span>
+    </a>
+    {{if .CanRemove}}
+    <form hx-post="/events" hx-swap="none">
+      <input type="hidden" name="event_type" value="frequency.unpin">
+      <input type="hidden" name="frequency_id" value="{{.ID}}">
+      <input type="hidden" name="work" value="{{.WorkID}}">
+      <button type="submit" class="freq-people__btn" aria-label="Unpin">Unpin</button>
+    </form>
+    {{end}}
+  </article>
+  {{end}}
+</section>
+{{end}}
+
+{{define "frequency_pin_form"}}
+<form class="freq-reschedule" hx-post="/events" hx-swap="none" data-reset-on-success>
+  <input type="hidden" name="event_type" value="frequency.pin">
+  <input type="hidden" name="frequency_id" value="{{.ID}}">
+  <input class="freq-ask__reason" name="work" type="text" autocomplete="off" required placeholder="Paste a link to a work" aria-label="Link to a work">
+  <button type="submit" class="freq-btn freq-btn--ghost">Pin</button>
+</form>
+{{end}}
+
+{{define "frequency_clip_form"}}
+<form class="freq-clip" data-clip-form hx-post="/events" hx-target="closest .freq-clip" hx-swap="outerHTML">
+  <input type="hidden" name="event_type" value="frequency.clip">
+  <input type="hidden" name="frequency_id" value="{{.ID}}">
+  <input type="hidden" name="start_seconds" value="0">
+  <label class="freq-ask__label" for="freq-clip-len-{{.ID}}">Clip from where the replay is now</label>
+  <select class="freq-ask__reason" id="freq-clip-len-{{.ID}}" name="length_seconds">
+    <option value="30">30 seconds</option>
+    <option value="60">1 minute</option>
+    <option value="140">2 minutes 20 seconds</option>
+  </select>
+  <button type="submit" class="freq-btn freq-btn--ghost">Make clip</button>
+</form>
+{{end}}
+
+{{define "frequency_clip_status"}}
+<div class="freq-clip" role="status">
+  {{if .Failure}}
+    <p class="freq-people__more">{{.Failure}}</p>
+    <span hx-get="/facets/frequency/{{.ID}}/clip" hx-trigger="load delay:4s" hx-target="closest .freq-clip" hx-swap="outerHTML"></span>
+  {{else if .Ready}}
+    {{if .Poster}}<img class="freq-clip__poster" src="{{.Poster}}" alt="Your clip">{{end}}
+    <div class="freq-host__row">
+      <button type="button" class="freq-btn freq-btn--primary" data-post-video="{{.VideoJSON}}">Post clip</button>
+      {{if .Download}}<a class="freq-btn freq-btn--ghost" href="{{.Download}}" download>Download</a>{{end}}
+    </div>
+  {{else}}
+    <p class="freq-people__more">Making your clip. You can leave this page; we'll notify you when it's ready.</p>
+    <span hx-get="/facets/frequency/{{.ID}}/clip/{{.UploadID}}" hx-trigger="every 5s" hx-target="closest .freq-clip" hx-swap="outerHTML"></span>
+  {{end}}
+</div>
+{{end}}

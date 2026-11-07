@@ -1,0 +1,12 @@
+{{/* Atomic profile Facets: true for every viewer, so one fragment goes to everyone watching. */}}
+{{define "profile_stat_count"}}<strong data-facet-id="facet:f33d3r:profile:{{.UserID}}:{{.Stat}}">{{.Count}}</strong>{{end}}
+{{define "profile_display_name"}}<h1 class="profile-display-name" data-facet-id="facet:f33d3r:profile:{{.UserID}}:display_name">{{.DisplayName}}</h1>{{end}}
+{{define "profile_bio"}}<div data-facet-id="facet:f33d3r:profile:{{.UserID}}:bio">{{if .Bio}}<p class="profile-bio">{{bioHTML .Bio}}</p>{{end}}</div>{{end}}
+{{/* The owner's own nav row, sent to their devices after a profile edit. */}}
+{{define "nav_account_avatar"}}<span class="facet-contents" data-facet-id="facet:f33d3r:account:{{.UserID}}:nav_avatar">{{template "user_avatar" (dict "Handle" .Handle "AvatarURL" .AvatarURL "DisplayName" .DisplayName "Size" "sm")}}</span>{{end}}
+{{define "nav_account_name"}}<div class="nav-account-name" data-facet-id="facet:f33d3r:account:{{.UserID}}:nav_name">{{.DisplayName}}</div>{{end}}
+{{/* The ring is decided per viewer, so the slot asks for its own contents on arrival. */}}
+{{define "profile_avatar_slot"}}<div class="vision-profile-ring-slot" id="profile-vision-ring-slot" data-facet-id="facet:f33d3r:profile:{{.UserID}}:avatar"
+     hx-get="/facets/vision/ring?handle={{.Handle}}"
+     hx-trigger="load, visionclosed from:body"
+     hx-swap="innerHTML">{{template "user_avatar" (dict "Handle" .Handle "AvatarURL" .AvatarURL "DisplayName" .DisplayName "Size" "xl")}}</div>{{end}}

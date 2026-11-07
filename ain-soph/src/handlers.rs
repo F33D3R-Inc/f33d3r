@@ -298,8 +298,29 @@ pub async fn deposit(
         db::append_ledger(&mut tx, tx_id, FEE_ACCOUNT, "credit", fee).await?;
     }
 
+    crate::notifications::enqueue(
+        &mut *tx,
+        &crate::notifications::Event {
+            actor_account: None,
+            recipient_account: None,
+            event_id: format!("ain-soph:deposit:{tx_id}"),
+            recipient_pial: user_id.clone(),
+            kind: "deposit".into(),
+            target_id: tx_id.to_string(),
+            target_type: "wallet".into(),
+            payload: serde_json::json!({ "amount_aet": format_aet(net) }),
+            push_title: "Deposit received".into(),
+            push_body: format!("{} added to your wallet", format_aet(net)),
+            push_url: "/wallet".into(),
+        },
+    )
+    .await?;
+
     tx.commit().await?;
     info!(user_id = %user_id, amount = req.amount_cents, fee, net, "AET deposit completed");
+
+    // FA Live: push the updated balance immediately.
+    notify_feed_engine_balance_spawn(pool.clone(), user_id.clone());
 
     Ok(Json(TxResponse {
         transaction_id: tx_id,
@@ -378,6 +399,27 @@ pub async fn transfer(
     db::append_ledger(&mut tx, tx_id, &to_user_id, "credit", net).await?;
     if fee > 0 {
         db::append_ledger(&mut tx, tx_id, FEE_ACCOUNT, "credit", fee).await?;
+    }
+
+    // Subscriptions and purchases are announced by the brain that sold them.
+    if !matches!(req.tx_meta.as_str(), "subscription" | "ppv") {
+        crate::notifications::enqueue(
+            &mut *tx,
+            &crate::notifications::Event {
+            actor_account: None,
+            recipient_account: None,
+            event_id: format!("ain-soph:transfer:{tx_id}"),
+            recipient_pial: to_user_id.clone(),
+            kind: "payment_received".into(),
+            target_id: tx_id.to_string(),
+            target_type: "wallet".into(),
+            payload: serde_json::json!({ "amount_aet": format_aet(net) }),
+            push_title: "Payment received".into(),
+            push_body: format!("{} added to your wallet", format_aet(net)),
+            push_url: "/wallet".into(),
+        },
+        )
+        .await?;
     }
 
     tx.commit().await?;
@@ -476,6 +518,26 @@ pub async fn tip(
         db::append_ledger(&mut tx, tx_id, FEE_ACCOUNT, "credit", fee).await?;
     }
 
+    if !req.from_handle.is_empty() {
+        crate::notifications::enqueue(
+            &mut *tx,
+            &crate::notifications::Event {
+                actor_account: req.from_account.clone(),
+                recipient_account: req.to_account.clone(),
+                event_id: format!("ain-soph:tip:{tx_id}"),
+                recipient_pial: to_pial_id.clone(),
+                kind: "tip".into(),
+                target_id: req.target_id.clone(),
+                target_type: req.target_type.clone(),
+                payload: serde_json::json!({ "amount_uaet": amount_units * 10_000 }),
+                push_title: format!("@{} sent you a tip", req.from_handle),
+                push_body: format_aet(amount_units),
+                push_url: "/wallet".into(),
+            },
+        )
+        .await?;
+    }
+
     tx.commit().await?;
     info!(from = %from_pial_id, to = %to_pial_id, aet = req.amount_aet, "AET tip sent");
 
@@ -551,8 +613,29 @@ pub async fn withdraw(
         db::append_ledger(&mut tx, tx_id, FEE_ACCOUNT, "credit", fee).await?;
     }
 
+    crate::notifications::enqueue(
+        &mut *tx,
+        &crate::notifications::Event {
+            actor_account: None,
+            recipient_account: None,
+            event_id: format!("ain-soph:withdrawal:{tx_id}"),
+            recipient_pial: user_id.clone(),
+            kind: "withdrawal".into(),
+            target_id: tx_id.to_string(),
+            target_type: "wallet".into(),
+            payload: serde_json::json!({ "amount_aet": format_aet(net) }),
+            push_title: "Withdrawal completed".into(),
+            push_body: format!("{} sent from your wallet", format_aet(net)),
+            push_url: "/wallet".into(),
+        },
+    )
+    .await?;
+
     tx.commit().await?;
     info!(user_id = %user_id, amount = req.amount_cents, fee, net, "AET withdrawal completed");
+
+    // FA Live: push the updated balance immediately.
+    notify_feed_engine_balance_spawn(pool.clone(), user_id.clone());
 
     Ok(Json(TxResponse {
         transaction_id: tx_id,

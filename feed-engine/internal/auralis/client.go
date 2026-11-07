@@ -143,6 +143,7 @@ type Summary struct {
 	MaxListeners         int        `json:"max_listeners"`
 	RequestsOpen         bool       `json:"requests_open"`
 	Locked               bool       `json:"locked"`
+	ClipsEnabled         bool       `json:"clips_enabled"`
 	MediaNode            *string    `json:"media_node"`
 	CreatedAt            time.Time  `json:"created_at"`
 	UpdatedAt            time.Time  `json:"updated_at"`
@@ -172,11 +173,13 @@ type Counts struct {
 }
 
 type Speaker struct {
-	PialID   string    `json:"pial_id"`
-	Role     string    `json:"role"`
-	Muted    bool      `json:"muted"`
-	Present  bool      `json:"present"`
-	JoinedAt time.Time `json:"joined_at"`
+	PialID string `json:"pial_id"`
+	// MediaIdentity is the name this person goes by in the room's audio.
+	MediaIdentity string    `json:"media_identity"`
+	Role          string    `json:"role"`
+	Muted         bool      `json:"muted"`
+	Present       bool      `json:"present"`
+	JoinedAt      time.Time `json:"joined_at"`
 }
 
 type Request struct {
@@ -195,6 +198,8 @@ type Viewer struct {
 	Muted         bool     `json:"muted"`
 	Present       bool     `json:"present"`
 	Blocked       bool     `json:"blocked"`
+	Invited       bool     `json:"invited"`
+	Reminded      bool     `json:"reminded"`
 	Request       *Request `json:"request"`
 	CanRequestMic bool     `json:"can_request_mic"`
 	CanModerate   bool     `json:"can_moderate"`
@@ -204,6 +209,12 @@ type Viewer struct {
 }
 
 // View is the authoritative read model of one Frequency.
+// Pin is one work pinned to a room.
+type Pin struct {
+	WorkID         string `json:"work_id"`
+	PinnedByPialID string `json:"pinned_by_pial_id"`
+}
+
 type View struct {
 	Frequency      Summary   `json:"frequency"`
 	Counts         Counts    `json:"counts"`
@@ -211,26 +222,16 @@ type View struct {
 	CohostPialIDs  []string  `json:"cohost_pial_ids"`
 	Requests       []Request `json:"requests"`
 	PresentPialIDs []string  `json:"present_pial_ids"`
+	ReminderCount  int       `json:"reminder_count"`
+	Pins           []Pin     `json:"pins"`
 	LeaseNode      *string   `json:"lease_node"`
 	Viewer         *Viewer   `json:"viewer"`
 }
 
-// Session is the short-lived media bootstrap a browser gets on Tune In and
-// Start. The token is the only credential that crosses the browser boundary.
-type Session struct {
-	SessionID   string   `json:"session_id"`
-	Token       string   `json:"token"`
-	ExpiresAt   int64    `json:"expires_at"`
-	SignalPath  string   `json:"signal_path"`
-	Role        string   `json:"role"`
-	Permissions []string `json:"permissions"`
-}
-
 // Answer is what every Frequency mutation and read returns.
 type Answer struct {
-	Frequency View     `json:"frequency"`
-	Session   *Session `json:"session"`
-	Rejoined  bool     `json:"rejoined"`
+	Frequency View `json:"frequency"`
+	Rejoined  bool `json:"rejoined"`
 }
 
 type ListItem struct {
@@ -479,8 +480,21 @@ func (c *Client) RequestsOpen(ctx context.Context, pial, id string, open bool) (
 
 // ── Participant mutations ────────────────────────────────────────────────────
 
-func (c *Client) TuneIn(ctx context.Context, pial, idem, id string) (*Answer, error) {
-	return c.answer(ctx, pial, idem, "/v1/frequencies/"+seg(id)+"/tune_in", nil)
+// AudienceFacts are what this brain knows about a viewer and a host. Auralis
+// decides admission from them; they never come from a browser.
+type AudienceFacts struct {
+	FollowsHost      bool `json:"follows_host"`
+	Subscribed       bool `json:"subscribed"`
+	BlockedEitherWay bool `json:"blocked_either_way"`
+}
+
+func (c *Client) TuneIn(ctx context.Context, pial, idem, id string, facts AudienceFacts) (*Answer, error) {
+	return c.answer(ctx, pial, idem, "/v1/frequencies/"+seg(id)+"/tune_in", facts)
+}
+
+// Invite admits a person to a room that would otherwise refuse them.
+func (c *Client) Invite(ctx context.Context, pial, id, target string) (*Answer, error) {
+	return c.answer(ctx, pial, "", "/v1/frequencies/"+seg(id)+"/invites/"+seg(target), nil)
 }
 
 func (c *Client) Leave(ctx context.Context, pial, id string) (*Answer, error) {
@@ -493,6 +507,113 @@ func (c *Client) Heartbeat(ctx context.Context, pial, id string) (*HeartbeatAnsw
 		return nil, err
 	}
 	return &out, nil
+}
+
+// Pin puts a work on a room or takes it off.
+func (c *Client) Pin(ctx context.Context, pial, id, workID string, on bool) (*Answer, error) {
+	return c.answer(ctx, pial, "", "/v1/frequencies/"+seg(id)+"/pins", map[string]interface{}{"work_id": workID, "on": on})
+}
+
+// SetClipsEnabled is the host deciding whether their replay can be clipped.
+func (c *Client) SetClipsEnabled(ctx context.Context, pial, id string, on bool) (*Answer, error) {
+	return c.answer(ctx, pial, "", "/v1/frequencies/"+seg(id)+"/clips_enabled", map[string]bool{"on": on})
+}
+
+// DeleteReplay removes a room's replay for good. Host only.
+func (c *Client) DeleteReplay(ctx context.Context, pial, id string) (*Answer, error) {
+	return c.answer(ctx, pial, "", "/v1/frequencies/"+seg(id)+"/replay/delete", nil)
+}
+
+// ReplayFile names a room's replay in the replay volume. Not found means there is none.
+func (c *Client) ReplayFile(ctx context.Context, id string) (string, error) {
+	var out struct {
+		File string `json:"file"`
+	}
+	if err := c.call(ctx, http.MethodGet, "/v1/frequencies/"+seg(id)+"/replay", "", "", nil, &out); err != nil {
+		return "", err
+	}
+	return out.File, nil
+}
+
+// Remind turns this person's reminder for a scheduled room on or off.
+func (c *Client) Remind(ctx context.Context, pial, id string, on bool) (*Answer, error) {
+	return c.answer(ctx, pial, "", "/v1/frequencies/"+seg(id)+"/remind", map[string]bool{"on": on})
+}
+
+// Reminders is who asked to be told about this room, as bare PIALs.
+func (c *Client) Reminders(ctx context.Context, id string) ([]string, error) {
+	var out struct {
+		PialIDs []string `json:"pial_ids"`
+	}
+	if err := c.call(ctx, http.MethodGet, "/v1/frequencies/"+seg(id)+"/reminders", "", "", nil, &out); err != nil {
+		return nil, err
+	}
+	return out.PialIDs, nil
+}
+
+// Search finds rooms by the words of their title or description.
+func (c *Client) Search(ctx context.Context, query, viewerPIAL string, limit int) (*ListAnswer, error) {
+	var out ListAnswer
+	path := fmt.Sprintf("/v1/frequencies?lane=search&q=%s&limit=%d", url.QueryEscape(query), limit)
+	if err := c.call(ctx, http.MethodGet, path, viewerPIAL, "", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ListByHost is what one person is hosting now or has coming up.
+func (c *Client) ListByHost(ctx context.Context, hostPIAL, viewerPIAL string, limit int) (*ListAnswer, error) {
+	var out ListAnswer
+	path := fmt.Sprintf("/v1/frequencies?lane=host&host=%s&limit=%d", url.QueryEscape(hostPIAL), limit)
+	if err := c.call(ctx, http.MethodGet, path, viewerPIAL, "", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// React asks whether this person may react now. Nothing is stored.
+func (c *Client) React(ctx context.Context, pial, id string) error {
+	return c.call(ctx, http.MethodPost, "/v1/frequencies/"+seg(id)+"/react", pial, "", nil, nil)
+}
+
+// PeopleAnswer is who is listening. Blocked is empty unless the viewer moderates.
+type PeopleAnswer struct {
+	Listeners   []string `json:"listeners"`
+	Total       int      `json:"total"`
+	Blocked     []string `json:"blocked"`
+	CanModerate bool     `json:"can_moderate"`
+}
+
+func (c *Client) People(ctx context.Context, pial, id string) (*PeopleAnswer, error) {
+	var out PeopleAnswer
+	if err := c.call(ctx, http.MethodGet, "/v1/frequencies/"+seg(id)+"/people", pial, "", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// StepDown moves a speaker back to the audience by their own choice.
+func (c *Client) StepDown(ctx context.Context, pial, id string) (*Answer, error) {
+	return c.answer(ctx, pial, "", "/v1/frequencies/"+seg(id)+"/step_down", nil)
+}
+
+func (c *Client) Promote(ctx context.Context, pial, id, targetPIAL string) (*Answer, error) {
+	return c.participant(ctx, pial, id, targetPIAL, "promote", nil)
+}
+
+func (c *Client) TransferHost(ctx context.Context, pial, id, targetPIAL string) (*Answer, error) {
+	return c.participant(ctx, pial, id, targetPIAL, "transfer", nil)
+}
+
+// MediaToken is a LiveKit join token for this person's current standing.
+func (c *Client) MediaToken(ctx context.Context, pial, id string) (string, error) {
+	var out struct {
+		Token string `json:"token"`
+	}
+	if err := c.call(ctx, http.MethodPost, "/v1/frequencies/"+seg(id)+"/media_token", pial, "", nil, &out); err != nil {
+		return "", err
+	}
+	return out.Token, nil
 }
 
 // RequestMic: reason is the one line the host reads; verityTier is what

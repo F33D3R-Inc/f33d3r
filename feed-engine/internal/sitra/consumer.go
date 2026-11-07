@@ -5,14 +5,14 @@
 // re-render Facets and push them over FA Live. Two properties decide the
 // shape of this consumer:
 //
-//   - Every Nantar replica must see every event, because an SSE session lives
-//     on exactly one replica and only that replica can push to it. So the
-//     consumer group is per instance (nantar-frequency-<hostname>), not a
-//     shared group that would split the topic between replicas.
-//   - A fresh replica starts at the END of the topic. History is a Frequency's
+//   - The group is shared. One replica owns each partition and renders that
+//     partition's rooms, and FA Live relays what it publishes to the connections
+//     held by other replicas. A group per replica would render every room once
+//     per replica and deliver each Fragment that many times.
+//   - A new group starts at the END of the topic. History is a Frequency's
 //     durable state in Auralis, which Nantar reads on demand; replaying old
 //     events into fresh SSE sessions would render stale mutations over current
-//     state. A replica that restarts resumes from its committed offset.
+//     state. A restarted group resumes from its committed offset.
 //
 // Offsets are committed only after onEvent has returned, so a crash mid-render
 // redelivers. Redelivery is harmless because every event id is deduplicated
@@ -23,13 +23,10 @@ package sitra
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
-	"os"
 	"sync"
 	"time"
 
@@ -204,16 +201,11 @@ func handleRecord(ctx context.Context, rec *kgo.Record, seen *dedup, onEvent fun
 
 // ── consumer ─────────────────────────────────────────────────────────────────
 
-func groupName() string {
-	if h, err := os.Hostname(); err == nil && h != "" {
-		return "nantar-frequency-" + h
-	}
-	var b [6]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "nantar-frequency-" + fmt.Sprint(time.Now().UnixNano())
-	}
-	return "nantar-frequency-" + hex.EncodeToString(b[:])
-}
+// frequencyGroup is shared by every replica. One replica owns each partition, so
+// one replica renders each room, and FA Live relays its output to the others.
+const frequencyGroup = "nantar-frequency"
+
+func groupName() string { return frequencyGroup }
 
 // StartFrequencyConsumer subscribes to topic frequency.events and calls
 // onEvent for each new event, in per-Frequency order. Returns a stop func that
@@ -311,8 +303,7 @@ func StartFrequencyConsumer(ctx context.Context, brokers string, onEvent func(ct
 			case <-time.After(5 * time.Second):
 				log.Printf("[sitra] frequency consumer did not stop within 5s; closing client anyway")
 			}
-			// Leaving the group promptly hands its partition to no one — it is
-			// a per-instance group — but it does let the broker forget us.
+			// Leaving promptly hands this replica's partitions to the others.
 			leaveCtx, leaveCancel := context.WithTimeout(context.Background(), 3*time.Second)
 			if err := client.LeaveGroupContext(leaveCtx); err != nil {
 				log.Printf("[sitra] frequency consumer leave group: %v", err)

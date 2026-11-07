@@ -30,7 +30,7 @@ func TestHeadersAndDecoding(t *testing.T) {
 	defer srv.Close()
 	c := New(srv.URL, "s3cret", time.Second)
 
-	ans, err := c.TuneIn(context.Background(), "x", "idem-1", "f1")
+	ans, err := c.TuneIn(context.Background(), "x", "idem-1", "f1", AudienceFacts{})
 	if err != nil {
 		t.Fatalf("tune in: %v", err)
 	}
@@ -58,9 +58,6 @@ func TestHeadersAndDecoding(t *testing.T) {
 	}
 	if ans.Frequency.Viewer == nil || ans.Frequency.Viewer.Role == nil || *ans.Frequency.Viewer.Role != "listener" || !ans.Frequency.Viewer.CanRequestMic {
 		t.Fatalf("viewer: %+v", ans.Frequency.Viewer)
-	}
-	if ans.Session == nil || ans.Session.Token != "abc.def" || ans.Session.Permissions[0] != "subscribe" {
-		t.Fatalf("session: %+v", ans.Session)
 	}
 }
 

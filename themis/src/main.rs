@@ -1,3 +1,4 @@
+mod notifications;
 mod cek;
 mod clients;
 mod config;
@@ -14,11 +15,8 @@ use axum::{
     routing::{delete, get, post, put},
     Router,
 };
-use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tracing::info;
-use watcher::{WatchMap, XrpWatchMap};
 
 pub struct AppState {
     pub pool: sqlx::PgPool,
@@ -29,8 +27,6 @@ pub struct AppState {
     pub manhattan: manhattan_client::Manhattan,
     pub themis_privkey: p256::SecretKey,
     pub themis_pubkey_b64: String,
-    pub watch_map: WatchMap,
-    pub xrp_watch_map: XrpWatchMap,
 }
 
 #[tokio::main]
@@ -40,6 +36,7 @@ async fn main() -> anyhow::Result<()> {
     observ::init("themis")?;
     let cfg = config::Config::from_env();
     let pool = sqlx::PgPool::connect(&cfg.database_url).await?;
+    notification_outbox::spawn(cfg.database_url.clone());
     db::migrate(&pool).await?;
     info!("Themis schema up to date");
 
@@ -56,8 +53,6 @@ async fn main() -> anyhow::Result<()> {
         info!("Manhattan naming plane configured");
     }
 
-    let watch_map: WatchMap = Arc::new(Mutex::new(HashMap::new()));
-    let xrp_watch_map: XrpWatchMap = Arc::new(Mutex::new(HashMap::new()));
 
     let state = Arc::new(AppState {
         pool,
@@ -66,13 +61,12 @@ async fn main() -> anyhow::Result<()> {
         manhattan: manhattan.clone(),
         themis_privkey: privkey,
         themis_pubkey_b64: pubkey_b64,
-        watch_map: watch_map.clone(),
-        xrp_watch_map: xrp_watch_map.clone(),
     });
 
     tokio::spawn(manhattan_outbox::run_drain(state.cfg.database_url.clone(), manhattan));
-    tokio::spawn(watcher::run_watcher(state.clone(), watch_map));
-    tokio::spawn(watcher::run_xrp_watcher(state.clone(), xrp_watch_map));
+    tokio::spawn(watcher::run_btc_watcher(state.clone()));
+    tokio::spawn(watcher::run_xrp_watcher(state.clone()));
+    tokio::spawn(watcher::run_delivery_retry(state.clone()));
 
     let app = Router::new()
         // ── Core health / metrics ───────────────────────────────────────────

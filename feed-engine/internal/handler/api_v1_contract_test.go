@@ -274,8 +274,8 @@ func TestAPIV1_SwiftModelKeys(t *testing.T) {
 		// Frequencies — the live audio rooms. The Swift side is
 		// Models/Frequency.swift; FrequencyDraft is a request struct with no
 		// DTO behind it and is deliberately absent from this list.
-		{"Frequency", &FrequencySummaryDTO{}},
-		{"FrequencyParticipant", &FrequencyParticipantDTO{}},
+		{"Frequency", &FrequencyDTO{}},
+		{"FrequencyParticipant", &FrequencySpeakerDTO{}},
 		{"FrequencyRequest", &FrequencyRequestDTO{}},
 		{"FrequencyViewer", &FrequencyViewerDTO{}},
 		{"FrequencyRoom", &FrequencyRoomDTO{}},

@@ -138,9 +138,6 @@ func TestAPIV1FrequencyRoomHidesQueueFromListenerShowsHost(t *testing.T) {
 	if room.Viewer.Role == nil || *room.Viewer.Role != "listener" || !room.Viewer.InFrequency || room.Viewer.CanModerate {
 		t.Fatalf("listener standing wrong: %+v", room.Viewer)
 	}
-	if room.Session != nil {
-		t.Fatal("a GET must not mint a session")
-	}
 	if len(room.Speakers) != 1 || room.Speakers[0].Role != "host" || room.Speakers[0].Author.Handle == "" && room.Speakers[0].Author.DisplayName != "" {
 		t.Fatalf("speakers wrong: %+v", room.Speakers)
 	}
@@ -182,9 +179,6 @@ func TestAPIV1FrequencyNativeTuneInReturnsSession(t *testing.T) {
 	var room FrequencyRoomDTO
 	if err := json.Unmarshal(w.Body.Bytes(), &room); err != nil {
 		t.Fatalf("decode: %v: %s", err, w.Body.String())
-	}
-	if room.Session == nil || room.Session.Token != "abc.def" || room.Session.SignalPath != "/frequencies/signal/"+freqTestID || len(room.Session.Permissions) != 1 {
-		t.Fatalf("session missing from native tune in: %s", w.Body.String())
 	}
 	if room.Frequency.ID != freqTestID || !room.Viewer.InFrequency {
 		t.Fatalf("room wrong: %s", w.Body.String())

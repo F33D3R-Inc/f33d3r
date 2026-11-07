@@ -337,7 +337,6 @@ func (h *Handler) sendToPerson(w http.ResponseWriter, r *http.Request, user *mod
 		return
 	}
 	// The one notification pipeline, reached the one way.
-	h.notifyContactRequest(user, outcome)
 
 	if state := contactGateState(outcome.Decision); state != "" {
 		h.gateProspect(w, user, target, pending, state)
@@ -405,7 +404,7 @@ func (h *Handler) deliverPending(user *model.User, convoID string, pending gnosi
 	if convo.Mode == gnosis.ModeSealed {
 		return false
 	}
-	msg, err := gnosis.InsertPlainMessage(h.db, convoID, user.ID, pending.Body)
+	msg, err := gnosis.InsertPlainMessage(h.db, convoID, user.ID, pending.Body, dbpkg.MessageAlerts(convoID, user.ID))
 	if err != nil {
 		log.Printf("[gnosis] delivering a held message into %s: %v", convoID, err)
 		return false
@@ -607,7 +606,7 @@ func (h *Handler) sendIntoConversation(user *model.User, convoID, body string) (
 	if h.undeliverableTo(user, convo) {
 		return gnosis.Message{}, http.StatusForbidden, sendNotDelivered
 	}
-	msg, err := gnosis.InsertPlainMessage(h.db, convoID, user.ID, body)
+	msg, err := gnosis.InsertPlainMessage(h.db, convoID, user.ID, body, dbpkg.MessageAlerts(convoID, user.ID))
 	if err != nil {
 		log.Printf("[gnosis] writing into %s: %v", convoID, err)
 		return gnosis.Message{}, http.StatusInternalServerError, "send failed"
@@ -806,7 +805,6 @@ func (h *Handler) handleGateNumber(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The one notification pipeline, reached the one way.
-	h.notifyContactRequest(user, outcome)
 
 	if state := contactGateState(outcome.Decision); state != "" {
 		gate(state)

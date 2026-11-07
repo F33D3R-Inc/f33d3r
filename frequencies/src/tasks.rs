@@ -7,13 +7,17 @@
 use std::time::Duration;
 
 use metrics::{counter, gauge};
+use serde_json::json;
 use tracing::{error, info, warn};
 
 use crate::api::ops::{self, Cause};
+use crate::domain::lifecycle;
 use crate::domain::permissions::{self, HostLossOutcome, Reconcile};
 use crate::domain::{FrequencyRole, FrequencyState};
 use crate::error::Result;
-use crate::repository::postgres as pg;
+use crate::events::EventType;
+use crate::herald;
+use crate::repository::postgres::{self as pg, Patch};
 use crate::state::AppState;
 use crate::telemetry::metrics as m;
 
@@ -71,7 +75,67 @@ pub async fn reconcile_on_boot(s: &AppState) -> Result<()> {
 pub fn spawn_all(s: AppState) {
     tokio::spawn(presence_loop(s.clone()));
     tokio::spawn(lease_loop(s.clone()));
+    tokio::spawn(schedule_loop(s.clone()));
     tokio::spawn(prune_loop(s));
+}
+
+const SCHEDULE_TICK: Duration = Duration::from_secs(30);
+/// How long before the time a reminder holder is told it is coming.
+const REMINDER_LEAD_SECS: i64 = 15 * 60;
+/// A room nobody started by now is not going to happen.
+const MISSED_AFTER_SECS: i64 = 24 * 60 * 60;
+
+async fn schedule_loop(s: AppState) {
+    let mut tick = tokio::time::interval(SCHEDULE_TICK);
+    loop {
+        tick.tick().await;
+        if let Err(e) = schedule_sweep(&s).await {
+            error!(error = %e, "schedule sweep failed");
+        }
+    }
+}
+
+/// Moves scheduled rooms along: the reminder, the host's nudge, and closing a room
+/// that was never started. Each commits its mark with what it owes, so a crash or a
+/// second node neither loses a notice nor repeats it.
+pub async fn schedule_sweep(s: &AppState) -> Result<()> {
+    let cause = Cause::service("schedule-sweep");
+    let mut tx = s.pool.begin().await?;
+    for id in pg::take_soon(&mut tx, REMINDER_LEAD_SECS).await? {
+        pg::insert_event(&mut tx, &cause.event(id, EventType::RemindersDue, json!({}))).await?;
+    }
+    for (id, host, title) in pg::take_start_due(&mut tx).await? {
+        herald::notify(
+            &mut tx,
+            &host,
+            herald::KIND_HOST_START,
+            &id.to_string(),
+            &format!("Time to start {title}"),
+            "Your Frequency is scheduled for now. People are waiting.",
+            &format!("/frequencies/{id}"),
+        )
+        .await?;
+    }
+    tx.commit().await?;
+
+    for id in pg::list_missed(&s.pool, MISSED_AFTER_SECS).await? {
+        let closed = ops::cas_tx(s, id, "miss", |f| {
+            lifecycle::transition(f.state, FrequencyState::Cancelled)?;
+            let mut p = Patch::state(FrequencyState::Cancelled);
+            p.ended_at = Some(Some(chrono::Utc::now()));
+            p.end_reason = Some(Some("missed".into()));
+            Ok(p)
+        })
+        .await;
+        match closed {
+            Ok((mut tx, f)) => {
+                pg::insert_event(&mut tx, &cause.event(f.id, EventType::Cancelled, json!({ "reason": "missed" }))).await?;
+                tx.commit().await?;
+            }
+            Err(e) => warn!(frequency_id = %id, error = %e, "closing a missed frequency"),
+        }
+    }
+    Ok(())
 }
 
 async fn presence_loop(s: AppState) {
@@ -81,7 +145,38 @@ async fn presence_loop(s: AppState) {
         if let Err(e) = presence_sweep(&s).await {
             error!(error = %e, "presence sweep failed");
         }
+        if let Err(e) = repair_stuck(&s).await {
+            error!(error = %e, "repairing stuck frequencies failed");
+        }
     }
+}
+
+/// A row left in `starting` or `ending` blocks its host from starting again, so
+/// it cannot wait for the next restart.
+pub async fn repair_stuck(s: &AppState) -> Result<()> {
+    let now = chrono::Utc::now();
+    let cause = Cause::service("stuck-repair");
+    for f in pg::list_open(&s.pool).await? {
+        let age = (now - f.updated_at).to_std().unwrap_or_default();
+        match permissions::reconcile_while_running(f.state, age, s.config.starting_timeout) {
+            Reconcile::FailStarting => {
+                warn!(frequency_id = %f.id, "failing a frequency stuck in starting");
+                ops::fail_starting(s, &f, &cause, "starting_timeout").await?;
+            }
+            Reconcile::CompleteEnding => {
+                warn!(frequency_id = %f.id, "completing a frequency stuck in ending");
+                ops::complete_ending(
+                    s,
+                    &f,
+                    &cause,
+                    f.end_reason.as_deref().unwrap_or("host_ended"),
+                )
+                .await?;
+            }
+            Reconcile::Leave => {}
+        }
+    }
+    Ok(())
 }
 
 /// One sweep (§26, §27). For every live Frequency: anyone whose presence key
@@ -157,7 +252,24 @@ pub async fn presence_sweep(s: &AppState) -> Result<()> {
             match permissions::on_host_absent(absent_for, s.config.host_grace, cohost_present) {
                 HostLossOutcome::KeepWaiting => {}
                 HostLossOutcome::ContinueUnderCoHost => {
-                    counter!(m::HOST_LOSS_TOTAL, "outcome" => "cohost_continues").increment(1);
+                    // The longest-serving co-host here takes over, so the room
+                    // always has someone who can run and end it.
+                    let mut taken = false;
+                    for (p, present) in joined.iter().zip(alive.iter().copied()) {
+                        if present && p.role == FrequencyRole::CoHost {
+                            if ops::transfer_host(s, f, &p.pial, &cause).await?.is_some() {
+                                taken = true;
+                                break;
+                            }
+                        }
+                    }
+                    if taken {
+                        counter!(m::HOST_LOSS_TOTAL, "outcome" => "cohost_continues").increment(1);
+                    } else {
+                        warn!(frequency_id = %f.id, "no co-host could take over; ending frequency");
+                        counter!(m::HOST_LOSS_TOTAL, "outcome" => "ended").increment(1);
+                        ops::end(s, f.id, &cause, "host_lost", FrequencyState::Ended).await?;
+                    }
                 }
                 HostLossOutcome::EndFrequency => {
                     warn!(frequency_id = %f.id, absent_secs = absent_for.as_secs(), "host lost; ending frequency");

@@ -1,3 +1,4 @@
+mod notifications;
 mod auth;
 mod db;
 mod error;
@@ -53,6 +54,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Registrations are queued transactionally by trigger; this delivers them.
     manhattan_outbox::start_drain(database_url.clone(), manhattan.clone());
+    notification_outbox::spawn(database_url.clone());
 
     let state = AppState {
         pool,

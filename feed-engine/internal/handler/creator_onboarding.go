@@ -237,13 +237,13 @@ func (h *Handler) handleCreatorSetupComplete(w http.ResponseWriter, r *http.Requ
 	// ── 6. SSE: push welcome banner to the user's live session ─────────────────
 
 	if user.PIALID != "" {
-		bannerHTML := `<div class="creator-welcome-banner" role="status">` +
+		facetID := "facet:f33d3r:toast:" + user.ID + ":creator_welcome"
+		bannerHTML := `<div class="creator-welcome-banner" role="status" data-expires-ms="6000" data-facet-id="` + facetID + `">` +
 			`<span class="creator-welcome-banner-icon">🎉</span>` +
 			`<span class="creator-welcome-banner-text">Creator profile set up! Welcome to the studio.</span>` +
 			`</div>`
-		PublishToUser(user.PIALID, SSEEvent{
-			Type: "creator_welcome_banner",
-			Data: bannerHTML,
+		PublishFacetToUser(user.PIALID, FacetMutation{
+			FacetID: facetID, Fragment: bannerHTML, Mode: FacetPrepend, ParentFacetID: toastsFacetID,
 		})
 	}
 

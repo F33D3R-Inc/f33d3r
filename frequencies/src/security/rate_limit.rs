@@ -47,6 +47,16 @@ pub const UPVOTE: Limit = Limit {
     max: 30,
     window: Duration::from_secs(60),
 };
+pub const REMIND: Limit = Limit {
+    scope: "remind",
+    max: 60,
+    window: Duration::from_secs(60),
+};
+pub const REACT: Limit = Limit {
+    scope: "react",
+    max: 30,
+    window: Duration::from_secs(60),
+};
 pub const MODERATION: Limit = Limit {
     scope: "moderation",
     max: 120,

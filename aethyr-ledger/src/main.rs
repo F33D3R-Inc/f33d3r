@@ -1,3 +1,4 @@
+mod notifications;
 mod db;
 mod manhattan_outbox;
 mod models;
@@ -104,6 +105,7 @@ async fn main() -> anyhow::Result<()> {
     let port = std::env::var("PORT").unwrap_or_else(|_| "8096".into());
 
     let pool = sqlx::PgPool::connect(&database_url).await?;
+    notification_outbox::spawn(database_url.clone());
     db::migrate(&pool).await?;
     info!("Aethyr Ledger schema up to date");
 
@@ -333,9 +335,11 @@ async fn fund_wallet(
         aet_to_mint,
         "PURCHASE",
         json!({ "rail": req.rail, "funding_id": funding_id, "fiat_cents": req.fiat_amount }),
+        ledger_notice(format!("ledger:fund:{funding_id}"), req.pial_id, "wallet_funded", "Wallet funded", gross_credit),
     )
     .await
     .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, &e))?;
+
 
     let new_balance = db::get_balance(&state.pool, req.pial_id).await;
 
@@ -480,6 +484,13 @@ async fn transfer(
     .await
     .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()))?;
 
+    if req.event_type == "TRANSFER" {
+        let notice = ledger_notice(format!("ledger:transfer:{}", row.id), req.to_pial, "payment_received", "Payment received", req.amount_uaet);
+        notifications::enqueue(&mut *tx, &notice)
+            .await
+            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()))?;
+    }
+
     tx.commit()
         .await
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()))?;
@@ -509,6 +520,7 @@ async fn relay_reward(
         req.amount_uaet,
         "RELAY_REWARD",
         req.metadata.clone().unwrap_or(json!({})),
+        ledger_notice(format!("ledger:reward:{}", Uuid::new_v4()), req.node_pial, "relay_reward", "Relay reward earned", req.amount_uaet),
     )
     .await
     .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, &e))?;
@@ -522,6 +534,7 @@ async fn relay_reward(
     .fetch_one(&state.pool)
     .await
     .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()))?;
+
 
     Ok(Json(to_event_resp(&row)))
 }
@@ -614,6 +627,7 @@ async fn admin_mint(
         req.amount_uaet,
         "MINT",
         json!({ "reason": req.reason, "admin": req.admin_id }),
+        ledger_notice(format!("ledger:mint:{}", Uuid::new_v4()), req.to_pial, "wallet_funded", "AET added to your wallet", req.amount_uaet),
     )
     .await
     .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, &e))?;
@@ -626,6 +640,7 @@ async fn admin_mint(
     .fetch_one(&state.pool)
     .await
     .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()))?;
+
 
     Ok(Json(to_event_resp(&row)))
 }
@@ -873,6 +888,7 @@ async fn mint_internal(
     amount: i64,
     event_type: &str,
     metadata: serde_json::Value,
+    notice: notifications::Event,
 ) -> Result<(), String> {
     let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
 
@@ -914,6 +930,10 @@ async fn mint_internal(
     .await
     .map_err(|e| e.to_string())?;
 
+    notifications::enqueue(&mut *tx, &notice)
+        .await
+        .map_err(|e| e.to_string())?;
+
     tx.commit().await.map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -944,5 +964,24 @@ fn to_block_resp(r: &BlockRow) -> BlockResp {
         total_volume: r.total_volume,
         fee_collected: r.fee_collected,
         sealed_at: r.sealed_at,
+    }
+}
+
+/// What a person is told when their ledger balance moves. It is written in the same
+/// transaction as the move.
+fn ledger_notice(event_id: String, pial: Uuid, kind: &str, title: &str, amount_uaet: i64) -> notifications::Event {
+    let aet = format!("{:.2} AET", amount_uaet as f64 / 1_000_000.0);
+    notifications::Event {
+        actor_account: None,
+        recipient_account: None,
+        event_id,
+        recipient_pial: pial.to_string(),
+        kind: kind.into(),
+        target_id: String::new(),
+        target_type: "wallet".into(),
+        payload: json!({ "amount_aet": aet }),
+        push_title: title.into(),
+        push_body: format!("{aet} added to your wallet"),
+        push_url: "/wallet".into(),
     }
 }

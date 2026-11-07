@@ -1,9 +1,11 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/f33d3r/feed-engine/internal/herald"
 	"log"
 	"regexp"
 	"strings"
@@ -119,8 +121,14 @@ func InsertWork(
 		VideoMasterURL: videoMasterURL,
 	})
 
+	tx, err := db.Begin()
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+
 	var workID string
-	err := db.QueryRow(`
+	err = tx.QueryRow(`
 		INSERT INTO works (
 			cid, author_id, author_pial, body, kind, media_urls,
 			tags, poll_options, poll_ends_at, scheduled_at,
@@ -157,51 +165,45 @@ func InsertWork(
 		return "", err
 	}
 
-	if parentCID != "" {
+	for _, citation := range []struct{ cid, kind string }{{parentCID, "reply"}, {quotedCID, "quote"}} {
+		if citation.cid == "" {
+			continue
+		}
 		var targetID string
-		err := db.QueryRow(`SELECT id FROM works WHERE cid = $1`, parentCID).Scan(&targetID)
+		err := tx.QueryRow(`SELECT id FROM works WHERE cid = $1`, citation.cid).Scan(&targetID)
+		if err == sql.ErrNoRows {
+			continue // the cited work does not exist, so there is no citation to record
+		}
 		if err != nil {
-			if err != sql.ErrNoRows {
-				log.Printf("works: resolving parentCID %q: %v", parentCID, err)
-			}
-			// citation skipped — parent not found
-		} else {
-			// root_id and depth are materialized by the database (trigger
-			// work_citations_materialize), so the chain this reply joins is
-			// recorded on the edge itself and never has to be walked to be known.
-			// ON CONFLICT makes a re-delivered create idempotent instead of an error.
-			// No counter is bumped here: reply totals are counted from these rows.
-			_, err = db.Exec(`
-				INSERT INTO work_citations (work_id, target_id, citation_type)
-				VALUES ($1::uuid, $2::uuid, 'reply')
-				ON CONFLICT (work_id, target_id, citation_type) DO NOTHING
-			`, workID, targetID)
-			if err != nil {
-				log.Printf("works: inserting reply citation for work %s: %v", workID, err)
-			}
+			return "", fmt.Errorf("resolving %s citation %q: %w", citation.kind, citation.cid, err)
+		}
+		// root_id and depth are materialized by the database (trigger
+		// work_citations_materialize), so the chain this reply joins is
+		// recorded on the edge itself and never has to be walked to be known.
+		// ON CONFLICT makes a re-delivered create idempotent instead of an error.
+		// No counter is bumped here: reply totals are counted from these rows.
+		if _, err := tx.Exec(`
+			INSERT INTO work_citations (work_id, target_id, citation_type)
+			VALUES ($1::uuid, $2::uuid, $3)
+			ON CONFLICT (work_id, target_id, citation_type) DO NOTHING
+		`, workID, targetID, citation.kind); err != nil {
+			return "", fmt.Errorf("recording %s citation for work %s: %w", citation.kind, workID, err)
 		}
 	}
 
-	if quotedCID != "" {
-		var targetID string
-		err := db.QueryRow(`SELECT id FROM works WHERE cid = $1`, quotedCID).Scan(&targetID)
-		if err != nil {
-			if err != sql.ErrNoRows {
-				log.Printf("works: resolving quotedCID %q: %v", quotedCID, err)
-			}
-			// citation skipped — quoted work not found
-		} else {
-			_, err = db.Exec(`
-				INSERT INTO work_citations (work_id, target_id, citation_type)
-				VALUES ($1::uuid, $2::uuid, 'quote')
-				ON CONFLICT (work_id, target_id, citation_type) DO NOTHING
-			`, workID, targetID)
-			if err != nil {
-				log.Printf("works: inserting quote citation for work %s: %v", workID, err)
-			}
+	// The people this work replies to, quotes or names are owed a notification, and
+	// working out who needs the naming plane. The debt commits with the work.
+	if parentCID != "" || quotedCID != "" || strings.Contains(body, "@") {
+		if _, err := tx.Exec(`
+			INSERT INTO notification_work_jobs (work_id, next_attempt_at)
+			VALUES ($1::uuid, COALESCE($2::timestamptz, NOW()))`, workID, scheduledAt); err != nil {
+			return "", fmt.Errorf("queueing notifications for work %s: %w", workID, err)
 		}
 	}
 
+	if err := tx.Commit(); err != nil {
+		return "", err
+	}
 	return workID, nil
 }
 
@@ -704,11 +706,9 @@ var purgeOrphanStatements = []struct {
 	},
 	// ── rows that name the person to OTHER accounts ───────────────────────────
 	{
-		"notifications on other people's timelines that name this account, whether as the actor or as the subject a system message was written about",
+		"notifications this account still owes to Herald; Herald's own rows are purged separately",
 		scopeAccount,
-		`DELETE FROM notifications
-		  WHERE actor_id = $1::uuid
-		     OR (target_type = 'user' AND target_id = $1::text)`,
+		`DELETE FROM notification_outbox WHERE recipient_account = $1::uuid`,
 	},
 	{
 		"another account's XP ledger row for following this one. The reference is released rather than the row deleted: the XP was genuinely earned by somebody who is not being erased, and users.xp is a separate counter, so removing the event would put the ledger and the total permanently out of step",
@@ -824,6 +824,14 @@ var purgeOrphanStatements = []struct {
 // Manhattan while both PIALs are still readable. Deleting the rows here first
 // would produce the same end state by a path neither trigger was written for.
 func PurgeUser(db *sql.DB, userID, pialID string) error {
+	// Herald holds this account's notifications and every row naming it to others.
+	// A failure stops the purge, because a purge that left them would not be one.
+	heraldCtx, heraldCancel := context.WithTimeout(context.Background(), heraldTimeout)
+	defer heraldCancel()
+	if err := herald.Purge(heraldCtx, userID); err != nil {
+		return fmt.Errorf("purging notifications: %w", err)
+	}
+
 	tx, err := db.Begin()
 	if err != nil {
 		return fmt.Errorf("purge %s: begin: %w", userID, err)

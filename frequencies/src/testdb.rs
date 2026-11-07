@@ -13,7 +13,7 @@
 //! skipped and pass; they never fake a database. Same convention as
 //! Manhattan's `MANHATTAN_TEST_DATABASE_URL`.
 //!
-//!     AURALIS_TEST_DATABASE_URL=postgres://f33d3r:REMOVED_DEV_PASSWORD@localhost:5432/postgres \
+//!     AURALIS_TEST_DATABASE_URL=postgres://f33d3r:$POSTGRES_PASSWORD@localhost:5432/postgres \
 //!         cargo test
 //!
 //! A test that panics leaves its database behind. They are all named

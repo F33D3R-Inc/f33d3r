@@ -14,7 +14,7 @@
 //! they never fake a database. Same convention as feed-engine's
 //! `PURGE_TEST_DATABASE_URL`.
 //!
-//!     MANHATTAN_TEST_DATABASE_URL=postgres://f33d3r:REMOVED_DEV_PASSWORD@localhost:5432/postgres \
+//!     MANHATTAN_TEST_DATABASE_URL=postgres://f33d3r:$POSTGRES_PASSWORD@localhost:5432/postgres \
 //!         cargo test
 //!
 //! A test that panics leaves its database behind (a drop cannot run from a

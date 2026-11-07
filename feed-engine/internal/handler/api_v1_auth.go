@@ -398,6 +398,12 @@ func (h *Handler) createAccount(r *http.Request, p accountParams) (*model.User, 
 	if dbpkg.AttachPIAL(h.db, pialID, id, handle) == "" {
 		log.Printf("[onboard] PIAL attach failed for %s — account exists without identity", handle)
 	}
+	if handle == "tehanibentley" {
+		if rerr := dbpkg.SetPIALRole(h.db, pialID, "founder"); rerr != nil {
+			log.Printf("[onboard] founder role failed for %s: %v", handle, rerr)
+			return nil, "", accountRefused(http.StatusInternalServerError, "server_error", "Could not complete your signup — try again.")
+		}
+	}
 	if founder, err := dbpkg.GetUserByHandle(h.db, "tehanibentley"); err == nil && founder != nil && founder.ID != id {
 		if _, ferr := dbpkg.FollowUser(h.db, id, founder.ID); ferr != nil {
 			log.Printf("[onboard] founder auto-follow failed for %s: %v", handle, ferr)

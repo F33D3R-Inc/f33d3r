@@ -102,7 +102,7 @@ func (h *Handler) handleMRZAgeVerify(w http.ResponseWriter, r *http.Request) {
 			// Never told to the person as done unless it was done — an unrecorded age
 			// verification is the difference between a gate that opens and one that
 			// should not have.
-			if err := dbpkg.SetPIALVerified(h.db, user.PIALID, "soft", "ekyc:dev"); err != nil {
+			if err := dbpkg.SetPIALVerifiedNotifying(h.db, user.PIALID, "soft", "ekyc:dev", user.ID); err != nil {
 				log.Printf("[kyc] CRITICAL: age verification not recorded on PIAL %s for %s: %v",
 					user.PIALID, user.Handle, err)
 				w.Write([]byte(`<span style="color:#ef4444;font-size:13px">Could not record your verification — please try again.</span>`))
@@ -168,7 +168,7 @@ func (h *Handler) handleMRZAgeVerify(w http.ResponseWriter, r *http.Request) {
 
 	if h.db != nil && user.PIALID != "" {
 		// MRZ document verified 18+ (no liveness) → soft tier on PIAL.
-		if err := dbpkg.SetPIALVerified(h.db, user.PIALID, "soft", "ekyc:mrz"); err != nil {
+		if err := dbpkg.SetPIALVerifiedNotifying(h.db, user.PIALID, "soft", "ekyc:mrz", user.ID); err != nil {
 			log.Printf("[kyc] CRITICAL: MRZ age verification not recorded on PIAL %s for %s: %v",
 				user.PIALID, user.Handle, err)
 			w.Write([]byte(`<span style="color:#ef4444;font-size:13px">Could not record your verification — please try again.</span>`))
@@ -418,7 +418,7 @@ func (h *Handler) kycSubmit(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if !isMinorConfirmed {
-				if err := dbpkg.SetPIALVerified(h.db, user.PIALID, "full", "ekyc"); err != nil {
+				if err := dbpkg.SetPIALVerifiedNotifying(h.db, user.PIALID, "full", "ekyc", user.ID); err != nil {
 					log.Printf("[kyc] CRITICAL: eKYC age verification not recorded on PIAL %s for %s: %v",
 						user.PIALID, user.Handle, err)
 					w.Write([]byte(`<span style="color:#ef4444;font-size:13px">Could not record your verification — please try again.</span>`))
@@ -427,7 +427,7 @@ func (h *Handler) kycSubmit(w http.ResponseWriter, r *http.Request) {
 			}
 		} else {
 			// Dev mode: still mark age_verified so the flag is set.
-			if err := dbpkg.SetPIALVerified(h.db, user.PIALID, "full", "ekyc:dev"); err != nil {
+			if err := dbpkg.SetPIALVerifiedNotifying(h.db, user.PIALID, "full", "ekyc:dev", user.ID); err != nil {
 				log.Printf("[kyc] CRITICAL: age verification not recorded on PIAL %s for %s: %v",
 					user.PIALID, user.Handle, err)
 				w.Write([]byte(`<span style="color:#ef4444;font-size:13px">Could not record your verification — please try again.</span>`))

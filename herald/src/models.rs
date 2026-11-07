@@ -32,6 +32,8 @@ pub struct NotificationPreferences {
     pub achievements_enabled: bool,
     pub mentions_enabled: bool,
     pub frequencies_enabled: bool,
+    pub tips_enabled: bool,
+    pub subscribers_enabled: bool,
     pub quiet_hours_enabled: bool,
     pub quiet_hours_start: i16,
     pub quiet_hours_end: i16,
@@ -76,6 +78,8 @@ pub struct NotifyRequest {
     pub body: String,
     pub icon_url: Option<String>,
     pub action_url: Option<String>,
+    #[serde(default)]
+    pub notification_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -89,6 +93,8 @@ pub struct UpdatePreferencesRequest {
     pub achievements_enabled: Option<bool>,
     pub mentions_enabled: Option<bool>,
     pub frequencies_enabled: Option<bool>,
+    pub tips_enabled: Option<bool>,
+    pub subscribers_enabled: Option<bool>,
     pub quiet_hours_enabled: Option<bool>,
     pub quiet_hours_start: Option<i16>,
     pub quiet_hours_end: Option<i16>,

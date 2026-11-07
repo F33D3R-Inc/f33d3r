@@ -503,6 +503,7 @@ pub async fn award_achievement(
     pool: &PgPool,
     identity_name: &str,
     achievement_id: &str,
+    notice: impl FnOnce(i32) -> crate::notifications::Event,
 ) -> Result<AwardOutcome> {
     let mut tx = pool.begin().await?;
 
@@ -538,6 +539,8 @@ pub async fn award_achievement(
         "INSERT INTO user_xp (identity_name, total_xp, current_tier) VALUES ($1, $2, 'Civilian') \
          ON CONFLICT (identity_name) DO UPDATE SET total_xp = user_xp.total_xp + $2, updated_at = NOW()"
     ).bind(identity_name).bind(xp).execute(&mut *tx).await?;
+
+    crate::notifications::enqueue(&mut *tx, &notice(xp)).await?;
 
     tx.commit().await?;
     Ok(AwardOutcome::Awarded(xp))

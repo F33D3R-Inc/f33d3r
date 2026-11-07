@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/f33d3r/feed-engine/internal/gnosis"
+	dbpkg "github.com/f33d3r/feed-engine/internal/db"
 )
 
 // Sealed-mode endpoints. The server is a blind relay here: it stores and routes
@@ -208,7 +209,7 @@ func (h *Handler) gnosisSendSealed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	msg, err := gnosis.InsertSealedMessage(h.db, req.C, user.ID, env.BodyCtB64, env.BodyNonceB64, keys)
+	msg, err := gnosis.InsertSealedMessage(h.db, req.C, user.ID, env.BodyCtB64, env.BodyNonceB64, keys, dbpkg.MessageAlerts(req.C, user.ID))
 	if err != nil {
 		http.Error(w, "send failed", http.StatusInternalServerError)
 		return

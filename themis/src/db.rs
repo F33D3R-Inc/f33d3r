@@ -2,6 +2,7 @@ use crate::models::*;
 use crate::pial_ref::PialRef;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use rand::Rng;
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
@@ -218,6 +219,21 @@ ALTER TABLE listings ADD COLUMN IF NOT EXISTS payment_currency TEXT NOT NULL DEF
 
 ALTER TABLE purchases ADD COLUMN IF NOT EXISTS currency TEXT NOT NULL DEFAULT 'btc';
 ALTER TABLE purchases ADD COLUMN IF NOT EXISTS xrp_address TEXT NOT NULL DEFAULT '';
+ALTER TABLE purchases ADD COLUMN IF NOT EXISTS created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW();
+-- XRP: the destination tag. BTC: the sats added to the price to make the amount unique.
+ALTER TABLE purchases ADD COLUMN IF NOT EXISTS payment_tag   BIGINT;
+ALTER TABLE purchases ADD COLUMN IF NOT EXISTS settlement_tx TEXT;
+-- A purchase with nothing binding a payment to it can never be settled safely.
+UPDATE purchases SET status = 'expired' WHERE status = 'pending' AND payment_tag IS NULL;
+-- At one address, each waiting BTC purchase has its own exact amount.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_purchases_btc_waiting_amount
+    ON purchases (btc_address, expected_sats) WHERE currency = 'btc' AND status = 'pending';
+-- At one address, an XRP destination tag belongs to one purchase, ever.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_purchases_xrp_tag
+    ON purchases (xrp_address, payment_tag) WHERE currency = 'xrp' AND payment_tag IS NOT NULL;
+-- One on-chain transaction pays for one purchase.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_purchases_settlement_tx
+    ON purchases (currency, settlement_tx) WHERE settlement_tx IS NOT NULL;
 "#;
 
 // Themis's durable handoff to the Manhattan naming plane.
@@ -611,6 +627,8 @@ fn row_to_purchase(row: &sqlx::postgres::PgRow) -> Result<Purchase> {
         expected_sats: row.try_get("expected_sats")?,
         currency: row.try_get("currency")?,
         xrp_address: row.try_get("xrp_address")?,
+        payment_tag: row.try_get("payment_tag")?,
+        created_at: row.try_get("created_at")?,
         status: row.try_get("status")?,
         cek_for_buyer: row.try_get("cek_for_buyer")?,
         expires_at: row.try_get("expires_at")?,
@@ -767,7 +785,52 @@ pub async fn listings_public(pool: &PgPool, limit: i64, offset: i64) -> Result<V
     rows.iter().map(|r| row_to_listing(r)).collect()
 }
 
-pub async fn purchase_create(
+/// Most sats a BTC price is raised by to make its amount unique at the address.
+const BTC_TAG_MAX: i64 = 999;
+const PURCHASE_OPEN_ATTEMPTS: usize = 16;
+
+/// Opens a BTC purchase. Shops share one address per seller, so the payment is
+/// bound by amount: the price plus a few sats, unique among purchases waiting at
+/// that address. None means every amount tried is taken.
+pub async fn purchase_open_btc(
+    pool: &PgPool,
+    listing_id: Uuid,
+    buyer_pial: PialRef,
+    address: &str,
+    price_sats: i64,
+) -> Result<Option<Purchase>> {
+    for _ in 0..PURCHASE_OPEN_ATTEMPTS {
+        let tag = rand::thread_rng().gen_range(1..=BTC_TAG_MAX);
+        let opened = purchase_insert(pool, listing_id, buyer_pial, address, price_sats + tag, "btc", "", tag).await?;
+        if opened.is_some() {
+            return Ok(opened);
+        }
+    }
+    Ok(None)
+}
+
+/// Opens an XRP purchase, bound by a destination tag no other purchase at that
+/// address has ever had.
+pub async fn purchase_open_xrp(
+    pool: &PgPool,
+    listing_id: Uuid,
+    buyer_pial: PialRef,
+    address: &str,
+    drops: i64,
+) -> Result<Option<Purchase>> {
+    for _ in 0..PURCHASE_OPEN_ATTEMPTS {
+        let tag = rand::thread_rng().gen_range(1..=i64::from(u32::MAX));
+        let opened = purchase_insert(pool, listing_id, buyer_pial, "", drops, "xrp", address, tag).await?;
+        if opened.is_some() {
+            return Ok(opened);
+        }
+    }
+    Ok(None)
+}
+
+/// None means the binding is already taken and another one should be tried.
+#[allow(clippy::too_many_arguments)]
+async fn purchase_insert(
     pool: &PgPool,
     listing_id: Uuid,
     buyer_pial: PialRef,
@@ -775,12 +838,13 @@ pub async fn purchase_create(
     expected_sats: i64,
     currency: &str,
     xrp_address: &str,
-) -> Result<Purchase> {
+    payment_tag: i64,
+) -> Result<Option<Purchase>> {
     let expires_at: DateTime<Utc> = Utc::now() + chrono::Duration::minutes(30);
-    let row = sqlx::query(
-        r#"INSERT INTO purchases (listing_id, buyer_pial, btc_address, expected_sats, currency, xrp_address, expires_at)
-           VALUES ($1,$2,$3,$4,$5,$6,$7)
-           RETURNING id, listing_id, buyer_pial, btc_address, expected_sats, currency, xrp_address, status, cek_for_buyer, expires_at, confirmed_at, delivered_at"#
+    let inserted = sqlx::query(
+        r#"INSERT INTO purchases (listing_id, buyer_pial, btc_address, expected_sats, currency, xrp_address, payment_tag, expires_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+           RETURNING id, listing_id, buyer_pial, btc_address, expected_sats, currency, xrp_address, payment_tag, created_at, status, cek_for_buyer, expires_at, confirmed_at, delivered_at"#
     )
     .bind(listing_id)
     .bind(buyer_pial.uuid())
@@ -788,14 +852,42 @@ pub async fn purchase_create(
     .bind(expected_sats)
     .bind(currency)
     .bind(xrp_address)
+    .bind(payment_tag)
     .bind(expires_at)
-    .fetch_one(pool).await?;
-    row_to_purchase(&row)
+    .fetch_one(pool)
+    .await;
+    match inserted {
+        Ok(row) => row_to_purchase(&row).map(Some),
+        Err(sqlx::Error::Database(e)) if e.is_unique_violation() => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// The buyer's purchase of this listing that is still inside its payment window,
+/// so asking to buy twice shows the same payment instead of reserving another.
+pub async fn purchase_open_for_buyer(
+    pool: &PgPool,
+    buyer_pial: PialRef,
+    listing_id: Uuid,
+    currency: &str,
+) -> Result<Option<Purchase>> {
+    let row = sqlx::query(
+        "SELECT id, listing_id, buyer_pial, btc_address, expected_sats, currency, xrp_address, payment_tag, created_at, status, cek_for_buyer, expires_at, confirmed_at, delivered_at
+           FROM purchases
+          WHERE buyer_pial = $1 AND listing_id = $2 AND currency = $3 AND status = 'pending' AND expires_at > NOW()
+          ORDER BY expires_at DESC LIMIT 1",
+    )
+    .bind(buyer_pial.uuid())
+    .bind(listing_id)
+    .bind(currency)
+    .fetch_optional(pool)
+    .await?;
+    row.map(|r| row_to_purchase(&r)).transpose()
 }
 
 pub async fn purchase_get(pool: &PgPool, id: Uuid) -> Result<Option<Purchase>> {
     let row = sqlx::query(
-        "SELECT id, listing_id, buyer_pial, btc_address, expected_sats, currency, xrp_address, status, cek_for_buyer, expires_at, confirmed_at, delivered_at FROM purchases WHERE id = $1"
+        "SELECT id, listing_id, buyer_pial, btc_address, expected_sats, currency, xrp_address, payment_tag, created_at, status, cek_for_buyer, expires_at, confirmed_at, delivered_at FROM purchases WHERE id = $1"
     )
     .bind(id)
     .fetch_optional(pool).await?;
@@ -804,7 +896,7 @@ pub async fn purchase_get(pool: &PgPool, id: Uuid) -> Result<Option<Purchase>> {
 
 pub async fn purchases_pending(pool: &PgPool) -> Result<Vec<Purchase>> {
     let rows = sqlx::query(
-        "SELECT id, listing_id, buyer_pial, btc_address, expected_sats, currency, xrp_address, status, cek_for_buyer, expires_at, confirmed_at, delivered_at FROM purchases WHERE status = 'pending' AND currency = 'btc' AND expires_at > NOW()"
+        "SELECT id, listing_id, buyer_pial, btc_address, expected_sats, currency, xrp_address, payment_tag, created_at, status, cek_for_buyer, expires_at, confirmed_at, delivered_at FROM purchases WHERE status = 'pending' AND currency = 'btc'"
     )
     .fetch_all(pool).await?;
     rows.iter().map(|r| row_to_purchase(r)).collect()
@@ -812,39 +904,80 @@ pub async fn purchases_pending(pool: &PgPool) -> Result<Vec<Purchase>> {
 
 pub async fn purchases_pending_xrp(pool: &PgPool) -> Result<Vec<Purchase>> {
     let rows = sqlx::query(
-        "SELECT id, listing_id, buyer_pial, btc_address, expected_sats, currency, xrp_address, status, cek_for_buyer, expires_at, confirmed_at, delivered_at FROM purchases WHERE status = 'pending' AND currency = 'xrp' AND expires_at > NOW()"
+        "SELECT id, listing_id, buyer_pial, btc_address, expected_sats, currency, xrp_address, payment_tag, created_at, status, cek_for_buyer, expires_at, confirmed_at, delivered_at FROM purchases WHERE status = 'pending' AND currency = 'xrp'"
     )
     .fetch_all(pool).await?;
     rows.iter().map(|r| row_to_purchase(r)).collect()
 }
 
-pub async fn purchase_mark_confirmed(pool: &PgPool, id: Uuid) -> Result<()> {
-    sqlx::query("UPDATE purchases SET status = 'confirmed', confirmed_at = NOW() WHERE id = $1")
-        .bind(id)
-        .execute(pool)
-        .await?;
-    Ok(())
+/// Records the transaction that paid for a purchase. False means the purchase is
+/// no longer waiting or the transaction already paid for another one.
+pub async fn purchase_settle(pool: &PgPool, id: Uuid, tx: &str) -> Result<bool> {
+    let settled = sqlx::query(
+        "UPDATE purchases SET status = 'confirmed', confirmed_at = NOW(), settlement_tx = $2
+          WHERE id = $1 AND status = 'pending'",
+    )
+    .bind(id)
+    .bind(tx)
+    .execute(pool)
+    .await;
+    match settled {
+        Ok(done) => Ok(done.rows_affected() == 1),
+        Err(sqlx::Error::Database(e)) if e.is_unique_violation() => Ok(false),
+        Err(e) => Err(e.into()),
+    }
 }
 
+/// Delivers a purchase and queues what the buyer and seller are told, in one
+/// transaction. False means another attempt already delivered it.
 pub async fn purchase_mark_delivered(
     pool: &PgPool,
     id: Uuid,
-    cek_for_buyer: Vec<u8>,
-) -> Result<()> {
-    sqlx::query(
-        "UPDATE purchases SET status = 'delivered', cek_for_buyer = $2, delivered_at = NOW() WHERE id = $1"
+    cek_for_buyer: &[u8],
+    notices: &[crate::notifications::Event],
+) -> Result<bool> {
+    let mut tx = pool.begin().await?;
+    let done = sqlx::query(
+        "UPDATE purchases SET status = 'delivered', cek_for_buyer = $2, delivered_at = NOW()
+          WHERE id = $1 AND status = 'confirmed'",
     )
     .bind(id)
-    .bind(&cek_for_buyer)
-    .execute(pool).await?;
-    Ok(())
+    .bind(cek_for_buyer)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    if done == 0 {
+        tx.rollback().await?;
+        return Ok(false);
+    }
+    for notice in notices {
+        crate::notifications::enqueue(&mut *tx, notice).await?;
+    }
+    tx.commit().await?;
+    Ok(true)
 }
 
-pub async fn purchase_mark_expired(pool: &PgPool, id: Uuid) -> Result<()> {
-    sqlx::query("UPDATE purchases SET status = 'expired' WHERE id = $1 AND status = 'pending'")
-        .bind(id)
-        .execute(pool)
-        .await?;
+/// Paid purchases whose delivery has not finished, such as a buyer with no key yet
+/// or a key authority that was down.
+pub async fn purchases_undelivered(pool: &PgPool) -> Result<Vec<Purchase>> {
+    let rows = sqlx::query(
+        "SELECT id, listing_id, buyer_pial, btc_address, expected_sats, currency, xrp_address, payment_tag, created_at, status, cek_for_buyer, expires_at, confirmed_at, delivered_at
+           FROM purchases WHERE status = 'confirmed' AND confirmed_at < NOW() - INTERVAL '1 minute'"
+    )
+    .fetch_all(pool)
+    .await?;
+    rows.iter().map(row_to_purchase).collect()
+}
+
+/// Ends purchases past their payment window plus the time a payment sent inside
+/// the window could take to confirm. Until then a late confirmation still counts.
+pub async fn purchases_lapse(pool: &PgPool) -> Result<()> {
+    sqlx::query(
+        "UPDATE purchases SET status = 'expired'
+          WHERE status = 'pending' AND expires_at < NOW() - INTERVAL '6 hours'",
+    )
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
@@ -854,7 +987,7 @@ pub async fn purchase_get_by_buyer_and_listing(
     listing_id: Uuid,
 ) -> Result<Option<Purchase>> {
     let row = sqlx::query(
-        "SELECT id, listing_id, buyer_pial, btc_address, expected_sats, currency, xrp_address, status, cek_for_buyer, expires_at, confirmed_at, delivered_at FROM purchases WHERE buyer_pial = $1 AND listing_id = $2 AND status = 'delivered' LIMIT 1"
+        "SELECT id, listing_id, buyer_pial, btc_address, expected_sats, currency, xrp_address, payment_tag, created_at, status, cek_for_buyer, expires_at, confirmed_at, delivered_at FROM purchases WHERE buyer_pial = $1 AND listing_id = $2 AND status = 'delivered' LIMIT 1"
     )
     .bind(buyer_pial.uuid())
     .bind(listing_id)
@@ -911,7 +1044,7 @@ pub async fn marketplace_subscription_active(
 
 pub async fn purchases_by_buyer(pool: &PgPool, buyer_pial: PialRef) -> Result<Vec<Purchase>> {
     let rows = sqlx::query(
-        "SELECT p.id, p.listing_id, p.buyer_pial, p.btc_address, p.expected_sats, p.currency, p.xrp_address, p.status, p.cek_for_buyer, p.expires_at, p.confirmed_at, p.delivered_at, \
+        "SELECT p.id, p.listing_id, p.buyer_pial, p.btc_address, p.expected_sats, p.currency, p.xrp_address, p.payment_tag, p.created_at, p.status, p.cek_for_buyer, p.expires_at, p.confirmed_at, p.delivered_at, \
                 l.title AS listing_title, l.content_url, l.content_hash \
            FROM purchases p \
            JOIN listings l ON l.id = p.listing_id \
@@ -962,9 +1095,9 @@ pub async fn seller_stats(pool: &PgPool, seller_pial: PialRef) -> Result<(i64, i
     .await?;
 
     let revenue: i64 = sqlx::query_scalar(
-        "SELECT COALESCE(SUM(p.expected_sats), 0) FROM purchases p
+        "SELECT COALESCE(SUM(p.expected_sats), 0)::BIGINT FROM purchases p
          JOIN listings l ON l.id = p.listing_id
-         WHERE l.shop_pial = $1 AND p.status = 'delivered'",
+         WHERE l.shop_pial = $1 AND p.status = 'delivered' AND p.currency = 'btc'",
     )
     .bind(seller_pial.uuid())
     .fetch_one(pool)

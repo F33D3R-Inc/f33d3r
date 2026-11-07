@@ -207,16 +207,16 @@ func (h *Handler) apiV1UserEvents(w http.ResponseWriter, r *http.Request, u *mod
 	// no longer prove it holds in full is replayed as nothing at all, and the
 	// connect-time snapshot below is what puts the client back on its feet.
 	//
-	// replayedTo is the last number this connection has already written. The
+	// replayed is what this connection has already written. The
 	// session is registered before the replay is read, so an event published in
 	// between is both queued to this connection AND held in the ring: without
 	// this the client would be handed the same new_post twice and prepend two
 	// cards for one work.
-	var replayedTo int64
+	replayed := map[int64]bool{}
 	if last := lastEventID(r); last > 0 {
-		if missed, ok := ReplayAfter(u.PIALID, last); ok {
+		if missed, ok := ReplayAfter(u.ID, u.PIALID, last); ok {
 			for _, f := range missed {
-				replayedTo = f.ID
+				replayed[f.ID] = true
 				if !apiStreamable(f.Event) {
 					continue
 				}
@@ -257,7 +257,12 @@ func (h *Handler) apiV1UserEvents(w http.ResponseWriter, r *http.Request, u *mod
 			if !open {
 				return
 			}
-			if !apiStreamable(ev) || (ev.ID > 0 && ev.ID <= replayedTo) {
+			if ev.Type == sseResync {
+				// This connection lost a delivery. The count is the state it can re-read.
+				sendNotify(0)
+				continue
+			}
+			if !apiStreamable(ev) || replayed[ev.ID] {
 				continue
 			}
 			if ev.Type == "notify" {
@@ -502,6 +507,7 @@ func (h *Handler) apiProfileUpdateEvent(w http.ResponseWriter, r *http.Request, 
 		http.Error(w, "could not save profile", http.StatusInternalServerError)
 		return
 	}
+	go h.publishProfileFacets(user.ID)
 	if tok := GetSessionToken(r); tok != "" {
 		h.sessionCache.Delete(tok)
 	}

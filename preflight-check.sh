@@ -101,6 +101,24 @@ check_internal_key() {
 check_internal_key .env.local
 check_internal_key .env.prod
 
+# LIVEKIT_API_SECRET signs Frequency audio join tokens. LiveKit and Auralis both
+# refuse to start without a real one, so a bad value takes audio down at boot.
+check_livekit_secret() {
+  local envfile="$1" secret
+  [ -f "$envfile" ] || return 0
+  secret=$(grep -E '^LIVEKIT_API_SECRET=' "$envfile" | head -n1 | cut -d= -f2- | tr -d '[:space:]"'"'")
+  if [ -z "$secret" ]; then
+    fail "$envfile: LIVEKIT_API_SECRET is not set — run: openssl rand -hex 32"
+  elif printf '%s' "$secret" | grep -qiE 'CHANGE_ME|change_in_production|placeholder'; then
+    fail "$envfile: LIVEKIT_API_SECRET is a placeholder — replace it with: openssl rand -hex 32"
+  elif [ "${#secret}" -lt 32 ]; then
+    fail "$envfile: LIVEKIT_API_SECRET is ${#secret} characters — needs at least 32"
+  else
+    ok "$envfile: LIVEKIT_API_SECRET set (${#secret} characters)"
+  fi
+}
+check_livekit_secret .env.prod
+
 echo ""
 echo "──────────────────────────────────────"
 if [ $ISSUES -eq 0 ]; then

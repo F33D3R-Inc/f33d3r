@@ -58,7 +58,7 @@ Mac. The same `/api/v1` surface now lives in feed-engine itself
 (`internal/handler/api_v1*.go`), so the dev server is only for working with no
 Linux box on the network. See `devserver/README.md`.
 
-Seeded dev accounts all use password `REMOVED_DEV_PASSWORD` — `@tehanibentley`, `@admin`,
+Seeded dev accounts all use password `devserver-only` — `@tehanibentley`, `@admin`,
 `@miiyazuko`, `@dev`, `@guest`. The sign-in screen can also create an account.
 
 ### The full platform on the Linux box
@@ -260,7 +260,7 @@ F33D3R_PAGE=tag F33D3R_TAG=film       # a tag timeline
 F33D3R_PAGE=editprofile               # own profile with the editor open
 F33D3R_PAGE=work F33D3R_WORK=<uuid> F33D3R_MEDIA_VIEWER=1   # first image full-screen
 F33D3R_SCROLLED=1              # open every list already scrolled to the end
-F33D3R_SIGN_IN=dev:REMOVED_DEV_PASSWORD   # sign in for this run, if the device has no session
+F33D3R_SIGN_IN=dev:devserver-only   # sign in for this run, if the device has no session
 ```
 
 All four are DEBUG-only and opt-in per run. They exist because the Simulator here

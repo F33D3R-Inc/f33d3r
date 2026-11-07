@@ -340,7 +340,8 @@ func (h *Handler) saveNotificationPrefs(w http.ResponseWriter, r *http.Request) 
 var webNotifFormFields = map[string]bool{
 	"push_enabled": true, "messages_enabled": true, "likes_enabled": true,
 	"reposts_enabled": true, "replies_enabled": true, "follows_enabled": true,
-	"achievements_enabled": true,
+	"achievements_enabled": true, "mentions_enabled": true, "frequencies_enabled": true,
+	"tips_enabled": true, "subscribers_enabled": true, "quiet_hours_enabled": true,
 }
 
 // jsonBodyMap reads a JSON request body into the raw field map the event lane
@@ -566,6 +567,7 @@ func (h *Handler) saveProfile(w http.ResponseWriter, r *http.Request) {
 		if xpGain > 0 {
 			dbpkg.AwardXP(h.db, user.ID, "profile_completion", xpGain)
 		}
+		go h.publishProfileFacets(user.ID)
 
 		// Birthday date is owned by PIAL — not writable from profile edit.
 		// Only visibility preferences are user-editable.

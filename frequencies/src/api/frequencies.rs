@@ -17,13 +17,13 @@ use super::view::{self, FrequencySummary};
 use crate::auth::{optional_viewer, Actor, Service};
 use crate::domain::frequency::{MAX_LISTENERS_CAP, MAX_SPEAKERS_CAP};
 use crate::domain::lifecycle;
-use crate::domain::{Action, FrequencyRole, FrequencyState, Visibility};
+use crate::domain::{Action, FrequencyRole, FrequencyState, ReplayStatus, Visibility};
 use crate::error::{AuralisError, Result};
 use crate::events::EventType;
 use crate::identity;
 use crate::repository::postgres::{self as pg, NewFrequency, Patch};
 use crate::security::rate_limit;
-use crate::security::{abuse, tokens};
+use crate::security::abuse;
 use crate::state::AppState;
 use crate::telemetry::metrics as m;
 
@@ -58,9 +58,9 @@ fn scheduled_time(t: DateTime<Utc>) -> Result<DateTime<Utc>> {
             "scheduled_at is in the past".into(),
         ));
     }
-    if t > now + ChronoDuration::days(30) {
+    if t > now + ChronoDuration::days(14) {
         return Err(AuralisError::BadRequest(
-            "scheduled_at is more than 30 days out".into(),
+            "scheduled_at is more than 14 days out".into(),
         ));
     }
     Ok(t)
@@ -74,31 +74,6 @@ fn bounded(v: Option<i32>, default: i32, cap: i32, field: &str) -> Result<i32> {
             "{field} must be between 1 and {cap}"
         ))),
     }
-}
-
-/// The session a browser needs to reach the media plane: minted here, burned
-/// on first use at the signaling socket.
-pub fn session_for(s: &AppState, freq_id: Uuid, pial: &str, role: FrequencyRole) -> Value {
-    let now = tokens::now_unix();
-    let claims = tokens::Claims {
-        frequency_id: freq_id,
-        pial_id: identity::bare_value(pial).to_string(),
-        session_id: Uuid::new_v4(),
-        role,
-        permissions: tokens::Claims::permissions_for(role),
-        iat: now,
-        exp: now + s.config.signal_token_ttl.as_secs() as i64,
-        nonce: tokens::new_nonce(),
-        node_id: s.config.node_id.clone(),
-    };
-    json!({
-        "session_id": claims.session_id,
-        "token": s.signer.mint(&claims),
-        "expires_at": claims.exp,
-        "signal_path": format!("/frequencies/signal/{freq_id}"),
-        "role": role,
-        "permissions": claims.permissions,
-    })
 }
 
 // ── create ───────────────────────────────────────────────────────────────────
@@ -200,6 +175,10 @@ pub async fn create(
 pub struct ListQuery {
     pub lane: Option<String>,
     pub limit: Option<i64>,
+    /// The words of `lane=search`.
+    pub q: Option<String>,
+    /// The bare PIAL of `lane=host`.
+    pub host: Option<String>,
 }
 
 pub async fn list(
@@ -214,6 +193,21 @@ pub async fn list(
         "live" => pg::list_live(&s.pool, limit).await?,
         "scheduled" => pg::list_scheduled(&s.pool, limit).await?,
         "ended" => pg::list_ended(&s.pool, limit).await?,
+        "search" => {
+            let words = q.q.as_deref().unwrap_or("").trim();
+            if words.is_empty() || words.chars().count() > 120 {
+                return Err(AuralisError::BadRequest("q must be 1 to 120 characters".into()));
+            }
+            pg::search(&s.pool, words, limit).await?
+        }
+        "host" => {
+            let host = q
+                .host
+                .as_deref()
+                .ok_or_else(|| AuralisError::BadRequest("lane=host needs host".into()))?;
+            let name = identity::resolve(&s.manhattan, host).await?;
+            pg::list_upcoming_by_host(&s.pool, &name, limit).await?
+        }
         "mine" => match &viewer {
             Some(v) => pg::list_by_host(&s.pool, v, limit).await?,
             None => {
@@ -226,14 +220,10 @@ pub async fn list(
     };
     let mut items = Vec::with_capacity(rows.len());
     for f in &rows {
-        let (listeners, speakers) = if f.state.is_open() {
-            s.hot.counts(f.id).await?
-        } else {
-            (0, 0)
-        };
+        let (listeners, speakers, participants) = ops::card_counts(&s, f).await?;
         items.push(json!({
             "frequency": FrequencySummary::from(f),
-            "counts": { "listeners": listeners, "speakers": speakers, "participants": listeners + speakers },
+            "counts": { "listeners": listeners, "speakers": speakers, "participants": participants },
         }));
     }
     Ok(Json(
@@ -395,7 +385,7 @@ pub async fn schedule(
 ) -> Result<Json<Value>> {
     let at = body.scheduled_at.map(scheduled_time).transpose()?;
     let cause = Cause::person(&actor.pial, &actor.correlation_id);
-    let freq = ops::cas(&s, id, "schedule", |f| {
+    let (mut tx, freq) = ops::cas_tx(&s, id, "schedule", |f| {
         require_host(f, &actor)?;
         let to = if at.is_some() {
             FrequencyState::Scheduled
@@ -410,7 +400,7 @@ pub async fn schedule(
         Ok(p)
     })
     .await?;
-    let mut tx = s.pool.begin().await?;
+    pg::clear_schedule_notices(&mut tx, freq.id).await?;
     pg::insert_event(
         &mut tx,
         &cause.event(freq.id, EventType::Scheduled, json!({ "scheduled_at": at })),
@@ -443,8 +433,7 @@ pub async fn start(
             require_host(&f, &actor)?;
             if f.state == FrequencyState::Live {
                 let v = view::build(&mut conn, &s.hot, &f, Some(&actor.pial)).await?;
-                let session = session_for(&s, f.id, &actor.pial, FrequencyRole::Host);
-                return Ok((StatusCode::OK, json!({ "frequency": v, "session": session })));
+                return Ok((StatusCode::OK, json!({ "frequency": v })));
             }
             if let Some(open) = pg::open_for_host(&mut conn, &actor.pial).await? {
                 if open.id != id {
@@ -488,6 +477,10 @@ pub async fn start(
                 return Err(AuralisError::VersionConflict);
             }
         };
+        // A person starting their own room stops listening to anyone else's.
+        if let Some(other) = pg::other_room(&mut tx, id, &actor.pial).await? {
+            ops::depart(&s, &mut tx, &other, &actor.pial, &cause, "another_room").await?;
+        }
         let (host_row, _) = pg::join(&mut tx, id, &actor.pial, FrequencyRole::Host).await?;
         pg::insert_event(
             &mut tx,
@@ -512,8 +505,7 @@ pub async fn start(
 
         let mut conn = s.pool.acquire().await?;
         let v = view::build(&mut conn, &s.hot, &live, Some(&actor.pial)).await?;
-        let session = session_for(&s, live.id, &actor.pial, FrequencyRole::Host);
-        Ok((StatusCode::OK, json!({ "frequency": v, "session": session })))
+        Ok((StatusCode::OK, json!({ "frequency": v })))
     })
     .await
 }
@@ -541,13 +533,87 @@ pub async fn end(
     .await
 }
 
+/// The file of a room's replay, for Nantar to serve. Nothing once it is gone, or
+/// for a room moderation removed.
+pub async fn replay_file(
+    State(s): State<AppState>,
+    _svc: Service,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Value>> {
+    let mut conn = s.pool.acquire().await?;
+    let f = ops::load(&mut conn, id).await?;
+    drop(conn);
+    if f.replay_status != ReplayStatus::Ready || f.state != FrequencyState::Archived {
+        return Err(AuralisError::NotFound);
+    }
+    let file = pg::latest_ready_recording(&s.pool, id)
+        .await?
+        .ok_or(AuralisError::NotFound)?;
+    Ok(Json(json!({ "file": file })))
+}
+
+#[derive(Deserialize)]
+pub struct ClipsBody {
+    pub on: bool,
+}
+
+/// The host deciding whether their replay can be clipped.
+pub async fn clips_enabled(
+    State(s): State<AppState>,
+    actor: Actor,
+    Path(id): Path<Uuid>,
+    Json(body): Json<ClipsBody>,
+) -> Result<Json<Value>> {
+    let freq = ops::cas(&s, id, "clips_enabled", |f| {
+        require_host(f, &actor)?;
+        Ok(Patch {
+            clips_enabled: Some(body.on),
+            ..Default::default()
+        })
+    })
+    .await?;
+    let mut conn = s.pool.acquire().await?;
+    let v = view::build(&mut conn, &s.hot, &freq, Some(&actor.pial)).await?;
+    Ok(Json(json!({ "frequency": v })))
+}
+
+/// The host deleting their replay. The row commits first, so a failed file removal
+/// can never leave a replay still playing.
+pub async fn delete_replay(
+    State(s): State<AppState>,
+    actor: Actor,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Value>> {
+    let (mut tx, freq) = ops::cas_tx(&s, id, "delete_replay", |f| {
+        require_host(f, &actor)?;
+        if f.replay_status != ReplayStatus::Ready {
+            return Err(AuralisError::Conflict("no_replay"));
+        }
+        Ok(Patch {
+            replay_status: Some(ReplayStatus::Deleted),
+            ..Default::default()
+        })
+    })
+    .await?;
+    let files = pg::delete_recordings(&mut tx, id).await?;
+    tx.commit().await?;
+    for file in files {
+        if let Err(e) = crate::replay::remove_file(&s.config.replay_dir, &file).await {
+            tracing::error!(frequency_id = %id, %file, error = %e, "removing a deleted replay");
+        }
+    }
+    let mut conn = s.pool.acquire().await?;
+    let v = view::build(&mut conn, &s.hot, &freq, Some(&actor.pial)).await?;
+    Ok(Json(json!({ "frequency": v })))
+}
+
 pub async fn cancel(
     State(s): State<AppState>,
     actor: Actor,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Value>> {
     let cause = Cause::person(&actor.pial, &actor.correlation_id);
-    let freq = ops::cas(&s, id, "cancel", |f| {
+    let freq = ops::cas_tx(&s, id, "cancel", |f| {
         require_host(f, &actor)?;
         if f.state == FrequencyState::Cancelled {
             return Err(AuralisError::Conflict("already_cancelled"));
@@ -560,8 +626,7 @@ pub async fn cancel(
     })
     .await;
     let freq = match freq {
-        Ok(f) => {
-            let mut tx = s.pool.begin().await?;
+        Ok((mut tx, f)) => {
             pg::insert_event(&mut tx, &cause.event(f.id, EventType::Cancelled, json!({}))).await?;
             tx.commit().await?;
             f
@@ -591,7 +656,7 @@ pub async fn lock(
     ops::limit(&s, rate_limit::MODERATION, &actor.pial).await?;
     let cause = Cause::person(&actor.pial, &actor.correlation_id);
     require_action(&s, id, &actor, Action::LockFrequency).await?;
-    let freq = ops::cas(&s, id, "lock", |f| {
+    let (mut tx, freq) = ops::cas_tx(&s, id, "lock", |f| {
         ops::require_open(f)?;
         Ok(Patch {
             locked: Some(body.locked),
@@ -599,7 +664,6 @@ pub async fn lock(
         })
     })
     .await?;
-    let mut tx = s.pool.begin().await?;
     pg::insert_event(
         &mut tx,
         &cause.event(freq.id, EventType::Locked, json!({ "locked": body.locked })),
@@ -636,7 +700,7 @@ pub async fn requests_open(
     ops::limit(&s, rate_limit::MODERATION, &actor.pial).await?;
     let cause = Cause::person(&actor.pial, &actor.correlation_id);
     require_action(&s, id, &actor, Action::ToggleRequests).await?;
-    let freq = ops::cas(&s, id, "requests_open", |f| {
+    let (mut tx, freq) = ops::cas_tx(&s, id, "requests_open", |f| {
         ops::require_open(f)?;
         Ok(Patch {
             requests_open: Some(body.open),
@@ -644,7 +708,6 @@ pub async fn requests_open(
         })
     })
     .await?;
-    let mut tx = s.pool.begin().await?;
     pg::insert_event(
         &mut tx,
         &cause.event(

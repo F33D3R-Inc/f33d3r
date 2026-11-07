@@ -40,6 +40,8 @@ CREATE TABLE IF NOT EXISTS notification_preferences (
 );
 -- Frequencies (Auralis) notifications: mic granted, co-host, invite.
 ALTER TABLE notification_preferences ADD COLUMN IF NOT EXISTS frequencies_enabled BOOL DEFAULT true;
+ALTER TABLE notification_preferences ADD COLUMN IF NOT EXISTS tips_enabled BOOL DEFAULT true;
+ALTER TABLE notification_preferences ADD COLUMN IF NOT EXISTS subscribers_enabled BOOL DEFAULT true;
 
 -- ── Notification Log ──────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS notification_log (
@@ -276,6 +278,7 @@ $do$;
 pub async fn migrate(pool: &PgPool) -> Result<()> {
     sqlx::raw_sql(SCHEMA).execute(pool).await?;
     sqlx::raw_sql(MANHATTAN_SCHEMA).execute(pool).await?;
+    migrate_inbox(pool).await?;
     Ok(())
 }
 
@@ -313,13 +316,39 @@ pub async fn upsert_subscription(
     Ok(())
 }
 
-pub async fn deactivate_subscription(pool: &PgPool, device_id: &str) -> Result<bool> {
-    let result =
-        sqlx::query("UPDATE push_subscriptions SET is_active = false WHERE device_id = $1")
-            .bind(device_id)
-            .execute(pool)
-            .await?;
+pub async fn deactivate_subscription(pool: &PgPool, pial: &str, device_id: &str) -> Result<bool> {
+    let result = sqlx::query(
+        "UPDATE push_subscriptions SET is_active = false WHERE pial_shard_id = $1 AND device_id = $2",
+    )
+    .bind(pial)
+    .bind(device_id)
+    .execute(pool)
+    .await?;
     Ok(result.rows_affected() > 0)
+}
+
+/// Whether it is currently a person's quiet hours, in their timezone. An unknown
+/// timezone counts as UTC.
+pub async fn in_quiet_hours(pool: &PgPool, prefs: &NotificationPreferences) -> Result<bool> {
+    if !prefs.quiet_hours_enabled {
+        return Ok(false);
+    }
+    let known: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_timezone_names WHERE name = $1)")
+        .bind(&prefs.timezone)
+        .fetch_one(pool)
+        .await?;
+    let zone = if known { prefs.timezone.as_str() } else { "UTC" };
+    let hour: f64 = sqlx::query_scalar("SELECT EXTRACT(HOUR FROM NOW() AT TIME ZONE $1)::float8")
+        .bind(zone)
+        .fetch_one(pool)
+        .await?;
+    let hour = hour as i16;
+    let (start, end) = (prefs.quiet_hours_start, prefs.quiet_hours_end);
+    Ok(if start <= end {
+        hour >= start && hour < end
+    } else {
+        hour >= start || hour < end
+    })
 }
 
 pub async fn get_active_subscriptions(
@@ -348,7 +377,7 @@ pub async fn get_preferences(
     let row = sqlx::query_as::<_, NotificationPreferences>(
         "SELECT pial_shard_id, push_enabled, messages_enabled, likes_enabled, \
                 reposts_enabled, replies_enabled, follows_enabled, achievements_enabled, \
-                mentions_enabled, frequencies_enabled, quiet_hours_enabled, quiet_hours_start, \
+                mentions_enabled, frequencies_enabled, tips_enabled, subscribers_enabled, quiet_hours_enabled, quiet_hours_start, \
                 quiet_hours_end, timezone \
          FROM notification_preferences WHERE pial_shard_id = $1"
     )
@@ -368,6 +397,8 @@ pub async fn get_preferences(
         achievements_enabled: true,
         mentions_enabled: true,
         frequencies_enabled: true,
+        tips_enabled: true,
+        subscribers_enabled: true,
         quiet_hours_enabled: false,
         quiet_hours_start: 22,
         quiet_hours_end: 8,
@@ -396,6 +427,8 @@ pub async fn upsert_preferences(
     let frequencies_enabled = req
         .frequencies_enabled
         .unwrap_or(current.frequencies_enabled);
+    let tips_enabled = req.tips_enabled.unwrap_or(current.tips_enabled);
+    let subscribers_enabled = req.subscribers_enabled.unwrap_or(current.subscribers_enabled);
     let quiet_hours_enabled = req
         .quiet_hours_enabled
         .unwrap_or(current.quiet_hours_enabled);
@@ -407,8 +440,8 @@ pub async fn upsert_preferences(
         "INSERT INTO notification_preferences \
            (pial_shard_id, push_enabled, messages_enabled, likes_enabled, reposts_enabled, \
             replies_enabled, follows_enabled, achievements_enabled, mentions_enabled, \
-            frequencies_enabled, quiet_hours_enabled, quiet_hours_start, quiet_hours_end, timezone) \
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) \
+            frequencies_enabled, tips_enabled, subscribers_enabled, quiet_hours_enabled, quiet_hours_start, quiet_hours_end, timezone) \
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) \
          ON CONFLICT (pial_shard_id) DO UPDATE \
            SET push_enabled         = EXCLUDED.push_enabled, \
                messages_enabled     = EXCLUDED.messages_enabled, \
@@ -419,6 +452,8 @@ pub async fn upsert_preferences(
                achievements_enabled = EXCLUDED.achievements_enabled, \
                mentions_enabled     = EXCLUDED.mentions_enabled, \
                frequencies_enabled  = EXCLUDED.frequencies_enabled, \
+               tips_enabled         = EXCLUDED.tips_enabled, \
+               subscribers_enabled  = EXCLUDED.subscribers_enabled, \
                quiet_hours_enabled  = EXCLUDED.quiet_hours_enabled, \
                quiet_hours_start    = EXCLUDED.quiet_hours_start, \
                quiet_hours_end      = EXCLUDED.quiet_hours_end, \
@@ -434,6 +469,8 @@ pub async fn upsert_preferences(
     .bind(achievements_enabled)
     .bind(mentions_enabled)
     .bind(frequencies_enabled)
+    .bind(tips_enabled)
+    .bind(subscribers_enabled)
     .bind(quiet_hours_enabled)
     .bind(quiet_hours_start)
     .bind(quiet_hours_end)
@@ -452,6 +489,8 @@ pub async fn upsert_preferences(
         achievements_enabled,
         mentions_enabled,
         frequencies_enabled,
+        tips_enabled,
+        subscribers_enabled,
         quiet_hours_enabled,
         quiet_hours_start,
         quiet_hours_end,
@@ -489,7 +528,7 @@ pub async fn log_notification(
 
 pub async fn mark_delivered(pool: &PgPool, log_id: uuid::Uuid, success: bool) -> Result<()> {
     let status = if success { "delivered" } else { "failed" };
-    sqlx::query("UPDATE notification_log SET status=$1, delivered_at=NOW() WHERE log_id=$2")
+    sqlx::query("UPDATE notification_log SET status=$1, delivered_at=CASE WHEN $1 = 'delivered' THEN NOW() END WHERE log_id=$2")
         .bind(status)
         .bind(log_id)
         .execute(pool)
@@ -541,4 +580,315 @@ pub async fn count_unresolvable_targets(pool: &PgPool) -> Result<i64> {
     .fetch_one(pool)
     .await?;
     Ok(row.0)
+}
+
+// ── Inbox ────────────────────────────────────────────────────────────────────
+
+const INBOX_SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS inbox_notifications (
+    id                UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    event_id          TEXT        NOT NULL UNIQUE,
+    recipient_account UUID        NOT NULL,
+    recipient_pial    TEXT        NOT NULL,
+    kind              TEXT        NOT NULL,
+    actor_account     UUID,
+    target_id         TEXT        NOT NULL DEFAULT '',
+    target_type       TEXT        NOT NULL DEFAULT '',
+    payload           JSONB       NOT NULL DEFAULT '{}',
+    channel           TEXT        NOT NULL CHECK (channel IN ('push_inbox', 'inbox', 'push')),
+    is_read           BOOLEAN     NOT NULL DEFAULT FALSE,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    stored_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    read_at           TIMESTAMPTZ,
+    push_title        TEXT,
+    push_body         TEXT,
+    push_icon_url     TEXT,
+    push_action_url   TEXT,
+    push_status       TEXT        NOT NULL DEFAULT 'none'
+                      CHECK (push_status IN ('none', 'pending', 'sending', 'sent', 'failed')),
+    push_attempts     INT         NOT NULL DEFAULT 0,
+    push_claimed_at   TIMESTAMPTZ,
+    push_result       TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_inbox_list   ON inbox_notifications(recipient_account, created_at DESC)
+    WHERE channel <> 'push';
+CREATE INDEX IF NOT EXISTS idx_inbox_unread ON inbox_notifications(recipient_account)
+    WHERE is_read = FALSE AND channel <> 'push';
+CREATE INDEX IF NOT EXISTS idx_inbox_actor  ON inbox_notifications(actor_account);
+CREATE INDEX IF NOT EXISTS idx_inbox_target ON inbox_notifications(target_id) WHERE target_type = 'user';
+CREATE INDEX IF NOT EXISTS idx_inbox_push   ON inbox_notifications(stored_at)
+    WHERE push_status IN ('pending', 'sending');
+"#;
+
+/// Push attempts allowed per notification.
+const MAX_PUSH_ATTEMPTS: i32 = 5;
+
+pub async fn migrate_inbox(pool: &PgPool) -> Result<()> {
+    sqlx::raw_sql(INBOX_SCHEMA).execute(pool).await?;
+    Ok(())
+}
+
+#[derive(Debug, serde::Serialize, sqlx::FromRow)]
+pub struct InboxRow {
+    pub id: String,
+    pub kind: String,
+    pub actor_account: Option<String>,
+    pub target_id: String,
+    pub target_type: String,
+    pub payload: String,
+    pub is_read: bool,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+pub struct PushClaim {
+    pub pial: String,
+    pub kind: String,
+    pub title: String,
+    pub body: String,
+    pub icon_url: Option<String>,
+    pub action_url: Option<String>,
+}
+
+/// Stores one event. Returns false when this event ID is already stored.
+pub async fn inbox_insert(pool: &PgPool, ev: &crate::inbox::NotificationEvent) -> Result<bool> {
+    let wants_push = ev.channel != "inbox" && ev.push.is_some();
+    let payload = ev
+        .payload
+        .clone()
+        .unwrap_or_else(|| serde_json::json!({}))
+        .to_string();
+    let push = ev.push.as_ref();
+    let done = sqlx::query(
+        r#"INSERT INTO inbox_notifications
+             (event_id, recipient_account, recipient_pial, kind, actor_account, target_id,
+              target_type, payload, channel, created_at, push_title, push_body, push_icon_url,
+              push_action_url, push_status)
+           VALUES ($1, $2::uuid, $3, $4, $5::uuid, $6, $7, $8::jsonb, $9, COALESCE($10, NOW()),
+                   $11, $12, $13, $14, $15)
+           ON CONFLICT (event_id) DO NOTHING"#,
+    )
+    .bind(&ev.event_id)
+    .bind(&ev.recipient_account)
+    .bind(&ev.recipient_pial)
+    .bind(&ev.kind)
+    .bind(ev.actor_account.as_deref().filter(|a| !a.is_empty()))
+    .bind(&ev.target_id)
+    .bind(&ev.target_type)
+    .bind(payload)
+    .bind(&ev.channel)
+    .bind(ev.created_at)
+    .bind(push.map(|p| p.title.clone()))
+    .bind(push.map(|p| p.body.clone()))
+    .bind(push.and_then(|p| p.icon_url.clone()))
+    .bind(push.and_then(|p| p.action_url.clone()))
+    .bind(if wants_push { "pending" } else { "none" })
+    .execute(pool)
+    .await?;
+    Ok(done.rows_affected() == 1)
+}
+
+pub async fn inbox_unread(pool: &PgPool, account: &str) -> Result<i64> {
+    let n = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM inbox_notifications
+          WHERE recipient_account = $1::uuid AND is_read = FALSE AND channel <> 'push'",
+    )
+    .bind(account)
+    .fetch_one(pool)
+    .await?;
+    Ok(n)
+}
+
+pub async fn inbox_recipient_pial(pool: &PgPool, account: &str) -> Result<Option<String>> {
+    let pial = sqlx::query_scalar(
+        "SELECT recipient_pial FROM inbox_notifications
+          WHERE recipient_account = $1::uuid ORDER BY stored_at DESC LIMIT 1",
+    )
+    .bind(account)
+    .fetch_optional(pool)
+    .await?;
+    Ok(pial)
+}
+
+pub async fn inbox_list(
+    pool: &PgPool,
+    account: &str,
+    limit: i64,
+    before: chrono::DateTime<chrono::Utc>,
+    kinds: &[String],
+) -> Result<Vec<InboxRow>> {
+    let rows = sqlx::query_as::<_, InboxRow>(
+        r#"SELECT id::text AS id, kind, actor_account::text AS actor_account, target_id,
+                  target_type, payload::text AS payload, is_read, created_at
+             FROM inbox_notifications
+            WHERE recipient_account = $1::uuid AND channel <> 'push' AND created_at < $2
+              AND (cardinality($4::text[]) = 0 OR kind = ANY($4))
+            ORDER BY created_at DESC
+            LIMIT $3"#,
+    )
+    .bind(account)
+    .bind(before)
+    .bind(limit)
+    .bind(kinds)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+/// A notification's group: rows of the same kind on the same target in the hour
+/// before it. Scoped to the account, so one account cannot read another's rows.
+pub async fn inbox_group(
+    pool: &PgPool,
+    account: &str,
+    id: &str,
+) -> Result<Option<(String, Vec<String>)>> {
+    let head: Option<(String, String, String, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
+        "SELECT kind, target_id, target_type, created_at FROM inbox_notifications
+          WHERE id = $1::uuid AND recipient_account = $2::uuid",
+    )
+    .bind(id)
+    .bind(account)
+    .fetch_optional(pool)
+    .await?;
+    let Some((kind, target_id, target_type, created)) = head else {
+        return Ok(None);
+    };
+    let ids = sqlx::query_scalar(
+        "SELECT id::text FROM inbox_notifications
+          WHERE recipient_account = $1::uuid AND kind = $2 AND target_id = $3 AND target_type = $4
+            AND created_at <= $5 AND created_at > $5 - INTERVAL '1 hour' AND channel <> 'push'",
+    )
+    .bind(account)
+    .bind(&kind)
+    .bind(&target_id)
+    .bind(&target_type)
+    .bind(created)
+    .fetch_all(pool)
+    .await?;
+    Ok(Some((kind, ids)))
+}
+
+pub async fn inbox_mark_read(pool: &PgPool, account: &str, ids: &[String], all: bool) -> Result<()> {
+    if all {
+        sqlx::query(
+            "UPDATE inbox_notifications SET is_read = TRUE, read_at = NOW()
+              WHERE recipient_account = $1::uuid AND is_read = FALSE",
+        )
+        .bind(account)
+        .execute(pool)
+        .await?;
+    } else if !ids.is_empty() {
+        sqlx::query(
+            "UPDATE inbox_notifications SET is_read = TRUE, read_at = NOW()
+              WHERE recipient_account = $1::uuid AND is_read = FALSE AND id::text = ANY($2)",
+        )
+        .bind(account)
+        .bind(ids)
+        .execute(pool)
+        .await?;
+    }
+    Ok(())
+}
+
+pub async fn inbox_distinct_actors(pool: &PgPool, account: &str, kind: &str, days: i32) -> Result<i64> {
+    let n = sqlx::query_scalar(
+        "SELECT COUNT(DISTINCT actor_account) FROM inbox_notifications
+          WHERE recipient_account = $1::uuid AND kind = $2
+            AND created_at >= NOW() - make_interval(days => $3)",
+    )
+    .bind(account)
+    .bind(kind)
+    .bind(days)
+    .fetch_one(pool)
+    .await?;
+    Ok(n)
+}
+
+pub async fn inbox_purge(pool: &PgPool, account: &str) -> Result<u64> {
+    let done = sqlx::query(
+        "DELETE FROM inbox_notifications
+          WHERE recipient_account = $1::uuid OR actor_account = $1::uuid
+             OR (target_type = 'user' AND target_id = $1)",
+    )
+    .bind(account)
+    .execute(pool)
+    .await?;
+    Ok(done.rows_affected())
+}
+
+/// Rows whose push is owed: never tried, or claimed by an attempt that died.
+pub async fn inbox_due_pushes(pool: &PgPool) -> Result<Vec<String>> {
+    let ids = sqlx::query_scalar(
+        "SELECT event_id FROM inbox_notifications
+          WHERE (push_status = 'pending' AND stored_at < NOW() - INTERVAL '20 seconds')
+             OR (push_status = 'sending' AND push_claimed_at < NOW() - INTERVAL '2 minutes')
+          ORDER BY stored_at LIMIT 200",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(ids)
+}
+
+/// Claims a row's push, so two attempts cannot both send it.
+pub async fn inbox_claim_push(pool: &PgPool, event_id: &str) -> Result<Option<crate::db::PushClaim>> {
+    let row: Option<(String, String, Option<String>, Option<String>, Option<String>, Option<String>)> =
+        sqlx::query_as(
+            "UPDATE inbox_notifications
+                SET push_status = 'sending', push_claimed_at = NOW(), push_attempts = push_attempts + 1
+              WHERE event_id = $1
+                AND (push_status = 'pending'
+                     OR (push_status = 'sending' AND push_claimed_at < NOW() - INTERVAL '2 minutes'))
+              RETURNING recipient_pial, kind, push_title, push_body, push_icon_url, push_action_url",
+        )
+        .bind(event_id)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.map(|(pial, kind, title, body, icon_url, action_url)| PushClaim {
+        pial,
+        kind,
+        title: title.unwrap_or_default(),
+        body: body.unwrap_or_default(),
+        icon_url,
+        action_url,
+    }))
+}
+
+/// Records a push attempt. A failure goes back to pending until attempts run out.
+pub async fn inbox_finish_push(pool: &PgPool, event_id: &str, ok: bool, result: &str) -> Result<()> {
+    sqlx::query(
+        "UPDATE inbox_notifications
+            SET push_result = $3,
+                push_status = CASE WHEN $2 THEN 'sent'
+                                   WHEN push_attempts >= $4 THEN 'failed'
+                                   ELSE 'pending' END
+          WHERE event_id = $1",
+    )
+    .bind(event_id)
+    .bind(ok)
+    .bind(result)
+    .bind(MAX_PUSH_ATTEMPTS)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn inbox_missing(pool: &PgPool, event_ids: &[String]) -> Result<Vec<String>> {
+    let ids = sqlx::query_scalar(
+        "SELECT id FROM unnest($1::text[]) AS id
+          WHERE NOT EXISTS (SELECT 1 FROM inbox_notifications n WHERE n.event_id = id)",
+    )
+    .bind(event_ids)
+    .fetch_all(pool)
+    .await?;
+    Ok(ids)
+}
+
+pub async fn inbox_push_backlog(pool: &PgPool) -> Result<(i64, i64)> {
+    let row = sqlx::query_as(
+        "SELECT COUNT(*) FILTER (WHERE push_status IN ('pending', 'sending')),
+                COUNT(*) FILTER (WHERE push_status = 'failed')
+           FROM inbox_notifications WHERE push_status <> 'none' AND push_status <> 'sent'",
+    )
+    .fetch_one(pool)
+    .await?;
+    Ok(row)
 }

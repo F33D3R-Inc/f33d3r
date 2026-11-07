@@ -1829,6 +1829,7 @@ pub async fn evaluate_contact(
     // association plane below, by the brain that is taking the decision.
     let presented_capability = body["capability"].as_str().unwrap_or_default().to_string();
     let note = body["note"].as_str().unwrap_or_default();
+    let initiator_account = body["initiator_account"].as_str().map(str::to_string);
 
     let deny = |reason: &'static str| {
         Json(json!({
@@ -2041,7 +2042,7 @@ pub async fn evaluate_contact(
         // via_number is true here, so Manhattan resolved a Number node; the
         // match is exhaustive rather than assuming it.
         if let Some(node) = number_node {
-            match number_lease::record_admission(&state.pool, node, initiator).await {
+            match number_lease::record_admission(&state.pool, node, initiator, owner).await {
                 // Spent, already spent by this same identity, or a Number
                 // carrying no budget at all. All three proceed.
                 Ok(Admission::Recorded(alert)) => budget_alert = alert,
@@ -2084,7 +2085,7 @@ pub async fn evaluate_contact(
 
     let mut request_id: Option<Uuid> = None;
     if decision == "request" {
-        match contact::open_request(&state.pool, owner, initiator, number_node, note).await {
+        match contact::open_request(&state.pool, owner, initiator, number_node, note, initiator_account.clone()).await {
             Ok(id) => request_id = id,
             Err(e) => {
                 tracing::error!("evaluate_contact: opening request: {e}");
@@ -2457,7 +2458,8 @@ pub async fn decide_contact_request(
         return bad("request_id required");
     };
     let accept = body["accept"].as_bool().unwrap_or(false);
-    match contact::decide_request(&state.pool, pial, request_id, accept).await {
+    let owner_account = body["owner_account"].as_str().map(str::to_string);
+    match contact::decide_request(&state.pool, pial, request_id, accept, owner_account).await {
         Ok(Some(requester)) => Json(json!({
             "ok": true,
             "accepted": accept,

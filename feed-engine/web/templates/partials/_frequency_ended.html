@@ -22,7 +22,7 @@ FACET frequency_ended
 
   signals:
     emits:    none
-    receives: frequency_facet (SSE)
+    receives: facet.mutate (SSE)
 
   context:
     frequency_stage → replaces the speaker grid and queue
@@ -41,7 +41,8 @@ FACET frequency_ended
     {{if eq .EndReason "host_lost"}}The host lost connection. {{end}}
     Hosted by <a href="/{{.Host.Handle}}">@{{.Host.Handle}}</a>{{if gt .SpeakerCount 0}} with {{.SpeakerCount}} speaker{{if ne .SpeakerCount 1}}s{{end}}{{end}}.
   </p>
-  <p class="freq-ended__replay">{{if eq .State "archived"}}Replay ready{{else}}Replay soon{{end}}</p>
   {{end}}
+  {{if eq .State "archived"}}{{template "frequency_replay_player" (dict "ID" .ID)}}{{end}}
+  {{if eq .State "processing_replay"}}<p class="freq-ended__sub" role="status">The replay is being prepared.</p>{{end}}
 </div>
 {{end}}

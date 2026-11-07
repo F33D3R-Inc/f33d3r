@@ -534,6 +534,53 @@ async fn burn_watermarked_mp4(
     Ok(())
 }
 
+const AUDIOGRAM_FONT: &str = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf";
+
+/// Draws a stretch of audio as a video: its waveform under the room's title. The words
+/// go through a file, so nothing in a title can be read as a filter instruction.
+pub async fn make_audiogram(
+    replay: &Path,
+    dest: &Path,
+    title_file: &Path,
+    start_seconds: u32,
+    length_seconds: u32,
+    title: &str,
+    host_handle: &str,
+) -> Result<()> {
+    let short: String = title.chars().take(60).collect();
+    let words = format!("{short}\n@{} on f33d3r", sanitize_for_drawtext(host_handle));
+    tokio::fs::write(title_file, words)
+        .await
+        .context("writing audiogram title")?;
+    let filter = format!(
+        "color=c=0x0B0B0F:s=1280x720:r=30[bg];\
+         [0:a]showwaves=s=1280x320:mode=cline:rate=30:colors=0xF97316,format=rgba[wave];\
+         [bg][wave]overlay=0:300:shortest=1,\
+         drawtext=fontfile={AUDIOGRAM_FONT}:textfile={}:x=(w-text_w)/2:y=90:fontsize=44:\
+         fontcolor=white:line_spacing=18:expansion=none,format=yuv420p[v]",
+        title_file.display()
+    );
+    let status = Command::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-y"])
+        .args(["-ss", &start_seconds.to_string()])
+        .args(["-t", &length_seconds.to_string()])
+        .arg("-i")
+        .arg(replay)
+        .args(["-filter_complex", &filter])
+        .args(["-map", "[v]", "-map", "0:a"])
+        .args(["-c:v", "libx264", "-preset", "veryfast", "-crf", "24"])
+        .args(["-c:a", "aac", "-b:a", "128k", "-shortest", "-movflags", "+faststart"])
+        .arg(dest)
+        .status()
+        .await
+        .context("ffmpeg audiogram failed to spawn")?;
+    let _ = tokio::fs::remove_file(title_file).await;
+    if !status.success() {
+        return Err(anyhow!("ffmpeg audiogram exit {status}"));
+    }
+    Ok(())
+}
+
 /// Full pipeline: probe → poster → clean HLS pass → watermarked MP4 → write to media filesystem.
 ///
 /// Pass 1 (clean HLS): no watermark → `posts/{asset_id}/clean/` — served to the in-app player.

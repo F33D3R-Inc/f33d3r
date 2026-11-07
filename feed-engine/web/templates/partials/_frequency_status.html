@@ -23,7 +23,7 @@ FACET frequency_status
 
   signals:
     emits:    none
-    receives: frequency_facet (SSE)
+    receives: facet.mutate (SSE)
 
   context:
     frequency_stage → under the header
@@ -40,9 +40,12 @@ FACET frequency_status
   {{- else if eq .State "moderation_terminated"}}
     <span class="freq-status__item freq-status__item--warn">Removed by F33D3R moderation</span>
   {{- else if eq .State "scheduled"}}
-    <span class="freq-status__item">Scheduled{{if .TimeLabel}} · {{.TimeLabel}}{{end}}</span>
+    <span class="freq-status__item">Starts {{if .ScheduledISO}}<time data-local datetime="{{.ScheduledISO}}">{{.TimeLabel}}</time>{{else}}{{.TimeLabel}}{{end}}</span>
+    {{- if gt .ReminderCount 0}}<span class="freq-status__item">{{.ReminderCount}} {{if eq .ReminderCount 1}}person has{{else}}people have{{end}} a reminder</span>{{end}}
+  {{- else if eq .State "cancelled"}}
+    <span class="freq-status__item">This Frequency was cancelled</span>
   {{- else if or (eq .State "processing_replay") (eq .State "archived")}}
-    <span class="freq-status__item">Ended{{if .EndedLabel}} · {{.EndedLabel}}{{end}} · Replay {{if eq .State "archived"}}ready{{else}}soon{{end}}</span>
+    <span class="freq-status__item">Ended{{if .EndedLabel}} · {{.EndedLabel}}{{end}} · Replay {{if eq .State "archived"}}available{{else}}being prepared{{end}}</span>
   {{- else}}
     <span class="freq-status__item">{{.State}}</span>
   {{- end}}
