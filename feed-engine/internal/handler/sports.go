@@ -64,7 +64,6 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/f33d3r/feed-engine/internal/model"
 	"github.com/f33d3r/feed-engine/internal/sports"
 )
 
