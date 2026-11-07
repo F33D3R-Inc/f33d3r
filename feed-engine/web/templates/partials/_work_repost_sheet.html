@@ -32,7 +32,7 @@ FACET work_repost_sheet
       <path d="M17 1l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/>
       <path d="M7 23l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/>
     </svg>
-    <span id="repost-count-{{.WorkID}}"{{if not .RepostCount}} style="display:none"{{end}}>{{.RepostCount}}</span>
+    {{template "work_count_repost" .}}
   </button>
   <div class="wab-sheet repost-sheet" id="rs-{{.WorkID}}">
     <button class="wab-sheet-btn repost-sheet-btn"
@@ -63,3 +63,5 @@ FACET work_repost_sheet
   </div>
 </div>
 {{end}}
+
+{{define "work_count_repost"}}<span id="repost-count-{{.WorkID}}" data-facet-id="facet:f33d3r:work:{{.WorkID}}:count_repost"{{if not .RepostCount}} style="display:none"{{end}}>{{.RepostCount}}</span>{{end}}

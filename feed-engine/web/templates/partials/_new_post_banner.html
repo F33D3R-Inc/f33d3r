@@ -17,13 +17,23 @@ FACET new_post_banner
   context:
     index.html → #new-post-slot (between .main-head and #feed-container)
 */}}
+{{define "new_post_slot"}}
+<div id="new-post-slot" class="new-post-slot" data-feed-surface="{{.ActiveSurface}}"{{if .OOB}} hx-swap-oob="outerHTML"{{end}}>
+  {{template "new_post_banner" .}}
+</div>
+{{end}}
+
 {{define "new_post_banner"}}
-<button id="new-post-banner" class="new-post-banner" style="display:none"
-        onclick="showNewPosts()" aria-live="polite" aria-label="Show new posts">
+<button id="new-post-banner" class="new-post-banner" data-facet-id="facet:f33d3r:feed:following:new_posts"
+        type="button"{{if not .NewPostCount}} hidden{{end}}
+        hx-get="/facets/works/feed?surface=following"
+        hx-target="#feed-container"
+        hx-swap="innerHTML show:window:top"
+        aria-live="polite" aria-label="Show new posts">
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
        style="width:15px;height:15px;flex-shrink:0">
     <line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/>
   </svg>
-  <span id="new-post-count">Show new posts</span>
+  <span>Show {{.NewPostCount}} new post{{if ne .NewPostCount 1}}s{{end}}</span>
 </button>
 {{end}}

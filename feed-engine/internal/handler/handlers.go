@@ -845,6 +845,7 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /facets/frequency/{id}/replay_controls", h.rlRead.Limit(h.facetFrequencyReplayControls))
 	mux.HandleFunc("GET /facets/frequency/{id}/clip", h.rlRead.Limit(h.facetFrequencyClip))
 	mux.HandleFunc("GET /facets/frequency/{id}/clip/{upload}", h.rlRead.Limit(h.requireHandle(h.facetFrequencyClipStatus)))
+	mux.HandleFunc("GET /facets/work/{id}/card", h.rlRead.Limit(h.facetWorkCard))
 	mux.HandleFunc("GET /facets/frequency/{id}/remind", h.rlRead.Limit(h.facetFrequencyRemind))
 	mux.HandleFunc("GET /facets/frequency-host/{handle}", h.rlRead.Limit(h.facetFrequenciesByHost))
 	mux.HandleFunc("GET /facets/frequency/{id}/people", h.rlRead.Limit(h.requireHandle(h.facetFrequencyPeople)))

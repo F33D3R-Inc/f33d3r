@@ -203,9 +203,9 @@ func messageDTO(m gnosis.Message, viewerAccount string, who gnosis.Participant) 
 	}
 }
 
-// hydrateSenders resolves every distinct sender on a page of messages to a
+// loadSenders resolves every distinct sender on a page of messages to a
 // display identity, in one query.
-func (h *Handler) hydrateSenders(msgs []gnosis.Message, known map[string]gnosis.Participant) map[string]gnosis.Participant {
+func (h *Handler) loadSenders(msgs []gnosis.Message, known map[string]gnosis.Participant) map[string]gnosis.Participant {
 	out := map[string]gnosis.Participant{}
 	for k, v := range known {
 		out[k] = v
@@ -312,7 +312,7 @@ func (h *Handler) apiV1MessageThread(w http.ResponseWriter, r *http.Request, u *
 			Handle: p.Handle, Display: p.Display, Avatar: strPtr(p.Avatar), Account: p.AccountID,
 		})
 	}
-	byAccount = h.hydrateSenders(msgs, byAccount)
+	byAccount = h.loadSenders(msgs, byAccount)
 
 	row, found, err := gnosis.ConversationRowForAccount(h.db, convoID, u.ID)
 	if err != nil {

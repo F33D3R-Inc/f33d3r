@@ -183,6 +183,9 @@ func (h *Handler) facetWorksFeed(w http.ResponseWriter, r *http.Request) {
 		}
 		result.Works = kept
 	}
+	if spec == specFollowing && before == "" {
+		h.clearNewPosts(user.PIALID)
+	}
 	cards := h.renderTimelineCards(result, user, surface)
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -249,6 +252,8 @@ func (h *Handler) writeFeedTabsOOB(w http.ResponseWriter, r *http.Request, viewe
 	}
 	switch r.Header.Get("HX-Target") {
 	case "feed-container":
+		// The pill is about Following. The active tab decides whether it may show.
+		h.renderPartial(w, "new_post_slot", map[string]interface{}{"ActiveSurface": surface, "NewPostCount": newPostCount(viewer.PIALID), "OOB": true})
 		var pinned []model.FeedSurface
 		if h.db != nil && viewer != nil && viewer.ID != "" {
 			pinned, _ = dbpkg.GetUserSurfaces(h.db, viewer.ID)
@@ -822,6 +827,25 @@ func (h *Handler) publishWorkEngagementFor(work *model.Work) {
 	if fragment := h.renderWorkCountsRow(work); fragment != "" {
 		PublishToPostWatchers(work.ID, SSEEvent{Type: "post_engagement", Data: fragment})
 	}
+
+	// The numbers on a card's action bar: nothing in them differs by viewer.
+	for name, data := range map[string]map[string]interface{}{
+		"work_count_like":    {"WorkID": work.ID, "LikeCount": work.LikeCount},
+		"work_count_dislike": {"WorkID": work.ID, "DislikeCount": work.DislikeCount},
+		"work_count_reply":   {"WorkID": work.ID, "ReplyCount": work.ReplyCount},
+		"work_count_repost":  {"WorkID": work.ID, "RepostCount": work.RepostCount},
+	} {
+		var buf bytes.Buffer
+		if err := h.partial.ExecuteTemplate(&buf, name, data); err != nil {
+			log.Printf("[engagement] %s %s: %v", name, work.ID, err)
+			continue
+		}
+		PublishFacetToPostWatchers(work.ID, FacetMutation{
+			FacetID:  "facet:f33d3r:work:" + work.ID + ":" + strings.TrimPrefix(name, "work_"),
+			Fragment: buf.String(),
+			Priority: FacetPriorityLow,
+		})
+	}
 }
 
 // renderWorkCountsRow renders the work_counts_row Facet. A render failure costs
@@ -980,6 +1004,23 @@ func (h *Handler) facetWorkEditions(w http.ResponseWriter, r *http.Request) {
 		"Editions": editions,
 		"WorkID":   id,
 	})
+}
+
+// facetWorkCard — GET /facets/work/{id}/card
+// One work's card for this viewer. An empty answer means they may not see it.
+func (h *Handler) facetWorkCard(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if h.db == nil {
+		return
+	}
+	user := h.userFromRequest(w, r)
+	work, ok := h.workReadable(r.PathValue("id"), user)
+	if !ok {
+		return
+	}
+	for _, c := range h.renderWorkCardSet([]*model.Work{work}, user, h.workCardCtx(user, "work_replies")) {
+		_, _ = w.Write([]byte(c.Fragment))
+	}
 }
 
 // workReadable loads a work if this viewer may read its conversation: it exists, no wall

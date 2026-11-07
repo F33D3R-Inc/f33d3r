@@ -15,7 +15,7 @@ FACET reply_preview
     user_avatar
 
   signals:
-    emits:    none (link navigates to /post/{ID})
+    emits:    none (link navigates to /work/{ID})
     receives: none
 
   context:
@@ -23,7 +23,7 @@ FACET reply_preview
 */}}
 {{define "reply_preview"}}
 {{if .LatestReplierHandles}}
-<a href="/post/{{.ID}}" class="reply-preview" onclick="event.stopPropagation()">
+<a href="/work/{{.ID}}" class="reply-preview" onclick="event.stopPropagation()">
   <div class="reply-preview-avatars">
     {{range $i, $h := .LatestReplierHandles}}
     {{template "user_avatar" (dict "Handle" $h "AvatarURL" (index $.LatestReplierAvatars $i) "DisplayName" $h "Size" "xs")}}

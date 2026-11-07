@@ -8,54 +8,6 @@ F33D3R.page('index', function (root) {
   const MY_HANDLE       = document.querySelector('meta[name="f33d3r:handle"]')?.content || '';
   const CURRENT_SURFACE = document.querySelector('meta[name="f33d3r:surface"]')?.content || 'feed';
 
-  // ── New-post banner ───────────────────────────────────────────────────────────
-  var _newPostCount = 0;
-
-  function _updateBanner() {
-    var banner = document.getElementById('new-post-banner');
-    var label  = document.getElementById('new-post-count');
-    if (!banner || !label) return;
-    var activeTab = document.querySelector('.feed-tab.is-active');
-    var surface   = activeTab ? activeTab.dataset.surface : '';
-    if (_newPostCount > 0 && surface === 'following') {
-      label.textContent = 'Show ' + _newPostCount + ' new post' + (_newPostCount === 1 ? '' : 's');
-      banner.style.display = 'flex';
-    } else {
-      banner.style.display = 'none';
-    }
-  }
-
-  // The Shell runtime (f33d3r.js) owns the default of both of these; they are
-  // taken over while the home feed is on screen and handed back on teardown.
-  var prevOnSSEPost   = window._onSSEPost;
-  var prevShowNewPosts = window.showNewPosts;
-
-  window._onSSEPost = function(e) {
-    var n = parseInt(e.data, 10) || 0;
-    if (n <= 0) return;
-    _newPostCount += n;
-    _updateBanner();
-  };
-
-  window.showNewPosts = function() {
-    _newPostCount = 0;
-    var banner = document.getElementById('new-post-banner');
-    if (banner) banner.style.display = 'none';
-    var fc = document.getElementById('feed-container');
-    if (fc) htmx.trigger(fc, 'refreshFeed');
-    var col = document.getElementById('main-col');
-    if (col) col.scrollTo({ top: 0, behavior: 'smooth' });
-  };
-
-  // A feed tab is a hypermedia control (hx-get on the tab itself); the server
-  // answers with the cards and the tab strip re-rendered. The banner only needs
-  // to learn which tab is now active once that strip has been placed.
-  F33D3R.once('index:tab-swap', function () {
-    document.addEventListener('htmx:oobAfterSwap', function (e) {
-      if (e.target && e.target.id === 'feed-tabs-scroll') _updateBanner();
-    });
-  });
-
   // ── Surface sheet (Add+ button) ───────────────────────────────────────────────
   function openTopicSheet() {
     var el = document.getElementById('topic-sheet');
@@ -115,7 +67,5 @@ F33D3R.page('index', function (root) {
   return function teardown() {
     document.removeEventListener('htmx:afterSwap', onSwap);
     observer.disconnect();
-    window._onSSEPost   = prevOnSSEPost;
-    window.showNewPosts = prevShowNewPosts;
   };
 });

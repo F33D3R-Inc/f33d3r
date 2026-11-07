@@ -36,6 +36,7 @@ FACET work_menu
       </svg>
       Copy link
     </button>
+    {{if .W.Body}}
     <button class="post-menu-item" type="button"
             hx-post="/api/post/{{.W.ID}}/translate"
             hx-target="#translate-wrap-{{.W.ID}}"
@@ -46,6 +47,7 @@ FACET work_menu
       </svg>
       Translate
     </button>
+    {{end}}
 
     {{if .Ctx}}
     {{if eq .W.AuthorHandle .Ctx.CurrentUserHandle}}
@@ -62,8 +64,8 @@ FACET work_menu
     </button>
     {{if .W.IsPinned}}
     <button class="post-menu-item"
-            hx-post="/events" hx-vals='{"event_type":"unpin_post"}'
-            onclick="closeAllPostMenus()">
+            hx-post="/events" hx-vals='{"event_type":"unpin_post"}' hx-swap="none"
+            onclick="closeAllPostMenus();toast('Post unpinned from your profile')">
       <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
         <line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"/>
         <line x1="2" y1="2" x2="22" y2="22" stroke="currentColor"/>
@@ -72,8 +74,8 @@ FACET work_menu
     </button>
     {{else}}
     <button class="post-menu-item"
-            hx-post="/events" hx-vals='{"event_type":"pin_post","post_id":"{{.W.ID}}"}'
-            onclick="closeAllPostMenus()">
+            hx-post="/events" hx-vals='{"event_type":"pin_post","post_id":"{{.W.ID}}"}' hx-swap="none"
+            onclick="closeAllPostMenus();toast('Post pinned to your profile')">
       <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
         <line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"/>
       </svg>
@@ -113,16 +115,16 @@ FACET work_menu
     <div class="post-menu-sep"></div>
     <button class="post-menu-item post-menu-item-danger"
             hx-post="/events" hx-vals='{"event_type":"block","target_handle":"{{.W.AuthorHandle}}"}'
-            hx-confirm="Block @{{.W.AuthorHandle}}? Their posts will be hidden from your feeds."
-            onclick="closeAllPostMenus()">
+            hx-confirm="Block @{{.W.AuthorHandle}}? Their posts will be hidden from your feeds." hx-swap="none"
+            onclick="closeAllPostMenus();toast('@{{.W.AuthorHandle}} blocked')">
       <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
         <circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
       </svg>
       Block @{{.W.AuthorHandle}}
     </button>
     <button class="post-menu-item"
-            hx-post="/events" hx-vals='{"event_type":"mute","target_handle":"{{.W.AuthorHandle}}"}'
-            onclick="closeAllPostMenus()">
+            hx-post="/events" hx-vals='{"event_type":"mute","target_handle":"{{.W.AuthorHandle}}"}' hx-swap="none"
+            onclick="closeAllPostMenus();toast('@{{.W.AuthorHandle}} muted')">
       <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
         <line x1="1" y1="1" x2="23" y2="23"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6"/>
         <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23M12 19v3M8 23h8"/>

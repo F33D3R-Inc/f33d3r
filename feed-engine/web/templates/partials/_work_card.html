@@ -31,7 +31,7 @@ FACET work_card
 {{if eq $w.ScanState "blocked"}}
 {{template "violation_notice" (dict "PostID" $w.ID)}}
 {{else if and $w.SubscriberOnly (not $w.ViewerSubscribed) (or (not $ctx) (ne $w.AuthorHandle $ctx.CurrentUserHandle))}}
-<article class="post-card post-card--locked" data-work-id="{{$w.ID}}" role="article">
+<article class="post-card post-card--locked" data-facet-id="facet:f33d3r:work:{{$w.ID}}:card" data-work-id="{{$w.ID}}" role="article">
   <div class="pcd">
     <div class="pcd-row">
       <div class="thread-avatar-col">
@@ -57,7 +57,7 @@ FACET work_card
 {{else}}
 
 <article class="post-card{{if $w.MediaURLs}} has-media{{end}}"
-         data-facet-id="work:{{$w.ID}}"
+         data-facet-id="facet:f33d3r:work:{{$w.ID}}:card"
          data-work-id="{{$w.ID}}"
          data-work-cid="{{$w.CID}}"
          data-content-id="{{$w.ID}}"
@@ -155,7 +155,7 @@ FACET work_card
           {{if $w.Tags}}
           <div class="post-tags-row">
             {{range $w.Tags}}
-            <a href="/search?q=%23{{.}}" class="post-tag" onclick="event.stopPropagation()">#{{.}}</a>
+            <a href="/tag/{{.}}" class="post-tag" onclick="event.stopPropagation()">#{{.}}</a>
             {{end}}
           </div>
           {{end}}
@@ -176,6 +176,9 @@ FACET work_card
   </div>{{/* /pcd */}}
 
   {{/* ── Mobile focus card layout (pcf) ──────────────────────── */}}
+  {{/* Only for someone who chose reels: otherwise it would be a second copy of the card
+       and its media in every page. */}}
+  {{if and $ctx.User (eq $ctx.User.MobileFeedView "reels")}}
   <div class="pcf">
     {{if not (adultMediaOpen $w $ctx.User)}}
     <div class="focus-bg"><div class="focus-bg-text"></div></div>
@@ -207,13 +210,14 @@ FACET work_card
             {{template "user_avatar" (dict "Handle" $w.AuthorHandle "AvatarURL" $w.AvatarURL "DisplayName" $w.AuthorName "Size" "md")}}
           </a>
           <div>
-            <a href="/{{$w.AuthorHandle}}" onclick="event.stopPropagation()" class="focus-name">{{$w.AuthorName}}{{if $w.IsVerified}}&nbsp;<svg style="display:inline;width:11px;height:11px;vertical-align:middle;color:var(--accent)" viewBox="0 0 24 24" fill="currentColor"><path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>{{end}}</a>
+            <a href="/{{$w.AuthorHandle}}" onclick="event.stopPropagation()" class="focus-name">{{$w.AuthorName}}</a>
+            {{template "badge_pill" (dict "Role" $w.AuthorRole "OfficialType" $w.AuthorOfficialType "IsVerified" $w.IsVerified "IsCreator" $w.AuthorIsCreator)}}
             <span class="focus-handle">@{{$w.AuthorHandle}} · {{$w.TimeAgo}}</span>
           </div>
         </div>
         <div class="focus-body" id="fbd-{{$w.ID}}">{{markdownHTML $w.Body}}</div>
         <button class="focus-more" id="fbm-{{$w.ID}}" onclick="event.stopPropagation();expandFocusBody('{{$w.ID}}')">more</button>
-        {{if $w.Tags}}<div class="focus-tags">{{range $w.Tags}}<a href="/search?q=%23{{.}}" class="focus-tag" onclick="event.stopPropagation()">#{{.}}</a>{{end}}</div>{{end}}
+        {{if $w.Tags}}<div class="focus-tags">{{range $w.Tags}}<a href="/tag/{{.}}" class="focus-tag" onclick="event.stopPropagation()">#{{.}}</a>{{end}}</div>{{end}}
         {{/* Ballot — Surface="pcf" so a mobile vote swaps the mobile ballot and
              not the desktop one, which is in the same DOM. */}}
         {{if $w.Poll}}
@@ -237,6 +241,7 @@ FACET work_card
       {{template "work_focus_sidebar" (dict "W" $w "Ctx" $ctx)}}
     </div>{{/* /focus-content */}}
   </div>{{/* /pcf */}}
+  {{end}}
 
 </article>
 {{end}}{{/* blocked */}}

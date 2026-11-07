@@ -301,29 +301,12 @@ window.F33D3R = window.F33D3R || {};
       window._onSSEFollowState && window._onSSEFollowState(e);
     });
 
-    // new_post: server sends fully rendered post_card HTML.
-    // Buffer it client-side; show banner with count. Never parse as JSON.
-    es.addEventListener('new_post', function(e) {
-      if (!e.data) return;
-      // Only show the banner on the home feed page
-      var feedContainer = document.getElementById('feed-container');
-      if (!feedContainer) return;
-      window._pendingPosts = window._pendingPosts || [];
-      window._pendingPosts.push(e.data);
-      var count = window._pendingPosts.length;
-      var countEl = document.getElementById('new-post-count');
-      if (countEl) {
-        countEl.textContent = count + ' new post' + (count === 1 ? '' : 's');
-      }
-      var banner = document.getElementById('new-post-banner');
-      if (banner) banner.style.display = 'flex';
-    });
-
     es.addEventListener('post_deleted', function(e) {
-      // Data is the raw work UUID. Locate all matching article elements in the DOM and remove them.
+      // Data is the raw work UUID. Remove it everywhere it shows: card, detail, locked
+      // card, vision and any quote of it.
       var workID = (e.data || '').trim();
       if (!workID) return;
-      document.querySelectorAll('article[data-facet-id="work:' + workID + '"]').forEach(function(el) {
+      document.querySelectorAll('[data-work-id="' + CSS.escape(workID) + '"]').forEach(function(el) {
         el.style.transition = 'opacity 0.25s';
         el.style.opacity = '0';
         setTimeout(function() { el.parentNode && el.parentNode.removeChild(el); }, 260);
@@ -410,39 +393,6 @@ window.F33D3R = window.F33D3R || {};
 
   connect();
 })();
-
-// ── showNewPosts: flush buffered SSE post cards into #feed-container ──────────
-// Called by onclick="showNewPosts()" on #new-post-banner.
-window.showNewPosts = function() {
-  var pending = window._pendingPosts || [];
-  if (!pending.length) return;
-  var feedContainer = document.getElementById('feed-container');
-  if (!feedContainer) return;
-
-  // Prepend newest-first (array is oldest-first from SSE, so reverse before inserting)
-  var reversed = pending.slice().reverse();
-  reversed.forEach(function(html) {
-    var tmp = document.createElement('div');
-    tmp.innerHTML = html;
-    var article = tmp.firstElementChild;
-    if (!article) return;
-    feedContainer.insertBefore(article, feedContainer.firstChild);
-    if (typeof htmx !== 'undefined') htmx.process(article);
-  });
-
-  // Reset buffer and banner
-  window._pendingPosts = [];
-  var banner = document.getElementById('new-post-banner');
-  if (banner) banner.style.display = 'none';
-  var countEl = document.getElementById('new-post-count');
-  if (countEl) countEl.textContent = '0';
-
-  // Format timestamps on the newly prepended posts
-  if (typeof formatPostTimes === 'function') formatPostTimes(feedContainer);
-
-  // Scroll to top so the new posts are visible
-  window.scrollTo({ top: 0, behavior: 'smooth' });
-};
 
 // ── FA Live Layer 2: SSE handlers for live mutation events ───────────────────
 // All event data is pre-rendered HTML — swap directly, never parse JSON.
@@ -637,6 +587,8 @@ window._onSSEAnalyticsTick = function(e) {
 
   function _observeAll(root) {
     var ctx = root || document;
+    // A swap can hand over the card itself, which querySelectorAll would not include.
+    if (ctx.matches && ctx.matches('article.post-card[data-content-id], [data-watch-id]')) postObs.observe(ctx);
     ctx.querySelectorAll('article.post-card[data-content-id], [data-watch-id]').forEach(function(el) {
       postObs.observe(el);
     });
@@ -1018,8 +970,7 @@ window.openReplyCompose = function(postId, handle, name) {
   if (!modal) return;
 
   // Find parent CID from the work card in the DOM.
-  // work_card uses data-facet-id="work:ID"; work_detail_focus uses data-work-id="ID".
-  var card = document.querySelector('[data-facet-id="work:' + postId + '"], [data-work-id="' + postId + '"]');
+  var card = document.querySelector('[data-work-id="' + postId + '"]');
   var parentCID = card ? (card.dataset.workCid || '') : '';
 
   // Stash parent_id
@@ -3505,6 +3456,7 @@ window.shareNative = function(btn) {
   // Re-attach after HTMX swaps inject new post cards
   document.addEventListener('htmx:afterSwap', function(e) {
     if (e.detail && e.detail.elt) {
+      if (e.detail.elt.matches && e.detail.elt.matches('[data-content-id]')) _rootObserver.observe(e.detail.elt);
       e.detail.elt.querySelectorAll('[data-content-id]').forEach(function(el) {
         _rootObserver.observe(el);
       });

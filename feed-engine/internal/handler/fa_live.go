@@ -266,19 +266,16 @@ func (h *Handler) publishWatchedFacet(watchKey, facetID, partial string, data ma
 }
 
 // publishNewReply adds a new reply to the thread of everyone watching the work it
-// answers. The card is rendered for no particular viewer, as new-post fan-out does.
-// The wrapper carries the Facet ID the event model requires; the runtime skips the
-// row if the reply's own card is already on screen, which it is for its author.
+// answers. The stream carries only where it goes: each person's page then fetches the
+// card for themselves, so it passes their checks and carries their own state. The
+// placeholder names the card, and the runtime skips the row if it's already on screen,
+// which it is for its author.
 func (h *Handler) publishNewReply(parentWorkID, replyWorkID string) {
-	card, err := h.renderWorkCardByID(replyWorkID, nil)
-	if err != nil {
-		log.Printf("[fa-live] reply %s: %v", replyWorkID, err)
-		return
-	}
 	facetID := "facet:f33d3r:work:" + replyWorkID + ":reply_row"
 	PublishFacetToPostWatchers(parentWorkID, FacetMutation{
-		FacetID:       facetID,
-		Fragment:      `<div data-facet-id="` + facetID + `">` + string(card) + `</div>`,
+		FacetID: facetID,
+		Fragment: `<div data-facet-id="` + facetID + `" hx-get="/facets/work/` + replyWorkID + `/card" hx-trigger="load" hx-swap="innerHTML">` +
+			`<span hidden data-facet-id="facet:f33d3r:work:` + replyWorkID + `:card"></span></div>`,
 		Mode:          FacetAppend,
 		ParentFacetID: "facet:f33d3r:work:" + parentWorkID + ":replies",
 	})

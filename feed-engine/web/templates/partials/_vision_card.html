@@ -16,8 +16,8 @@ FACET vision_card
     visions_feed → scrolling media feed
 */}}
 {{define "vision_card"}}
-{{$w := .}}
-<article class="vision-card" data-work-id="{{$w.ID}}" data-facet="vision_card" role="article">
+{{$w := .W}}{{$ctx := .Ctx}}
+<article class="vision-card" data-work-id="{{$w.ID}}" data-facet-id="facet:f33d3r:work:{{$w.ID}}:vision" role="article">
   <div class="vision-card__media">
     {{if $w.VideoMasterURL}}
     <video class="vision-card__video"
@@ -40,6 +40,7 @@ FACET vision_card
     {{end}}
   </div>
   <div class="vision-card__actions">
+    {{template "work_menu" (dict "W" $w "Ctx" $ctx)}}
     <button class="vision-card__action{{if $w.LikedByUser}} is-active{{end}}"
             aria-label="Like" aria-pressed="{{if $w.LikedByUser}}true{{else}}false{{end}}"
             onclick="event.stopPropagation();toggleWorkReaction(this,'{{$w.ID}}','like',{{if $w.LikedByUser}}true{{else}}false{{end}})">

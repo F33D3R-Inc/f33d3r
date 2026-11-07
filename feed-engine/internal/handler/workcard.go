@@ -2,7 +2,6 @@ package handler
 
 import (
 	"bytes"
-	"fmt"
 	"html/template"
 	"log"
 
@@ -133,19 +132,6 @@ func (h *Handler) enrichWorks(works []*model.Work, viewer *model.User) {
 // produces an empty buffer, is logged with its id and dropped — a half-written
 // or empty fragment on the stream is a broken card in the browser, and one bad
 // work must never take the rest of the batch down with it.
-//
-// viewer may be nil. That is the stream fan-out: it renders one fragment and
-// broadcasts it to every follower, because rendering per recipient would turn a
-// single render into one render per follower and does not survive a large
-// follow graph. A nil viewer therefore produces the complete
-// non-viewer-relative card: everything that does not depend on who is looking
-// is present (author, body, media, counts, quotes, link previews, repliers,
-// relative time), while viewer-relative marks (the viewer's own like/repost/
-// bookmark state, their pinned marker) are absent because there is no single
-// viewer they could belong to, and adult media renders behind the gate rather
-// than raw. Adult works are not dropped for a nil viewer — a broadcast has no
-// one viewer to filter for, and dropping them would silently deny delivery to
-// the followers entitled to them.
 func (h *Handler) renderWorkCardSet(works []*model.Work, viewer *model.User, ctx map[string]interface{}) []workCardFragment {
 	if len(works) == 0 || h.partial == nil {
 		return nil
@@ -183,7 +169,7 @@ func (h *Handler) renderFinishedCards(works []*model.Work, ctx map[string]interf
 		var data interface{} = map[string]interface{}{"W": wk, "Ctx": ctx}
 		if s, _ := ctx["Surface"].(string); s == surfaceVisions {
 			name = "vision_card"
-			data = wk
+			data = map[string]interface{}{"W": wk, "Ctx": ctx}
 		}
 		var buf bytes.Buffer
 		if err := h.partial.ExecuteTemplate(&buf, name, data); err != nil {
@@ -209,24 +195,4 @@ func (h *Handler) renderWorkCards(works []*model.Work, viewer *model.User, ctx m
 		out = append(out, c.Fragment)
 	}
 	return out
-}
-
-// renderWorkCardByID loads a work by id, enriches it, and returns the finished
-// fragment. Used by the stream fan-out, which has a work id and nothing else.
-func (h *Handler) renderWorkCardByID(workID string, viewer *model.User) (template.HTML, error) {
-	if h.db == nil {
-		return "", fmt.Errorf("work %s: no database", workID)
-	}
-	work, err := dbpkg.GetWorkByID(h.db, workID, viewerAccountID(viewer))
-	if err != nil {
-		return "", fmt.Errorf("work %s: %w", workID, err)
-	}
-	if work == nil {
-		return "", fmt.Errorf("work %s not found", workID)
-	}
-	cards := h.renderWorkCardSet([]*model.Work{work}, viewer, h.workCardCtx(viewer, ""))
-	if len(cards) == 0 {
-		return "", fmt.Errorf("work %s produced no fragment", workID)
-	}
-	return cards[0].Fragment, nil
 }

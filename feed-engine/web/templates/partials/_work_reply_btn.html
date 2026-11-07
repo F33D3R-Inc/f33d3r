@@ -26,6 +26,8 @@ FACET work_reply_btn
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
     <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
   </svg>
-  <span id="reply-count-{{.WorkID}}"{{if not .ReplyCount}} style="display:none"{{end}}>{{.ReplyCount}}</span>
+  {{template "work_count_reply" .}}
 </button>
 {{end}}
+
+{{define "work_count_reply"}}<span id="reply-count-{{.WorkID}}" data-facet-id="facet:f33d3r:work:{{.WorkID}}:count_reply"{{if not .ReplyCount}} style="display:none"{{end}}>{{.ReplyCount}}</span>{{end}}

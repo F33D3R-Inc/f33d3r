@@ -33,6 +33,7 @@ func (h *Handler) indexPage(w http.ResponseWriter, r *http.Request) {
 		"User":           user,
 		"Surface":        "feed",
 		"ActiveSurface":  active,
+		"NewPostCount":   newPostCount(user.PIALID),
 		"SessionID":      uuid.New().String(),
 		"Title":          "Home",
 		"ShowScores":     h.cfg.ShowScores,

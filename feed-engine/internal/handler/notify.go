@@ -9,13 +9,8 @@ import (
 	dbpkg "github.com/f33d3r/feed-engine/internal/db"
 )
 
-// publishNewPostToFollowers fans out a new_work SSE event to followers.
-// The fragment is rendered once through renderWorkCardByID — the single
-// work_card entry point — and broadcast, so the card that arrives over the
-// stream is the same card the same work renders as on an HTTP facet fetch.
-// One render is deliberate: rendering per follower would scale with the follow
-// graph, so the broadcast carries the non-viewer-relative card (see
-// renderWorkCardSet).
+// publishNewPostToFollowers tells followers there is something new. The stream carries
+// a count for the web and the work's id for the app; the card is read per person.
 func (h *Handler) publishNewPostToFollowers(posterUserID, workID string) {
 	if h.db == nil || h.partial == nil {
 		return
@@ -77,25 +72,16 @@ func (h *Handler) publishRepostToFollowers(reposterID, workID string) {
 	h.fanOutNewPost(reposterID, workID, string(twin))
 }
 
-// fanOutNewPost renders the card once and delivers it to everyone following
-// sourceUserID who is allowed to see the work.
-//
-// One render is deliberate: rendering per follower would scale with the follow
-// graph, so the broadcast carries the non-viewer-relative card (see
-// renderWorkCardSet). Who receives it is decided per follower, in SQL, against
-// the same predicates the following feed reads with.
+// fanOutNewPost tells everyone following sourceUserID who may see the work. Who that is
+// is decided per follower, in SQL, against the same rules the following feed reads with.
 func (h *Handler) fanOutNewPost(sourceUserID, workID, twin string) {
-	fragment, err := h.renderWorkCardByID(workID, nil)
-	if err != nil {
-		log.Printf("[new-work-sse] %v", err)
-		return
-	}
 	pials, err := dbpkg.FanoutFollowerPIALs(h.db, sourceUserID, workID)
 	if err != nil {
 		log.Printf("[new-work-sse] audience for work %s: %v", workID, err)
 		return
 	}
-	event := SSEEvent{Type: "new_post", Data: string(fragment), JSON: twin}
+	h.tellNewPost(pials)
+	event := SSEEvent{Type: "new_post", Data: workID, JSON: twin}
 	for _, pial := range pials {
 		PublishToUser(pial, event)
 	}

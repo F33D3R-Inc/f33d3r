@@ -27,6 +27,8 @@ FACET dislike_btn
        stroke="currentColor" stroke-width="1.8">
     <path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72A2 2 0 0 0 3.72 3.7l-1.38 9a2 2 0 0 0 2 2.3zm10-13h2.67A2.31 2.31 0 0 1 25 4v7a2.31 2.31 0 0 1-2.33 2H20"/>
   </svg>
-  {{if .DislikeCount}}<span>{{.DislikeCount}}</span>{{end}}
+  {{template "work_count_dislike" .}}
 </button>
 {{end}}
+
+{{define "work_count_dislike"}}<span data-facet-id="facet:f33d3r:work:{{.WorkID}}:count_dislike">{{if .DislikeCount}}{{.DislikeCount}}{{end}}</span>{{end}}

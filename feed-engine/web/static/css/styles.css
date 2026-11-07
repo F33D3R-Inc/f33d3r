@@ -10324,6 +10324,8 @@ div.account-switcher-row-inner { cursor:default; }
 .feed-error { display:flex; flex-direction:column; align-items:center; gap:10px; padding:28px 16px; text-align:center; }
 .feed-error__text { margin:0; font-size:14px; color:var(--text-secondary); }
 .feed-error__retry { min-height:40px; padding:8px 18px; border-radius:999px; border:1px solid var(--border); background:transparent; color:var(--text-primary); font:inherit; font-weight:600; cursor:pointer; }
+.new-post-banner[hidden] { display:none; }
+.new-post-slot:not([data-feed-surface="following"]) .new-post-banner { display:none; }
 .freq-audio-unlock {
   position:fixed; left:50%; bottom:calc(16px + env(safe-area-inset-bottom)); transform:translateX(-50%); z-index:1000;
   padding:12px 20px; border:0; border-radius:999px; background:var(--accent); color:#fff; font:inherit; font-weight:600; cursor:pointer;
