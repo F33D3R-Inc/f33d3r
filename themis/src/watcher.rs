@@ -22,8 +22,11 @@ const DELIVERY_RETRY_TICK: Duration = Duration::from_secs(60);
 const NETWORK_TIMEOUT: Duration = Duration::from_secs(20);
 /// Block timestamps may run behind real time by up to about two hours.
 const BLOCK_TIME_TOLERANCE_SECS: i64 = 7_200;
-/// A busy shop address is read back no further than this many pages per sweep.
-const MAX_HISTORY_PAGES: usize = 8;
+/// A busy address is read back no further than this per sweep. An address that hits
+/// the limit is not read in full, so nothing at it can expire on that pass.
+const MAX_HISTORY_PAGES: usize = 40;
+/// Seconds between the XRPL's epoch and the Unix one.
+const RIPPLE_EPOCH: i64 = 946_684_800;
 const ESPLORA_CONFIRMED_PAGE: usize = 25;
 
 /// Reads Bitcoin for every purchase still waiting. The database holds what is
@@ -51,28 +54,40 @@ pub async fn run_xrp_watcher(state: Arc<AppState>) {
 }
 
 async fn sweep_btc(state: &Arc<AppState>) -> Result<()> {
-    db::purchases_lapse(&state.pool).await?;
-    let pending = db::purchases_pending(&state.pool).await?;
-    if pending.is_empty() {
+    let mut any = db::purchases_pending(&state.pool).await?;
+    if any.is_empty() {
         return Ok(());
     }
     let tip = btc_tip_height(state).await?;
+    db::purchases_stamp_tip(&state.pool, tip).await?;
+    any = db::purchases_pending(&state.pool).await?;
     let mut by_address: HashMap<String, Vec<Purchase>> = HashMap::new();
-    for p in pending {
+    for p in any {
         by_address.entry(p.btc_address.clone()).or_default().push(p);
     }
     for (address, purchases) in by_address {
+        // One address the chain will not answer for must not hold up anyone else's.
         let oldest = purchases.iter().map(|p| p.created_at.timestamp()).min().unwrap_or(0);
-        let txs = btc_address_history(state, &address, oldest).await?;
+        let (txs, complete) = match btc_address_history(state, &address, oldest).await {
+            Ok(read) => read,
+            Err(e) => {
+                warn!("Bitcoin history for {address}: {e}");
+                continue;
+            }
+        };
         for p in purchases {
             let threshold = if p.expected_sats < 50_000 {
                 state.cfg.confirmation_threshold_low
             } else {
                 state.cfg.confirmation_threshold_high
             };
-            if let Some(txid) = btc_settlement(&txs, &address, p.expected_sats, p.created_at.timestamp(), tip, threshold) {
+            let Some(first_tip) = p.first_tip else { continue };
+            if let Some(txid) = btc_settlement(&txs, &address, p.expected_sats, first_tip, tip, threshold) {
                 settle(state, p, txid).await;
             }
+        }
+        if complete {
+            db::purchases_lapse_at(&state.pool, "btc", &address).await?;
         }
     }
     Ok(())
@@ -84,8 +99,9 @@ async fn btc_tip_height(state: &Arc<AppState>) -> Result<i64> {
     Ok(body.trim().parse()?)
 }
 
-/// The address's transactions back to the oldest purchase waiting on it.
-async fn btc_address_history(state: &Arc<AppState>, address: &str, oldest: i64) -> Result<Vec<Value>> {
+/// The address's transactions back to the oldest purchase waiting on it, and whether
+/// that whole stretch was read.
+async fn btc_address_history(state: &Arc<AppState>, address: &str, oldest: i64) -> Result<(Vec<Value>, bool)> {
     let mut all = Vec::new();
     let mut url = format!("{}/address/{address}/txs", state.cfg.mempool_api_url);
     for _ in 0..MAX_HISTORY_PAGES {
@@ -99,15 +115,16 @@ async fn btc_address_history(state: &Arc<AppState>, address: &str, oldest: i64) 
         all.extend(page.iter().cloned());
         match next {
             Some(txid) => url = format!("{}/address/{address}/txs/chain/{txid}", state.cfg.mempool_api_url),
-            None => break,
+            None => return Ok((all, true)),
         }
     }
-    Ok(all)
+    Ok((all, false))
 }
 
-/// The transaction that pays this purchase: confirmed deeply enough, no older than
-/// the purchase, and carrying exactly the amount reserved for it at this address.
-fn btc_settlement(txs: &[Value], address: &str, expected_sats: i64, created_at: i64, tip: i64, threshold: u32) -> Option<String> {
+/// The transaction that pays this purchase: confirmed deeply enough, mined after the
+/// purchase existed (allowing the one block that can land before it was first watched),
+/// and carrying exactly the amount reserved for it at this address.
+fn btc_settlement(txs: &[Value], address: &str, expected_sats: i64, first_tip: i64, tip: i64, threshold: u32) -> Option<String> {
     txs.iter().find_map(|tx| {
         let status = &tx["status"];
         if status["confirmed"].as_bool() != Some(true) {
@@ -117,7 +134,7 @@ fn btc_settlement(txs: &[Value], address: &str, expected_sats: i64, created_at: 
         if tip - height + 1 < i64::from(threshold) {
             return None;
         }
-        if status["block_time"].as_i64()? + BLOCK_TIME_TOLERANCE_SECS < created_at {
+        if height < first_tip {
             return None;
         }
         if sum_vout_to_address(tx, address) != expected_sats {
@@ -141,7 +158,6 @@ fn sum_vout_to_address(tx: &Value, address: &str) -> i64 {
 }
 
 async fn sweep_xrp(state: &Arc<AppState>) -> Result<()> {
-    db::purchases_lapse(&state.pool).await?;
     let pending = db::purchases_pending_xrp(&state.pool).await?;
     if pending.is_empty() {
         return Ok(());
@@ -152,19 +168,33 @@ async fn sweep_xrp(state: &Arc<AppState>) -> Result<()> {
     }
     let (mut ws, _) = timeout(NETWORK_TIMEOUT, connect_async(&state.cfg.xrp_ws_url)).await??;
     for (address, purchases) in by_address {
-        let txs = xrp_account_history(&mut ws, &address).await?;
+        // One address the ledger will not answer for must not hold up anyone else's.
+        let oldest = purchases.iter().map(|p| p.created_at.timestamp()).min().unwrap_or(0);
+        let (txs, complete) = match xrp_account_history(&mut ws, &address, oldest).await {
+            Ok(read) => read,
+            Err(e) => {
+                warn!("XRPL history for {address}: {e}");
+                continue;
+            }
+        };
         for p in purchases {
             let Some(tag) = p.payment_tag else { continue };
             if let Some(hash) = xrp_settlement(&txs, &address, tag, p.expected_sats) {
                 settle(state, p, hash).await;
             }
         }
+        if complete {
+            db::purchases_lapse_at(&state.pool, "xrp", &address).await?;
+        }
     }
     let _ = ws.close(None).await;
     Ok(())
 }
 
-async fn xrp_account_history<S>(ws: &mut WebSocketStream<S>, address: &str) -> Result<Vec<Value>>
+/// The account's transactions back to the oldest purchase waiting on it, and whether
+/// that whole stretch was read. Newest first, so a flood of small payments cannot push
+/// a real one out of reach while the read can still get back to it.
+async fn xrp_account_history<S>(ws: &mut WebSocketStream<S>, address: &str, oldest: i64) -> Result<(Vec<Value>, bool)>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
@@ -197,15 +227,20 @@ where
         if reply["status"].as_str() != Some("success") {
             return Err(anyhow!("account_tx refused: {}", reply["error"]));
         }
+        let mut reached = false;
         if let Some(txs) = reply["result"]["transactions"].as_array() {
             all.extend(txs.iter().cloned());
+            reached = txs
+                .last()
+                .and_then(|t| t["tx"]["date"].as_i64())
+                .is_some_and(|d| d + RIPPLE_EPOCH + BLOCK_TIME_TOLERANCE_SECS < oldest);
         }
         marker = reply["result"]["marker"].clone();
-        if marker.is_null() {
-            break;
+        if marker.is_null() || reached {
+            return Ok((all, true));
         }
     }
-    Ok(all)
+    Ok((all, false))
 }
 
 /// The validated payment that settles this purchase. The amount is what the ledger
@@ -454,23 +489,23 @@ mod tests {
     #[test]
     fn btc_needs_the_exact_reserved_amount() {
         let txs = [btc_tx("near", 10_001, 100, 1_000), btc_tx("paid", 10_042, 100, 1_000)];
-        assert_eq!(btc_settlement(&txs, ADDR, 10_042, 1_000, 100, 1).as_deref(), Some("paid"));
-        assert_eq!(btc_settlement(&txs, ADDR, 10_043, 1_000, 100, 1), None);
+        assert_eq!(btc_settlement(&txs, ADDR, 10_042, 100, 100, 1).as_deref(), Some("paid"));
+        assert_eq!(btc_settlement(&txs, ADDR, 10_043, 100, 100, 1), None);
     }
 
     #[test]
     fn btc_counts_real_confirmations() {
         let txs = [btc_tx("paid", 10_042, 100, 1_000)];
-        assert_eq!(btc_settlement(&txs, ADDR, 10_042, 1_000, 101, 3), None);
-        assert_eq!(btc_settlement(&txs, ADDR, 10_042, 1_000, 102, 3).as_deref(), Some("paid"));
+        assert_eq!(btc_settlement(&txs, ADDR, 10_042, 100, 101, 3), None);
+        assert_eq!(btc_settlement(&txs, ADDR, 10_042, 100, 102, 3).as_deref(), Some("paid"));
     }
 
     #[test]
     fn btc_ignores_unconfirmed_and_older_transactions() {
         let unconfirmed = [json!({ "txid": "m", "status": { "confirmed": false }, "vout": [{ "scriptpubkey_address": ADDR, "value": 10_042 }] })];
-        assert_eq!(btc_settlement(&unconfirmed, ADDR, 10_042, 1_000, 100, 0), None);
-        let old = [btc_tx("old", 10_042, 100, 1_000)];
-        assert_eq!(btc_settlement(&old, ADDR, 10_042, 1_000 + BLOCK_TIME_TOLERANCE_SECS + 1, 100, 1), None);
+        assert_eq!(btc_settlement(&unconfirmed, ADDR, 10_042, 100, 100, 0), None);
+        let old = [btc_tx("old", 10_042, 99, 1_000)];
+        assert_eq!(btc_settlement(&old, ADDR, 10_042, 100, 100, 1), None);
     }
 
     #[test]

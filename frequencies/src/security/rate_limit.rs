@@ -47,6 +47,16 @@ pub const UPVOTE: Limit = Limit {
     max: 30,
     window: Duration::from_secs(60),
 };
+pub const INVITE: Limit = Limit {
+    scope: "invite",
+    max: 30,
+    window: Duration::from_secs(3600),
+};
+pub const SCHEDULE: Limit = Limit {
+    scope: "schedule",
+    max: 10,
+    window: Duration::from_secs(3600),
+};
 pub const REMIND: Limit = Limit {
     scope: "remind",
     max: 60,

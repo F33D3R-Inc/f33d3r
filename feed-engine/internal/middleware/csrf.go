@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -77,7 +78,7 @@ func CSRF(next http.Handler) http.Handler {
 
 		// No Origin and no Referer — allow only from localhost in dev, block otherwise.
 		// This handles form submissions from file:// or odd browser contexts.
-		if strings.HasPrefix(r.Host, "localhost") || strings.HasPrefix(r.Host, "127.") {
+		if host := hostOnly(r.Host); host == "localhost" || net.ParseIP(host).IsLoopback() {
 			next.ServeHTTP(w, r)
 			return
 		}

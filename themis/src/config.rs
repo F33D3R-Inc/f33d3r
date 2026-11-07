@@ -30,7 +30,7 @@ impl Config {
             confirmation_threshold_low: std::env::var("CONF_THRESHOLD_LOW")
                 .ok()
                 .and_then(|v| v.parse().ok())
-                .unwrap_or(1),
+                .unwrap_or(2),
             confirmation_threshold_high: std::env::var("CONF_THRESHOLD_HIGH")
                 .ok()
                 .and_then(|v| v.parse().ok())

@@ -298,6 +298,8 @@ func RemoveTickerWatcher(pial, ticker string) {
 	relayWatch(pial, liveWatchTicker, ticker, false)
 }
 
+const maxWatchesPerPerson = 2000
+
 // applyWatch updates this replica's watch context for one person.
 func applyWatch(pial, watchType, id string, add bool) {
 	withPial(pial, func(us *userSessions) {
@@ -306,6 +308,14 @@ func applyWatch(pial, watchType, id string, add bool) {
 			set = us.ctx.tickers
 		}
 		if add {
+			// A page holds tens of watches. Past this a client is misbehaving, so an
+			// old one gives way rather than memory growing without limit.
+			if len(set) >= maxWatchesPerPerson && !set[id] {
+				for old := range set {
+					delete(set, old)
+					break
+				}
+			}
 			set[id] = true
 		} else {
 			delete(set, id)

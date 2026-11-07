@@ -45,6 +45,8 @@ pub struct Purchase {
     pub xrp_address: String,
     /// XRP: the destination tag. BTC: the sats added to make the amount unique.
     pub payment_tag: Option<i64>,
+    /// The chain's height when this purchase was first watched (BTC).
+    pub first_tip: Option<i64>,
     pub created_at: DateTime<Utc>,
     pub status: String, // "pending" | "confirmed" | "delivered" | "expired"
     pub cek_for_buyer: Option<Vec<u8>>,

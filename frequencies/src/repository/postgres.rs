@@ -1073,6 +1073,27 @@ pub async fn list_missed(pool: &PgPool, grace_secs: i64) -> Result<Vec<Uuid>> {
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 
+pub async fn blocked_by(conn: &mut PgConnection, id: Uuid, pial: &str) -> Result<Option<String>> {
+    let _t = Timed::db("blocked_by");
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT blocked_by FROM frequency_blocks WHERE frequency_id = $1 AND pial = $2")
+            .bind(id)
+            .bind(pial)
+            .fetch_optional(conn)
+            .await?;
+    Ok(row.map(|(p,)| p))
+}
+
+pub async fn revoke_invites(conn: &mut PgConnection, id: Uuid, pial: &str) -> Result<()> {
+    let _t = Timed::db("revoke_invites");
+    sqlx::query("DELETE FROM frequency_invites WHERE frequency_id = $1 AND pial = $2")
+        .bind(id)
+        .bind(pial)
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
 pub async fn is_blocked(conn: &mut PgConnection, id: Uuid, pial: &str) -> Result<bool> {
     let _t = Timed::db("is_blocked");
     let r: Option<(i32,)> =

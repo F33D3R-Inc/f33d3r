@@ -37,7 +37,7 @@ FACET frequency_request_row
     {{template "user_avatar" (dict "Handle" .Person.Handle "AvatarURL" .Person.AvatarURL "DisplayName" .Person.DisplayName "Size" "md" "IsOnline" false)}}
   </a>
   <div class="freq-req__body">
-    <p class="freq-req__reason">{{if .Reason}}{{.Reason}}{{else}}<em>No reason given</em>{{end}}</p>
+    <p class="freq-req__reason">{{if .Reason}}{{.Reason}}{{else if .CanModerate}}<em>No reason given</em>{{else}}Asked for the mic{{end}}</p>
     <p class="freq-req__who">
       <a href="/{{.Person.Handle}}">@{{.Person.Handle}}</a>
       {{if .Person.IsVerified}}{{template "badge_verified" (dict "Type" .Person.VerifiedType)}}{{end}}

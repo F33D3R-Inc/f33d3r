@@ -2,7 +2,7 @@ use crate::{
     db,
     models::*,
     pial_ref::{register_content, require_identity, ContentRef, IdentityError, PialRef},
-    watcher, AppState,
+    AppState,
 };
 use axum::{
     extract::{Path, Query, State},
@@ -61,66 +61,6 @@ async fn verify_pial_signature(
     verifying_key.verify(data, &signature).map_err(|_| ())
 }
 
-/// Validates a Bitcoin address format (does not check checksum — just format).
-/// Accepts:
-///   P2PKH (Legacy):    starts with '1', length 25–34, Base58 chars
-///   P2SH:              starts with '3', length 25–34, Base58 chars
-///   Bech32 SegWit v0:  starts with 'bc1q', length 42 (P2WPKH) or 62 (P2WSH)
-///   Bech32m Taproot:   starts with 'bc1p', length 62
-/// Base58 alphabet: 123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz
-fn validate_btc_address(addr: &str) -> bool {
-    if addr.len() < 25 || addr.len() > 90 {
-        return false;
-    }
-    if addr.starts_with("bc1") {
-        // Bech32 / Bech32m: all lowercase after the HRP separator
-        let lower = addr.to_lowercase();
-        if lower != addr {
-            return false; // mixed case invalid for bech32
-        }
-        // Only valid bech32 chars: 0-9, a-z (excluding 'b', 'i', 'o', '1' in data part —
-        // but the HRP 'bc' uses them, so just check the charset broadly)
-        let valid_chars: bool = addr.chars().all(|c| c.is_ascii_alphanumeric());
-        if !valid_chars {
-            return false;
-        }
-        // bc1q (P2WPKH = 42 chars) or bc1q (P2WSH = 62 chars) or bc1p (Taproot = 62 chars)
-        let len = addr.len();
-        return (addr.starts_with("bc1q") || addr.starts_with("bc1p")) && (len == 42 || len == 62);
-    }
-    // Legacy P2PKH (starts with '1') or P2SH (starts with '3')
-    if !addr.starts_with('1') && !addr.starts_with('3') {
-        return false;
-    }
-    // Base58 charset check: no 0 (zero), O (capital oh), I (capital eye), l (lowercase L)
-    let base58_chars: bool = addr.chars().all(|c| {
-        matches!(c,
-            '1'..='9' |
-            'A'..='H' | 'J'..='N' | 'P'..='Z' |
-            'a'..='k' | 'm'..='z'
-        )
-    });
-    base58_chars && addr.len() >= 25 && addr.len() <= 34
-}
-
-/// Validates an XRP address format: starts with 'r', 25–34 chars, base58 alphabet.
-fn validate_xrp_address(addr: &str) -> bool {
-    if !addr.starts_with('r') {
-        return false;
-    }
-    let len = addr.len();
-    if len < 25 || len > 34 {
-        return false;
-    }
-    // Base58 alphabet (same as Bitcoin, excludes 0, O, I, l)
-    addr.chars().all(|c| {
-        matches!(c,
-            '1'..='9' |
-            'A'..='H' | 'J'..='N' | 'P'..='Z' |
-            'a'..='k' | 'm'..='z'
-        )
-    })
-}
 
 fn pial_from_headers(headers: &HeaderMap) -> Option<PialRef> {
     headers
@@ -157,12 +97,39 @@ fn identity_refused(pial: &PialRef, e: IdentityError) -> (StatusCode, Json<serde
     }
 }
 
+/// A person cannot hold more of the shops' reserved amounts than this at once.
+const MAX_WAITING_PURCHASES: i64 = 10;
+
+/// Compares without stopping at the first difference, so timing reveals nothing.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
 fn internal_key_ok(headers: &HeaderMap, cfg_key: &str) -> bool {
     headers
         .get("X-Internal-Key")
         .and_then(|v| v.to_str().ok())
-        .map(|k| !cfg_key.is_empty() && k == cfg_key)
+        .map(|k| !cfg_key.is_empty() && constant_time_eq(k.as_bytes(), cfg_key.as_bytes()))
         .unwrap_or(false)
+}
+
+/// Only Nantar may call this service, because it trusts X-Pial-Identity as the caller's
+/// identity. Health and metrics stay open to the container network's monitors.
+pub async fn require_service_key(
+    State(state): State<Arc<AppState>>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let path = req.uri().path();
+    if path == "/health" || path == "/metrics" {
+        return next.run(req).await;
+    }
+    let key = &state.cfg.internal_api_key;
+    let presented = req.headers().get("X-Service-Key").and_then(|v| v.to_str().ok()).unwrap_or("");
+    if key.is_empty() || !constant_time_eq(presented.as_bytes(), key.as_bytes()) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error":"service_key_required"}))).into_response();
+    }
+    next.run(req).await
 }
 
 // GET /health
@@ -214,10 +181,11 @@ pub async fn events(
     // Verify PIAL signature for high-value mutations.
     // shop.open uses session auth only — PIAL session already proves creator identity.
     // listing.create and listing.delete require device-bound signing (encrypted content).
+    // Taking a listing down through an edit does what a delete does, so it needs the same.
     let requires_sig = matches!(
         evt.event_type.as_str(),
         "marketplace.listing.create" | "marketplace.listing.delete"
-    );
+    ) || (evt.event_type == "marketplace.listing.edit" && evt.is_active == Some(false));
     if requires_sig {
         match (&evt.cid, &evt.pial_sig) {
             (Some(cid), Some(sig)) => {
@@ -267,7 +235,7 @@ pub async fn events(
                         .into_response()
                 }
             };
-            if !validate_btc_address(&btc) {
+            if !crate::addresses::valid_btc(&btc) {
                 return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error":"invalid_btc_address","message":"That doesn't look like a valid Bitcoin address."}))).into_response();
             }
             // Reject if another active shop already claims this BTC address
@@ -279,7 +247,7 @@ pub async fn events(
             // Optional XRP address
             let xrp = match evt.xrp_address {
                 Some(ref a) if !a.is_empty() => {
-                    if !validate_xrp_address(a) {
+                    if !crate::addresses::valid_xrp(a) {
                         return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error":"invalid_xrp_address","message":"That doesn't look like a valid XRP address."}))).into_response();
                     }
                     // Reject if another active shop already claims this XRP address
@@ -515,6 +483,16 @@ pub async fn events(
                 }
             }
             let currency = if use_xrp { "xrp" } else { "btc" };
+            match db::purchases_waiting_for_buyer(&state.pool, requester).await {
+                Ok(n) if n >= MAX_WAITING_PURCHASES => {
+                    return (StatusCode::TOO_MANY_REQUESTS, Json(serde_json::json!({"error":"too_many_waiting","message":"You have too many payments waiting. Finish or let some expire first."}))).into_response();
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::error!("{e}");
+                    return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error":"db_error"}))).into_response();
+                }
+            }
             let opened = match db::purchase_open_for_buyer(&state.pool, requester, listing_id, currency).await {
                 Ok(Some(open)) => Ok(Some(open)),
                 Ok(None) if use_xrp => {
@@ -565,32 +543,12 @@ pub async fn events(
             }
         }
 
-        "marketplace.subscription.create" => {
-            let sp = match evt.seller_pial {
-                Some(p) => p,
-                None => {
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Json(serde_json::json!({"error":"seller_pial required"})),
-                    )
-                        .into_response()
-                }
-            };
-            if let Err(e) = require_identity(&state.manhattan, &sp).await {
-                return identity_refused(&sp, e).into_response();
-            }
-            match db::marketplace_subscription_create(&state.pool, requester, sp).await {
-                Ok(_) => Json(serde_json::json!({"ok":true})).into_response(),
-                Err(e) => {
-                    tracing::error!("{e}");
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(serde_json::json!({"error":"db_error"})),
-                    )
-                        .into_response()
-                }
-            }
-        }
+        // Nothing charges for this yet, so it must not hand out access for free.
+        "marketplace.subscription.create" => (
+            StatusCode::GONE,
+            Json(serde_json::json!({"error":"subscriptions_unavailable","message":"Marketplace subscriptions aren't available yet."})),
+        )
+            .into_response(),
 
         "marketplace.subscription.cancel" => {
             let sp = match evt.seller_pial {
@@ -1365,11 +1323,13 @@ pub async fn unsubscribe(
 
 pub async fn check_subscription(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     AxumQuery(q): AxumQuery<CommerceAccessQuery>,
 ) -> CommerceRes<Value> {
     let subscriber = q
         .subscriber
         .ok_or_else(|| cerr(StatusCode::BAD_REQUEST, "subscriber required"))?;
+    require_caller(&headers, &state.cfg.internal_api_key, &subscriber)?;
     let creator = q
         .creator
         .ok_or_else(|| cerr(StatusCode::BAD_REQUEST, "creator required"))?;
@@ -1388,8 +1348,10 @@ pub async fn check_subscription(
 
 pub async fn list_subscribers(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Path(pial_id): Path<PialRef>,
 ) -> CommerceRes<Vec<SubscriptionRow>> {
+    require_caller(&headers, &state.cfg.internal_api_key, &pial_id)?;
     let rows = sqlx::query_as::<_, SubscriptionRow>(
         "SELECT id, subscriber_pial_id, creator_pial_id, plan_id, status, \
                 current_period_start, current_period_end, cancelled_at, created_at \
@@ -1406,8 +1368,10 @@ pub async fn list_subscribers(
 
 pub async fn list_subscriptions(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Path(pial_id): Path<PialRef>,
 ) -> CommerceRes<Vec<SubscriptionRow>> {
+    require_caller(&headers, &state.cfg.internal_api_key, &pial_id)?;
     let rows = sqlx::query_as::<_, SubscriptionRow>(
         "SELECT id, subscriber_pial_id, creator_pial_id, plan_id, status, \
                 current_period_start, current_period_end, cancelled_at, created_at \
@@ -1585,11 +1549,13 @@ pub async fn purchase_ppv(
 
 pub async fn check_ppv_access(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     AxumQuery(q): AxumQuery<CommerceAccessQuery>,
 ) -> CommerceRes<Value> {
     let buyer = q
         .buyer
         .ok_or_else(|| cerr(StatusCode::BAD_REQUEST, "buyer required"))?;
+    require_caller(&headers, &state.cfg.internal_api_key, &buyer)?;
     let content_id = q
         .content_id
         .ok_or_else(|| cerr(StatusCode::BAD_REQUEST, "content_id required"))?;
@@ -1787,8 +1753,10 @@ pub async fn purchase_qr(
 
 pub async fn creator_earnings(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Path(pial_id): Path<PialRef>,
 ) -> CommerceRes<Value> {
+    require_caller(&headers, &state.cfg.internal_api_key, &pial_id)?;
     let total: (i64,) = sqlx::query_as(
         "SELECT COALESCE(SUM(gross_aet), 0)::bigint FROM commerce_transactions \
          WHERE creator_pial_id = $1 AND status = 'completed'",

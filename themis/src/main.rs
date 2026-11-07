@@ -1,4 +1,5 @@
 mod notifications;
+mod addresses;
 mod cek;
 mod clients;
 mod config;
@@ -113,6 +114,7 @@ async fn main() -> anyhow::Result<()> {
             "/v1/creator/:pial_id/earnings",
             get(handlers::creator_earnings),
         )
+        .layer(middleware::from_fn_with_state(state.clone(), handlers::require_service_key))
         .layer(middleware::from_fn(observ::http_middleware))
         .with_state(state);
 

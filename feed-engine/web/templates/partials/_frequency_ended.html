@@ -42,7 +42,7 @@ FACET frequency_ended
     Hosted by <a href="/{{.Host.Handle}}">@{{.Host.Handle}}</a>{{if gt .SpeakerCount 0}} with {{.SpeakerCount}} speaker{{if ne .SpeakerCount 1}}s{{end}}{{end}}.
   </p>
   {{end}}
-  {{if eq .State "archived"}}{{template "frequency_replay_player" (dict "ID" .ID)}}{{end}}
+  {{if eq .State "archived"}}<span hx-get="/facets/frequency/{{.ID}}/replay" hx-trigger="load" hx-swap="outerHTML"></span>{{end}}
   {{if eq .State "processing_replay"}}<p class="freq-ended__sub" role="status">The replay is being prepared.</p>{{end}}
 </div>
 {{end}}

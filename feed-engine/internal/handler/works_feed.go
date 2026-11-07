@@ -209,6 +209,10 @@ func (h *Handler) facetWorksFeed(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "user not found", http.StatusNotFound)
 			return
 		}
+		if h.profileFeedWalled(profileUser, user) {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
 		works, err = dbpkg.GetWorksForProfile(h.db, profileUser.PIALID, limit, before)
 		// Exclude the pinned post from the main feed to avoid duplication.
 		if surface == "profile_posts" {
@@ -234,17 +238,19 @@ func (h *Handler) facetWorksFeed(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "user not found", http.StatusNotFound)
 			return
 		}
+		if h.profileFeedWalled(profileUser, user) {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
 		works, err = dbpkg.GetWorksRepostedByUser(h.db, profileUser.ID, limit, before)
 
 	case "profile_saves":
-		handle := r.URL.Query().Get("handle")
-		viewerID := user.ID
-		if handle != "" {
-			if profileUser, dbErr := dbpkg.GetUserByHandle(h.db, handle); dbErr == nil && profileUser != nil {
-				viewerID = profileUser.ID
-			}
+		// Saves are private: only ever the viewer's own, whatever handle is asked for.
+		if handle := r.URL.Query().Get("handle"); handle != "" && !strings.EqualFold(strings.TrimPrefix(handle, "@"), user.Handle) {
+			w.WriteHeader(http.StatusOK)
+			return
 		}
-		works, err = dbpkg.GetWorksSaves(h.db, viewerID, limit, before)
+		works, err = dbpkg.GetWorksSaves(h.db, user.ID, limit, before)
 
 	default:
 		// A pinned interest surface. Its meaning is a server-side definition —
@@ -1064,4 +1070,29 @@ func (h *Handler) facetWorkEditions(w http.ResponseWriter, r *http.Request) {
 		"Editions": editions,
 		"WorkID":   id,
 	})
+}
+
+// profileFeedWalled applies the profile page's walls to the feed endpoint, which can be
+// asked for directly. A private account shows nothing to non-followers, a block hides
+// both ways, and an adult creator's works need a verified, opted-in adult. Any doubt
+// walls: this must never allow because it could not look.
+func (h *Handler) profileFeedWalled(profile, viewer *model.User) bool {
+	access, err := h.authorWall(profile.ID, viewer)
+	if err != nil {
+		log.Printf("[feed] wall for %s: %v", profile.Handle, err)
+		return true
+	}
+	if access.IsOwner {
+		return false
+	}
+	if access.IsBlocked || (profile.IsPrivate && !access.IsFollowing) {
+		return true
+	}
+	if profile.IsAdultCreator {
+		if viewer == nil || excludeNSFW(viewer) || viewer.ContentSetting != "adult_enabled" ||
+			!(viewer.IsAgeVerified || viewer.IsVerified) {
+			return true
+		}
+	}
+	return false
 }

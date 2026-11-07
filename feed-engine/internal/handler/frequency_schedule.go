@@ -35,6 +35,37 @@ func frequencyScheduleProblem(at time.Time) string {
 	return ""
 }
 
+// frequencyMayReach says whether an action may be aimed at this person. It refuses when
+// either has blocked the other, when they muted the actor, and when a room's content is
+// not something they can see.
+func (h *Handler) frequencyMayReach(ctx context.Context, actor *model.User, id, targetPIAL string) bool {
+	if h.db == nil {
+		return false
+	}
+	account, err := dbpkg.GetUserIDFromPIAL(h.db, targetPIAL)
+	if err != nil {
+		return false
+	}
+	if dbpkg.IsBlocked(h.db, account, actor.ID) || dbpkg.IsBlocked(h.db, actor.ID, account) {
+		return false
+	}
+	muted, err := dbpkg.GetMutedUserIDs(h.db, account)
+	if err != nil || muted[actor.ID] {
+		return false
+	}
+	ans, err := h.auralis.Get(ctx, id, "")
+	if err != nil {
+		return false
+	}
+	if ans.Frequency.Frequency.AdultContent {
+		person, err := dbpkg.GetUserByID(h.db, account)
+		if err != nil || !frequencyAdultAllowed(person) {
+			return false
+		}
+	}
+	return true
+}
+
 // frequencyRemindButton renders this person's own reminder control. It is fetched
 // by each viewer, because the shared controls of a scheduled room name nobody.
 func (h *Handler) frequencyRemindButton(w http.ResponseWriter, id string, reminded bool) {
@@ -209,7 +240,12 @@ func (h *Handler) frequencyTellReminded(ctx context.Context, id, kind, eventID, 
 	if s.State != state {
 		return nil
 	}
-	return h.writeFrequencyNotices(ctx, s, kind, kind+"|"+eventID, "“"+s.Title+"”"+what)
+	// A host changing the time repeatedly tells each person once an hour at most.
+	key := kind + "|" + eventID
+	if kind == "frequency_rescheduled" {
+		key = kind + "|" + id + "|" + time.Now().UTC().Format("2006010215")
+	}
+	return h.writeFrequencyNotices(ctx, s, kind, key, "“"+s.Title+"”"+what)
 }
 
 // frequencyAnnounceStart tells reminder holders, who asked, and then queues the
@@ -275,7 +311,7 @@ func (h *Handler) writeFrequencyNotices(ctx context.Context, s *auralis.Summary,
 		if err != nil || person == nil {
 			continue
 		}
-		if dbpkg.IsBlocked(h.db, hostID, account) || dbpkg.IsBlocked(h.db, account, hostID) || (s.AdultContent && excludeNSFW(person)) {
+		if dbpkg.IsBlocked(h.db, hostID, account) || dbpkg.IsBlocked(h.db, account, hostID) || (s.AdultContent && !frequencyAdultAllowed(person)) {
 			continue
 		}
 		eventID := dbpkg.FanoutEventID(kind, s.ID, account)
@@ -314,9 +350,9 @@ func (h *Handler) frequencyReplay(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	name, err := h.auralis.ReplayFile(r.Context(), id)
+	name, err := h.auralis.ReplayFile(r.Context(), viewerPIALOf(viewer), id, h.frequencyAudienceFacts(viewer, ans.Frequency.Frequency.HostPialID))
 	if err != nil {
-		if !auralis.IsNotFound(err) {
+		if auralis.IsOutage(err) {
 			log.Printf("[frequency] replay %s: %v", id, err)
 		}
 		http.NotFound(w, r)
@@ -337,6 +373,42 @@ func (h *Handler) frequencyReplay(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "audio/mp4")
 	w.Header().Set("Cache-Control", "private, no-store")
 	http.ServeContent(w, r, "", info.ModTime(), f)
+}
+
+// facetFrequencyReplay — GET /facets/frequency/{id}/replay
+// The player, or why not. The ended stage is shared by everyone, so each viewer fetches
+// this for themselves, and a player is only shown to someone who may listen.
+func (h *Handler) facetFrequencyReplay(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if h.auralis == nil || !h.auralis.Configured() {
+		return
+	}
+	id := r.PathValue("id")
+	viewer := h.userFromRequest(w, r)
+	ans, err := h.auralis.Get(r.Context(), id, viewerPIALOf(viewer))
+	if err != nil {
+		return
+	}
+	if _, _, refused := h.frequencyGate(viewer, &ans.Frequency); refused {
+		return
+	}
+	name := "frequency_replay_player"
+	_, err = h.auralis.ReplayFile(r.Context(), viewerPIALOf(viewer), id, h.frequencyAudienceFacts(viewer, ans.Frequency.Frequency.HostPialID))
+	switch {
+	case err == nil:
+	case auralis.Code(err) == "followers_only":
+		name = "frequency_replay_followers"
+	case auralis.Code(err) == "subscribers_only":
+		name = "frequency_replay_subscribers"
+	default:
+		return
+	}
+	frag, err := h.renderFrequencyFragment(name, map[string]interface{}{"ID": id})
+	if err != nil {
+		log.Printf("[frequency] %v", err)
+		return
+	}
+	_, _ = w.Write([]byte(frag))
 }
 
 // facetFrequencyReplayControls — GET /facets/frequency/{id}/replay_controls

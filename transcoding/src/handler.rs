@@ -4,6 +4,7 @@
 //! GET  /v1/video/job/:id — poll job status; output contains HLS URLs when ready
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use axum::{
@@ -16,6 +17,7 @@ use dashmap::DashMap;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
+use tokio::sync::Semaphore;
 use tracing::{error, info};
 use uuid::Uuid;
 
@@ -197,6 +199,39 @@ pub struct FrequencyClipRequest {
 }
 
 const MAX_CLIP_SECONDS: u32 = 140;
+/// Clips drawn at once. Each one is real encoding work on a shared box.
+const CLIPS_AT_ONCE: usize = 2;
+/// Clips allowed to wait. Past this the service says it is busy.
+const CLIPS_QUEUED: usize = 20;
+/// How long a finished job's answer is kept.
+const JOB_RETENTION_HOURS: i64 = 24;
+
+static CLIP_SLOTS: Lazy<Arc<Semaphore>> = Lazy::new(|| Arc::new(Semaphore::new(CLIPS_AT_ONCE)));
+static CLIPS_WAITING: AtomicUsize = AtomicUsize::new(0);
+
+/// Forgets finished jobs, so the table cannot grow for the life of the process.
+pub fn evict_finished_jobs() {
+    let cutoff = Utc::now() - chrono::Duration::hours(JOB_RETENTION_HOURS);
+    JOBS.retain(|_, job| {
+        job.updated_at > cutoff || !matches!(job.status, JobStatus::Ready | JobStatus::Failed)
+    });
+}
+
+/// Only Nantar may start work here or read a job's output.
+pub async fn require_service_key(req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
+    let path = req.uri().path();
+    if path == "/health" || path == "/metrics" {
+        return next.run(req).await;
+    }
+    let key = std::env::var("INTERNAL_API_KEY").unwrap_or_default();
+    let presented = req.headers().get("X-Service-Key").and_then(|v| v.to_str().ok()).unwrap_or("");
+    let same = presented.len() == key.len()
+        && presented.bytes().zip(key.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0;
+    if key.is_empty() || !same {
+        return axum::response::IntoResponse::into_response((StatusCode::UNAUTHORIZED, "service key required"));
+    }
+    next.run(req).await
+}
 
 /// POST /v1/frequency/clip
 /// Draws part of a replay as a video, then sends it through the same pipeline as an
@@ -221,6 +256,11 @@ pub async fn frequency_clip(
         return Err((StatusCode::NOT_FOUND, "no such replay".to_string()));
     }
 
+    if CLIPS_WAITING.fetch_add(1, Ordering::SeqCst) >= CLIPS_QUEUED {
+        CLIPS_WAITING.fetch_sub(1, Ordering::SeqCst);
+        return Err((StatusCode::SERVICE_UNAVAILABLE, "too many clips waiting".to_string()));
+    }
+
     let asset_id = Uuid::new_v4().to_string();
     let job_id = Uuid::new_v4().to_string();
     let now = Utc::now();
@@ -241,6 +281,8 @@ pub async fn frequency_clip(
     let aid = asset_id.clone();
     let media_dir = (*state.media_dir).clone();
     tokio::spawn(async move {
+        let _slot = CLIP_SLOTS.clone().acquire_owned().await;
+        CLIPS_WAITING.fetch_sub(1, Ordering::SeqCst);
         let dir = std::env::temp_dir();
         let source = dir.join(format!("{jid}-clip.mp4"));
         let made = transcode::make_audiogram(

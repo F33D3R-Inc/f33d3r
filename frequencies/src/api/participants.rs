@@ -15,7 +15,7 @@ use super::view::{self, RequestView};
 use crate::auth::{Actor, Service};
 use crate::domain::permissions::{self, AudienceFacts};
 use crate::domain::role::may;
-use crate::domain::{Action, FrequencyState, RequestStatus};
+use crate::domain::{Action, FrequencyState, RequestStatus, Visibility};
 use crate::error::{AuralisError, Result};
 use crate::events::EventType;
 use crate::identity::bare_value;
@@ -213,6 +213,13 @@ pub async fn people(
         .await?
         .is_some_and(|r| r.moderates());
     let joined = pg::joined(&mut conn, id).await?;
+    // Who listens to a restricted room is known only to those inside it.
+    if freq.visibility != Visibility::Public
+        && !can_moderate
+        && ops::standing(&mut conn, id, &actor.pial).await?.is_none()
+    {
+        return Err(AuralisError::Forbidden("not in this frequency".into()));
+    }
     let blocked = if can_moderate {
         pg::blocked(&mut conn, id).await?
     } else {

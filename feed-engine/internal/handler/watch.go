@@ -2,6 +2,7 @@ package handler
 
 import (
 	"net/http"
+	"regexp"
 	"strings"
 )
 
@@ -16,13 +17,21 @@ import (
 //	id:     post UUID or ticker symbol (e.g. "AAPL")
 //	action: "watch" | "unwatch"
 //	resync: "1" when the client is re-registering after a reconnect
+//
+// watchBodyLimit and watchIDShape keep watch registration small: every id is held in
+// memory for the life of a connection and relayed to other replicas.
+const watchBodyLimit = 2 << 10
+
+var watchIDShape = regexp.MustCompile(`^[A-Za-z0-9:_.$^=-]{1,128}$`)
+
 func (h *Handler) watchHandler(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, watchBodyLimit)
 	_ = r.ParseForm()
 	watchType := strings.TrimSpace(r.FormValue("type"))
 	id := strings.TrimSpace(r.FormValue("id"))
 	action := strings.TrimSpace(r.FormValue("action"))
 
-	if watchType == "" || id == "" || (action != "watch" && action != "unwatch") {
+	if watchType == "" || !watchIDShape.MatchString(id) || (action != "watch" && action != "unwatch") {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}

@@ -41,6 +41,7 @@ type FrequencyPinData struct {
 	Preview      string
 	Thumb        string
 	CanRemove    bool
+	Adult        bool
 }
 
 type frequencyPinCached struct {
@@ -84,6 +85,7 @@ func (h *Handler) frequencyPinOf(workID string) (FrequencyPinData, bool) {
 			}
 			if frequencyAdultWork(w) {
 				pin.Thumb = ""
+				pin.Adult = true
 			}
 		}
 	}
@@ -96,7 +98,8 @@ func (h *Handler) frequencyPinData(v *auralis.View, canModerate bool) []Frequenc
 	out := make([]FrequencyPinData, 0, len(v.Pins))
 	for _, p := range v.Pins {
 		pin, ok := h.frequencyPinOf(p.WorkID)
-		if !ok {
+		// A work flagged adult after it was pinned stops showing in a room for everyone.
+		if !ok || (pin.Adult && !v.Frequency.AdultContent) {
 			continue
 		}
 		pin.ID = v.Frequency.ID
@@ -214,7 +217,7 @@ func (h *Handler) frequencyClip(w http.ResponseWriter, r *http.Request, user *mo
 		h.frequencyProblem(w, r, http.StatusConflict, "clip_refused", refusal)
 		return
 	}
-	file, err := h.auralis.ReplayFile(r.Context(), id)
+	file, err := h.auralis.ReplayFile(r.Context(), user.PIALID, id, h.frequencyAudienceFacts(user, s.HostPialID))
 	if err != nil {
 		h.frequencyProblem(w, r, http.StatusConflict, "clip_refused", "This replay isn't available.")
 		return

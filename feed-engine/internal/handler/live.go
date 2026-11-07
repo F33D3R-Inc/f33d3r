@@ -719,7 +719,7 @@ func (h *Handler) liveWatchPage(w http.ResponseWriter, r *http.Request) {
 
 	// Adult wall: an 18+ broadcast is never rendered to a viewer whose account
 	// is not cleared for it, and never to the public.
-	if s.IsNSFW && excludeNSFW(viewer) {
+	if s.IsNSFW && !frequencyAdultAllowed(viewer) {
 		h.renderLiveGate(w, r, viewer, s)
 		return
 	}
@@ -1057,7 +1057,7 @@ func (h *Handler) liveChatSend(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "this stream is unavailable", http.StatusForbidden)
 		return
 	}
-	if s.IsNSFW && excludeNSFW(viewer) {
+	if s.IsNSFW && !frequencyAdultAllowed(viewer) {
 		http.Error(w, "not available for this account", http.StatusForbidden)
 		return
 	}

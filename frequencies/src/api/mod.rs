@@ -36,9 +36,36 @@ fn changed_frequency(method: &Method, path: &str) -> Option<Uuid> {
     segments.find(|s| *s == "frequencies")?;
     let id = Uuid::parse_str(segments.next()?).ok()?;
     match segments.next() {
-        Some("heartbeat" | "media_token" | "react" | "remind" | "pins" | "clips_enabled") => None,
+        Some(
+            "heartbeat" | "media_token" | "react" | "remind" | "pins" | "clips_enabled" | "replay"
+            | "remove_replay",
+        ) => None,
         _ => Some(id),
     }
+}
+
+/// LiveKit telling us someone connected. The reconcile this wakes grants them what the
+/// database says right now, and removes them if they no longer belong, within moments.
+async fn livekit_webhook(
+    State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> axum::http::StatusCode {
+    let authorization = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if !s.media.webhook_is_genuine(authorization, &body) {
+        return axum::http::StatusCode::UNAUTHORIZED;
+    }
+    if let Ok(event) = serde_json::from_slice::<serde_json::Value>(&body) {
+        if event["event"].as_str() == Some("participant_joined") {
+            if let Some(room) = event["room"]["name"].as_str().and_then(|n| Uuid::parse_str(n).ok()) {
+                s.media.kick(room);
+            }
+        }
+    }
+    axum::http::StatusCode::OK
 }
 
 /// One place wakes the audio plane, so a new route cannot forget to.
@@ -92,7 +119,12 @@ pub fn router(state: AppState) -> Router {
             "/v1/frequencies/:id/clips_enabled",
             post(frequencies::clips_enabled),
         )
-        .route("/v1/frequencies/:id/replay", get(frequencies::replay_file))
+        .route("/webhooks/livekit", post(livekit_webhook))
+        .route("/v1/frequencies/:id/replay", post(frequencies::replay_file))
+        .route(
+            "/internal/v1/frequencies/:id/remove_replay",
+            post(frequencies::remove_replay),
+        )
         .route(
             "/v1/frequencies/:id/replay/delete",
             post(frequencies::delete_replay),

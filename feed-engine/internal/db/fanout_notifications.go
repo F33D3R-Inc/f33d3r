@@ -85,9 +85,9 @@ const frequencyFanoutSQL = `
 	   AND NOT EXISTS (SELECT 1 FROM user_mutes m WHERE m.muter_id = u.id AND m.muted_id = $1::uuid)
 	   AND ($4 <> 'subscribers' OR EXISTS (SELECT 1 FROM subscriptions s
 	                    WHERE s.subscriber_id = u.id AND s.creator_id = $1::uuid AND s.status = 'active'))
-	   AND (NOT $5 OR NOT (COALESCE(pr.is_minor, FALSE)
-	                    OR COALESCE(p.content_setting, '') = 'safe_mode'
-	                    OR COALESCE(p.official_type, '') IN ('government', 'business')))
+	   AND (NOT $5 OR (COALESCE(pr.is_adult, FALSE) AND NOT COALESCE(pr.is_minor, FALSE)
+	                    AND COALESCE(p.content_setting, '') = 'adult_enabled'
+	                    AND COALESCE(p.official_type, '') NOT IN ('government', 'business')))
 	 ORDER BY f.follower_id LIMIT $3`
 
 // RunFanoutBatch advances the oldest open job by one batch and returns who it reached.
@@ -297,15 +297,24 @@ func FollowedAmongPIALs(db *sql.DB, followerID string, pials []string) (map[stri
 // RecordFrequencyClip records a clip being made, unless the account has made its limit
 // in the last hour. False means the limit was reached and nothing was recorded.
 func RecordFrequencyClip(db *sql.DB, uploadID, frequencyID, accountID string, perHour int) (bool, error) {
-	res, err := db.Exec(`
-		INSERT INTO frequency_clips (upload_id, frequency_id, account_id)
-		SELECT $1, $2::uuid, $3::uuid
-		 WHERE (SELECT COUNT(*) FROM frequency_clips
-		         WHERE account_id = $3::uuid AND created_at > NOW() - INTERVAL '1 hour') < $4`,
-		uploadID, frequencyID, accountID, perHour)
-	if err != nil {
-		return false, err
-	}
-	n, err := res.RowsAffected()
-	return n == 1, err
+	recorded := false
+	err := WithTx(db, func(tx *sql.Tx) error {
+		// One account at a time, so simultaneous requests can't all pass the count.
+		if _, err := tx.Exec(`SELECT pg_advisory_xact_lock(hashtext($1))`, "frequency_clip:"+accountID); err != nil {
+			return err
+		}
+		res, err := tx.Exec(`
+			INSERT INTO frequency_clips (upload_id, frequency_id, account_id)
+			SELECT $1, $2::uuid, $3::uuid
+			 WHERE (SELECT COUNT(*) FROM frequency_clips
+			         WHERE account_id = $3::uuid AND created_at > NOW() - INTERVAL '1 hour') < $4`,
+			uploadID, frequencyID, accountID, perHour)
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		recorded = n == 1
+		return err
+	})
+	return recorded, err
 }

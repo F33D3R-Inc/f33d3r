@@ -30,8 +30,9 @@ use crate::replay;
 use crate::repository::postgres as pg;
 use crate::state::AppState;
 
-/// Long enough to join with; a connected client is refreshed by LiveKit itself.
-const JOIN_TOKEN_TTL_SECS: i64 = 600;
+/// Long enough to join with; a connected client is refreshed by LiveKit itself. A join
+/// token never carries the right to speak, so an old one is worth little.
+const JOIN_TOKEN_TTL_SECS: i64 = 60;
 const ADMIN_TOKEN_TTL_SECS: i64 = 60;
 const CALL_TIMEOUT: Duration = Duration::from_secs(5);
 const SWEEP_EVERY: Duration = Duration::from_secs(5);
@@ -166,12 +167,40 @@ impl Media {
                 "room": room.to_string(),
                 "roomJoin": true,
                 "canSubscribe": true,
-                "canPublish": grant.publish,
+                // Granted by the reconcile a join triggers, from the database as it
+                // stands then. A saved token can never put someone back on air.
+                "canPublish": false,
                 "canPublishData": false,
                 "canPublishSources": ["microphone"],
                 "hidden": grant.hidden,
             },
         }))
+    }
+
+    /// True when a webhook really came from LiveKit: signed with our secret, over this
+    /// exact body.
+    pub fn webhook_is_genuine(&self, authorization: &str, body: &[u8]) -> bool {
+        let token = authorization.trim_start_matches("Bearer ").trim();
+        let mut parts = token.split('.');
+        let (Some(header), Some(claims), Some(sig), None) = (parts.next(), parts.next(), parts.next(), parts.next()) else {
+            return false;
+        };
+        let Ok(sig) = B64.decode(sig) else { return false };
+        let mut mac = Hmac::<Sha256>::new_from_slice(self.secret.as_bytes())
+            .expect("hmac accepts any key length");
+        mac.update(format!("{header}.{claims}").as_bytes());
+        if mac.verify_slice(&sig).is_err() {
+            return false;
+        }
+        let Some(claims) = B64.decode(claims).ok().and_then(|c| serde_json::from_slice::<Value>(&c).ok()) else {
+            return false;
+        };
+        let now = Utc::now().timestamp();
+        if claims["iss"].as_str() != Some(self.key.as_str()) || claims["exp"].as_i64().unwrap_or(0) < now {
+            return false;
+        }
+        let digest = base64::engine::general_purpose::STANDARD.encode(Sha256::digest(body));
+        claims["sha256"].as_str() == Some(digest.as_str())
     }
 
     /// One RoomService call. None means LiveKit has no such room or participant.
@@ -499,6 +528,25 @@ mod tests {
         assert!(matches!(egress_outcome_of(&empty), EgressOutcome::Failed(_)));
         assert_eq!(egress_outcome_of(&json!({ "status": "EGRESS_ACTIVE" })), EgressOutcome::Running);
         assert!(matches!(egress_outcome_of(&json!({ "status": "EGRESS_FAILED", "error": "x" })), EgressOutcome::Failed(_)));
+    }
+
+    #[test]
+    fn a_webhook_must_be_signed_over_its_own_body() {
+        let (media, _rx) = Media::new("http://livekit:7880", "key", "0123456789abcdef0123456789abcdef").unwrap();
+        let body = br#"{"event":"participant_joined"}"#;
+        let digest = base64::engine::general_purpose::STANDARD.encode(Sha256::digest(body));
+        let token = media.sign(&json!({ "iss": "key", "exp": Utc::now().timestamp() + 60, "sha256": digest }));
+        assert!(media.webhook_is_genuine(&format!("Bearer {token}"), body));
+        assert!(!media.webhook_is_genuine(&format!("Bearer {token}"), b"{}"));
+        assert!(!media.webhook_is_genuine("Bearer a.b.c", body));
+    }
+
+    #[test]
+    fn a_join_token_never_carries_publish() {
+        let (media, _rx) = Media::new("http://livekit:7880", "key", "0123456789abcdef0123456789abcdef").unwrap();
+        let token = media.join_token(Uuid::new_v4(), "m1", Grant { publish: true, hidden: false });
+        let claims: Value = serde_json::from_slice(&B64.decode(token.split('.').nth(1).unwrap()).unwrap()).unwrap();
+        assert_eq!(claims["video"]["canPublish"], json!(false));
     }
 
     #[test]

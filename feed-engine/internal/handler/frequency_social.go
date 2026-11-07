@@ -183,6 +183,25 @@ type adminFrequencyRow struct {
 	People     int
 }
 
+// adminFrequencyRemoveReplay — POST /admin/frequencies/{id}/remove_replay
+// Takes a replay down for good, whatever its host wants.
+func (h *Handler) adminFrequencyRemoveReplay(w http.ResponseWriter, r *http.Request) {
+	user := h.userFromRequest(w, r)
+	if !user.IsAdmin() {
+		http.Error(w, "403 Forbidden", http.StatusForbidden)
+		return
+	}
+	id := r.PathValue("id")
+	if _, err := h.auralis.RemoveReplay(r.Context(), id); err != nil {
+		log.Printf("[frequency] remove replay %s by %s: %v", id, user.Handle, err)
+		publishToast(user.PIALID, "frequency-remove-replay", "Could not remove that replay. Try again.")
+	} else {
+		log.Printf("[frequency] replay %s removed by %s", id, user.Handle)
+		h.frequencyDirty(id)
+	}
+	h.renderAdminFrequencies(w, r)
+}
+
 // adminPanelFrequencies — GET /admin/partials/frequencies
 func (h *Handler) adminPanelFrequencies(w http.ResponseWriter, r *http.Request) {
 	user := h.userFromRequest(w, r)
@@ -212,6 +231,19 @@ func (h *Handler) renderAdminFrequencies(w http.ResponseWriter, r *http.Request)
 		}
 		data["Rooms"] = rows
 	}
+	replays := []adminFrequencyRow{}
+	if ended, err := h.auralis.List(r.Context(), "ended", "", 100); err != nil {
+		log.Printf("[frequency] admin replays: %v", err)
+	} else {
+		for _, item := range ended.Items {
+			if item.Frequency.ReplayStatus != "ready" {
+				continue
+			}
+			host := h.frequencyPeople([]string{item.Frequency.HostPialID})[item.Frequency.HostPialID]
+			replays = append(replays, adminFrequencyRow{ID: item.Frequency.ID, Title: item.Frequency.Title, HostHandle: host.Handle})
+		}
+	}
+	data["Replays"] = replays
 	frag, err := h.renderFrequencyFragment("admin_panel_frequencies", data)
 	if err != nil {
 		log.Printf("[frequency] %v", err)

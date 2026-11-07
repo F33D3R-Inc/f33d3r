@@ -524,12 +524,19 @@ func (c *Client) DeleteReplay(ctx context.Context, pial, id string) (*Answer, er
 	return c.answer(ctx, pial, "", "/v1/frequencies/"+seg(id)+"/replay/delete", nil)
 }
 
-// ReplayFile names a room's replay in the replay volume. Not found means there is none.
-func (c *Client) ReplayFile(ctx context.Context, id string) (string, error) {
+// RemoveReplay is the platform taking a replay down: service key only, no person.
+func (c *Client) RemoveReplay(ctx context.Context, id string) (*Answer, error) {
+	return c.answer(ctx, "", "", "/internal/v1/frequencies/"+seg(id)+"/remove_replay", nil)
+}
+
+// ReplayFile names a room's replay in the replay volume, for this viewer. Auralis applies
+// the audience the room had. Not found means there is none; a conflict means they may
+// not listen.
+func (c *Client) ReplayFile(ctx context.Context, viewerPIAL, id string, facts AudienceFacts) (string, error) {
 	var out struct {
 		File string `json:"file"`
 	}
-	if err := c.call(ctx, http.MethodGet, "/v1/frequencies/"+seg(id)+"/replay", "", "", nil, &out); err != nil {
+	if err := c.call(ctx, http.MethodPost, "/v1/frequencies/"+seg(id)+"/replay", viewerPIAL, "", facts, &out); err != nil {
 		return "", err
 	}
 	return out.File, nil

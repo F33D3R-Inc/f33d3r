@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/f33d3r/feed-engine/internal/auralis"
 	dbpkg "github.com/f33d3r/feed-engine/internal/db"
 	"github.com/f33d3r/feed-engine/internal/model"
@@ -479,6 +481,10 @@ func (h *Handler) frequencyAnswer(w http.ResponseWriter, r *http.Request, user *
 // overlay clear it; every other form on these surfaces declares hx-swap="none".
 func (h *Handler) frequencyDone(w http.ResponseWriter, r *http.Request, user *model.User, ans *auralis.Answer) {
 	if apiWantsJSON(r) {
+		if _, _, refused := h.frequencyGate(user, &ans.Frequency); refused {
+			h.frequencyProblem(w, r, http.StatusNotFound, "not_found", "This Frequency isn't available.")
+			return
+		}
 		h.writeFrequencyRoomJSON(w, user, ans)
 		return
 	}
@@ -494,6 +500,10 @@ func (h *Handler) frequencyMutated(w http.ResponseWriter, r *http.Request, user 
 	ans, err := h.auralis.Get(r.Context(), id, user.PIALID)
 	if err != nil {
 		h.frequencyRefuse(w, r, id, err)
+		return
+	}
+	if _, _, refused := h.frequencyGate(user, &ans.Frequency); refused {
+		h.frequencyProblem(w, r, http.StatusNotFound, "not_found", "This Frequency isn't available.")
 		return
 	}
 	h.writeFrequencyRoomJSON(w, user, ans)
@@ -706,6 +716,9 @@ func (h *Handler) frequencyDeparted(ctx context.Context, user *model.User, id st
 		log.Printf("[frequency] departed %s: read: %v", id, err)
 		return
 	}
+	if _, _, refused := h.frequencyGate(user, &ans.Frequency); refused {
+		return
+	}
 	stage := h.buildFrequencyStage(&ans.Frequency, user.PIALID, user, nil)
 	if frag, rerr := h.renderFrequencySlot(freqSlotStage, stage); rerr == nil {
 		PublishFacetToUser(user.PIALID, FacetMutation{FacetID: frequencyFacetID(id, freqSlotStage), Fragment: frag})
@@ -747,6 +760,15 @@ func (h *Handler) frequencyParticipantAction(w http.ResponseWriter, r *http.Requ
 	reason := truncate(strings.TrimSpace(eventField(r, raw, "reason")), 140)
 	ctx := r.Context()
 	me := user.PIALID
+	// These put something in front of another person, so they get the same respect a
+	// follower notification does: nothing reaches someone who has shut this person out.
+	switch eventType {
+	case "frequency.invite", "frequency.cohost", "frequency.promote":
+		if !h.frequencyMayReach(r.Context(), user, id, target) {
+			h.frequencyProblem(w, r, http.StatusConflict, "cannot_reach", "You can't do that with this person.")
+			return
+		}
+	}
 	// An open people sheet refreshes at once instead of on its next tick.
 	w.Header().Set("HX-Trigger", "fa:people-changed")
 	h.frequencyAnswer(w, r, user, id, func() (*auralis.Answer, error) {
@@ -766,6 +788,7 @@ func (h *Handler) frequencyParticipantAction(w http.ResponseWriter, r *http.Requ
 		case "frequency.block":
 			ans, err := h.auralis.Block(ctx, me, id, target, reason)
 			if err == nil {
+				RemovePostWatcher(target, frequencyWatchPrefix+id)
 				frequencyToast(target, "A host blocked you from this Frequency.")
 			}
 			return ans, err
@@ -830,6 +853,14 @@ func (h *Handler) frequencyTargetPIAL(w http.ResponseWriter, r *http.Request, ra
 func (h *Handler) frequencyReport(w http.ResponseWriter, r *http.Request, user *model.User, id string, raw map[string]json.RawMessage) {
 	if id == "" {
 		h.frequencyProblem(w, r, http.StatusBadRequest, "frequency_id_required", "frequency_id required")
+		return
+	}
+	if _, err := uuid.Parse(id); err != nil {
+		h.frequencyProblem(w, r, http.StatusBadRequest, "frequency_id_required", "frequency_id required")
+		return
+	}
+	if _, err := h.auralis.Get(r.Context(), id, ""); err != nil {
+		h.frequencyRefuse(w, r, id, err)
 		return
 	}
 	reason := eventField(r, raw, "reason")

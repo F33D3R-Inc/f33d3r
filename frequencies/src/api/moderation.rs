@@ -281,7 +281,7 @@ pub async fn invite(
     actor: Actor,
     Path((id, pial)): Path<(Uuid, String)>,
 ) -> Result<Json<Value>> {
-    ops::limit(&s, rate_limit::MODERATION, &actor.pial).await?;
+    ops::limit(&s, rate_limit::INVITE, &actor.pial).await?;
     let mut tx = s.pool.begin().await?;
     let (freq, moderator) = moderator(&s, &mut tx, id, &actor, Action::InviteSpeaker).await?;
     ops::require_open(&freq)?;
@@ -580,6 +580,7 @@ pub async fn block(
         return Err(AuralisError::Forbidden("the host cannot be blocked".into()));
     }
     pg::block(&mut tx, id, &target, &actor.pial, &reason).await?;
+    pg::revoke_invites(&mut tx, id, &target).await?;
     let removed = pg::remove(&mut tx, id, &target, &actor.pial, &reason).await?;
     pg::revoke_role(&mut tx, id, &target, &actor.pial).await?;
     if let Some(r) = pg::pending_request_for(&mut tx, id, &target).await? {
@@ -617,6 +618,12 @@ pub async fn unblock(
     let mut tx = s.pool.begin().await?;
     let (freq, moderator) = moderator(&s, &mut tx, id, &actor, Action::BlockParticipant).await?;
     let target = identity::resolve(&s.manhattan, &pial).await?;
+    // A co-host can undo their own block, never the host's.
+    if moderator.role != FrequencyRole::Host
+        && pg::blocked_by(&mut tx, id, &target).await?.as_deref() != Some(actor.pial.as_str())
+    {
+        return Err(AuralisError::Forbidden("only the host may undo this block".into()));
+    }
     let done = pg::unblock(&mut tx, id, &target).await?;
     if done {
         pg::log_moderation(
@@ -652,7 +659,11 @@ pub async fn add_cohost(
         return Err(AuralisError::Conflict("blocked"));
     }
     pg::grant_role(&mut tx, id, &target, FrequencyRole::CoHost, &actor.pial).await?;
+    // Only someone already in the room, so this can't be used to reach strangers.
     let seated = pg::set_role(&mut tx, id, &target, FrequencyRole::CoHost).await?;
+    if seated.is_none() {
+        return Err(AuralisError::Conflict("not_joined"));
+    }
     if let Some(r) = pg::pending_request_for(&mut tx, id, &target).await? {
         pg::resolve_request(&mut tx, r.id, RequestStatus::Approved, Some(&actor.pial)).await?;
     }
@@ -675,7 +686,7 @@ pub async fn add_cohost(
         &mut tx,
         &target,
         herald::KIND_COHOST,
-        &added.event_id.to_string(),
+        &id.to_string(),
         &format!("You are co-hosting {}", freq.title),
         "The host made you a co-host.",
         &format!("/frequencies/{id}"),

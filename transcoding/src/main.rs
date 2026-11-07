@@ -25,6 +25,14 @@ async fn main() -> anyhow::Result<()> {
         media_dir: Arc::new(media_dir),
     };
 
+    tokio::spawn(async {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(3600));
+        loop {
+            tick.tick().await;
+            handler::evict_finished_jobs();
+        }
+    });
+
     let app = Router::new()
         .route("/metrics", get(observ::metrics_handler))
         .route("/health", get(handler::health))
@@ -33,6 +41,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/frequency/clip", post(handler::frequency_clip))
         .layer(DefaultBodyLimit::max(10 * 1024 * 1024 * 1024))
         .with_state(state)
+        .layer(axum::middleware::from_fn(handler::require_service_key))
         .layer(axum::middleware::from_fn(observ::http_middleware));
 
     let addr = format!("0.0.0.0:{port}");

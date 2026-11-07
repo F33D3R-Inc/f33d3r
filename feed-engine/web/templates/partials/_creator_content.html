@@ -36,7 +36,7 @@ FACET creator_content
           <time class="crt-content-age post-time" data-ts="{{.CreatedAt.Unix}}">{{.TimeAgo}}</time>
         </div>
         {{if .Body}}
-        <p class="crt-content-preview">{{safeHTML .Body}}</p>
+        <p class="crt-content-preview">{{.Body}}</p>
         {{end}}
       </div>
       <div class="crt-content-stats">

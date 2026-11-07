@@ -17,7 +17,7 @@ use super::view::{self, FrequencySummary};
 use crate::auth::{optional_viewer, Actor, Service};
 use crate::domain::frequency::{MAX_LISTENERS_CAP, MAX_SPEAKERS_CAP};
 use crate::domain::lifecycle;
-use crate::domain::{Action, FrequencyRole, FrequencyState, ReplayStatus, Visibility};
+use crate::domain::{permissions, Action, Frequency, FrequencyRole, FrequencyState, ReplayStatus, Visibility};
 use crate::error::{AuralisError, Result};
 use crate::events::EventType;
 use crate::identity;
@@ -383,6 +383,7 @@ pub async fn schedule(
     Path(id): Path<Uuid>,
     Json(body): Json<ScheduleBody>,
 ) -> Result<Json<Value>> {
+    ops::limit(&s, rate_limit::SCHEDULE, &actor.pial).await?;
     let at = body.scheduled_at.map(scheduled_time).transpose()?;
     let cause = Cause::person(&actor.pial, &actor.correlation_id);
     let (mut tx, freq) = ops::cas_tx(&s, id, "schedule", |f| {
@@ -533,19 +534,48 @@ pub async fn end(
     .await
 }
 
-/// The file of a room's replay, for Nantar to serve. Nothing once it is gone, or
-/// for a room moderation removed.
+#[derive(Deserialize, Default)]
+pub struct ReplayBody {
+    #[serde(default)]
+    pub follows_host: bool,
+    #[serde(default)]
+    pub subscribed: bool,
+    #[serde(default)]
+    pub blocked_either_way: bool,
+}
+
+/// The file of a room's replay, for one viewer. A replay has the same audience the room
+/// had, so a paid or followers-only room stays that way after it ends. Nothing once it
+/// is gone, or for a room moderation removed.
 pub async fn replay_file(
     State(s): State<AppState>,
     _svc: Service,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
+    Json(body): Json<ReplayBody>,
 ) -> Result<Json<Value>> {
+    let viewer = optional_viewer(&s, &headers).await?;
     let mut conn = s.pool.acquire().await?;
     let f = ops::load(&mut conn, id).await?;
-    drop(conn);
     if f.replay_status != ReplayStatus::Ready || f.state != FrequencyState::Archived {
         return Err(AuralisError::NotFound);
     }
+    let mut role = FrequencyRole::Listener;
+    let mut invited = false;
+    if let Some(v) = viewer.as_deref() {
+        if pg::is_blocked(&mut conn, id, v).await? {
+            return Err(AuralisError::Conflict("blocked"));
+        }
+        role = permissions::role_on_entry(&f, v, pg::granted_role(&mut conn, id, v).await?);
+        invited = pg::is_invited(&mut conn, id, v).await?;
+    }
+    let facts = permissions::AudienceFacts {
+        follows_host: body.follows_host,
+        subscribed: body.subscribed,
+        blocked_either_way: body.blocked_either_way,
+    };
+    permissions::audience(&f, role, facts, invited).map_err(|refused| AuralisError::Conflict(refused.code()))?;
+    drop(conn);
     let file = pg::latest_ready_recording(&s.pool, id)
         .await?
         .ok_or(AuralisError::NotFound)?;
@@ -577,20 +607,21 @@ pub async fn clips_enabled(
     Ok(Json(json!({ "frequency": v })))
 }
 
-/// The host deleting their replay. The row commits first, so a failed file removal
-/// can never leave a replay still playing.
-pub async fn delete_replay(
-    State(s): State<AppState>,
-    actor: Actor,
-    Path(id): Path<Uuid>,
-) -> Result<Json<Value>> {
-    let (mut tx, freq) = ops::cas_tx(&s, id, "delete_replay", |f| {
-        require_host(f, &actor)?;
+/// Removes a replay and its file, once `allowed` agrees. The row commits first, so a
+/// failed file removal can never leave a replay still playing.
+async fn erase_replay(
+    s: &AppState,
+    id: Uuid,
+    allowed: impl Fn(&Frequency) -> Result<()>,
+) -> Result<Frequency> {
+    let (mut tx, freq) = ops::cas_tx(s, id, "delete_replay", |f| {
+        allowed(f)?;
         if f.replay_status != ReplayStatus::Ready {
             return Err(AuralisError::Conflict("no_replay"));
         }
         Ok(Patch {
             replay_status: Some(ReplayStatus::Deleted),
+            clips_enabled: Some(false),
             ..Default::default()
         })
     })
@@ -602,6 +633,30 @@ pub async fn delete_replay(
             tracing::error!(frequency_id = %id, %file, error = %e, "removing a deleted replay");
         }
     }
+    Ok(freq)
+}
+
+/// The platform taking a replay down. Internal: only Nantar's admin route calls it.
+pub async fn remove_replay(
+    State(s): State<AppState>,
+    _svc: Service,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Value>> {
+    let freq = erase_replay(&s, id, |_| Ok(())).await?;
+    tracing::warn!(frequency_id = %id, "replay removed by the platform");
+    let mut conn = s.pool.acquire().await?;
+    let v = view::build(&mut conn, &s.hot, &freq, None).await?;
+    Ok(Json(json!({ "frequency": v })))
+}
+
+/// The host deleting their replay. The row commits first, so a failed file removal
+/// can never leave a replay still playing.
+pub async fn delete_replay(
+    State(s): State<AppState>,
+    actor: Actor,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Value>> {
+    let freq = erase_replay(&s, id, |f| require_host(f, &actor)).await?;
     let mut conn = s.pool.acquire().await?;
     let v = view::build(&mut conn, &s.hot, &freq, Some(&actor.pial)).await?;
     Ok(Json(json!({ "frequency": v })))

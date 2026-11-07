@@ -2,6 +2,7 @@ package handler
 
 import (
 	"fmt"
+	"html"
 	"log"
 	"net/http"
 	"os"
@@ -189,7 +190,7 @@ func htmxError(w http.ResponseWriter, r *http.Request, msg string, code int) {
 	if r.Header.Get("HX-Request") == "true" {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(code)
-		fmt.Fprintf(w, `<div style="padding:12px 16px;background:color-mix(in srgb,#ef4444 12%%,transparent);border:1px solid color-mix(in srgb,#ef4444 30%%,transparent);border-radius:10px;font-size:13px;color:#fca5a5;margin:8px 0">%s</div>`, msg)
+		fmt.Fprintf(w, `<div style="padding:12px 16px;background:color-mix(in srgb,#ef4444 12%%,transparent);border:1px solid color-mix(in srgb,#ef4444 30%%,transparent);border-radius:10px;font-size:13px;color:#fca5a5;margin:8px 0">%s</div>`, html.EscapeString(msg))
 		return
 	}
 	http.Error(w, msg, code)

@@ -265,6 +265,13 @@ func (h *Handler) frequencyMayWatch(ctx context.Context, user *model.User, id st
 	return !refused
 }
 
+// frequencyAdultAllowed says whether an account has opted into adult rooms. Audio has
+// no blur to fall back on, so being merely not a minor is not enough: a person must be
+// a confirmed adult who turned adult content on.
+func frequencyAdultAllowed(u *model.User) bool {
+	return u != nil && !excludeNSFW(u) && u.IsAdult && u.ContentSetting == "adult_enabled"
+}
+
 // frequencyGate decides whether a person may look at a room at all: the stage,
 // its Facets and its stream. Followers-only and subscriber-only rooms can be
 // looked at, and Auralis refuses their Tune In with the reason. An invite-only
@@ -278,7 +285,7 @@ func (h *Handler) frequencyGate(viewer *model.User, v *auralis.View) (code, mess
 	if viewerPIAL != "" && viewerPIAL == s.HostPialID {
 		return "", "", false
 	}
-	if s.AdultContent && excludeNSFW(viewer) {
+	if s.AdultContent && !frequencyAdultAllowed(viewer) {
 		return "adult_content_disabled", "This Frequency is for adult-enabled accounts.", true
 	}
 	const unavailable = "This Frequency isn't available."
@@ -288,7 +295,7 @@ func (h *Handler) frequencyGate(viewer *model.User, v *auralis.View) (code, mess
 	if s.Visibility == "private" {
 		inside := false
 		if v.Viewer != nil && v.Viewer.PialID == viewerPIAL && viewerPIAL != "" {
-			inside = v.Viewer.Invited || v.Viewer.Role != nil
+			inside = !v.Viewer.Blocked && (v.Viewer.Invited || v.Viewer.Role != nil)
 		}
 		if !inside {
 			return "frequency_unavailable", unavailable, true
@@ -539,7 +546,7 @@ func (h *Handler) buildFrequencyCards(items []auralis.ListItem, viewer *model.Us
 	out := make([]FrequencyCardData, 0, len(items))
 	for i := range items {
 		s := &items[i].Frequency
-		if s.AdultContent && hideAdult {
+		if s.AdultContent && (hideAdult || !frequencyAdultAllowed(viewer)) {
 			continue
 		}
 		// An invite-only room is reached through its invitation, not a lane.
@@ -635,11 +642,16 @@ func (h *Handler) buildFrequencyStage(v *auralis.View, viewerPIAL string, viewer
 }
 
 func (h *Handler) requestData(freqID string, r *auralis.Request, people map[string]FrequencyPerson, viewerPIAL string, canModerate bool, ctx PageCtx) FrequencyRequestData {
+	// Why someone asked for the mic is for the host and for them, not the audience.
+	reason := ""
+	if canModerate || (viewerPIAL != "" && r.PialID == viewerPIAL) {
+		reason = r.Reason
+	}
 	return FrequencyRequestData{
 		ID:           freqID,
 		RequestID:    r.ID,
 		Person:       people[r.PialID],
-		Reason:       r.Reason,
+		Reason:       reason,
 		Upvotes:      r.Upvotes,
 		CreatedLabel: TimeAgo(r.CreatedAt),
 		CanModerate:  canModerate,

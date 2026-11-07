@@ -516,6 +516,7 @@ services:
     environment:
       RUST_LOG: "${RUST_LOG:-info}"
       PORT: "8085"
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY}"
       MEDIA_DIR: "/data/media"
     volumes:
       - frequency_replays:/replays:ro
@@ -638,17 +639,33 @@ services:
   livekit:
     image: livekit/livekit-server:v1.13.11
     restart: unless-stopped
-    command: ["--config", "/etc/livekit.yaml", "--node-ip", "${LIVE_PUBLIC_HOST}"]
+    command: ["--node-ip", "${LIVE_PUBLIC_HOST}"]
     ports:
       - "7881:7881"
       - "7882:7882/udp"
     environment:
       LIVEKIT_KEYS: "${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}"
+      # In the environment, not a file, because the webhook names the key.
+      LIVEKIT_CONFIG: |
+        port: 7880
+        rtc:
+          tcp_port: 7881
+          udp_port: 7882
+          use_external_ip: false
+        redis:
+          address: redis-state:6379
+        room:
+          auto_create: false
+        webhook:
+          api_key: ${LIVEKIT_API_KEY}
+          urls:
+            - http://auralis:8108/webhooks/livekit
+        logging:
+          level: info
+          json: true
     depends_on:
       redis-state:
         condition: service_healthy
-    volumes:
-      - ./infra/livekit.yaml:/etc/livekit.yaml:ro
     mem_limit: 2g
 
   # ── Egress — records a Frequency when its host opted in ──────────────────────

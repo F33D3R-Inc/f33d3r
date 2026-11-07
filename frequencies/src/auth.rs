@@ -67,7 +67,11 @@ fn internal_key_ok(headers: &HeaderMap, cfg_key: &str) -> bool {
     headers
         .get(HEADER_INTERNAL_KEY)
         .and_then(|v| v.to_str().ok())
-        .map(|k| !cfg_key.is_empty() && k == cfg_key)
+        .map(|k| {
+            !cfg_key.is_empty()
+                && k.len() == cfg_key.len()
+                && k.bytes().zip(cfg_key.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+        })
         .unwrap_or(false)
 }
 

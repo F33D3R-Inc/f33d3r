@@ -471,17 +471,33 @@ services:
   # stays on the container network and only Auralis calls it.
   livekit:
     image: livekit/livekit-server:v1.13.11
-    command: ["--config", "/etc/livekit.yaml", "--node-ip", "${LIVE_PUBLIC_HOST:-127.0.0.1}"]
+    command: ["--node-ip", "${LIVE_PUBLIC_HOST:-127.0.0.1}"]
     ports:
       - "7881:7881"
       - "7882:7882/udp"
     environment:
       LIVEKIT_KEYS: "${LIVEKIT_API_KEY:?set this in .env.local}: ${LIVEKIT_API_SECRET:?set this in .env.local}"
+      # In the environment, not a file, because the webhook names the key.
+      LIVEKIT_CONFIG: |
+        port: 7880
+        rtc:
+          tcp_port: 7881
+          udp_port: 7882
+          use_external_ip: false
+        redis:
+          address: redis-state:6379
+        room:
+          auto_create: false
+        webhook:
+          api_key: ${LIVEKIT_API_KEY:?set this in .env.local}
+          urls:
+            - http://auralis:8108/webhooks/livekit
+        logging:
+          level: info
+          json: true
     depends_on:
       redis-state:
         condition: service_healthy
-    volumes:
-      - ./infra/livekit.yaml:/etc/livekit.yaml:ro
     mem_limit: 1g
 
   # ── Egress — records a Frequency when its host opted in ──────────────────────
@@ -958,6 +974,7 @@ services:
     environment:
       RUST_LOG: "${RUST_LOG:-info}"
       PORT: "8085"
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY:?set this in .env.local}"
       MEDIA_DIR: "/data/media"
       DEV_MODE: "${DEV_MODE:-false}"
       # Same contract as mediamtx and content-scan below: encode picks h264_nvenc

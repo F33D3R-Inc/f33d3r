@@ -135,6 +135,20 @@
 {{define "admin_panel_frequencies"}}
 <section class="admin-frequencies" id="admin-frequencies">
   <span hidden hx-get="/admin/partials/frequencies" hx-trigger="every 30s" hx-target="closest .admin-frequencies" hx-swap="outerHTML"></span>
+  {{if .Replays}}
+  <h3 class="freq-people__head">Replays ({{len .Replays}})</h3>
+  <ul class="freq-people__rows" role="list">
+    {{range .Replays}}
+    <li class="admin-frequencies__row">
+      <a class="freq-people__name" href="/frequencies/{{.ID}}">{{.Title}}</a>
+      <span class="freq-people__more">@{{.HostHandle}}</span>
+      <form hx-post="/admin/frequencies/{{.ID}}/remove_replay" hx-target="closest .admin-frequencies" hx-swap="outerHTML" hx-confirm="Remove the replay of “{{.Title}}” for good? This cannot be undone.">
+        <button type="submit" class="freq-people__btn freq-people__btn--danger">Remove replay</button>
+      </form>
+    </li>
+    {{end}}
+  </ul>
+  {{end}}
   <h3 class="freq-people__head">Live Frequencies ({{len .Rooms}})</h3>
   {{if .Unavailable}}<p class="freq-people__more">Frequencies are unavailable right now.</p>
   {{else if not .Rooms}}<p class="freq-people__more">None live right now.</p>
@@ -175,6 +189,14 @@
   <span hx-get="/facets/frequency/{{.ID}}/clip" hx-trigger="load" hx-swap="outerHTML"></span>
   <span hx-get="/facets/frequency/{{.ID}}/replay_controls" hx-trigger="load" hx-swap="outerHTML"></span>
 </div>
+{{end}}
+
+{{define "frequency_replay_followers"}}
+<p class="freq-people__more" data-facet-id="{{frequencyFacetID .ID "replay"}}">This replay is for people who follow the host.</p>
+{{end}}
+
+{{define "frequency_replay_subscribers"}}
+<p class="freq-people__more" data-facet-id="{{frequencyFacetID .ID "replay"}}">This replay is for the host's subscribers.</p>
 {{end}}
 
 {{define "frequency_replay_controls"}}

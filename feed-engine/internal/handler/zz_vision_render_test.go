@@ -25,7 +25,7 @@ func TestVisionFacetsRender(t *testing.T) {
 	art := buildVisionArtboard("33333333-3333-3333-3333-333333333333",
 		"Twitter users are missing Visions", "ember", "display", "auto", "center")
 	created := visionCreatedView{
-		VisionID:     art.EntityID,
+		VisionID:    art.EntityID,
 		Handle:      "nantar",
 		ContentType: "text",
 		ExpiryLabel: "gone in 24h",
@@ -33,7 +33,7 @@ func TestVisionFacetsRender(t *testing.T) {
 		HasArtboard: true,
 	}
 	createdMedia := visionCreatedView{
-		VisionID:     "44444444-4444-4444-4444-444444444444",
+		VisionID:    "44444444-4444-4444-4444-444444444444",
 		Handle:      "nantar",
 		ContentType: "image",
 		ExpiryLabel: "gone in 24h",

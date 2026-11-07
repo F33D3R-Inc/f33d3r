@@ -77,4 +77,27 @@ help.f33d3r.com {
   }
 }
 
+# ── Tor ───────────────────────────────────────────────────────────────────────
+# The onion service arrives here, never at the application directly, so it passes
+# through the same walls as the public site. This port is not published. Tor hides
+# the real address, so every onion visitor shares one rate-limit address.
+http://:8081 {
+  route {
+    respond /metrics 404
+    respond /api/internal/* 404
 
+    @livekit path /rtc /rtc/*
+    handle @livekit {
+      reverse_proxy livekit:7880
+    }
+
+    handle {
+      reverse_proxy feed-engine:8081 {
+        header_up X-Real-IP 198.18.0.1
+        header_up -X-Forwarded-For
+        header_up X-Forwarded-Proto http
+        flush_interval -1
+      }
+    }
+  }
+}

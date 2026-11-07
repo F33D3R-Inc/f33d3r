@@ -230,6 +230,8 @@ func New(cfg *config.Config, aethyrClient *aethyr.Client, database *sql.DB) *Han
 		rssCache:        rss.NewCache(),
 		sitra:           sitra.New(),
 	}
+	keyServiceCalls(h.httpClient, cfg.InternalAPIKey, cfg.ThemisURL, cfg.TranscodingURL)
+	keyServiceCalls(h.videoClient, cfg.InternalAPIKey, cfg.ThemisURL, cfg.TranscodingURL)
 	// The avatar ring: the author strip says who is hosting a Frequency right
 	// now, and the mappers that build it read this cache rather than the brain.
 	useFrequencyPresence(h.auralis)
@@ -837,6 +839,8 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /facets/frequency/cards", h.rlRead.Limit(h.facetFrequencyCards))
 	mux.HandleFunc("GET /facets/frequency/{id}/{slot}", h.rlRead.Limit(h.facetFrequencySlot))
 	mux.HandleFunc("GET /frequencies/{id}/replay", h.rlRead.Limit(h.frequencyReplay))
+	mux.HandleFunc("GET /facets/frequency/{id}/replay", h.rlRead.Limit(h.facetFrequencyReplay))
+	mux.HandleFunc("POST /admin/frequencies/{id}/remove_replay", h.rlWrite.Limit(h.requireHandle(h.adminFrequencyRemoveReplay)))
 	mux.HandleFunc("GET /facets/frequency/{id}/replay_controls", h.rlRead.Limit(h.facetFrequencyReplayControls))
 	mux.HandleFunc("GET /facets/frequency/{id}/clip", h.rlRead.Limit(h.facetFrequencyClip))
 	mux.HandleFunc("GET /facets/frequency/{id}/clip/{upload}", h.rlRead.Limit(h.requireHandle(h.facetFrequencyClipStatus)))
