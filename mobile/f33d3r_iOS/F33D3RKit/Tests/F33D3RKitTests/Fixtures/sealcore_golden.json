@@ -1,6 +1,6 @@
 {
   "note": "Vectors for SealCore.swift. The Argon2 rows marked source=go are computed here by golang.org/x/crypto/argon2, an implementation independent of both the Rust crate and the Swift port. The rows marked source=argon2-0.5.3-kat and source=rfc9106 are transcribed from tests/kat.rs of the exact crate version sealcore/Cargo.lock pins; they carry a secret and associated data, which x/crypto cannot express.",
-  "generated_by": "Tools/sealcore-golden (go1.26.2)",
+  "generated_by": "Tools/sealcore-golden (go1.27.3)",
   "argon2": [
     {
       "name": "sealcore_default_params",
@@ -162,19 +162,19 @@
   "agreement": [
     {
       "name": "pair_0",
-      "priv_b64": "cAquHC81xVDFlllg7CEvM9e8h5pZ+CWGjz5NDihvSFM=",
-      "pub_b64": "6FGY8pq7OVT+l+xH/gpifBf8ULo5WjuWq1FL9SO6nWQ=",
-      "peer_pub_b64": "xp/s2t4HxlhZX8Oa4bivoiobM5Elh2r8tSs9X1dRV0Y=",
-      "shared_b64": "67quoaQsY/Opjl2ip2bjpUnDbGZuiC6kso+GzrpvGmw=",
-      "wrap_key_b64": "AsP6hgilI0NtNj7alwtJP3fnpwdH11zSQ2pHjbha5+A="
+      "priv_b64": "u4U7myk9r9fiaTLA5RTXfKpaRur4Q99EWS8MyXQlPH4=",
+      "pub_b64": "h3rUHdXQrhxSwT9fYF4Z4WEyYVxO5mD3vPzdCJdVvmU=",
+      "peer_pub_b64": "STSHOvMIwclvR3iJFIwTZvCrqvkcPmw9J39IQRckZ1U=",
+      "shared_b64": "IcxHnYEV5j4fE/8F/K0UbmCriWqagFJ+uG039lY2+yE=",
+      "wrap_key_b64": "1MyNXPw0FmeNJ1vTYE1DIjUuz9vVB1tTKQnvVUMAVyc="
     },
     {
       "name": "pair_1",
-      "priv_b64": "XEBZwPioqMP1aWcYfLkyCg0r/AXG4ttNKIiHQKNW2j8=",
-      "pub_b64": "2vmeMQckLVA0AU1K+rsxU0Jn/Opw1gliCiPWShEx0Ag=",
-      "peer_pub_b64": "zQqvZxg/fG5UcDUfCHfFFBA4edaLGa3ty//P3BkBTxE=",
-      "shared_b64": "7iTqWig1DeJ17d3NpWxTOGVaJKbwiQwd73W8xNOGd3M=",
-      "wrap_key_b64": "QNAfQzGAfGg3wmpmw6hhHIVYgryJYAy45UuQ9aC0M2A="
+      "priv_b64": "DlGatxOKc537eqDbhgqaYmvIJZDjaY8rSQL7AAGsvTA=",
+      "pub_b64": "WMzOR7+2h6Y6du6CTCyOf6MTWdLwK2Fat8JTriks/xM=",
+      "peer_pub_b64": "kcZBbNju9BerG1q2dU5tkRdJQKj7QyO02OIE7XUVvCc=",
+      "shared_b64": "KXKZxjB2LLjoRXzhCC5HXo2uNmPjURfluTkmWq7j0Xs=",
+      "wrap_key_b64": "lK7zb/uP82Ojzls1wNkRt/TNrMlnaMfP24uu3/fN36A="
     }
   ],
   "sealed": [
@@ -184,19 +184,19 @@
       "recipients": [
         {
           "account": "acct-single_recipient-0",
-          "priv_b64": "JMT2hL3D7lJX7Eytw39RPjYI97JhtXAbtUbt+XVSmAs=",
-          "pub_b64": "i1vfyjBufxrsKLQW7K4yHyg80ftKR+BBUjpGncnuRT0="
+          "priv_b64": "FA9loAurU+pd5ONawBeUlA0Ap6kXCtYH0nZmTRfh4j8=",
+          "pub_b64": "05WqtsPFMDbgaqcD/vAsrqTc1vECmW40tzePDL47PwE="
         }
       ],
       "envelope": {
-        "body_ct_b64": "PaDGNqSUUgCBhPHUKcMsl3mfwg4mz8WaLA73RQ==",
-        "body_nonce_b64": "mxC0W1Ml9QClBRVU",
+        "body_ct_b64": "OiWs/oLbQTzQDUKWSdMOV75V7npuE5UVQQLpDA==",
+        "body_nonce_b64": "ziVehcz9Lco9i0lA",
         "sealed": [
           {
             "recipient_account": "acct-single_recipient-0",
-            "eph_pub_b64": "CE7QZRjQlmCANQ+uodJ/PmnMg94XlfGDio2fxo9sQmE=",
-            "sealed_b64": "kHQ8lMwq0ADIQyuNZQuL0namfukPVhw2UuAxLJGEF5dMb8ETa7qil9SxLuIrIEql",
-            "sealed_nonce_b64": "q9PE9U+gMuve770h"
+            "eph_pub_b64": "orp1yUFFMqeInllttmtafN5ACFu17T3V07upc2DJPUs=",
+            "sealed_b64": "refcRg61bfXgZJIGGvJ2Omz2C65LETqoX1gYwbzE4KUOg2Y5D+tObd3+0uNDPP/k",
+            "sealed_nonce_b64": "YfPftBIfpgrM9xyA"
           }
         ]
       }
@@ -207,41 +207,41 @@
       "recipients": [
         {
           "account": "acct-group_of_three-0",
-          "priv_b64": "UFUo3Tuq7fFeW9Ap0WMxpQKfo6XliaPtIfPgeckOVSI=",
-          "pub_b64": "T81W76VzmDFRCjKI1x/VqknDNJZuM0y5m15/B53GuXc="
+          "priv_b64": "SdV1t06NaZuzd3aeihCXo3Vb6jxxU212yskCCcX2Jzw=",
+          "pub_b64": "c9x1r0nXguDD8R2VgkmWmu70L0JWfuflCKKmW2xWkms="
         },
         {
           "account": "acct-group_of_three-1",
-          "priv_b64": "lWyp3rzAu0fTgXXjU8TgybbAlwT00ljqbHKy6A+m5hk=",
-          "pub_b64": "sxBEErvRXFSRE/X5N4WPAeIPeXQdsakcEw/Dy5CCs2c="
+          "priv_b64": "jV4WVFTy3Flka0JyKUUHkWaYFAGJbA/ljMGth1anxus=",
+          "pub_b64": "TJjZ9YeauWPgKKfKpHpvcbKFSzBK12LF9xRWT+uHxCc="
         },
         {
           "account": "acct-group_of_three-2",
-          "priv_b64": "XoYTNFYSGHao2+z8OCs272z+vafRgRj1jBrxnPFtync=",
-          "pub_b64": "A3mu6RIjitnPIt87Hl4d05HYRdBFbIP/JbEKr9TNLkQ="
+          "priv_b64": "5idvicZrcveRv/6xbFOHAfSHYWRPDvqs7lnY821Dn7E=",
+          "pub_b64": "bnDtIjEaW5V0+KSMkdTQjfa2rfenbS6wxycDPlFV724="
         }
       ],
       "envelope": {
-        "body_ct_b64": "RSRkH+paZpGeW0roEjvJZlYu/2Epi1gjShFFTUbmbBpU7cehQqJzjZ4=",
-        "body_nonce_b64": "N0RSXLRemxokjIjj",
+        "body_ct_b64": "F9gMHRJ0yu69WZXNahzYI/wPhlAt9MHLoU4eLOWvE1cDwAsVYofABlw=",
+        "body_nonce_b64": "iqfU/lGxz/EGklaZ",
         "sealed": [
           {
             "recipient_account": "acct-group_of_three-0",
-            "eph_pub_b64": "qY9H4HhlNZFa1y4pTAO6ZYHvrXCtH5ZHP8TAUhYgfno=",
-            "sealed_b64": "r3VMhEOQ0tIb+i9JfZrY2dI1s4MLBgoPp8dpMmlgguRttWGY/LQv99Wzx2R9weay",
-            "sealed_nonce_b64": "yYLeEUG2cvG9Mptk"
+            "eph_pub_b64": "vp20WZO7lpC8G6S0DWyXkX/91BIuog5YCbcD9vQLzRM=",
+            "sealed_b64": "1pn2We4cUXzjy68wB9JxAanN6UaXLb8VucHXqWqyys3q2CMidoFhasC7r9MnmF3j",
+            "sealed_nonce_b64": "4cEoJWyOLwNMDC+S"
           },
           {
             "recipient_account": "acct-group_of_three-1",
-            "eph_pub_b64": "xJLbCkDzJ29nYEUrvQ4QhqcnPe3Tr50/05r4iDTBEl4=",
-            "sealed_b64": "7QqdxHvR/XI0B9LX5mYBm44AG3t/+ZPSi2Ae2GPhCoAKOzIoA7QdR0QZDGZ2qBcz",
-            "sealed_nonce_b64": "gQOdsFUzvgOVzGxJ"
+            "eph_pub_b64": "Huj+8eChOB6FESe5ktOPDNeAnyhUbz/getg2AJUsqFk=",
+            "sealed_b64": "SvwlDHhP/aINoZ1qZQe+5yJ+xM6l2pW9le8IkW8RqqAgXUdEIVh2ah8Qxo3JBHm3",
+            "sealed_nonce_b64": "f2o+UUtKcbH59O5N"
           },
           {
             "recipient_account": "acct-group_of_three-2",
-            "eph_pub_b64": "p0yrp+YPRmcKdQcszuMUSRHulnB6hdmbbwUKdIVFPnQ=",
-            "sealed_b64": "+4Ufsgu5I/fDi7TyJilYQBZATKkQYqxDEar6cVsBJQPFUliB3IDNq3pc3tkrdK2o",
-            "sealed_nonce_b64": "dF6F+LfPnWlqNeLO"
+            "eph_pub_b64": "qwLE0Z7plPKD2X0whDIhwxS80EWnrjeH8QB81+2BRG8=",
+            "sealed_b64": "x1dQwdultNwtze3ZiloQnO5FHebcqO/cHS7tsq4mdQZBy1Ktu2x7wpnSNp96hpKD",
+            "sealed_nonce_b64": "15bWdxDbTDd5muzH"
           }
         ]
       }
@@ -252,19 +252,19 @@
       "recipients": [
         {
           "account": "acct-empty_body-0",
-          "priv_b64": "GNdCunHhkP/a3J8I8ApbwF/MbC6IbDzEN6bQjNJPVoM=",
-          "pub_b64": "KCmI9k4izhWmLyP6wrsiYG/vEyDlgS57G/HrG5o8oyM="
+          "priv_b64": "kDKNMq44wyc7Lg8j8QqasbtepX7pT1spk1eLzRwxE0I=",
+          "pub_b64": "3qdmVglqCk/5t3Y8m4El72HFL18+V+xWOPJ9OiwXtEc="
         }
       ],
       "envelope": {
-        "body_ct_b64": "xt5aecziQi9KS091S4GbdQ==",
-        "body_nonce_b64": "sBto3hhgxwvFL9t5",
+        "body_ct_b64": "+AWLUbmGq5XyuW7n7bE+6A==",
+        "body_nonce_b64": "tgxKU4wHboqnoLr0",
         "sealed": [
           {
             "recipient_account": "acct-empty_body-0",
-            "eph_pub_b64": "G9Tw8avXCadjeqJJW8id/Z/FqftFu6L7ECespgvV6iE=",
-            "sealed_b64": "SMVFIV7YHyV/0+w+KE6u+PdpepiCAvNpMufDvB2PDeOW7EptH3XJuPDGL7meH2/L",
-            "sealed_nonce_b64": "AlMXT/1ydcrPJkuI"
+            "eph_pub_b64": "46VgKS3a0pqN2fW41D3p+didvQ694VzBHQfaLwaC6ls=",
+            "sealed_b64": "DQ7ijGZ4SxsbANudg7lEk5VW65GBvsjm4vILXSppMHp8x64N6zTDwyxK3NMdlwbO",
+            "sealed_nonce_b64": "o//olHXWWqqOC4xZ"
           }
         ]
       }
@@ -273,56 +273,12 @@
   "vault": {
     "note": "salt_b64 is SHA-256 of the lower-cased handle; Argon2 sees its 32 decoded bytes.",
     "handle": "MiiYazuko",
-    "password": "REMOVED_DEV_PASSWORD",
+    "password": "golden-vector-input",
     "salt_b64": "e2i4plE6MhH4TP7hEqoZcmKxMZhjPrSpR+TB1Y8tlWs=",
-    "derived_key_b64": "idQ5Kvj9uT2SYKwLZHHHbWZiEVEE+DE2xx7/H3Ai62A=",
-    "identity_priv_b64": "r3Kf9FQ1xUbOJcuczYacvkCpTohW4sE0BMLqkg3sHtM=",
-    "identity_pub_b64": "IPKrt2u/QjNzfop3r4zOBmfMF9AJqj2Ath4XdoP762c=",
-    "wrapped_ct_b64": "awbcRJRITlx7rePMmzG9gd7KFpZwNeOhkmBRNHI20A5e4+2iTdb+vDDJe8bJSJJa",
-    "wrapped_nonce_b64": "Oibf+43898gXfbo0"
-  },
-  "from_swift": {
-    "go_version": "go1.26.2",
-    "vault_note": "derived the same key and unwrapped the raw 32-byte identity scalar",
-    "vault_verified": true,
-    "verdicts": [
-      {
-        "name": "swift_single",
-        "should_open": true,
-        "opened_by_go": true,
-        "plaintext_go_read": "hello from swift"
-      },
-      {
-        "name": "swift_group_alice",
-        "should_open": true,
-        "opened_by_go": true,
-        "plaintext_go_read": "群 — sealed 🔐"
-      },
-      {
-        "name": "swift_group_bob",
-        "should_open": true,
-        "opened_by_go": true,
-        "plaintext_go_read": "群 — sealed 🔐"
-      },
-      {
-        "name": "swift_group_carol",
-        "should_open": true,
-        "opened_by_go": true,
-        "plaintext_go_read": "群 — sealed 🔐"
-      },
-      {
-        "name": "swift_empty_body",
-        "should_open": true,
-        "opened_by_go": true,
-        "plaintext_go_read": ""
-      },
-      {
-        "name": "swift_wrong_recipient_entry",
-        "should_open": false,
-        "opened_by_go": false,
-        "plaintext_go_read": "",
-        "error": "unwrap content key: cipher: message authentication failed"
-      }
-    ]
+    "derived_key_b64": "OTS+9OpAB+RMrgxfDPJrJVYaGak+YPVtADEty145+UQ=",
+    "identity_priv_b64": "olbNXjKAgwelk3jd3BEsTjVqLZIz9dXLTeRHfCaryLk=",
+    "identity_pub_b64": "/P/tKOi7pT1REyzHmJ0lMFF60Umqt4OXwawZFhmW10s=",
+    "wrapped_ct_b64": "woawvdWeS97/WUhUTAAegsWfg1ho9//fdN1LGsxDQfduk0GkWHjm5O4fu6LaMC/p",
+    "wrapped_nonce_b64": "5dkGZzelyuYTFf+p"
   }
 }

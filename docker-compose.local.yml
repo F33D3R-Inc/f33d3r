@@ -47,7 +47,7 @@ services:
       - ./postgres-init:/docker-entrypoint-initdb.d:ro
       - ./infra/postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
     ports:
-      - "${POSTGRES_HOST_PORT:-5432}:5432"
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
     healthcheck:
       test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-f33d3r}" ]
       interval: 5s
@@ -97,7 +97,7 @@ services:
     image: redis:7-alpine
     command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     healthcheck:
       test: [ "CMD", "redis-cli", "ping" ]
       interval: 5s
@@ -109,7 +109,7 @@ services:
       context: ./aethyr-schema-registry
       dockerfile: docker/Dockerfile
     ports:
-      - "8079:8079"
+      - "127.0.0.1:8079:8079"
     environment:
       RUST_LOG: "${RUST_LOG:-info}"
       DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:?set this in .env.local}@postgres:5432/f33d3r_registry?sslmode=disable"
@@ -129,7 +129,7 @@ services:
       context: ./aethyrrank-engine
       dockerfile: docker/Dockerfile
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     environment:
       RUST_LOG: "${RUST_LOG:-info}"
       APP__SERVER__PORT: "8080"
@@ -151,7 +151,7 @@ services:
       context: ./zior-engine
       dockerfile: docker/Dockerfile
     ports:
-      - "8082:8082"
+      - "127.0.0.1:8082:8082"
     environment:
       RUST_LOG: "${RUST_LOG:-info}"
       ZIOR__SERVER__PORT: "8082"
@@ -227,9 +227,9 @@ services:
       TRANSLATION_API_URL: "http://libretranslate:5000"
       ASTRAON_URL: "http://astraon:8088"
       ALEXANDRIA_URL: "http://alexandria:8098"
-      INTERNAL_API_KEY: "${INTERNAL_API_KEY:-dev_internal_key_change_in_production}"
-      SESSION_SECRET: "${SESSION_SECRET:-dev_secret_change_in_production_32chars}"
-      MEDIA_TOKEN_SECRET: "${MEDIA_TOKEN_SECRET:-dev_media_token_secret_change_in_prod}"
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY:?set this in .env.local}"
+      SESSION_SECRET: "${SESSION_SECRET:?set this in .env.local}"
+      MEDIA_TOKEN_SECRET: "${MEDIA_TOKEN_SECRET:?set this in .env.local}"
       SHOW_SCORES: "${SHOW_SCORES:-false}"
       DEV_MODE: "${DEV_MODE:-false}"
       # Live lane — control plane address, media server API, publish endpoints.
@@ -302,11 +302,11 @@ services:
       context: .
       dockerfile: astraon/docker/Dockerfile
     ports:
-      - "8088:8088"
+      - "127.0.0.1:8088:8088"
     environment:
       MANHATTAN_URL: "http://manhattan:8107"
       # Authenticates every call to Manhattan; the brain refuses to boot without it.
-      INTERNAL_API_KEY: "${INTERNAL_API_KEY:-dev_internal_key_change_in_production}"
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY:?set this in .env.local}"
       RUST_LOG: "${RUST_LOG:-info}"
       PORT: "8088"
       DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:?set this in .env.local}@postgres:5432/f33d3r_feed?sslmode=disable"
@@ -339,7 +339,7 @@ services:
       DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:?set this in .env.local}@postgres:5432/f33d3r_wallet?sslmode=disable"
       AETHYRRANK_URL: "http://aethyrrank-engine:8080"
       FEED_ENGINE_URL: "http://feed-engine:8081"
-      INTERNAL_API_KEY: "${INTERNAL_API_KEY:-dev_internal_key_change_in_production}"
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY:?set this in .env.local}"
     depends_on:
       postgres:
         condition: service_healthy
@@ -359,14 +359,14 @@ services:
       context: .
       dockerfile: elohim-veni/docker/Dockerfile
     ports:
-      - "8093:8093"
+      - "127.0.0.1:8093:8093"
     environment:
       MANHATTAN_URL: "http://manhattan:8107"
       RUST_LOG: "${RUST_LOG:-info}"
       PORT: "8093"
       DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:?set this in .env.local}@postgres:5432/f33d3r_security?sslmode=disable"
       VERITY_URL: "http://verity:8095"
-      INTERNAL_API_KEY: "${INTERNAL_API_KEY:-dev_internal_key_change_in_production}"
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY:?set this in .env.local}"
       # Ed25519 seed (base64, 32 bytes) signing contact key bundles. Unset means
       # bundles ship unsigned and report themselves as unsigned.
       CONTACT_BUNDLE_SIGNING_SEED: "${CONTACT_BUNDLE_SIGNING_SEED:-}"
@@ -387,11 +387,11 @@ services:
       context: .
       dockerfile: zodacare/docker/Dockerfile
     ports:
-      - "8090:8090"
+      - "127.0.0.1:8090:8090"
     environment:
       MANHATTAN_URL: "http://manhattan:8107"
       # Authenticates every call to Manhattan; the brain refuses to boot without it.
-      INTERNAL_API_KEY: "${INTERNAL_API_KEY:-dev_internal_key_change_in_production}"
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY:?set this in .env.local}"
       RUST_LOG: "${RUST_LOG:-info}"
       PORT: "8090"
       DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:?set this in .env.local}@postgres:5432/f33d3r_safety?sslmode=disable"
@@ -413,12 +413,12 @@ services:
       context: .
       dockerfile: herald/docker/Dockerfile
     ports:
-      - "8105:8105"
+      - "127.0.0.1:8105:8105"
     environment:
       KAFKA_BROKERS: "sitra-achra:9092"
       MANHATTAN_URL: "http://manhattan:8107"
       # Authenticates every call to Manhattan; the brain refuses to boot without it.
-      INTERNAL_API_KEY: "${INTERNAL_API_KEY:-dev_internal_key_change_in_production}"
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY:?set this in .env.local}"
       RUST_LOG: "${RUST_LOG:-info}"
       PORT: "8105"
       DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:?set this in .env.local}@postgres:5432/f33d3r_herald?sslmode=disable"
@@ -443,11 +443,11 @@ services:
       context: .
       dockerfile: lore/docker/Dockerfile
     ports:
-      - "8106:8106"
+      - "127.0.0.1:8106:8106"
     environment:
       MANHATTAN_URL: "http://manhattan:8107"
       # Authenticates every call to Manhattan; the brain refuses to boot without it.
-      INTERNAL_API_KEY: "${INTERNAL_API_KEY:-dev_internal_key_change_in_production}"
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY:?set this in .env.local}"
       RUST_LOG: "${RUST_LOG:-info}"
       PORT: "8106"
       DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:?set this in .env.local}@postgres:5432/f33d3r_lore?sslmode=disable"
@@ -476,7 +476,7 @@ services:
       - "7881:7881"
       - "7882:7882/udp"
     environment:
-      LIVEKIT_KEYS: "${LIVEKIT_API_KEY:-dev_frequencies}: ${LIVEKIT_API_SECRET:-dev_livekit_secret_change_in_production_00}"
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY:?set this in .env.local}: ${LIVEKIT_API_SECRET:?set this in .env.local}"
     depends_on:
       redis-state:
         condition: service_healthy
@@ -492,8 +492,8 @@ services:
     network_mode: "service:livekit"
     environment:
       EGRESS_CONFIG_FILE: /etc/egress.yaml
-      LIVEKIT_API_${LIVEKIT_API_KEY:-dev_frequencies}: "${LIVEKIT_API_KEY:-dev_frequencies}"
-      LIVEKIT_API_${LIVEKIT_API_SECRET:-dev_livekit_secret_change_in_production_00}: "${LIVEKIT_API_SECRET:-dev_livekit_secret_change_in_production_00}"
+      LIVEKIT_API_${LIVEKIT_API_KEY:?set this in .env.local}: "${LIVEKIT_API_KEY:?set this in .env.local}"
+      LIVEKIT_API_${LIVEKIT_API_SECRET:?set this in .env.local}: "${LIVEKIT_API_SECRET:?set this in .env.local}"
     volumes:
       - ./infra/egress.yaml:/etc/egress.yaml:ro
       - frequency_replays:/home/egress/replays
@@ -518,20 +518,20 @@ services:
       context: .
       dockerfile: frequencies/docker/Dockerfile
     ports:
-      - "8108:8108"
+      - "127.0.0.1:8108:8108"
     environment:
       MANHATTAN_URL: "http://manhattan:8107"
       # Authenticates every call to Manhattan and every call INTO this brain;
       # it refuses to boot without it.
-      INTERNAL_API_KEY: "${INTERNAL_API_KEY:-dev_internal_key_change_in_production}"
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY:?set this in .env.local}"
       RUST_LOG: "${RUST_LOG:-info}"
       PORT: "8108"
       DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:?set this in .env.local}@postgres:5432/f33d3r_frequencies?sslmode=disable"
       REDIS_URL: "redis://redis-state:6379"
       KAFKA_BROKERS: "sitra-achra:9092"
       LIVEKIT_URL: "http://livekit:7880"
-      LIVEKIT_API_KEY: "${LIVEKIT_API_KEY:-dev_frequencies}"
-      LIVEKIT_API_SECRET: "${LIVEKIT_API_SECRET:-dev_livekit_secret_change_in_production_00}"
+      LIVEKIT_API_KEY: "${LIVEKIT_API_KEY:?set this in .env.local}"
+      LIVEKIT_API_SECRET: "${LIVEKIT_API_SECRET:?set this in .env.local}"
     volumes:
       - frequency_replays:/replays
     mem_limit: 512m
@@ -556,11 +556,11 @@ services:
       context: .
       dockerfile: registry-brain/docker/Dockerfile
     ports:
-      - "8094:8094"
+      - "127.0.0.1:8094:8094"
     environment:
       MANHATTAN_URL: "http://manhattan:8107"
       # Authenticates every call to Manhattan; the brain refuses to boot without it.
-      INTERNAL_API_KEY: "${INTERNAL_API_KEY:-dev_internal_key_change_in_production}"
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY:?set this in .env.local}"
       RUST_LOG: "${RUST_LOG:-info}"
       PORT: "8094"
       DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:?set this in .env.local}@postgres:5432/f33d3r_handles?sslmode=disable"
@@ -579,14 +579,14 @@ services:
       context: ./manhattan
       dockerfile: docker/Dockerfile
     ports:
-      - "8107:8107"
+      - "127.0.0.1:8107:8107"
     environment:
       RUST_LOG: "${RUST_LOG:-info}"
       PORT: "8107"
       # Every call into the naming plane carries this shared secret; Manhattan
       # refuses to boot without it. A brain name in a header is a claim anyone on
       # the network could make — the key is what makes it a fact.
-      INTERNAL_API_KEY: "${INTERNAL_API_KEY:-dev_internal_key_change_in_production}"
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY:?set this in .env.local}"
       DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:?set this in .env.local}@postgres:5432/f33d3r_manhattan?sslmode=disable"
     depends_on:
       postgres:
@@ -615,7 +615,7 @@ services:
       DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:?set this in .env.local}@postgres:5432/f33d3r_verity?sslmode=disable"
       # Verity decides who may earn money. Every mutating route requires this
       # shared secret and the service refuses to boot without it.
-      INTERNAL_API_KEY: "${INTERNAL_API_KEY:-dev_internal_key_change_in_production}"
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY:?set this in .env.local}"
       # NEXUS maintenance sweep (was the nexus-sweep container): expires stale
       # link requests and session context, flags AML aggregates for EDD.
       NEXUS_SWEEP_INTERVAL_SECS: "900"
@@ -634,7 +634,7 @@ services:
       context: .
       dockerfile: aethyr-ledger/docker/Dockerfile
     ports:
-      - "8096:8096"
+      - "127.0.0.1:8096:8096"
     environment:
       MANHATTAN_URL: "http://manhattan:8107"
       RUST_LOG: "${RUST_LOG:-info}"
@@ -642,7 +642,7 @@ services:
       DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:?set this in .env.local}@postgres:5432/f33d3r_ledger?sslmode=disable"
       # Ain Soph authenticates the block checkpoint this brain posts after each
       # seal. Without the shared secret that call is refused.
-      INTERNAL_API_KEY: "${INTERNAL_API_KEY:-dev_internal_key_change_in_production}"
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY:?set this in .env.local}"
     depends_on:
       postgres:
         condition: service_healthy
@@ -658,11 +658,11 @@ services:
       context: .
       dockerfile: alexandria/docker/Dockerfile
     ports:
-      - "8098:8098"
+      - "127.0.0.1:8098:8098"
     environment:
       MANHATTAN_URL: "http://manhattan:8107"
       # Authenticates every call to Manhattan; the brain refuses to boot without it.
-      INTERNAL_API_KEY: "${INTERNAL_API_KEY:-dev_internal_key_change_in_production}"
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY:?set this in .env.local}"
       RUST_LOG: "${RUST_LOG:-info}"
       PORT: "8098"
       DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:?set this in .env.local}@postgres:5432/f33d3r_library?sslmode=disable"
@@ -704,7 +704,7 @@ services:
       context: ./caeor
       dockerfile: docker/Dockerfile
     ports:
-      - "8086:8086"
+      - "127.0.0.1:8086:8086"
     environment:
       RUST_LOG: "${RUST_LOG:-info}"
       PORT: "8086"
@@ -730,7 +730,7 @@ services:
       elohim-veni:
         condition: service_healthy
     ports:
-      - "8100:8100"
+      - "127.0.0.1:8100:8100"
     environment:
       MANHATTAN_URL: "http://manhattan:8107"
       RUST_LOG: "${RUST_LOG:-info}"
@@ -738,7 +738,7 @@ services:
       PORT: "8100"
       NANTAR_URL: "http://feed-engine:8081"
       ELOHIM_VENI_URL: "http://elohim-veni:8093"
-      INTERNAL_API_KEY: "${INTERNAL_API_KEY:-dev_internal_key_change_in_production}"
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY:?set this in .env.local}"
       MEMPOOL_API_URL: "https://mempool.space/api"
       XRP_WS_URL: "${XRP_WS_URL:-wss://xrpl.ws}"
       THEMIS_ECDH_PRIVKEY_B64: "${THEMIS_ECDH_PRIVKEY_B64:-}"
@@ -763,7 +763,7 @@ services:
       context: ./ekyc
       dockerfile: Dockerfile
     ports:
-      - "8099:8099"
+      - "127.0.0.1:8099:8099"
     environment:
       PORT: "8099"
     healthcheck:
@@ -799,7 +799,7 @@ services:
       ADMIN_USERS: "${POSTGRES_USER:-f33d3r}"
       AUTH_TYPE: "scram-sha-256"
     ports:
-      - "6432:5432"
+      - "127.0.0.1:6432:5432"
     depends_on:
       postgres:
         condition: service_healthy
@@ -827,8 +827,8 @@ services:
       MINIO_BROWSER_REDIRECT_URL: "http://localhost:9001"
       MINIO_PROMETHEUS_AUTH_TYPE: "public"
     ports:
-      - "9000:9000"   # S3 API
-      - "9001:9001"   # web console
+      - "127.0.0.1:9000:9000"   # S3 API
+      - "127.0.0.1:9001:9001"   # web console
     volumes:
       - minio_data:/data
     healthcheck:
@@ -905,7 +905,7 @@ services:
     environment:
       MTX_AUTHHTTPADDRESS: "http://feed-engine:8110/live/auth"
       MTX_WEBRTCADDITIONALHOSTS: "${LIVE_PUBLIC_HOST:-localhost}"
-      INTERNAL_API_KEY: "${INTERNAL_API_KEY:-dev_internal_key_change_in_production}"
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY:?set this in .env.local}"
       LIVE_CONTROL_URL: "http://feed-engine:8110"
       LIVE_MEDIA_ROOT: "/data/media/live"
       LIVE_SCAN_ROOT: "/data/live-scan"
@@ -938,7 +938,7 @@ services:
   live-edge:
     image: nginx:1.27-alpine
     ports:
-      - "8092:80"
+      - "127.0.0.1:8092:80"
     volumes:
       - ./infra/live/nginx.conf:/etc/nginx/nginx.conf:ro
       - f33d3r_media:/srv:ro
@@ -954,7 +954,7 @@ services:
       context: ./transcoding
       dockerfile: Dockerfile
     ports:
-      - "8085:8085"
+      - "127.0.0.1:8085:8085"
     environment:
       RUST_LOG: "${RUST_LOG:-info}"
       PORT: "8085"
@@ -995,7 +995,7 @@ services:
       - ./infra/observability/prometheus-rules.yml:/etc/prometheus/prometheus-rules.yml:ro
       - prometheus_data:/prometheus
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     healthcheck:
       test: [ "CMD", "wget", "-qO-", "http://localhost:9090/-/healthy" ]
       interval: 15s
@@ -1013,7 +1013,7 @@ services:
       - ./infra/observability/loki-config.yml:/etc/loki/loki-config.yml:ro
       - loki_data:/loki
     ports:
-      - "3100:3100"
+      - "127.0.0.1:3100:3100"
     healthcheck:
       test: [ "CMD-SHELL", "wget -qO- http://localhost:3100/ready || exit 1" ]
       interval: 15s
@@ -1031,7 +1031,7 @@ services:
       - ./infra/observability/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
       - alertmanager_data:/alertmanager
     ports:
-      - "9093:9093"
+      - "127.0.0.1:9093:9093"
     healthcheck:
       test: [ "CMD", "wget", "-qO-", "http://localhost:9093/-/healthy" ]
       interval: 15s
@@ -1078,7 +1078,7 @@ services:
       - '--path.rootfs=/rootfs'
       - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
     ports:
-      - "9100:9100"
+      - "127.0.0.1:9100:9100"
     healthcheck:
       test: [ "CMD", "wget", "-qO-", "http://localhost:9100/metrics" ]
       interval: 15s
@@ -1112,7 +1112,7 @@ services:
       - ./infra/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana_data:/var/lib/grafana
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     depends_on:
       prometheus:
         condition: service_healthy
@@ -1167,7 +1167,7 @@ services:
         ONNXRUNTIME_PACKAGE: "${CONTENT_SCAN_ONNXRUNTIME:-onnxruntime}"
     restart: unless-stopped
     ports:
-      - "8097:8097"
+      - "127.0.0.1:8097:8097"
     environment:
       PORT: "8097"
       DB_HOST: "postgres"
@@ -1176,7 +1176,7 @@ services:
       DB_USER: "${POSTGRES_USER:-f33d3r}"
       DB_PASSWORD: "${POSTGRES_PASSWORD:?set this in .env.local}"
       FEED_ENGINE_URL: "http://feed-engine:8081"
-      INTERNAL_API_KEY: "${INTERNAL_API_KEY:-dev_internal_key_change_in_production}"
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY:?set this in .env.local}"
       # cpu | cuda. cuda also needs CONTENT_SCAN_RUNTIME=nvidia below; a cuda
       # request the host cannot honour logs a warning naming the reason and runs
       # on CPU rather than refusing to start.

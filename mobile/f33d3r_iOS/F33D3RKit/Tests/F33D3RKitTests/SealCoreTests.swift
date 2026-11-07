@@ -575,7 +575,7 @@ struct SealCoreTests {
     func vaultRoundTrips() throws {
         let identity = SealCore.generateKeypair()
         let salt = SealCore.saltFromHandle("MiiYazuko")
-        let key = try SealCore.deriveBackupKey(code: "REMOVED_DEV_PASSWORD", saltBase64: salt)
+        let key = try SealCore.deriveBackupKey(code: "golden-vector-input", saltBase64: salt)
 
         let wrapped = try SealCore.wrap(keyBase64: key, plaintextBase64: identity.privateKeyBase64)
         // What the server stores is a blob and a nonce, nothing else.
@@ -584,7 +584,7 @@ struct SealCoreTests {
 
         // Deriving again from the same password must produce the same key —
         // there is no stored salt to lose.
-        let again = try SealCore.deriveBackupKey(code: "REMOVED_DEV_PASSWORD", saltBase64: salt)
+        let again = try SealCore.deriveBackupKey(code: "golden-vector-input", saltBase64: salt)
         #expect(again == key)
 
         let unwrapped = try SealCore.unwrap(
@@ -819,7 +819,7 @@ struct SealCoreTests {
         // The vault, in the direction Go can check: Swift derives and wraps.
         let identity = SealCore.generateKeypair()
         let handle = "MiiYazuko"
-        let password = "REMOVED_DEV_PASSWORD"
+        let password = "golden-vector-input"
         let key = try SealCore.deriveBackupKey(
             code: password, saltBase64: SealCore.saltFromHandle(handle)
         )

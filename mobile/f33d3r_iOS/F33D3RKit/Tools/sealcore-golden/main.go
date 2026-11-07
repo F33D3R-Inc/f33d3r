@@ -431,7 +431,7 @@ func generate(path string) error {
 	// The vault: password -> Argon2id -> wrap the raw identity key. This one
 	// fixture pins Argon2, AES-GCM and both base64 conventions at once.
 	handle := "MiiYazuko"
-	password := "REMOVED_DEV_PASSWORD"
+	password := "golden-vector-input"
 	salt := saltFromHandle(handle)
 	derived := argon2.IDKey([]byte(password), salt, 2, 19456, 1, 32)
 	identity, err := ecdh.X25519().GenerateKey(rand.Reader)
