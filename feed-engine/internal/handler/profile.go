@@ -81,7 +81,9 @@ func (h *Handler) userProfilePage(w http.ResponseWriter, r *http.Request) {
 	//       "auth"   → anonymous visitor: sign up / log in to view (no NSFW to public).
 	//       "verify" → 18+ but unverified (must KYC, US law).
 	//       "enable" → 18+ verified but not adult_enabled.
-	privateWall := profileUser.IsPrivate && !isOwner && !isFollowing
+	// One authority for the wall. If it can't look, the answer is no.
+	access, wallErr := h.authorWall(profileUser.ID, viewerUser)
+	privateWall := wallErr != nil || access.IsBlocked || privateWalled(profileUser.IsPrivate, access)
 
 	adultGate := ""
 	if !privateWall && profileUser.IsAdultCreator && !isOwner {
@@ -612,7 +614,7 @@ func (h *Handler) bookmarksPage(w http.ResponseWriter, r *http.Request) {
 	filter := r.URL.Query().Get("filter")
 
 	works := h.fetchBookmarkWorks(user, filter)
-	works = filterAdultForViewer(user, works)
+	works = h.gateWorks(user, works)
 	// The page template renders these works as cards itself; run the same
 	// enrichment sequence renderWorkCardSet applies so a bookmarked work looks
 	// identical on the page and on the /bookmarks/items facet fetch.

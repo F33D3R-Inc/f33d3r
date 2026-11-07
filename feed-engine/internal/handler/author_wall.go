@@ -9,11 +9,7 @@ package handler
 // them inline, which is how the /media/ read path came to answer none of them.
 // authorWall is the one place that answer is computed.
 //
-// FA doctrine note: workWall (internal/handler/works_feed.go:457) and the
-// privateWall/adultGate block (internal/handler/profile.go:85) still carry their
-// own copies of this logic. They must delegate to authorWall so a fourth read
-// path cannot drift again; those two files are owned elsewhere this session, so
-// the consolidation is flagged here rather than applied.
+// workWall, the profile page and the API profile wall all delegate here.
 
 import (
 	"database/sql"

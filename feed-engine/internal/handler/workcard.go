@@ -150,12 +150,16 @@ func (h *Handler) renderWorkCardSet(works []*model.Work, viewer *model.User, ctx
 	if len(works) == 0 || h.partial == nil {
 		return nil
 	}
-	if viewer != nil {
-		works = filterAdultForViewer(viewer, works)
-	}
-	h.enrichWorks(works, viewer)
 	if ctx == nil {
 		ctx = h.workCardCtx(viewer, "")
+	}
+	if viewer != nil {
+		surface, _ := ctx["Surface"].(string)
+		works = h.gateWorksWith(viewer, works, gateOptions{keepMuted: surfaceKeepsMuted(surface)})
+	}
+	h.enrichWorks(works, viewer)
+	if viewer != nil {
+		h.gateQuotes(viewer, works)
 	}
 
 	out := make([]workCardFragment, 0, len(works))

@@ -318,3 +318,60 @@ func RecordFrequencyClip(db *sql.DB, uploadID, frequencyID, accountID string, pe
 	})
 	return recorded, err
 }
+
+// PrivateAmong says which of these accounts are private.
+func PrivateAmong(db *sql.DB, accountIDs []string) (map[string]bool, error) {
+	out := map[string]bool{}
+	if len(accountIDs) == 0 {
+		return out, nil
+	}
+	rows, err := db.Query(`SELECT user_id::text FROM user_profiles WHERE is_private AND user_id::text = ANY($1)`, pq.Array(accountIDs))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out[id] = true
+	}
+	return out, rows.Err()
+}
+
+// FollowedAmong says which of these accounts the viewer follows.
+func FollowedAmong(db *sql.DB, followerID string, accountIDs []string) (map[string]bool, error) {
+	out := map[string]bool{}
+	rows, err := db.Query(`SELECT following_id::text FROM follows WHERE follower_id = $1::uuid AND following_id::text = ANY($2)`, followerID, pq.Array(accountIDs))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out[id] = true
+	}
+	return out, rows.Err()
+}
+
+// UserIDsByHandles maps handles to account ids.
+func UserIDsByHandles(db *sql.DB, handles []string) (map[string]string, error) {
+	out := map[string]string{}
+	rows, err := db.Query(`SELECT handle, id::text FROM users WHERE handle = ANY($1)`, pq.Array(handles))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var handle, id string
+		if err := rows.Scan(&handle, &id); err != nil {
+			return nil, err
+		}
+		out[handle] = id
+	}
+	return out, rows.Err()
+}

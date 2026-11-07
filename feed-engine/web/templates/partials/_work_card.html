@@ -30,7 +30,7 @@ FACET work_card
 
 {{if eq $w.ScanState "blocked"}}
 {{template "violation_notice" (dict "PostID" $w.ID)}}
-{{else if and $w.SubscriberOnly (or (not $ctx) (ne $w.AuthorHandle $ctx.CurrentUserHandle))}}
+{{else if and $w.SubscriberOnly (not $w.ViewerSubscribed) (or (not $ctx) (ne $w.AuthorHandle $ctx.CurrentUserHandle))}}
 <article class="post-card post-card--locked" data-work-id="{{$w.ID}}" role="article">
   <div class="pcd">
     <div class="pcd-row">
@@ -177,7 +177,9 @@ FACET work_card
 
   {{/* ── Mobile focus card layout (pcf) ──────────────────────── */}}
   <div class="pcf">
-    {{if eq $w.Kind "react_video"}}
+    {{if not (adultMediaOpen $w $ctx.User)}}
+    <div class="focus-bg"><div class="focus-bg-text"></div></div>
+    {{else if eq $w.Kind "react_video"}}
     <div class="focus-bg">
       <video class="focus-bg-video" src="{{$w.VideoMasterURL}}"
              preload="metadata" playsinline muted loop autoplay

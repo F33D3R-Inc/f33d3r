@@ -549,7 +549,7 @@ func (h *Handler) sportsGamePage(w http.ResponseWriter, r *http.Request) {
 			}
 			merged = append(merged, wks...)
 		}
-		works = filterAdultForViewer(user, dedupeWorkRows(merged))
+		works = h.gateWorks(user, dedupeWorkRows(merged))
 	}
 
 	h.render(w, r, "sports_game.html", h.withRail(map[string]interface{}{

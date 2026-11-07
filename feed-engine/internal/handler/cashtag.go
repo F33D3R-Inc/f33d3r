@@ -413,7 +413,7 @@ func (h *Handler) stocksPage(w http.ResponseWriter, r *http.Request) {
 		if sErr != nil {
 			log.Printf("[cashtag] search works %q: %v", ticker, sErr)
 		}
-		works = filterAdultForViewer(user, wks)
+		works = h.gateWorks(user, wks)
 	}
 	h.render(w, r, "stocks.html", h.withRail(map[string]interface{}{
 		"User":              user,

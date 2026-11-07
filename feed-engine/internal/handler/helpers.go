@@ -155,25 +155,6 @@ func excludeNSFW(u *model.User) bool {
 	return u.IsMinor || u.ContentSetting == "safe_mode"
 }
 
-// filterAdultForViewer strips adult content (porn IsNSFW, gore IsGore, and adult-creator
-// authors) from a works slice for viewers who must never see it — minors, safe_mode, and
-// government/business accounts (excludeNSFW). 18+ standard/nsfw viewers keep the works; they
-// are gated per-item at render time by the content_gate Facet. This is what keeps adult
-// creators out of a minor's Trending feed (which otherwise leaks then 403s on click).
-func filterAdultForViewer(u *model.User, works []*model.Work) []*model.Work {
-	if !excludeNSFW(u) {
-		return works
-	}
-	out := works[:0]
-	for _, w := range works {
-		if w.IsNSFW || w.IsGore || w.AuthorIsAdultCreator {
-			continue
-		}
-		out = append(out, w)
-	}
-	return out
-}
-
 // hideAdultCreators returns true when adult creator accounts and their content must be
 // excluded at the DB level. Only users who have explicitly opted in (adult_enabled AND
 // confirmed 18+) may see adult creator accounts — everyone else gets them filtered out.
@@ -358,7 +339,7 @@ func DemoUser() *model.User {
 		ThemeID:     "void",
 		Tier:        "free",
 		// Anonymous / logged-out visitors are forced into safe_mode so that every
-		// existing NSFW guard (excludeNSFW, filterAdultForViewer, hideAdultCreators)
+		// existing NSFW guard (excludeNSFW, gateWorks, hideAdultCreators)
 		// strips adult content automatically — no NSFW ever leaks to the public.
 		ContentSetting:    "safe_mode",
 		SafetyEpsilon:     1e-6,

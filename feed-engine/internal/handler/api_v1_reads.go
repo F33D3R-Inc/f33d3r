@@ -21,7 +21,7 @@ import (
 // ── /api/v1 reads ─────────────────────────────────────────────────────────────
 //
 // Each handler here is the JSON twin of a Facet fetch: it selects works with
-// the same query, filters them for the same viewer with filterAdultForViewer,
+// the same query, filters them for the same viewer with gateWorks,
 // enriches them with the one enrichment sequence (enrichWorks) and projects
 // them through the DTOs. Nothing here decides what a viewer may see that the
 // HTML surface does not decide the same way.
@@ -154,28 +154,9 @@ func (h *Handler) apiPrepareWorks(works []*model.Work, u *model.User) []*model.W
 	if len(works) == 0 {
 		return works
 	}
-	works = filterAdultForViewer(u, works)
-	hidden := map[string]bool{}
-	if blocked, err := dbpkg.GetBlockedUserIDs(h.db, u.ID); err == nil {
-		for id := range blocked {
-			hidden[id] = true
-		}
-	}
-	if muted, err := dbpkg.GetMutedUserIDs(h.db, u.ID); err == nil {
-		for id := range muted {
-			hidden[id] = true
-		}
-	}
-	if len(hidden) > 0 {
-		kept := works[:0]
-		for _, wk := range works {
-			if wk != nil && !hidden[wk.AuthorID] {
-				kept = append(kept, wk)
-			}
-		}
-		works = kept
-	}
+	works = h.gateWorks(u, works)
 	h.enrichWorks(works, u)
+	h.gateQuotes(u, works)
 	return works
 }
 
@@ -368,8 +349,11 @@ func (h *Handler) apiProfileWall(target, viewer *model.User) (code, message stri
 	if isOwner {
 		return "", ""
 	}
-	isFollowing, _ := dbpkg.IsFollowing(h.db, viewer.ID, target.ID)
-	if target.IsPrivate && !isFollowing {
+	access, err := h.authorWall(target.ID, viewer)
+	if err != nil {
+		return "private_account", "This account is private."
+	}
+	if access.IsBlocked || privateWalled(target.IsPrivate, access) {
 		return "private_account", "This account is private."
 	}
 	if target.IsAdultCreator {

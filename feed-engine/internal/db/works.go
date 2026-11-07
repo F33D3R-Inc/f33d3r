@@ -240,14 +240,16 @@ func GetWorkEditions(db *sql.DB, workID string) ([]model.Edition, error) {
 
 // workLiveSQL excludes works whose ephemeral lifetime has run out. Only ephemeral
 // kinds get an expires_at, so the NULL check covers every permanent work.
-const workLiveSQL = `(w.expires_at IS NULL OR w.expires_at > NOW())`
+const workLiveSQL = `((w.expires_at IS NULL OR w.expires_at > NOW()) AND (w.scheduled_at IS NULL OR w.scheduled_at <= NOW()))`
 
 // workNotBlockedSQL is the moderation verdict expressed as a read predicate.
 // 'blocked' is the only verdict that hides a work; an undecided scan is not a
 // verdict, so a scanner outage cannot take the feeds down. is_blocked is the
 // admin/manual lane and scan_state is the automated one — both are checked
 // because a work can be stopped by either.
-const workNotBlockedSQL = `(NOT w.is_blocked AND w.scan_state <> 'blocked')`
+// It also carries liveness, so every read, including repost arms and reply chains,
+// leaves out expired works and works scheduled for later without having to remember to.
+const workNotBlockedSQL = `(NOT w.is_blocked AND w.scan_state <> 'blocked' AND ` + workLiveSQL + `)`
 
 // worksSelectSQL is the shared SELECT for all work feed queries.
 // Caller appends WHERE, ORDER BY, LIMIT.

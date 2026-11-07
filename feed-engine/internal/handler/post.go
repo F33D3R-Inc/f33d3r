@@ -73,7 +73,7 @@ func (h *Handler) searchPage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	works = filterAdultForViewer(user, works)
+	works = h.gateWorks(user, works)
 	var frequencyResults []FrequencyCardData
 	if searchType == "top" {
 		frequencyResults = h.frequencySearchCards(r.Context(), strings.TrimPrefix(query, "#"), user)

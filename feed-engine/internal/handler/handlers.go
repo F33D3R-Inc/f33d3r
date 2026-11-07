@@ -606,6 +606,7 @@ func (h *Handler) loadTemplates() {
 	h.funcMap["frequencyFacetID"] = frequencyFacetID
 	h.funcMap["frequencyGridSurface"] = frequencyGridSurface
 	h.funcMap["frequencyReactions"] = frequencyReactions
+	h.funcMap["adultMediaOpen"] = adultMediaOpen
 	h.funcMap["frequencyQueueSurface"] = frequencyQueueSurface
 	h.funcMap["frequencyControlsSurface"] = frequencyControlsSurface
 

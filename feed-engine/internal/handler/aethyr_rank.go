@@ -106,7 +106,7 @@ func (h *Handler) rankWorks(ctx context.Context, user *model.User, surface, sess
 	// Strip what this viewer may never see before ranking, so the page the
 	// ranker fills is a full page. renderWorkCardSet applies the same filter
 	// again; it is idempotent.
-	window = filterAdultForViewer(user, window)
+	window = h.gateWorks(user, window)
 	if len(window) == 0 {
 		return window, cursor
 	}

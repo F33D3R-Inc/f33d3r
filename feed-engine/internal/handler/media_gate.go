@@ -288,6 +288,11 @@ func decideMediaAccess(o mediaOwner, viewer *model.User, a authorAccess) int {
 		if anon || excludeNSFW(viewer) {
 			return http.StatusForbidden
 		}
+		// The card asks an unverified adult to verify before showing adult media, and the
+		// file must say the same, or the gate only hides a link.
+		if (o.IsNSFW || o.AuthorIsAdultCreator) && !(viewer.IsAgeVerified || viewer.IsVerified) {
+			return http.StatusForbidden
+		}
 	}
 	return 0
 }

@@ -1061,9 +1061,11 @@ type Work struct {
 	IsRepost       bool
 	RepostSourceID string // UUID of the original work; empty when not a repost
 	IsSensitive    bool
-	SubscriberOnly bool
-	CommentGating  string // open | followers | verified | none
-	ScheduledAt    *time.Time
+	// ViewerSubscribed is true when the viewer has an active subscription to the author.
+	ViewerSubscribed bool
+	SubscriberOnly   bool
+	CommentGating    string // open | followers | verified | none
+	ScheduledAt      *time.Time
 
 	// Taxonomy
 	Tags        []string

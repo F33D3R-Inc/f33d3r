@@ -36,7 +36,7 @@ func (h *Handler) tagPage(w http.ResponseWriter, r *http.Request) {
 		// One enrichment sequence, defined once (enrichWorks) — including the
 		// ballot, so a poll found by tag draws the same as a poll in the feed.
 		h.enrichWorks(w2, user)
-		works = filterAdultForViewer(user, w2)
+		works = h.gateWorks(user, w2)
 	}
 	isFollowing := h.db != nil && user.ID != "" && dbpkg.IsFollowingTopic(h.db, user.ID, strings.ToLower(tag))
 	h.render(w, r, "tag.html", h.withRail(map[string]interface{}{

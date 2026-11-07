@@ -284,6 +284,10 @@ func (h *Handler) facetWorksFeed(w http.ResponseWriter, r *http.Request) {
 	// the viewer's pinned mark) and the vision branch all live in
 	// renderWorkCardSet — the single work_card entry point — so this feed and
 	// the stream fan-out cannot produce different cards for the same work.
+	var pageEnd *model.Work
+	if len(works) > 0 {
+		pageEnd = works[len(works)-1]
+	}
 	cards := h.renderWorkCardSet(works, user, h.workCardCtx(user, surface))
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -308,6 +312,15 @@ func (h *Handler) facetWorksFeed(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if len(cards) == 0 && pageEnd != nil {
+		// Everything on this page was withheld from this viewer. That is not the end of
+		// the feed, so the next page is still asked for.
+		h.writeFeedSentinel(w, r, surface, feedCursor(pageEnd, rankCursor))
+		return
+	}
+	if len(cards) == 0 && before != "" {
+		return
+	}
 	if len(cards) == 0 {
 		es := emptyStates[surface]
 		if es.Title == "" && surfaceDef != nil {
@@ -328,21 +341,7 @@ func (h *Handler) facetWorksFeed(w http.ResponseWriter, r *http.Request) {
 	for _, c := range cards {
 		_, _ = w.Write([]byte(c.Fragment))
 	}
-	// The next page starts below the last card on a chronological surface,
-	// and below the whole candidate window on a ranked one.
-	cursorTS := cards[len(cards)-1].Work.CreatedAt
-	if !rankCursor.IsZero() {
-		cursorTS = rankCursor
-	}
-	cursor := cursorTS.Format(time.RFC3339)
-	sentinelURL := fmt.Sprintf("/facets/works/feed?surface=%s&before=%s", url.QueryEscape(surface), url.QueryEscape(cursor))
-	if handle := r.URL.Query().Get("handle"); handle != "" {
-		sentinelURL += "&handle=" + url.QueryEscape(handle)
-	}
-	if topics := r.URL.Query().Get("topics"); topics != "" {
-		sentinelURL += "&topics=" + url.QueryEscape(topics)
-	}
-	h.renderPartial(w, "feed_sentinel", map[string]interface{}{"URL": sentinelURL, "Cursor": cursor})
+	h.writeFeedSentinel(w, r, surface, feedCursor(pageEnd, rankCursor))
 }
 
 // homeTabSurface folds the surface ids the "For You" tab answers to onto the
@@ -404,7 +403,11 @@ func (h *Handler) facetWorkReplies(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "id required", http.StatusBadRequest)
 		return
 	}
-	stream := h.buildReplyStream(id, user.ID)
+	if _, ok := h.workReadable(id, user); !ok {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		return
+	}
+	stream := h.buildReplyStream(id, user)
 	ctx := h.workCardCtx(user, "work_replies")
 
 	// The lone replies in the stream are rendered as one batch through the
@@ -478,8 +481,8 @@ func (h *Handler) facetWorkConversation(w http.ResponseWriter, r *http.Request) 
 	if !validAccentClass(accentClass) {
 		accentClass = mcPalette[0]
 	}
-	seedWork, err := dbpkg.GetWorkByID(h.db, seedID, user.ID)
-	if err != nil {
+	seedWork, readable := h.workReadable(seedID, user)
+	if !readable {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
@@ -487,6 +490,7 @@ func (h *Handler) facetWorkConversation(w http.ResponseWriter, r *http.Request) 
 	if exErr != nil {
 		log.Printf("[works] replies for %s: %v", seedID, exErr)
 	}
+	exchanges = h.gateWorks(user, exchanges)
 	all := append([]*model.Work{seedWork}, exchanges...)
 	dbpkg.EnrichWorksWithReactions(h.db, all, user.ID)
 	dbpkg.EnrichWorksWithQuotes(h.db, all)
@@ -522,10 +526,21 @@ func (h *Handler) facetWorkConversation(w http.ResponseWriter, r *http.Request) 
 // buildReplyStream returns a merged, time-sorted stream of microconversation containers
 // and lone reply cards for a work detail page.
 // Colors are assigned sequentially so every container on screen is a distinct color.
-func (h *Handler) buildReplyStream(workID, userID string) []model.ReplyStreamItem {
-	mcs, mcErr := dbpkg.GetMicroconversations(h.db, workID, 10)
+func (h *Handler) buildReplyStream(workID string, viewer *model.User) []model.ReplyStreamItem {
+	userID := gateViewerID(viewer)
+	found, mcErr := dbpkg.GetMicroconversations(h.db, workID, 10)
 	if mcErr != nil {
 		log.Printf("[works] microconversations for %s: %v", workID, mcErr)
+	}
+	// A conversation whose opening reply is withheld goes with it, and the rest of the
+	// exchange is checked person by person.
+	mcs := found[:0]
+	for _, mc := range found {
+		if len(h.gateWorks(viewer, []*model.Work{mc.SeedWork})) == 0 {
+			continue
+		}
+		mc.Exchanges = h.gateWorks(viewer, mc.Exchanges)
+		mcs = append(mcs, mc)
 	}
 	for i, mc := range mcs {
 		mc.AccentClass = mcPalette[i%len(mcPalette)]
@@ -534,6 +549,7 @@ func (h *Handler) buildReplyStream(workID, userID string) []model.ReplyStreamIte
 	if lrErr != nil {
 		log.Printf("[works] lone replies for %s: %v", workID, lrErr)
 	}
+	loneReplies = h.gateWorks(viewer, loneReplies)
 
 	// Lone replies are NOT enriched here: they render as work_card fragments,
 	// and renderWorkCardSet owns that enrichment. The work detail page, which
@@ -581,11 +597,11 @@ func (h *Handler) workWall(work *model.Work, author, viewer *model.User) (privat
 	}
 	anon := viewer == nil || viewer.ID == "demo_user"
 	isOwner := !anon && author != nil && author.ID == viewer.ID
-	isFollowing := false
-	if h.db != nil && !anon && !isOwner && author != nil {
-		isFollowing, _ = dbpkg.IsFollowing(h.db, viewer.ID, author.ID)
+	// One authority for the wall. If it can't look, the answer is no.
+	if author != nil {
+		access, err := h.authorWall(author.ID, viewer)
+		privateWall = err != nil || access.IsBlocked || privateWalled(author.IsPrivate, access)
 	}
-	privateWall = author != nil && author.IsPrivate && !isOwner && !isFollowing
 	if !privateWall && (work.IsNSFW || work.IsGore || work.AuthorIsAdultCreator) && !isOwner {
 		if anon {
 			workGate = "auth"
@@ -636,6 +652,14 @@ func (h *Handler) workDetailPage(w http.ResponseWriter, r *http.Request) {
 		author, _ = dbpkg.GetUserByHandle(h.db, work.AuthorHandle)
 	}
 	isOwner := !anon && author != nil && author.ID == user.ID
+
+	// A block means the work doesn't exist for this person, on the page as in the API.
+	if author != nil && !isOwner {
+		if access, wallErr := h.authorWall(author.ID, user); wallErr != nil || access.IsBlocked {
+			http.NotFound(w, r)
+			return
+		}
+	}
 
 	// ── Walls (body/media replaced; the work header still renders) ────────────────
 	// Single source of truth shared with facetShareSheet so the two paths can't drift.
@@ -689,13 +713,14 @@ func (h *Handler) workDetailPage(w http.ResponseWriter, r *http.Request) {
 	// work must not stream its media, quotes, parents or replies to the public.
 	if !walled {
 		dbpkg.EnrichWorksWithQuotes(h.db, []*model.Work{work})
+		h.gateQuotes(user, []*model.Work{work})
 		dbpkg.EnrichWorksWithLinkPreviews(h.db, []*model.Work{work})
 		parentChain, pcErr := dbpkg.GetWorkParentChain(h.db, id, viewerID, 3)
 		if pcErr != nil {
 			log.Printf("[works] parent chain for %s: %v", id, pcErr)
 		}
-		data["ParentChain"] = parentChain
-		replyStream := h.buildReplyStream(id, viewerID)
+		data["ParentChain"] = h.gateWorks(user, parentChain)
+		replyStream := h.buildReplyStream(id, user)
 		// The page template renders the lone replies itself; run them through
 		// the same enrichment sequence renderWorkCardSet applies so a reply
 		// looks identical on the page and on the reply-stream facet fetch.
@@ -1095,4 +1120,41 @@ func (h *Handler) profileFeedWalled(profile, viewer *model.User) bool {
 		}
 	}
 	return false
+}
+
+// feedCursor is where the next page starts: below the last work read on a chronological
+// surface, whether or not this viewer could see it, and below the whole candidate window
+// on a ranked one.
+func feedCursor(last *model.Work, rankCursor time.Time) string {
+	ts := rankCursor
+	if ts.IsZero() && last != nil {
+		ts = last.CreatedAt
+	}
+	return ts.Format(time.RFC3339)
+}
+
+func (h *Handler) writeFeedSentinel(w http.ResponseWriter, r *http.Request, surface, cursor string) {
+	sentinelURL := fmt.Sprintf("/facets/works/feed?surface=%s&before=%s", url.QueryEscape(surface), url.QueryEscape(cursor))
+	if handle := r.URL.Query().Get("handle"); handle != "" {
+		sentinelURL += "&handle=" + url.QueryEscape(handle)
+	}
+	if topics := r.URL.Query().Get("topics"); topics != "" {
+		sentinelURL += "&topics=" + url.QueryEscape(topics)
+	}
+	h.renderPartial(w, "feed_sentinel", map[string]interface{}{"URL": sentinelURL, "Cursor": cursor})
+}
+
+// workReadable loads a work if this viewer may read its conversation: it exists, no wall
+// stands in front of it, and no block stands between them.
+func (h *Handler) workReadable(id string, viewer *model.User) (*model.Work, bool) {
+	work, err := dbpkg.GetWorkByID(h.db, id, gateViewerID(viewer))
+	if err != nil || work == nil {
+		return nil, false
+	}
+	author, err := dbpkg.GetUserByHandle(h.db, work.AuthorHandle)
+	if err != nil || author == nil {
+		return nil, false
+	}
+	privateWall, gate := h.workWall(work, author, viewer)
+	return work, !privateWall && gate == ""
 }

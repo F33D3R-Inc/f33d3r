@@ -54,7 +54,7 @@ func (h *Handler) listDetailPage(w http.ResponseWriter, r *http.Request) {
 		works = works[:h.cfg.FeedPageSize]
 		nextBefore = works[len(works)-1].CreatedAt.Format(time.RFC3339)
 	}
-	works = filterAdultForViewer(user, works)
+	works = h.gateWorks(user, works)
 	nextURL := ""
 	if nextBefore != "" {
 		nextURL = listWorksNextURL(listID, nextBefore)
