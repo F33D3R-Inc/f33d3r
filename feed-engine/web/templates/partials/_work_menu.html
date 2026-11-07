@@ -113,6 +113,15 @@ FACET work_menu
     {{else if .Ctx.CurrentUserHandle}}
     {{/* ── Viewer actions (non-owner, logged in) ── */}}
     <div class="post-menu-sep"></div>
+    <button class="post-menu-item" type="button"
+            hx-post="/events" hx-vals='{"event_type":"not_interested","work_id":"{{.W.ID}}"}'
+            hx-swap="none"
+            onclick="closeAllPostMenus()">
+      <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="10"/><path d="M8 15s1.5-2 4-2 4 2 4 2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/>
+      </svg>
+      Not interested
+    </button>
     <button class="post-menu-item post-menu-item-danger"
             hx-post="/events" hx-vals='{"event_type":"block","target_handle":"{{.W.AuthorHandle}}"}'
             hx-confirm="Block @{{.W.AuthorHandle}}? Their posts will be hidden from your feeds." hx-swap="none"

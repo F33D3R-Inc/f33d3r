@@ -790,6 +790,7 @@ type AethyrSession struct {
 	RequestID string    `json:"request_id"`
 	SessionID string    `json:"session_id"`
 	MaxItems  int       `json:"max_items"`
+	PageSize  int       `json:"page_size"`
 	Timestamp time.Time `json:"timestamp"`
 }
 

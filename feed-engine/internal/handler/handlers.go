@@ -1915,11 +1915,12 @@ func (h *Handler) eventsPost(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		contentID := eventField(r, rawBodyMap, "work_id", "post_id")
-		if contentID == "" {
+		parsedID, perr := uuid.Parse(eventField(r, rawBodyMap, "work_id", "post_id"))
+		if perr != nil {
 			http.Error(w, "work_id required", http.StatusBadRequest)
 			return
 		}
+		contentID := parsedID.String()
 		surface := eventField(r, rawBodyMap, "surface")
 		if surface == "" {
 			surface = "feed"
@@ -1943,6 +1944,14 @@ func (h *Handler) eventsPost(w http.ResponseWriter, r *http.Request) {
 		}
 		if h.aethyr != nil {
 			h.aethyr.SendFeedback(&feedback)
+		}
+		// Recorded, so it can be confirmed: the card leaves any feed it is in. A post
+		// opened on its own page stays, since that is what the person is reading.
+		if r.Header.Get("HX-Request") == "true" {
+			publishToast(user.PIALID, "not_interested", "You will see less like this")
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			fmt.Fprintf(w, `<div data-facet-id="facet:f33d3r:work:%[1]s:card" hx-swap-oob="delete:.post-card[data-work-id='%[1]s'],.vision-card[data-work-id='%[1]s']"></div>`, contentID)
+			return
 		}
 		w.WriteHeader(http.StatusNoContent)
 		return

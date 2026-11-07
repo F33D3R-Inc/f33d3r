@@ -47,7 +47,7 @@
        Mounting it here as well would put the same four games on the Home screen
        twice at desktop width, once in the centre and once in the rail. */}}
   <div id="feed-container"
-       hx-get="/facets/works/feed?surface={{.ActiveSurface}}"
+       hx-get="/facets/works/feed?surface={{.ActiveSurface}}&session_id={{.SessionID}}"
        hx-trigger="load, refreshFeed"
        hx-swap="innerHTML">
     {{/* Skeleton cards shown until HTMX replaces with real posts */}}

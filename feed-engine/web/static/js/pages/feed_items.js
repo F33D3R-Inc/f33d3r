@@ -63,10 +63,10 @@ F33D3R.page('feed_items', function () {
     if (!portal) return;
     var workId = btn.dataset.postId;
     if (portal.firstChild && portal.firstChild.dataset.menuFor === workId) {
-      closeAllPostMenus();
+      clearPostMenus();
       return;
     }
-    closeAllPostMenus();
+    clearPostMenus();
     var wrap = btn.closest('.post-menu-wrap');
     var src  = wrap && wrap.querySelector('.post-menu-dropdown');
     if (!src) return;
@@ -79,9 +79,14 @@ F33D3R.page('feed_items', function () {
     portal.appendChild(clone);
     if (window.htmx) htmx.process(clone);
   }
-  function closeAllPostMenus() {
+  function clearPostMenus() {
     var portal = document.getElementById('work-menu-overlay');
     if (portal) portal.innerHTML = '';
+  }
+  // Menu items call this from their click. htmx handles that same click afterwards and
+  // ignores an element no longer on the page, so the menu goes once the click is done.
+  function closeAllPostMenus() {
+    setTimeout(clearPostMenus, 0);
   }
 
   F33D3R.once('feed_items:menu-close', function () {

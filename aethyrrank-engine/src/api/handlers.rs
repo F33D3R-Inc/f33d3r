@@ -239,9 +239,24 @@ pub async fn rank_handler(
     let scored_items = reranker::apply_diversity(scored_items, &creator_pairs);
 
     // ── Stage 7: Exploration injection ───────────────────────────────────────
-    let ranked_ids: HashSet<String> = scored_items.iter().map(|i| i.content_id.clone()).collect();
-    let with_exploration =
-        inject_exploration_slots(scored_items, &req.content_pool, explore_count, &ranked_ids);
+    // Checked across the whole pool: exploration may pick items the pre-ranker dropped.
+    let refused: HashSet<String> = req
+        .content_pool
+        .iter()
+        .filter(|c| barrier::check(&req.user_state, c, &cfg.safety).blocked)
+        .map(|c| c.content_id.clone())
+        .collect();
+    let page_size = req
+        .session_context
+        .page_size
+        .unwrap_or(req.session_context.max_items);
+    let with_exploration = inject_exploration_slots(
+        scored_items,
+        &req.content_pool,
+        explore_count,
+        &refused,
+        page_size,
+    );
 
     let final_items: Vec<RankedItem> = with_exploration
         .into_iter()

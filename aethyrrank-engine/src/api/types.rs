@@ -111,6 +111,9 @@ pub struct SessionContext {
     pub request_id: String,
     pub session_id: String,
     pub max_items: usize,
+    /// How many items one page shows. Exploration lands inside it.
+    #[serde(default)]
+    pub page_size: Option<usize>,
     pub timestamp: DateTime<Utc>,
 }
 

@@ -32,7 +32,7 @@ pub fn velocity_boost(item: &ContentItem, config: &VelocityConfig) -> f64 {
         let intensity =
             (v - config.promotion_threshold) / (1.0 - config.promotion_threshold).max(1e-9);
         intensity.clamp(0.0, 1.0) * config.boost_multiplier
-    } else if v <= config.decay_threshold {
+    } else if v <= config.decay_threshold && item.exposure_count >= MIN_EXPOSURE_TO_DECAY {
         // Declining content → negative adjustment
         let decay_intensity = (config.decay_threshold - v) / config.decay_threshold.max(1e-9);
         -decay_intensity.clamp(0.0, 1.0) * (config.boost_multiplier * 0.5)
@@ -42,16 +42,24 @@ pub fn velocity_boost(item: &ContentItem, config: &VelocityConfig) -> f64 {
     }
 }
 
-/// Composite velocity from four signals.
-/// `velocity_score` carries the primary signal; retention and completion are strong
-/// independent predictors of sustained growth; `self_reply_cadence` captures
-/// early creator engagement (replying to own post within 30 min).
+/// A post nobody has seen yet isn't declining, however quiet it is.
+const MIN_EXPOSURE_TO_DECAY: u64 = 500;
+
+/// Composite velocity from four signals. Retention and completion only exist for media
+/// that has been measured, and a zero there means unmeasured, so the weight is shared
+/// among what was measured. Otherwise most posts could never reach the threshold.
 fn composite_velocity(item: &ContentItem) -> f64 {
-    (0.45 * item.velocity_score
-        + 0.25 * item.early_retention
-        + 0.20 * item.completion_rate
-        + 0.10 * item.self_reply_cadence)
-        .clamp(0.0, 1.0)
+    let mut weighted = 0.45 * item.velocity_score + 0.10 * item.self_reply_cadence;
+    let mut total = 0.55;
+    if item.early_retention > 0.0 {
+        weighted += 0.25 * item.early_retention;
+        total += 0.25;
+    }
+    if item.completion_rate > 0.0 {
+        weighted += 0.20 * item.completion_rate;
+        total += 0.20;
+    }
+    (weighted / total).clamp(0.0, 1.0)
 }
 
 /// Content lifecycle phase — informational, included in explanation string.
@@ -137,6 +145,18 @@ mod tests {
         let item = make_item(0.05, 0.10, 0.08, 50_000);
         let boost = velocity_boost(&item, &cfg());
         assert!(boost < 0.0, "decaying content should penalise: {}", boost);
+    }
+
+    #[test]
+    fn unmeasured_retention_does_not_cap_the_boost() {
+        let item = make_item(1.0, 0.0, 0.0, 10_000);
+        assert!(velocity_boost(&item, &cfg()) > 0.0);
+    }
+
+    #[test]
+    fn a_new_quiet_post_is_not_penalised() {
+        let item = make_item(0.0, 0.0, 0.0, 10);
+        assert_eq!(velocity_boost(&item, &cfg()), 0.0);
     }
 
     #[test]

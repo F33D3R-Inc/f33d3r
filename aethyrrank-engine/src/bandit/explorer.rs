@@ -3,51 +3,58 @@ use std::collections::HashSet;
 
 use crate::api::types::{ContentItem, RankedItem, ScoreBreakdown};
 
-/// Inject `explore_count` exploration items into a ranked list.
+/// Place `explore_count` exploration items on the first page, in its lower half, so
+/// they are actually seen without leading the feed.
 ///
-/// Selection criteria (in priority order):
-///   1. New creators  (low creator_exposure)
-///   2. Low-exposure content (low exposure_count)
-///
-/// Exploration items are inserted into a random position in the bottom half
-/// of the ranked list so they do not dominate the top of the feed.
-/// Each injected item is flagged with `exploration_slot: true`.
+/// Candidates are anything in the pool not already on that page and not in `excluded`,
+/// which holds whatever the safety barrier refused. New creators and low-exposure
+/// content come first. Anything picked moves up rather than appearing twice. Each is
+/// flagged with `exploration_slot: true`.
 pub fn inject_exploration_slots(
     mut ranked: Vec<RankedItem>,
     content_pool: &[ContentItem],
     explore_count: usize,
-    already_ranked: &HashSet<String>,
+    excluded: &HashSet<String>,
+    page_size: usize,
 ) -> Vec<RankedItem> {
     if explore_count == 0 {
         return ranked;
     }
 
     let mut rng = rand::thread_rng();
-
-    // Collect candidates not already in the ranked list
-    let mut candidates: Vec<&ContentItem> = content_pool
+    let page = page_size.min(ranked.len());
+    let on_page: HashSet<&str> = ranked[..page]
         .iter()
-        .filter(|c| !already_ranked.contains(&c.content_id))
+        .map(|i| i.content_id.as_str())
         .collect();
 
-    // Sort by exploration priority descending (lower exposure = higher priority)
+    let mut candidates: Vec<&ContentItem> = content_pool
+        .iter()
+        .filter(|c| !excluded.contains(&c.content_id) && !on_page.contains(c.content_id.as_str()))
+        .collect();
     candidates.sort_by(|a, b| {
         exploration_priority(b)
             .partial_cmp(&exploration_priority(a))
             .unwrap_or(std::cmp::Ordering::Equal)
     });
+    let picked: Vec<&ContentItem> = candidates.into_iter().take(explore_count).collect();
+    drop(on_page);
+    if picked.is_empty() {
+        return ranked;
+    }
 
-    let n = explore_count.min(candidates.len());
+    ranked.retain(|i| !picked.iter().any(|p| p.content_id == i.content_id));
 
-    for item in &candidates[..n] {
-        let list_len = ranked.len();
-        let bottom_start = list_len / 2;
-        let insert_pos = if list_len > bottom_start {
-            rng.gen_range(bottom_start..=list_len)
-        } else {
-            list_len
-        };
-
+    // Each pick gets its own stretch of the lower half, in ascending order, so a later
+    // insert never pushes an earlier one off the page.
+    let limit = page_size.min(ranked.len() + picked.len());
+    let low = limit / 2;
+    let stretch = ((limit - low) / picked.len()).max(1);
+    let mut next_free = 0;
+    for (n, item) in picked.iter().enumerate() {
+        let wanted = low + n * stretch + rng.gen_range(0..stretch);
+        let insert_pos = wanted.max(next_free).min(ranked.len());
+        next_free = insert_pos + 1;
         ranked.insert(
             insert_pos,
             RankedItem {
@@ -65,7 +72,6 @@ pub fn inject_exploration_slots(
         );
     }
 
-    // Re-index ranks after insertion
     for (i, item) in ranked.iter_mut().enumerate() {
         item.rank = i + 1;
     }
@@ -131,11 +137,42 @@ mod tests {
 
         let pool = vec![make_item("e1", 0, 0), make_item("e2", 10, 5)];
 
-        let already: HashSet<String> = ranked.iter().map(|r| r.content_id.clone()).collect();
-        let result = inject_exploration_slots(ranked, &pool, 2, &already);
+        let result = inject_exploration_slots(ranked, &pool, 2, &HashSet::new(), 10);
 
         let explore_count = result.iter().filter(|i| i.exploration_slot).count();
         assert_eq!(explore_count, 2);
+        assert!(
+            result
+                .iter()
+                .take(10)
+                .filter(|i| i.exploration_slot)
+                .count()
+                == 2
+        );
+    }
+
+    #[test]
+    fn what_the_barrier_refused_is_never_explored() {
+        let ranked: Vec<RankedItem> = vec![];
+        let pool = vec![make_item("blocked", 0, 0)];
+        let excluded: HashSet<String> = ["blocked".to_string()].into_iter().collect();
+        let result = inject_exploration_slots(ranked, &pool, 1, &excluded, 10);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn an_item_moved_up_does_not_appear_twice() {
+        let ranked: Vec<RankedItem> = (0..5)
+            .map(|i| RankedItem {
+                content_id: format!("r{}", i),
+                rank: i + 1,
+                ..Default::default()
+            })
+            .collect();
+        let pool = vec![make_item("r4", 0, 0)];
+        let result = inject_exploration_slots(ranked, &pool, 1, &HashSet::new(), 2);
+        assert_eq!(result.iter().filter(|i| i.content_id == "r4").count(), 1);
+        assert!(result.iter().take(2).any(|i| i.content_id == "r4"));
     }
 
     #[test]

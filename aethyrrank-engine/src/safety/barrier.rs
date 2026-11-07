@@ -78,7 +78,8 @@ pub fn check(user: &UserState, item: &ContentItem, config: &SafetyConfig) -> Saf
     // Combined barrier estimate: take the maximum (most conservative)
     let combined = semantic_prob.max(drift_probability);
 
-    let blocked = combined >= user.safety_epsilon;
+    // An epsilon of 1.0 means no restriction, even for content certain to be adult.
+    let blocked = user.safety_epsilon < 1.0 && combined >= user.safety_epsilon;
 
     SafetyResult {
         blocked,

@@ -175,8 +175,11 @@ func (h *Handler) runTimeline(ctx context.Context, spec *timelineSpec, q *timeli
 
 	// filter
 	shown := h.gateWorksWith(q.Viewer, read, gateOptions{keepMuted: spec.KeepMuted})
-	if spec.Ranked && pool == nil && q.Before == "" {
-		shown = withoutRecentlyServed(viewerKey, shown)
+	if spec.Ranked {
+		if pool == nil {
+			shown = withoutRecentlyServed(viewerKey, shown, q.Before == "")
+		}
+		shown = h.withoutNotWanted(q.Viewer, shown)
 	}
 
 	// rank
@@ -252,9 +255,9 @@ func parseTimelinePool(raw string) *timelinePoolCursor {
 	return &timelinePoolCursor{ID: parts[0], Offset: offset, Below: parts[2]}
 }
 
-// withoutRecentlyServed drops what this person just saw, unless that leaves nothing:
-// on a small network a repeat is better than an empty feed.
-func withoutRecentlyServed(viewerKey string, works []*model.Work) []*model.Work {
+// withoutRecentlyServed drops what this person just saw. On a first page it won't leave
+// nothing: on a small network a repeat is better than an empty feed.
+func withoutRecentlyServed(viewerKey string, works []*model.Work, keepIfEmpty bool) []*model.Work {
 	served, ok := timelineServed.get(viewerKey)
 	if !ok {
 		return works
@@ -269,10 +272,72 @@ func withoutRecentlyServed(viewerKey string, works []*model.Work) []*model.Work 
 			fresh = append(fresh, w)
 		}
 	}
-	if len(fresh) == 0 {
+	if len(fresh) == 0 && keepIfEmpty {
 		return works
 	}
 	return fresh
+}
+
+// withoutNotWanted takes out what this person asked to see less of. It can only shape a
+// recommendation feed: people they follow still appear in Following.
+func (h *Handler) withoutNotWanted(viewer *model.User, works []*model.Work) []*model.Work {
+	viewerID := gateViewerID(viewer)
+	if viewerID == "" || h.db == nil || len(works) == 0 {
+		return works
+	}
+	notWanted, err := dbpkg.GetNotWanted(h.db, viewerID)
+	if err != nil {
+		log.Printf("[timeline] not wanted: %v", err)
+		return works
+	}
+	kept := make([]*model.Work, 0, len(works))
+	for _, w := range works {
+		if !notWanted.Works[w.ID] && !notWanted.Authors[w.AuthorID] {
+			kept = append(kept, w)
+		}
+	}
+	return kept
+}
+
+// forYouCandidates reads from several places. The stream of recent works is what pages:
+// it goes last so the cursor continues from it. The first read also brings people the
+// viewer follows, topics they follow and what is popular. A source that fails is left
+// out rather than losing the feed, but the stream itself must answer.
+func forYouCandidates(h *Handler, q *timelineQuery, n int) ([]*model.Work, error) {
+	stream, err := dbpkg.GetWorksForYou(h.db, n, q.Before)
+	if err != nil {
+		return nil, err
+	}
+	viewerID := gateViewerID(q.Viewer)
+	if q.Before != "" || viewerID == "" {
+		return stream, nil
+	}
+	inStream := make(map[string]bool, len(stream))
+	for _, w := range stream {
+		inStream[w.ID] = true
+	}
+	var merged []*model.Work
+	add := func(source string, works []*model.Work, err error) {
+		if err != nil {
+			log.Printf("[timeline] for_you %s: %v", source, err)
+			return
+		}
+		for _, w := range works {
+			if !inStream[w.ID] {
+				inStream[w.ID] = true
+				merged = append(merged, w)
+			}
+		}
+	}
+	following, err := dbpkg.GetWorksFeedFollowing(h.db, viewerID, n/2, "")
+	add("following", following, err)
+	if topics := dbpkg.GetSubscribedTopics(h.db, viewerID); len(topics) > 0 {
+		fromTopics, err := dbpkg.GetWorksBySurface(h.db, topics, "", n/4, "")
+		add("topics", fromTopics, err)
+	}
+	popular, err := dbpkg.GetWorksPopular(h.db, n/3)
+	add("popular", popular, err)
+	return append(merged, stream...), nil
 }
 
 func rememberServed(viewerKey string, works []*model.Work) {
@@ -355,17 +420,15 @@ var (
 	}
 	specForYou = &timelineSpec{
 		Name: "for_you", Ranked: true, Paged: true, Provenance: apiDiscoveryProvenance,
-		Empty: timelineEmpty{"Nothing here yet", "Post something to get started"},
-		Candidates: func(h *Handler, q *timelineQuery, n int) ([]*model.Work, error) {
-			return dbpkg.GetWorksForYou(h.db, n, q.Before)
-		},
+		Empty:      timelineEmpty{"Nothing here yet", "Post something to get started"},
+		Candidates: forYouCandidates,
 	}
 	specTrending = &timelineSpec{
-		Name: "trending", Ranked: true, Paged: true,
+		Name: "trending", Ranked: true,
 		Provenance: func(*model.User) func(*model.Work) *ProvenanceDTO { return apiTrendingProvenance() },
 		Empty:      timelineEmpty{"No trending works", "Check back soon"},
 		Candidates: func(h *Handler, q *timelineQuery, n int) ([]*model.Work, error) {
-			return dbpkg.GetWorksTrending(h.db, n, q.Before)
+			return dbpkg.GetWorksPopular(h.db, n)
 		},
 	}
 	specNSFW = &timelineSpec{
@@ -547,6 +610,9 @@ func timelineNextURL(surface string, q *timelineQuery, cursor string) string {
 	}
 	if q.ExcludeID != "" {
 		v.Set("exclude_id", q.ExcludeID)
+	}
+	if q.SessionID != "" {
+		v.Set("session_id", q.SessionID)
 	}
 	if surface == "topics" {
 		v.Set("topics", strings.Join(q.Terms, ","))

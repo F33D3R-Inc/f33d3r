@@ -1514,30 +1514,6 @@ func GetWorksNSFW(db *sql.DB, limit int, before string) ([]*model.Work, error) {
 	return collectWorks(rows)
 }
 
-// GetWorksTrending returns globally recent works ordered by created_at (trending by recency; score-based ranking is done by AethyrRank on ingest).
-func GetWorksTrending(db *sql.DB, limit int, before string) ([]*model.Work, error) {
-	c, err := parseCursor(before)
-	if err != nil {
-		return nil, err
-	}
-	rows, err := db.Query(worksSelectSQL+`
-		WHERE w.deleted_at IS NULL
-		  AND `+workNotBlockedSQL+`
-		  AND NOT w.subscriber_only
-		  AND w.kind != 'reply'
-		  AND `+workLiveSQL+`
-		  AND (w.scheduled_at IS NULL OR w.scheduled_at <= NOW())
-		  AND (w.created_at, w.id) < ($1, $3::uuid)
-		ORDER BY w.created_at DESC, w.id DESC
-		LIMIT $2
-	`, c.TS, limit, c.ID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return collectWorks(rows)
-}
-
 // GetWorksBySurface returns the works that belong to a named interest surface,
 // newest first.
 //

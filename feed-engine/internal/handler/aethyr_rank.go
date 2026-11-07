@@ -21,8 +21,10 @@ import (
 // A ranked surface is served in two steps: the chronological candidate window
 // the works lane already knows how to page (a `before=` cursor over feed
 // time), then AethyrRank ordering that window for this person. The ranker is
-// advisory: it reorders, it never selects, and if it is slow or down the
-// window is served in the order it came. The feed never blocks on it.
+// advisory: it reorders, and if it is slow or down the window is served in the
+// order it came. The feed never blocks on it. The one thing that selects is the
+// safety barrier, which applies here before the ranker is asked, so what a person
+// can be shown doesn't depend on whether the ranker answered.
 //
 // Following stays strictly chronological, as X's Following tab does — that
 // surface's promise is "everything from people I chose, in order", and a
@@ -93,8 +95,9 @@ func feedTime(w *model.Work) time.Time {
 // has already been filtered for them. Works the ranker did not return follow the ranked
 // ones in chronological order. On any ranker failure the window is served as it came.
 func (h *Handler) rankWorks(ctx context.Context, user *model.User, surface, sessionID string, window []*model.Work, limit int) []*model.Work {
-	if h.aethyr == nil || h.db == nil {
-		return window
+	window = withoutBarrierRefused(user, window)
+	if h.aethyr == nil || h.db == nil || len(window) == 0 {
+		return spreadAuthors(window, limit)
 	}
 
 	h.ensureWorkVectors(window)
@@ -105,7 +108,7 @@ func (h *Handler) rankWorks(ctx context.Context, user *model.User, surface, sess
 	resp, err := h.aethyr.Rank(rctx, req)
 	if err != nil {
 		log.Printf("[aethyr] rank unavailable for surface=%s: %v — serving chronological window", surface, err)
-		return window
+		return spreadAuthors(window, limit)
 	}
 
 	byID := make(map[string]*model.Work, len(window))
@@ -116,6 +119,7 @@ func (h *Handler) rankWorks(ctx context.Context, user *model.User, surface, sess
 	seen := make(map[string]bool, len(window))
 	for _, item := range resp.RankedItems {
 		if item.SafetyBlocked {
+			seen[item.ContentID] = true
 			continue
 		}
 		w := byID[item.ContentID]
@@ -125,13 +129,66 @@ func (h *Handler) rankWorks(ctx context.Context, user *model.User, surface, sess
 		seen[w.ID] = true
 		ordered = append(ordered, w)
 	}
+	// Anything the engine didn't return follows in time order.
 	for _, w := range window {
 		if !seen[w.ID] {
 			seen[w.ID] = true
 			ordered = append(ordered, w)
 		}
 	}
-	return ordered
+	return spreadAuthors(ordered, limit)
+}
+
+// withoutBarrierRefused applies the engine's safety rule: adult content scores 1.0, so
+// it is refused for anyone whose epsilon is below 1.0. No known viewer means no
+// permission.
+func withoutBarrierRefused(user *model.User, window []*model.Work) []*model.Work {
+	if user != nil && user.SafetyEpsilon >= 1.0 {
+		return window
+	}
+	kept := make([]*model.Work, 0, len(window))
+	for _, w := range window {
+		if !w.IsNSFW && !w.IsGore && !w.AuthorIsAdultCreator {
+			kept = append(kept, w)
+		}
+	}
+	return kept
+}
+
+// maxPerAuthorOnPage keeps one person from filling a page, however good their posts are.
+const maxPerAuthorOnPage = 3
+
+// spreadAuthors moves anyone past the limit on a page down to the next page with room.
+// Nothing is dropped, so a network with few authors still has a full feed.
+func spreadAuthors(works []*model.Work, pageSize int) []*model.Work {
+	if pageSize <= 0 {
+		return works
+	}
+	out := make([]*model.Work, 0, len(works))
+	remaining := works
+	for len(remaining) > 0 {
+		counts := map[string]int{}
+		var deferred []*model.Work
+		placed := 0
+		for i, w := range remaining {
+			if placed >= pageSize {
+				deferred = append(deferred, remaining[i:]...)
+				break
+			}
+			if counts[w.AuthorID] >= maxPerAuthorOnPage {
+				deferred = append(deferred, w)
+				continue
+			}
+			counts[w.AuthorID]++
+			out = append(out, w)
+			placed++
+		}
+		if placed == 0 {
+			return append(out, deferred...)
+		}
+		remaining = deferred
+	}
+	return out
 }
 
 func trimWorks(works []*model.Work, limit int) []*model.Work {
@@ -255,7 +312,9 @@ func (h *Handler) buildRankRequest(user *model.User, surface, sessionID string, 
 			Surface:   surface,
 			RequestID: uuid.New().String(),
 			SessionID: sessionID,
-			MaxItems:  limit,
+			// The whole window is ranked: its later pages come from this same order.
+			MaxItems:  len(window),
+			PageSize:  limit,
 			Timestamp: time.Now().UTC(),
 		},
 	}

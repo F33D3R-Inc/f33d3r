@@ -18,6 +18,11 @@ pub struct PrerankedItem<'a> {
     pub fast_score: f64,
 }
 
+/// Below this many impressions a post's engagement rate says nothing yet.
+const COLD_IMPRESSIONS: f64 = 20.0;
+/// The score a post starts with until then.
+const COLD_QUALITY: f64 = 0.25;
+
 /// Filter and sort candidates, returning at most `top_k` items.
 /// Items below `min_fast_score` are dropped entirely.
 pub fn prerank<'a>(
@@ -30,7 +35,12 @@ pub fn prerank<'a>(
     let mut scored: Vec<PrerankedItem<'a>> = pool
         .iter()
         .filter_map(|item| {
-            let q = quick_quality(&item.engagement);
+            // A post nobody has had the chance to react to has no rate yet, which is not
+            // the same as a low one. It gets a starting score until it has been seen.
+            let mut q = quick_quality(&item.engagement);
+            if item.engagement.impressions < COLD_IMPRESSIONS {
+                q = q.max(COLD_QUALITY);
+            }
             let f = compute_freshness(item.published_at, half_life);
             let fast_score = q * f;
 
@@ -115,6 +125,18 @@ mod tests {
             !result.iter().any(|r| r.item.content_id == "bad"),
             "low quality item should be filtered"
         );
+    }
+
+    #[test]
+    fn a_new_post_with_no_engagement_is_kept() {
+        let cfg = PrerankConfig {
+            top_k: 10,
+            min_fast_score: 0.05,
+        };
+        let pool = vec![make_item("new", 1.0, 0.0), make_item("seen", 500.0, 0.0)];
+        let result = prerank(&pool, &cfg, Utc::now());
+        assert!(result.iter().any(|r| r.item.content_id == "new"));
+        assert!(!result.iter().any(|r| r.item.content_id == "seen"));
     }
 
     #[test]
