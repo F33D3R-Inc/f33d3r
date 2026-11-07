@@ -314,35 +314,6 @@ func PendingSecurityCount(db *sql.DB) int {
 // ── Threat detection helpers ──────────────────────────────────────────────────
 // These are called from a goroutine in middleware so they never block the response.
 
-// sqlInjectionSignatures are simple patterns that match obvious SQL injection attempts.
-// Not exhaustive — sophisticated WAF belongs in infrastructure, not app layer.
-var sqlInjectionSignatures = []string{
-	"UNION SELECT", "union select",
-	"DROP TABLE", "drop table",
-	"1=1", "' OR '", "\" OR \"",
-	"--", "xp_cmdshell", "EXEC(", "exec(",
-}
-
-// CheckSQLInjection logs a medium severity event if the request path or body
-// contains known SQL injection signatures.
-func CheckSQLInjection(db *sql.DB, r *http.Request, userID, ip string) {
-	target := r.URL.RawPath + r.URL.RawQuery
-	if r.Body != nil {
-		// Already read by middleware — use form values which have been parsed
-		for _, v := range r.Form {
-			target += " " + strings.Join(v, " ")
-		}
-	}
-	for _, sig := range sqlInjectionSignatures {
-		if strings.Contains(target, sig) {
-			go LogSecurityEvent(db, "suspicious_request", "medium", userID, ip,
-				r.UserAgent(), r.URL.Path,
-				map[string]interface{}{"signature": sig, "path": r.URL.Path, "query": r.URL.RawQuery})
-			return
-		}
-	}
-}
-
 // CheckBruteForce counts recent login failures from an IP and auto-blocks if threshold exceeded.
 // Threshold: >5 login failures from same IP in 5 minutes → block + critical event.
 func CheckBruteForce(db *sql.DB, ip string) {
@@ -372,7 +343,7 @@ func CheckBruteForce(db *sql.DB, ip string) {
 }
 
 // CheckBruteForceHandle counts recent login failures against a specific handle and
-// temporarily locks it after 10 failures in 15 minutes. Uses security_events so the
+// records an account_lockout event after 10 failures in 15 minutes. Uses security_events so the
 // window survives restarts.
 func CheckBruteForceHandle(db *sql.DB, handle, ip string) {
 	if db == nil {
@@ -387,7 +358,7 @@ func CheckBruteForceHandle(db *sql.DB, handle, ip string) {
 	if count >= 10 {
 		go LogSecurityEvent(db, "account_lockout", "high", "", ip, "", "",
 			map[string]interface{}{"handle": handle, "failed_attempts": count, "window": "15m"})
-		log.Printf("[security] account lockout triggered — handle @%s (%d failures in 15m from %s)", handle, count, ip)
+		log.Printf("[security] repeated login failures — handle @%s (%d failures in 15m from %s)", handle, count, ip)
 	}
 }
 
@@ -432,25 +403,6 @@ func RegisterDevice(db *sql.DB, userID, ua, ip string) {
 	} else {
 		db.Exec(`UPDATE user_devices SET last_seen = NOW(), ip_address = $3
 			WHERE user_id = $1 AND device_hash = $2`, userID, hash, ip)
-	}
-}
-
-// CheckBulkAction counts recent action events for a user and logs a high event if threshold exceeded.
-// Threshold: >50 like/follow/post events from same user in 60 seconds.
-func CheckBulkAction(db *sql.DB, userID, ip string) {
-	if db == nil || userID == "" {
-		return
-	}
-	var count int
-	db.QueryRow(`
-		SELECT COUNT(*) FROM security_events
-		WHERE event_type IN ('like','follow','post')
-		  AND user_id = $1::uuid
-		  AND created_at > NOW() - INTERVAL '60 seconds'`, userID).Scan(&count)
-	if count > 50 {
-		go LogSecurityEvent(db, "bulk_action", "high", userID, ip, "", "",
-			map[string]interface{}{"action_count": count, "window": "60s"})
-		log.Printf("[security] bulk action detected — user %s performed %d actions in 60s from %s", userID, count, ip)
 	}
 }
 

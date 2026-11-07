@@ -96,17 +96,6 @@ func DeletePending(database *sql.DB, id string) error {
 	return err
 }
 
-// DeletePendingBetween clears any undelivered message between two accounts. Used
-// once a conversation between them is genuinely in use, so a draft written
-// before contact existed cannot resurface inside a conversation that has moved
-// on without it.
-func DeletePendingBetween(database *sql.DB, sender, target string) error {
-	_, err := database.Exec(`
-		DELETE FROM gnosis_pending_messages
-		WHERE sender_account = $1 AND target_account = $2`, sender, target)
-	return err
-}
-
 func scanPending(row *sql.Row) (Pending, bool, error) {
 	var p Pending
 	err := row.Scan(&p.ID, &p.SenderAccount, &p.TargetAccount, &p.Body, &p.LastDecision, &p.CreatedAt)

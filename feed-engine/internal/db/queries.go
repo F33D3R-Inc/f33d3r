@@ -50,49 +50,6 @@ func extractYouTubePlaylistID(src string) string {
 	return ""
 }
 
-// blockedFilter excludes only confirmed-blocked posts, not-yet-published scheduled posts,
-// and soft-deleted rows from all public feeds. Applied to every public feed/explore/search query.
-// scan_state = 'pending_scan', 'human_review', 'age_gated' are all VISIBLE — Abraxas scoring
-// affects ranking and flags for admin review only. Only 'blocked' hides a post.
-const blockedFilter = "AND COALESCE(p.scan_state, 'clean') != 'blocked' AND (p.scheduled_at IS NULL OR p.scheduled_at <= NOW()) AND p.deleted_at IS NULL"
-
-// blockedFilterForViewer extends blockedFilter to also hide pending_scan posts
-// from users who are not the author. Authors always see their own pending posts.
-// viewerID must be the UUID string of the authenticated user, or "" for anonymous.
-func blockedFilterForViewer(viewerID string) string {
-	// Validate viewerID is a UUID to prevent SQL injection before interpolating.
-	// UUIDs contain only hex digits and hyphens — safe to embed.
-	safeID := ""
-	if isValidUUID(viewerID) {
-		safeID = viewerID
-	}
-	if safeID == "" {
-		// Anonymous viewers: also hide pending_scan posts.
-		return blockedFilter + " AND COALESCE(p.scan_state, 'clean') != 'pending_scan'"
-	}
-	// Authenticated: hide pending_scan unless the viewer is the author.
-	return blockedFilter + " AND (COALESCE(p.scan_state, 'clean') != 'pending_scan' OR p.author_id::text = '" + safeID + "')"
-}
-
-// isValidUUID returns true if s is a valid UUID (lowercase or uppercase hex + hyphens, correct length).
-func isValidUUID(s string) bool {
-	if len(s) != 36 {
-		return false
-	}
-	for i, c := range s {
-		if i == 8 || i == 13 || i == 18 || i == 23 {
-			if c != '-' {
-				return false
-			}
-		} else {
-			if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
-				return false
-			}
-		}
-	}
-	return true
-}
-
 // ── Users ─────────────────────────────────────────────────────────────────────
 
 func UpsertUser(database *sql.DB, handle, emailHash string) (string, error) {
@@ -285,11 +242,6 @@ func OrgMembershipExists(database *sql.DB, userID, orgUserID string) bool {
 	return n > 0
 }
 
-func CreateOrgMembership(database *sql.DB, userID, orgUserID, initiatedBy string) error {
-	_, err := createOrgMembership(database, userID, orgUserID, initiatedBy)
-	return err
-}
-
 func createOrgMembership(q DBTX, userID, orgUserID, initiatedBy string) (sql.Result, error) {
 	return q.Exec(`
 		INSERT INTO org_memberships (user_id, org_user_id, status, initiated_by)
@@ -375,14 +327,6 @@ func SetPrimaryOrg(database *sql.DB, userID, membershipID string) error {
 		return err
 	}
 	return tx.Commit()
-}
-
-func SuspendOrgMemberships(database *sql.DB, orgUserID string) error {
-	_, err := database.Exec(`
-		UPDATE org_memberships SET status='suspended', updated_at=NOW()
-		WHERE org_user_id=$1 AND status='approved'
-	`, orgUserID)
-	return err
 }
 
 func SearchOrgs(database *sql.DB, query string) []model.OrgInfo {
@@ -777,28 +721,6 @@ func GetPollResults(database *sql.DB, postID, voterID string) (*model.Poll, erro
 // already on the row, and the handle it currently answers to is resolved from
 // the naming plane at the point of display.
 
-// CreateCanonicalMedia inserts a new canonical media record and returns its UUID.
-// ON CONFLICT on master_url: first uploader owns the record. Returns existing ID on conflict.
-// creatorPIAL may be empty for legacy accounts without a PIAL root.
-func CreateCanonicalMedia(database *sql.DB, creatorUserID, creatorPIAL, masterURL, posterURL string, durationSecs float32, width, height int) (string, error) {
-	var id string
-	err := database.QueryRow(`
-		INSERT INTO canonical_media (creator_user_id, creator_pial_id, master_url, poster_url, duration_secs, width, height)
-		VALUES ($1, NULLIF($2,'')::uuid, $3, $4, $5, $6, $7)
-		ON CONFLICT (master_url) WHERE master_url != ''
-		DO NOTHING
-		RETURNING id`,
-		creatorUserID, creatorPIAL, masterURL, posterURL, durationSecs, width, height,
-	).Scan(&id)
-	if err == sql.ErrNoRows {
-		// Conflict: this video already has a canonical record. Return existing owner's ID.
-		err = database.QueryRow(
-			`SELECT id FROM canonical_media WHERE master_url = $1`, masterURL,
-		).Scan(&id)
-	}
-	return id, err
-}
-
 // CreateCanonicalImage registers a new image asset with its original uploader.
 // ON CONFLICT DO NOTHING so the first uploader always retains ownership.
 func CreateCanonicalImage(database *sql.DB, creatorUserID, creatorPIAL, imageURL string) error {
@@ -812,24 +734,6 @@ func CreateCanonicalImage(database *sql.DB, creatorUserID, creatorPIAL, imageURL
 		creatorUserID, creatorPIAL, imageURL,
 	)
 	return err
-}
-
-// FindCanonicalImageOwnerPIAL returns the original uploader's PIAL for a known
-// image URL, or "" when no canonical record exists for it. Callers that need a
-// handle to show resolve it from this PIAL through Manhattan; they must not read
-// the copy this table used to carry.
-func FindCanonicalImageOwnerPIAL(database *sql.DB, imageURL string) (pial string, err error) {
-	if database == nil || imageURL == "" {
-		return "", nil
-	}
-	err = database.QueryRow(`
-		SELECT COALESCE(creator_pial_id::TEXT, '')
-		FROM canonical_media WHERE image_url = $1`, imageURL,
-	).Scan(&pial)
-	if err == sql.ErrNoRows {
-		return "", nil
-	}
-	return pial, err
 }
 
 // SetPostLineage stores the original uploader's PIAL and handle on a post when
@@ -1304,12 +1208,6 @@ func scanTracks(rows *sql.Rows) ([]*model.Track, error) {
 
 // ── Sessions ──────────────────────────────────────────────────────────────────
 
-func CreateSession(database *sql.DB, userID, surface string) (string, error) {
-	var id string
-	err := database.QueryRow(`INSERT INTO feed_sessions (user_id, surface) VALUES ($1, $2) RETURNING id`, userID, surface).Scan(&id)
-	return id, err
-}
-
 // ── Feedback events ───────────────────────────────────────────────────────────
 
 // InsertFeedbackEvents persists a batch of feedback events to the audit table.
@@ -1343,65 +1241,6 @@ func InsertFeedbackEvents(database *sql.DB, userID, sessionID, surface string, e
 		}
 	}
 	return tx.Commit()
-}
-
-// GetContentVelocitiesBatch returns normalised 0–1 velocity scores for a set of
-// content IDs in a single query. windowHours controls the lookback window.
-// Use this before building a rank request to pass real signal to AethyrRank.
-func GetContentVelocitiesBatch(database *sql.DB, contentIDs []string, windowHours int) (map[string]float64, error) {
-	if len(contentIDs) == 0 {
-		return map[string]float64{}, nil
-	}
-	rows, err := database.Query(`
-		SELECT content_id,
-		       COUNT(*) FILTER (WHERE event_type IN ('like','share','comment','save','view_complete')) AS eng,
-		       GREATEST(1, COUNT(*) FILTER (WHERE event_type = 'impression')) AS imp
-		FROM feedback_events
-		WHERE content_id = ANY($1)
-		  AND created_at >= NOW() - ($2::int * interval '1 hour')
-		GROUP BY content_id
-	`, pq.Array(contentIDs), windowHours)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	result := make(map[string]float64, len(contentIDs))
-	for rows.Next() {
-		var cid string
-		var eng, imp int
-		if err := rows.Scan(&cid, &eng, &imp); err != nil {
-			continue
-		}
-		v := float64(eng) / float64(imp)
-		if v > 1.0 {
-			v = 1.0
-		}
-		result[cid] = v
-	}
-	return result, nil
-}
-
-// GetContentVelocity returns a normalised 0–1 velocity score for a content item:
-// engagement events (like/share/comment/save) in the last windowHours divided by
-// total impressions in the same window (floored at 1 to avoid division by zero).
-func GetContentVelocity(database *sql.DB, contentID string, windowHours int) (float64, error) {
-	var engagements, impressions int
-	err := database.QueryRow(`
-		SELECT
-			COUNT(*) FILTER (WHERE event_type IN ('like','share','comment','save','view_complete')) AS eng,
-			GREATEST(1, COUNT(*) FILTER (WHERE event_type = 'impression')) AS imp
-		FROM feedback_events
-		WHERE content_id = $1
-		  AND created_at >= NOW() - ($2::int * interval '1 hour')
-	`, contentID, windowHours).Scan(&engagements, &impressions)
-	if err != nil {
-		return 0, err
-	}
-	v := float64(engagements) / float64(impressions)
-	if v > 1.0 {
-		v = 1.0
-	}
-	return v, nil
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -1593,21 +1432,6 @@ func GetBlockedUserIDs(database *sql.DB, viewerID string) (map[string]bool, erro
 	return out, nil
 }
 
-// FilterBlockedPosts removes posts whose author is in the blocked set.
-// Operates in-place on the slice header — callers should use the returned slice.
-func FilterBlockedPosts(posts []*model.Post, blocked map[string]bool) []*model.Post {
-	if len(blocked) == 0 {
-		return posts
-	}
-	out := posts[:0]
-	for _, p := range posts {
-		if !blocked[p.AuthorID] {
-			out = append(out, p)
-		}
-	}
-	return out
-}
-
 // ── Reply restrictions ────────────────────────────────────────────────────────
 
 // SetCommentGating updates a post's comment_gating. Verifies ownership.
@@ -1746,20 +1570,6 @@ func GetPIALKYCVerifiedAt(database *sql.DB, pialID string) *time.Time {
 	}
 	t := at.Time
 	return &t
-}
-
-// FilterMutedPosts removes posts whose author is in the muted set.
-func FilterMutedPosts(posts []*model.Post, muted map[string]bool) []*model.Post {
-	if len(muted) == 0 {
-		return posts
-	}
-	out := posts[:0]
-	for _, p := range posts {
-		if !muted[p.AuthorID] {
-			out = append(out, p)
-		}
-	}
-	return out
 }
 
 // ── Post pinning ──────────────────────────────────────────────────────────────
@@ -2256,13 +2066,6 @@ func UnpinSurface(database *sql.DB, userID, surfaceID string) error {
 	return err
 }
 
-// GetUserPIAL returns the PIAL ID for a given user ID, or empty string if not found.
-func GetUserPIAL(database *sql.DB, userID string) string {
-	var pial string
-	database.QueryRow(`SELECT COALESCE(pial_id::text,'') FROM users WHERE id=$1`, userID).Scan(&pial)
-	return pial
-}
-
 // ── AethyrRank signal gaps ────────────────────────────────────────────────────
 
 // GetFollowedUserIDSet returns a set of user IDs that viewerID follows.
@@ -2711,36 +2514,6 @@ func AddBannedHash(database *sql.DB, hashType, hashValue, category, addedBy, not
 		hashType, hashValue, category, addedBy, note,
 	)
 	return err
-}
-
-// GetModerationLog returns the state transition history for a post.
-func GetModerationLog(database *sql.DB, postID string) ([]map[string]interface{}, error) {
-	rows, err := database.Query(`
-		SELECT from_state, to_state, reason, actor, created_at
-		FROM content_moderation_log
-		WHERE post_id = $1
-		ORDER BY created_at ASC`, postID,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []map[string]interface{}
-	for rows.Next() {
-		var from, to, reason, actor string
-		var createdAt time.Time
-		if err := rows.Scan(&from, &to, &reason, &actor, &createdAt); err != nil {
-			continue
-		}
-		out = append(out, map[string]interface{}{
-			"from_state": from,
-			"to_state":   to,
-			"reason":     reason,
-			"actor":      actor,
-			"created_at": createdAt,
-		})
-	}
-	return out, nil
 }
 
 // ── Link preview ──────────────────────────────────────────────────────────────

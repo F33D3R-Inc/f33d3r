@@ -96,9 +96,6 @@ func IsRateLimited(err error) bool { return statusIs(err, http.StatusTooManyRequ
 // IsBadRequest: 400 — a field Auralis would not accept.
 func IsBadRequest(err error) bool { return statusIs(err, http.StatusBadRequest) }
 
-// IsUnavailable: Auralis answered 503 (its naming plane or Redis is down).
-func IsUnavailable(err error) bool { return statusIs(err, http.StatusServiceUnavailable) }
-
 // IsOutage reports whether err says nothing about the request: the brain
 // could not be reached, it faulted, it is not configured, or it rejected this
 // brain's key. Rendered to a person as "Frequencies are unavailable", never
@@ -408,16 +405,6 @@ func (c *Client) List(ctx context.Context, lane, viewerPIAL string, limit int) (
 	return &out, nil
 }
 
-func (c *Client) Events(ctx context.Context, id string) ([]Event, error) {
-	var out struct {
-		Events []Event `json:"events"`
-	}
-	if err := c.call(ctx, http.MethodGet, "/v1/frequencies/"+seg(id)+"/events", "", "", nil, &out); err != nil {
-		return nil, err
-	}
-	return out.Events, nil
-}
-
 // Current returns the live Frequency this person is joined to, rendered for
 // them (viewer-specific), or nil. The Shell asks this once per full page so
 // the dock renders on load and survives navigation.
@@ -448,10 +435,6 @@ func (c *Client) Create(ctx context.Context, pial, idem string, in CreateInput) 
 		return nil, err
 	}
 	return &out, nil
-}
-
-func (c *Client) Update(ctx context.Context, pial, id string, in UpdateInput) (*Answer, error) {
-	return c.answer(ctx, pial, "", "/v1/frequencies/"+seg(id)+"/update", in)
 }
 
 func (c *Client) Schedule(ctx context.Context, pial, id string, at *time.Time) (*Answer, error) {

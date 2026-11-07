@@ -30,19 +30,6 @@
 }
 
 /* ── Facet(sidebar_card) — right sidebar widget cards ────────────────── */
-.sidebar-card {
-  border-radius: var(--r-lg);
-  border: 1px solid var(--border-soft);
-  background: var(--panel);
-  overflow: hidden;
-}
-
-.sidebar-card-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 14px 16px 10px;
-}
 
 .sidebar-card-title {
   font-size: 16px;
@@ -51,126 +38,19 @@
   letter-spacing: -.02em;
 }
 
-.sidebar-card-link {
-  font-size: 13px;
-  color: var(--accent);
-  text-decoration: none;
-  font-weight: 500;
-  transition: opacity 0.15s;
-}
-
-.sidebar-card-link:hover { opacity: 0.8; }
-
-.sidebar-card-body {
-  padding: 4px 0 8px;
-}
-
 /* ── Facet(sidebar_user_row) — "Who to follow" suggested user item ───── */
-.sidebar-user-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 16px;
-  transition: background 0.1s;
-  text-decoration: none;
-}
-
-.sidebar-user-row:hover { background: var(--panel-hover); }
-
-.sidebar-user-av {
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 13px;
-  font-weight: 700;
-  color: #fff;
-  overflow: hidden;
-}
-
-.sidebar-user-av img { width: 100%; height: 100%; object-fit: cover; display: block; }
 
 .sidebar-user-info { flex: 1; min-width: 0; }
 
-.sidebar-user-name {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-primary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  display: block;
-}
-
-.sidebar-user-handle {
-  font-size: 12px;
-  color: var(--text-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  display: block;
-}
-
 /* ── Facet(sidebar_trend_row) — trending hashtag item ───────────────── */
-.sidebar-trend-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 9px 16px;
-  text-decoration: none;
-  transition: background 0.1s;
-}
-
-.sidebar-trend-row:hover { background: var(--panel-hover); }
-
-.sidebar-trend-tag {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-.sidebar-trend-count {
-  font-size: 11px;
-  color: var(--text-muted);
-}
-
 
 /* ── Portal roots — fixed full-screen layers for modals/sheets/dropdowns ─── */
-/* These sit at the document body level, above all page content.
- * Each root is pointer-events:none by default; injected content sets auto. */
-.portal-dropdown {
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  z-index: var(--z-dropdown);
-}
-
-.portal-sheet {
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  z-index: var(--z-sheet);
-}
 
 .portal-modal {
   position: fixed;
   inset: 0;
   pointer-events: none;
   z-index: var(--z-modal);
-}
-
-.portal-toast {
-  position: fixed;
-  bottom: 80px;
-  right: 20px;
-  pointer-events: none;
-  z-index: var(--z-toast);
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
 }
 
 /* ── Facet(post_card_thread_link) — dead-zone click target ───────────── */
@@ -209,8 +89,7 @@
 
 /* Gates above content */
 .nsfw-gate,
-.sensitive-gate,
-.subscriber-gate {
+.sensitive-gate {
   position: relative;
   z-index: var(--z-card-overlay);
   pointer-events: auto;
@@ -231,10 +110,6 @@
   .post-actions { gap: 0; margin-left: -4px; }
   .action { padding: 5px 5px; font-size: 12px; gap: 4px; }
   .action svg { width: 16px; height: 16px; }
-  /* Legacy action system */
-  .action-btn { padding: 5px 5px; font-size: 11px; gap: 3px; }
-  .action-btn svg { width: 14px; height: 14px; }
-  .post-actions-legacy { gap: 0; }
 }
 
 /* ── Narrow rail overrides — lives in desktop.css (loads last) so these win

@@ -21,7 +21,6 @@ FACET leaderboard_panel
 
   signals:
     emits:    none
-    receives: leaderboard_refresh (SSE) → JS calls htmx.trigger(panel, 'lbRefresh') → hx-get re-fetches
 
   context:
     achievements.html → below XP hero, above achievement tabs

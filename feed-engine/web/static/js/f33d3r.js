@@ -354,12 +354,6 @@ window.F33D3R = window.F33D3R || {};
         }
       }
     });
-    es.addEventListener('leaderboard_refresh', function(e) {
-      window._onSSELeaderboardRefresh && window._onSSELeaderboardRefresh(e);
-      // Refresh XP bar in sidebar live without page reload
-      var bar = document.getElementById('xp-bar-wrap');
-      if (bar && typeof htmx !== 'undefined') htmx.ajax('GET', '/facets/xp_bar', {target: '#xp-bar-wrap', swap: 'outerHTML'});
-    });
 
     es.onerror = function() {
       // Reconnect with capped backoff (native retry is a fallback; this also resubscribes

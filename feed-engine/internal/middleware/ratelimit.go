@@ -160,19 +160,6 @@ func (rl *RateLimiter) LimitKeyed(keyFn func(*http.Request) string, next http.Ha
 	}
 }
 
-// LimitHandler wraps an http.Handler with per-IP rate limiting.
-func (rl *RateLimiter) LimitHandler(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ip := rl.clientIP(r)
-		if !rl.allow(ip) {
-			w.Header().Set("Retry-After", "60")
-			http.Error(w, "Too many requests — slow down", http.StatusTooManyRequests)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
 func min64(a, b float64) float64 {
 	if a < b {
 		return a

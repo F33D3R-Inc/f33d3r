@@ -362,22 +362,3 @@ func (h *Handler) facetLeaderboardPanel(w http.ResponseWriter, r *http.Request) 
 		"InTop10":             inTop10,
 	})
 }
-
-// broadcastLeaderboardRefresh signals all active sessions to refresh their
-// leaderboard panel. Called after XP is awarded so the board updates live.
-func (h *Handler) broadcastLeaderboardRefresh() {
-	PublishToAllSessions(SSEEvent{Type: "leaderboard_refresh", Data: "1"})
-}
-
-// facetXPBar serves GET /facets/xp_bar — returns a fresh xp_bar partial.
-// Called by client-side SSE handler on leaderboard_refresh so the sidebar bar
-// updates without a full page reload.
-func (h *Handler) facetXPBar(w http.ResponseWriter, r *http.Request) {
-	user := h.userFromRequest(w, r)
-	if user == nil {
-		w.WriteHeader(http.StatusUnauthorized)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	h.renderPartial(w, "xp_bar", map[string]interface{}{"User": user})
-}

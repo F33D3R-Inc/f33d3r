@@ -36,97 +36,6 @@ type VideoResult struct {
 	Height    int     `json:"height"`
 }
 
-// transcodingVideoUpload forwards a video file to the transcoding brain and
-// blocks until the HLS ladder + poster are produced (or timeout / failure).
-// Uses videoClient (2-hour timeout) so large file uploads don't time out mid-transfer.
-func (h *Handler) transcodingVideoUpload(fileBytes []byte, filename string) (*VideoResult, error) {
-	if h.transcodingURL == "" {
-		return nil, fmt.Errorf("TRANSCODING_URL not configured")
-	}
-
-	var buf bytes.Buffer
-	mw := multipart.NewWriter(&buf)
-	fw, err := mw.CreateFormFile("file", filename)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := fw.Write(fileBytes); err != nil {
-		return nil, err
-	}
-	mw.Close()
-
-	req, err := http.NewRequest(http.MethodPost, h.transcodingURL+"/v1/video/upload", &buf)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", mw.FormDataContentType())
-	resp, err := h.videoClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("transcoding upload returned %d", resp.StatusCode)
-	}
-
-	var queued struct {
-		JobID   string `json:"job_id"`
-		AssetID string `json:"asset_id"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&queued); err != nil {
-		return nil, err
-	}
-
-	// Poll until ready. 30-minute cap handles 4K sources on CPU-only nodes.
-	deadline := time.Now().Add(30 * time.Minute)
-	backoff := 1 * time.Second
-	statusURL := h.transcodingURL + "/v1/video/job/" + queued.JobID
-	for {
-		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("transcoding timed out (job %s)", queued.JobID)
-		}
-		time.Sleep(backoff)
-		if backoff < 8*time.Second {
-			backoff += 500 * time.Millisecond
-		}
-
-		jr, err := h.httpClient.Get(statusURL)
-		if err != nil {
-			continue
-		}
-		var job struct {
-			Status string `json:"status"`
-			Error  string `json:"error"`
-			Output *struct {
-				MasterURL       string  `json:"master_url"`
-				PosterURL       string  `json:"poster_url"`
-				DurationSeconds float64 `json:"duration_seconds"`
-				SourceWidth     int     `json:"source_width"`
-				SourceHeight    int     `json:"source_height"`
-			} `json:"output"`
-		}
-		_ = json.NewDecoder(jr.Body).Decode(&job)
-		jr.Body.Close()
-
-		switch job.Status {
-		case "ready":
-			if job.Output == nil {
-				return nil, fmt.Errorf("transcoding returned ready but no output")
-			}
-			return &VideoResult{
-				Kind:      "video",
-				MasterURL: job.Output.MasterURL,
-				PosterURL: job.Output.PosterURL,
-				Duration:  float32(job.Output.DurationSeconds),
-				Width:     job.Output.SourceWidth,
-				Height:    job.Output.SourceHeight,
-			}, nil
-		case "failed":
-			return nil, fmt.Errorf("transcoding failed: %s", job.Error)
-		}
-	}
-}
-
 // caeorUpload forwards a multipart file to Caeor for processing and returns
 // the primary derivative URL. Falls back to saveUpload if Caeor is unavailable.
 func (h *Handler) caeorUpload(fileBytes []byte, filename, mediaType string) (string, error) {
@@ -1081,14 +990,6 @@ type duplicateVideoInfo struct {
 	WorkID      string
 }
 
-// syncCheckDuplicate — video dedup was handled by the Python content-scan brain.
-// Abraxas Shield (Phase 3) is a pure Kafka consumer with no HTTP endpoint.
-// Video-level dedup will be added in Phase 3.1 via media hash events.
-// Fail-open: always returns nil so uploads proceed normally.
-func (h *Handler) syncCheckDuplicate(videoMasterURL, uploaderPIAL, uploaderHandle string) *duplicateVideoInfo {
-	return nil
-}
-
 // checkVideoDuplicateByBytes checks whether the raw file bytes match a video
 // already stored on F33D3R by comparing SHA-256 against video_raw_hashes.
 // Returns nil when the file is original (not a duplicate).
@@ -1121,57 +1022,6 @@ func (h *Handler) checkVideoDuplicateByBytes(fileBytes []byte, filename, uploade
 		CreatorName:       res.CreatorName,
 		WorkID:            res.WorkID,
 	}
-}
-
-// imageDuplicateInfo holds the result of a synchronous image dedup check.
-type imageDuplicateInfo struct {
-	OriginalHandle string
-	OriginalPIAL   string
-	OriginalPostID string
-	ImageURL       string // canonical image URL from the original upload
-}
-
-// checkImageDuplicate — image dedup via content-scan HTTP is removed.
-// Abraxas Shield Phase 3.1 will add image hash events. Fail-open for now.
-func (h *Handler) checkImageDuplicate(imageBytes []byte, uploadedURL, uploaderPIAL, uploaderHandle string) *imageDuplicateInfo {
-	return nil
-}
-
-// cleanupDuplicateImage deletes a newly uploaded image from Caeor when it
-// is confirmed as a duplicate. Best-effort — errors only logged.
-func (h *Handler) cleanupDuplicateImage(imageURL string) {
-	h.caeorDelete(imageURL)
-}
-
-// cleanupDuplicateTranscoded deletes orphaned HLS transcoding output from Caeor
-// when a duplicate video is detected before the post is created.
-func (h *Handler) cleanupDuplicateTranscoded(masterURL string) {
-	if masterURL == "" {
-		return
-	}
-	h.caeorDelete(masterURL)
-}
-
-// caeorDelete calls Caeor's DELETE /v1/media endpoint to remove a media asset.
-// Best-effort: errors are logged but never fatal to the caller.
-func (h *Handler) caeorDelete(mediaURL string) {
-	if h.cfg.CaeorURL == "" || mediaURL == "" {
-		return
-	}
-	body, _ := json.Marshal(map[string]string{"url": mediaURL})
-	req, err := http.NewRequest(http.MethodDelete, h.cfg.CaeorURL+"/v1/media", bytes.NewReader(body))
-	if err != nil {
-		log.Printf("[caeor] delete request build error for %s: %v", mediaURL, err)
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := h.httpClient.Do(req)
-	if err != nil {
-		log.Printf("[caeor] delete error for %s: %v", mediaURL, err)
-		return
-	}
-	resp.Body.Close()
-	log.Printf("[caeor] deleted orphaned asset: %s (status %d)", mediaURL, resp.StatusCode)
 }
 
 // uploadEncryptedMedia stores a client-encrypted blob (marketplace paid content).

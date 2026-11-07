@@ -1,10 +1,9 @@
 package handler
 
 import (
-	dbpkg "github.com/f33d3r/feed-engine/internal/db"
-	"database/sql"
 	"context"
 	"crypto/subtle"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +13,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+
+	dbpkg "github.com/f33d3r/feed-engine/internal/db"
 )
 
 // internalCallerOK is the one check every brain-facing endpoint makes: the
@@ -161,32 +162,6 @@ func (h *Handler) fetchEcdhPubkey(ctx context.Context, pialID string) (string, e
 		return "", errKeyNotRegistered
 	}
 	return out.PublicKeyB64, nil
-}
-
-// pialSigningPubkeyInternal returns a PIAL's ECDSA-P256 signing public key for Themis signature verification.
-// PIAL record (feed-engine) is authoritative — reads local first, Elohim-veni key service as fallback.
-// GET /api/internal/pial/{pial_id}/signing-pubkey
-// Auth: X-Internal-Key header
-func (h *Handler) pialSigningPubkeyInternal(w http.ResponseWriter, r *http.Request) {
-	if !h.internalCallerOK(r) {
-		http.Error(w, "forbidden", http.StatusForbidden)
-		return
-	}
-	pialID := r.PathValue("pial_id")
-	if pialID == "" {
-		http.Error(w, "bad request", http.StatusBadRequest)
-		return
-	}
-
-	// Elohim-veni owns the `key` kind, so it is the only place this answer comes
-	// from. There is no longer a local table to prefer or fall back to.
-	pub := h.fetchSigningPubkey(pialID)
-	if pub == "" {
-		http.Error(w, `{"error":"not_found"}`, http.StatusNotFound)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(w, `{"public_key_b64":%q}`, pub)
 }
 
 // registerPIALEcdhKey hands the calling PIAL's ECDH-P256 public key to the brain

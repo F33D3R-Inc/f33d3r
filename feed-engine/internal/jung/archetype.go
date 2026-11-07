@@ -50,13 +50,3 @@ func ArchetypePrior(archetype string) Vector {
 	}
 	return Neutral()
 }
-
-// Archetypes lists the recognised archetype names, for anything that needs
-// to validate or enumerate the declared vocabulary.
-func Archetypes() []string {
-	out := make([]string, 0, len(archetypePriors))
-	for k := range archetypePriors {
-		out = append(out, k)
-	}
-	return out
-}

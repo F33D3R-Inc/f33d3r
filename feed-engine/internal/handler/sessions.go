@@ -71,3 +71,24 @@ func (h *Handler) sessionRevokeEvent(w http.ResponseWriter, r *http.Request, raw
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 }
+
+// endSessionsAfterPasswordChange signs out every device on the account, except the one
+// keepToken names. A password change is often someone locking a thief out, which only
+// works if sessions opened with the old password end with it. Cached copies go too, so
+// a revoked session doesn't keep working until its cache entry expires.
+func (h *Handler) endSessionsAfterPasswordChange(userID, keepToken string) error {
+	var err error
+	if keepToken == "" {
+		err = dbpkg.RevokeAllSessions(h.db, userID)
+	} else {
+		err = dbpkg.RevokeOtherSessions(h.db, userID, keepToken)
+	}
+	h.sessionCache.Range(func(key, value any) bool {
+		entry, ok := value.(sessionEntry)
+		if ok && entry.user != nil && entry.user.ID == userID && key != keepToken {
+			h.sessionCache.Delete(key)
+		}
+		return true
+	})
+	return err
+}

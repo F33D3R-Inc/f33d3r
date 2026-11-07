@@ -323,7 +323,7 @@ func (h *Handler) apiV1AccountEvent(w http.ResponseWriter, r *http.Request, even
 		h.apiProfileUpdateEvent(w, r, user, rawBodyMap)
 	case "password_change":
 		next := eventField(r, rawBodyMap, "new_password")
-		status, msg := h.changePassword(user, eventField(r, rawBodyMap, "current_password"), next, next)
+		status, msg := h.changePassword(user, eventField(r, rawBodyMap, "current_password"), next, next, GetSessionToken(r))
 		if status != http.StatusOK {
 			http.Error(w, msg, status)
 			return true
@@ -551,7 +551,7 @@ func linkGroupReader(r *http.Request, rawBodyMap map[string]json.RawMessage, obj
 // changePassword is the one set of rules for changing a password, whichever
 // surface asked. 200 means it changed; any other status carries the sentence
 // to show.
-func (h *Handler) changePassword(user *model.User, current, next, confirm string) (int, string) {
+func (h *Handler) changePassword(user *model.User, current, next, confirm, keepToken string) (int, string) {
 	if h.db == nil {
 		return http.StatusServiceUnavailable, "Database unavailable."
 	}
@@ -576,6 +576,10 @@ func (h *Handler) changePassword(user *model.User, current, next, confirm string
 	if err := dbpkg.SetPassword(h.db, user.ID, next); err != nil {
 		log.Printf("[settings] SetPassword error: %v", err)
 		return http.StatusInternalServerError, "Could not save password — try again."
+	}
+	if err := h.endSessionsAfterPasswordChange(user.ID, keepToken); err != nil {
+		log.Printf("[settings] ending sessions for %s: %v", user.Handle, err)
+		return http.StatusInternalServerError, "Password saved, but other devices could not be signed out. Sign them out in Settings."
 	}
 	return http.StatusOK, "Password updated successfully."
 }

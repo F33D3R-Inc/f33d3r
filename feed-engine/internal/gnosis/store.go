@@ -493,13 +493,6 @@ type Identity struct {
 	WrapNonceB64   string
 }
 
-// GetIdentityPub returns an account's X25519 messaging public key, or "" if none.
-func GetIdentityPub(database *sql.DB, account string) string {
-	var pub string
-	_ = database.QueryRow(`SELECT pub_b64 FROM gnosis_identity WHERE account_id = $1`, account).Scan(&pub)
-	return pub
-}
-
 // GetIdentity returns an account's full identity custody (ok=false if none).
 func GetIdentity(database *sql.DB, account string) (Identity, bool, error) {
 	var id Identity

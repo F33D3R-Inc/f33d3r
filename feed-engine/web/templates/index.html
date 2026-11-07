@@ -1,6 +1,5 @@
 {{define "title"}}Home · F33D3R{{end}}
 {{define "nav-active-home"}}active{{end}}
-{{define "mob-active-home"}}active{{end}}
 {{define "body"}}
 <main class="f33d3r-main{{if .User}}{{if eq .User.MobileFeedView "reels"}} reels-enabled{{end}}{{end}}" id="main-col">
   {{template "home_feed_header" (dict "EngineOnline" .EngineOnline "User" .User "PinnedSurfaces" .PinnedSurfaces "SessionID" .SessionID "ActiveSurface" .ActiveSurface)}}

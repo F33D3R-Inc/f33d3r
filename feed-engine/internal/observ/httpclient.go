@@ -1,7 +1,6 @@
 package observ
 
 import (
-	"context"
 	"net/http"
 	"time"
 )
@@ -66,19 +65,4 @@ func (c *correlatingTransport) RoundTrip(r *http.Request) (*http.Response, error
 	outboundDuration.WithLabelValues(Brain(), dest).Observe(dur)
 
 	return resp, err
-}
-
-// PropagateToOutbound is a convenience for places that build their own
-// http.Request without a context, e.g. cron jobs. It manually adds the
-// correlation headers from the supplied ctx onto req.
-func PropagateToOutbound(ctx context.Context, req *http.Request) {
-	if req == nil {
-		return
-	}
-	if id := RequestID(ctx); id != "" && req.Header.Get(HeaderRequestID) == "" {
-		req.Header.Set(HeaderRequestID, id)
-	}
-	if pial := PIAL(ctx); pial != "" && req.Header.Get(HeaderPialIdentity) == "" {
-		req.Header.Set(HeaderPialIdentity, pial)
-	}
 }

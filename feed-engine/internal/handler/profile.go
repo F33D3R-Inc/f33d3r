@@ -601,7 +601,7 @@ func (h *Handler) changePasswordAPI(w http.ResponseWriter, r *http.Request) {
 
 	// One set of rules with the native clients' password_change event; see
 	// changePassword. The form only differs in how it shows the answer.
-	status, msg := h.changePassword(user, r.FormValue("current_password"), r.FormValue("new_password"), r.FormValue("confirm_password"))
+	status, msg := h.changePassword(user, r.FormValue("current_password"), r.FormValue("new_password"), r.FormValue("confirm_password"), GetSessionToken(r))
 	if status != http.StatusOK {
 		fmt.Fprintf(w, `<span style="color:#ef4444;font-size:13px">%s</span>`, template.HTMLEscapeString(msg))
 		return

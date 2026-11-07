@@ -982,27 +982,27 @@ func workEditionCID(workID string, edition int, body string) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
+// facetWorkEditions — GET /facets/work/{id}/editions
+// A work's edit history. Earlier text is the work's text, so whoever may not read the
+// work may not read its history either: they get nothing.
 func (h *Handler) facetWorkEditions(w http.ResponseWriter, r *http.Request) {
-	user := h.userFromRequest(w, r)
-	if user == nil {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-	id := r.PathValue("id")
-	if id == "" {
-		http.Error(w, "id required", http.StatusBadRequest)
-		return
-	}
-	editions, err := dbpkg.GetWorkEditions(h.db, id)
-	if err != nil || len(editions) == 0 {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, `<div class="work-editions-panel"><div class="editions-header">No edition history found</div></div>`)
-		return
-	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if h.db == nil {
+		return
+	}
+	work, ok := h.workReadable(r.PathValue("id"), h.userFromRequest(w, r))
+	if !ok {
+		return
+	}
+	editions, err := dbpkg.GetWorkEditions(h.db, work.ID)
+	if err != nil {
+		log.Printf("[editions] %s: %v", work.ID, err)
+		http.Error(w, "could not load edit history", http.StatusInternalServerError)
+		return
+	}
 	h.renderPartial(w, "work_editions_panel", map[string]interface{}{
 		"Editions": editions,
-		"WorkID":   id,
+		"WorkID":   work.ID,
 	})
 }
 

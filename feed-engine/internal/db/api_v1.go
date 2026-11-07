@@ -4,10 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"github.com/f33d3r/feed-engine/internal/herald"
 	"time"
 
-	"github.com/lib/pq"
+	"github.com/f33d3r/feed-engine/internal/herald"
 
 	"github.com/f33d3r/feed-engine/internal/model"
 )
@@ -46,49 +45,6 @@ func GetHandleForPIAL(db *sql.DB, pialID string) string {
 	var handle string
 	_ = db.QueryRow(`SELECT handle FROM users WHERE pial_id = $1::uuid LIMIT 1`, pialID).Scan(&handle)
 	return handle
-}
-
-// UsersByPIAL resolves many PIALs to the accounts that anchor them in ONE
-// query, keyed by PIAL.
-//
-// It exists because a brain that speaks only in PIALs (Auralis, the
-// Frequencies brain) hands back a room full of them — host, every speaker,
-// every co-host, every raised hand — and resolving those one at a time is a
-// query per face on every 2s poll of every open room. A PIAL with no local
-// account is simply absent from the result, which is what lets the caller
-// drop an unresolvable identity rather than leak the uuid.
-func UsersByPIAL(database *sql.DB, pials []string) (map[string]*model.User, error) {
-	out := map[string]*model.User{}
-	if database == nil || len(pials) == 0 {
-		return out, nil
-	}
-	seen := make(map[string]bool, len(pials))
-	want := make([]string, 0, len(pials))
-	for _, p := range pials {
-		if p == "" || seen[p] {
-			continue
-		}
-		seen[p] = true
-		want = append(want, p)
-	}
-	if len(want) == 0 {
-		return out, nil
-	}
-	rows, err := database.Query(userSelectSQL+"WHERE u.pial_id::text = ANY($1)", pq.Array(want))
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		u, err := scanUser(rows)
-		if err != nil {
-			return nil, err
-		}
-		if u != nil && u.PIALID != "" {
-			out[u.PIALID] = u
-		}
-	}
-	return out, rows.Err()
 }
 
 // GetWorkRepliesBefore is GetWorkReplies with a cursor: replies to workID

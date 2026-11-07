@@ -236,6 +236,11 @@ func (h *Handler) forgotPasswordResetSubmit(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// Whoever else was signed in may be the reason for this reset.
+	if err := h.endSessionsAfterPasswordChange(userID, ""); err != nil {
+		log.Printf("[backup-codes] ending sessions for %s: %v", userID, err)
+	}
+
 	// Create a session so the user lands directly on the home feed.
 	deviceName := r.UserAgent()
 	if len(deviceName) > 100 {

@@ -88,11 +88,6 @@ func LiveMasterPlaylistURL(streamID string) string {
 	return "/live/" + streamID + "/master.m3u8"
 }
 
-// LiveVariantPlaylistURL is one rung of the ABR ladder.
-func LiveVariantPlaylistURL(streamID string, height int) string {
-	return fmt.Sprintf("/live/%s/%dp/index.m3u8", streamID, height)
-}
-
 // LivePosterURL is the periodically refreshed still frame for a stream.
 func LivePosterURL(streamID string) string {
 	return "/live/" + streamID + "/poster.jpg"

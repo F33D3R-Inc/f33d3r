@@ -96,50 +96,6 @@ func (h *Handler) ledgerProxy(w http.ResponseWriter, r *http.Request) {
 	proxy.ServeHTTP(w, r)
 }
 
-// ── Themis proxy: /themis/v1/... → themis:8100/v1/... ────────────────────────
-func (h *Handler) themisProxy(w http.ResponseWriter, r *http.Request) {
-	user := h.userFromRequest(w, r)
-	if user.PIALID == "" {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusServiceUnavailable)
-		w.Write([]byte(`{"error":"pial_not_ready"}`))
-		return
-	}
-
-	upstreamURL, err := url.Parse(h.themisURL)
-	if err != nil {
-		http.Error(w, "proxy config error", http.StatusInternalServerError)
-		return
-	}
-
-	pathSuffix := strings.TrimPrefix(r.URL.Path, "/themis")
-	if pathSuffix == "" {
-		pathSuffix = "/"
-	}
-	pialID := user.PIALID
-
-	proxy := &httputil.ReverseProxy{
-		Director: func(req *http.Request) {
-			req.URL.Scheme = upstreamURL.Scheme
-			req.URL.Host = upstreamURL.Host
-			req.URL.Path = pathSuffix
-			if r.URL.RawQuery != "" {
-				req.URL.RawQuery = r.URL.RawQuery
-			}
-			req.Host = upstreamURL.Host
-			req.Header.Set("X-Pial-Identity", pialID)
-			req.Header.Set("X-Pial-Handle", user.Handle)
-			req.Header.Del("Cookie")
-			req.Header.Set(serviceKeyHeader, h.cfg.InternalAPIKey)
-		},
-		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			log.Printf("themis proxy: %v", err)
-			http.Error(w, `{"error":"themis_unavailable"}`, http.StatusBadGateway)
-		},
-	}
-	proxy.ServeHTTP(w, r)
-}
-
 // thessalonAllowed lists what a browser may reach through this proxy. Everything else
 // on Themis, including its events route, metrics and other people's records, stays
 // behind it. Reads about a person are for that person only.

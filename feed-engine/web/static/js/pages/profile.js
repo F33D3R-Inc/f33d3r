@@ -108,26 +108,9 @@ F33D3R.page('profile', function (root) {
     else toast('Cancel failed', 'error');
   }
 
-  // Facet(notify_btn) — toggle profile notifications
-  async function toggleProfileNotify(btn, handle) {
-    const active = btn.dataset.active === '1';
-    const fd = new FormData();
-    fd.append('handle', handle);
-    fd.append('enabled', active ? '0' : '1');
-    const r = await fetch('/api/notify/profile', { method: 'POST', body: fd });
-    if (r.ok) {
-      btn.dataset.active = active ? '0' : '1';
-      btn.style.color = active ? '' : 'var(--accent)';
-      btn.style.borderColor = active ? '' : 'var(--accent)';
-      toast(active ? 'Notifications off' : 'You\'ll be notified', 'success');
-    } else {
-      toast('Could not update notifications', 'error');
-    }
-  }
 
   window.setProfileView      = setProfileView;
   window.openSubscribeModal  = openSubscribeModal;
   window.confirmSubscribe    = confirmSubscribe;
   window.unsubscribeFrom     = unsubscribeFrom;
-  window.toggleProfileNotify = toggleProfileNotify;
 });

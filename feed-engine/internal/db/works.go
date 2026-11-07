@@ -5,12 +5,13 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"github.com/f33d3r/feed-engine/internal/herald"
-	"github.com/google/uuid"
 	"log"
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/f33d3r/feed-engine/internal/herald"
+	"github.com/google/uuid"
 
 	"github.com/lib/pq"
 
@@ -232,11 +233,11 @@ func GetWorkEditions(db *sql.DB, workID string) ([]model.Edition, error) {
 	for rows.Next() {
 		var e model.Edition
 		if err := rows.Scan(&e.ID, &e.WorkID, &e.CID, &e.Body, &e.EditionNumber, &e.CreatedAt); err != nil {
-			continue
+			return nil, err
 		}
 		editions = append(editions, e)
 	}
-	return editions, nil
+	return editions, rows.Err()
 }
 
 // workLiveSQL excludes works whose ephemeral lifetime has run out. Only ephemeral
@@ -1637,11 +1638,6 @@ func GetWorksSaves(db *sql.DB, viewerID string, limit int, before string) ([]*mo
 	return collectWorks(rows)
 }
 
-// SearchWorks returns works whose body matches a full-text query, newest first.
-func SearchWorks(db *sql.DB, query string, limit int, viewerID string) ([]*model.Work, error) {
-	return SearchWorksPage(db, []string{query}, limit, "", viewerID)
-}
-
 // SearchWorksPage returns one page of works matching any of the terms, newest first.
 func SearchWorksPage(db *sql.DB, terms []string, limit int, before, viewerID string) ([]*model.Work, error) {
 	if len(terms) == 0 {
@@ -1868,38 +1864,6 @@ func GetWorkReplies(db *sql.DB, workID string, limit int) ([]*model.Work, error)
 	return collectWorks(rows)
 }
 
-// GetVisionsWorksFeed returns all media-rich works from the viewer and followed accounts.
-// Cursor-paginated by created_at.
-func GetVisionsWorksFeed(db *sql.DB, viewerID string, limit int, before string) ([]*model.Work, error) {
-	cursor, err := parseBefore(before)
-	if err != nil {
-		return nil, err
-	}
-	rows, err := db.Query(worksSelectSQL+`
-		WHERE (
-		    array_length(w.media_urls, 1) > 0
-		    OR w.video_master_url IS NOT NULL
-		)
-		AND (
-		    w.author_id = $1::uuid
-		    OR w.author_id IN (
-		        SELECT following_id FROM follows WHERE follower_id = $1::uuid
-		    )
-		)
-		AND w.deleted_at IS NULL
-		AND `+workNotBlockedSQL+`
-		AND `+workLiveSQL+`
-		AND w.created_at < $2
-		ORDER BY w.created_at DESC
-		LIMIT $3
-	`, viewerID, cursor, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return collectWorks(rows)
-}
-
 // GetVisionsWorksForYou returns all media-rich works platform-wide, newest first.
 func GetVisionsWorksForYou(db *sql.DB, limit int, before string) ([]*model.Work, error) {
 	c, err := parseCursor(before)
@@ -1923,18 +1887,6 @@ func GetVisionsWorksForYou(db *sql.DB, limit int, before string) ([]*model.Work,
 	}
 	defer rows.Close()
 	return collectWorks(rows)
-}
-
-// SetWorkLineage sets the lineage_pial and lineage_handle on a work, marking it as
-// duplicate content with a reference to the original creator's PIAL and handle.
-// Called by the scan pipeline when deduplication detects a prior upload.
-func SetWorkLineage(db *sql.DB, workID, lineagePIAL, lineageHandle string) error {
-	_, err := db.Exec(
-		`UPDATE works SET lineage_pial = $2, lineage_handle = $3
-		 WHERE id = $1::uuid AND deleted_at IS NULL`,
-		workID, lineagePIAL, lineageHandle,
-	)
-	return err
 }
 
 // GetWorkParentChain walks up the reply citation chain up to maxDepth levels.
@@ -2216,18 +2168,6 @@ func GetEngagedWorksForPsych(db *sql.DB, userID string, limit int) ([]*model.Wor
 		return nil, err
 	}
 	return collectWorksPsych(rows)
-}
-
-// SaveWorkPsychVector writes one work's vector.
-func SaveWorkPsychVector(db *sql.DB, workID string, vec []float32) error {
-	if len(vec) != jung.Dim {
-		return fmt.Errorf("works: psych vector for %s has %d dims, want %d", workID, len(vec), jung.Dim)
-	}
-	_, err := db.Exec(
-		`UPDATE works SET psych_vector = $1 WHERE id = $2::uuid AND psych_vector IS NULL`,
-		pq.Float32Array(vec), workID,
-	)
-	return err
 }
 
 // SaveWorkPsychVectors writes vectors for a batch of works in one

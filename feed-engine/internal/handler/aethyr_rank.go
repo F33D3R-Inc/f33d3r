@@ -56,16 +56,6 @@ const rankHistoryLimit = 50
 // per-creator affinities are the interest vector's job.
 const followAffinity = 0.30
 
-// rankable reports whether a surface is ordered by AethyrRank. surfaceDef is
-// non-nil only when `surface` named a pinned interest surface.
-func rankable(surface string, surfaceDef *model.FeedSurface) bool {
-	switch surface {
-	case "for_you", "feed", "field", "focus", "trending", "topics":
-		return true
-	}
-	return surfaceDef != nil
-}
-
 // rankWindow is the candidate window size for one page of `limit` items.
 func rankWindow(limit int) int {
 	n := limit * rankWindowMultiplier
@@ -189,13 +179,6 @@ func spreadAuthors(works []*model.Work, pageSize int) []*model.Work {
 		remaining = deferred
 	}
 	return out
-}
-
-func trimWorks(works []*model.Work, limit int) []*model.Work {
-	if limit > 0 && len(works) > limit {
-		return works[:limit]
-	}
-	return works
 }
 
 // ensureWorkVectors guarantees every work in the set carries its psych

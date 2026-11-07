@@ -336,7 +336,7 @@ const sseCursor = "fa.cursor"
 // bulkEventTypes are the high-volume event names that use the low buffer.
 var bulkEventTypes = map[string]bool{
 	"new_post": true, "post_engagement": true, "work_engagement": true, "price_update": true,
-	"sports_facet": true, "leaderboard_refresh": true, "live_chat": true, "article_view": true,
+	"sports_facet": true, "live_chat": true, "article_view": true,
 }
 
 // offer queues an event without blocking. A full buffer costs this connection the
@@ -650,11 +650,6 @@ func PublishToPostWatchers(postID string, event SSEEvent) {
 // PublishToAllSessions broadcasts an event to every active connection.
 func PublishToAllSessions(event SSEEvent) {
 	publishLive(liveKindAll, "", event)
-}
-
-// PublishToTickerWatchers pushes an event to every person watching ticker.
-func PublishToTickerWatchers(ticker string, event SSEEvent) {
-	publishLive(liveKindTicker, ticker, event)
 }
 
 // resyncLocalSessions tells every connection on this replica to re-read.

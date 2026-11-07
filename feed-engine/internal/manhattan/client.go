@@ -418,22 +418,12 @@ func Name(namespace, value string) string {
 	return namespace + ":" + value
 }
 
-// WorkName is the canonical name for a work: its UUID.
-func WorkName(workID string) string { return Name(NamespaceUUID, workID) }
-
-// WorkCIDName is a work's content-addressed name. A work answers to both; this
-// is what lets a caller holding only a CID resolve without knowing the UUID.
-func WorkCIDName(cid string) string { return Name(NamespaceCID, cid) }
-
 // HandleName is an identity's public handle name — a pointer to the identity,
 // not the identity itself.
 func HandleName(handle string) string { return Name(NamespaceHandle, handle) }
 
 // PIALName is the canonical name for an identity.
 func PIALName(pialID string) string { return Name(NamespacePIAL, pialID) }
-
-// AddressName is the name of a contact address.
-func AddressName(addr string) string { return Name(NamespaceAddress, addr) }
 
 // ── Resolution ───────────────────────────────────────────────────────────────
 
@@ -546,40 +536,7 @@ func (n *Node) PrimaryNameIn(namespace string) string {
 	return ""
 }
 
-// BindName attaches an additional name to an existing node — a work's CID
-// alongside its UUID, a new handle alongside an identity.
-func (c *Client) BindName(ctx context.Context, nodeID, name, namespace string) error {
-	body := map[string]interface{}{
-		"node_id":   nodeID,
-		"name":      name,
-		"namespace": namespace,
-	}
-	return c.do(ctx, http.MethodPost, "/v1/names", body, nil)
-}
-
-// RevokeName retires a name. The row survives revocation so the name can never
-// be re-minted to someone else.
-func (c *Client) RevokeName(ctx context.Context, name string) error {
-	return c.do(ctx, http.MethodPost, "/v1/names/"+urlSegment(name)+"/revoke", nil, nil)
-}
-
 // ── Edges ────────────────────────────────────────────────────────────────────
-
-// AddEdge records a typed relationship. Manhattan assigns root and depth and
-// refuses an edge that would close a cycle, so the returned Edge is the
-// authoritative account of where this relationship sits in its chain.
-func (c *Client) AddEdge(ctx context.Context, subject, predicate, object string) (*Edge, error) {
-	var out Edge
-	body := map[string]interface{}{
-		"subject":   subject,
-		"predicate": predicate,
-		"object":    object,
-	}
-	if err := c.do(ctx, http.MethodPost, "/v1/edges", body, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
 
 // ── Associations ─────────────────────────────────────────────────────────────
 //
@@ -611,91 +568,8 @@ type Assoc struct {
 	Changed     bool   `json:"changed"`
 }
 
-// AddAssoc records an association between two named nodes. Idempotent: asserting
-// one that already exists succeeds with Changed false rather than answering 409,
-// so unlike an edge write there is no conflict for a drain to interpret.
-func (c *Client) AddAssoc(ctx context.Context, subjectName, assoc, objectName string) (*Assoc, error) {
-	var out Assoc
-	body := map[string]interface{}{
-		"assoc":        assoc,
-		"subject_name": subjectName,
-		"object_name":  objectName,
-	}
-	if err := c.do(ctx, http.MethodPost, "/v1/assocs", body, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-// RemoveAssoc retracts an association. Idempotent for the same reason, and it
-// can never be refused: nothing is ever placed beneath an association, so a
-// retraction has no descendants to orphan. That matters here because this
-// retraction is what stops a contact policy honouring a follow that no longer
-// exists.
-func (c *Client) RemoveAssoc(ctx context.Context, subjectName, assoc, objectName string) (*Assoc, error) {
-	var out Assoc
-	body := map[string]interface{}{
-		"assoc":        assoc,
-		"subject_name": subjectName,
-		"object_name":  objectName,
-	}
-	if err := c.do(ctx, http.MethodDelete, "/v1/assocs", body, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-// Edge returns one edge by its key, or ErrNotFound. This is how a caller learns
-// whether an edge is present: a primary-key probe on Manhattan's side, so the
-// answer is the same on a subject with five edges and one with five million. A
-// listing can be truncated; this cannot.
-func (c *Client) Edge(ctx context.Context, subject, predicate, object string) (*Edge, error) {
-	var out Edge
-	path := fmt.Sprintf("/v1/edges/one/%s/%s/%s", urlSegment(subject), urlSegment(predicate), urlSegment(object))
-	if err := c.do(ctx, http.MethodGet, path, nil, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
 // MaxEdgeList mirrors Manhattan's ceiling on one page of an edge listing.
 const MaxEdgeList = 5000
-
-// EdgesOut returns one page of the edges leaving a subject node, shallowest and
-// oldest first, optionally filtered by predicate. An empty predicate means all
-// of them. A page holds at most MaxEdgeList edges; a full page is continued by
-// passing the last edge's Cursor() as after. To ask whether ONE edge is present,
-// use Edge instead — it cannot be truncated.
-//
-// /v1/edges/out answers with a bare JSON array, not the {"edges": [...]} envelope
-// /v1/edges/thread uses.
-func (c *Client) EdgesOut(ctx context.Context, subjectNodeID, predicate, after string) ([]Edge, error) {
-	path := fmt.Sprintf("/v1/edges/out/%s?limit=%d", urlSegment(subjectNodeID), MaxEdgeList)
-	if predicate != "" {
-		path += "&predicate=" + urlSegment(predicate)
-	}
-	if after != "" {
-		path += "&after=" + urlSegment(after)
-	}
-	var out []Edge
-	if err := c.do(ctx, http.MethodGet, path, nil, &out); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-// Thread returns every edge under a root, bounded by depth. The bound is the
-// query, not a counter in the caller.
-func (c *Client) Thread(ctx context.Context, root string, maxDepth int) ([]Edge, error) {
-	var out struct {
-		Edges []Edge `json:"edges"`
-	}
-	path := fmt.Sprintf("/v1/edges/thread/%s?max_depth=%d", urlSegment(root), maxDepth)
-	if err := c.do(ctx, http.MethodGet, path, nil, &out); err != nil {
-		return nil, err
-	}
-	return out.Edges, nil
-}
 
 // ── Addresses ────────────────────────────────────────────────────────────────
 
@@ -843,12 +717,6 @@ func (c *Client) do(ctx context.Context, method, path string, body interface{}, 
 type ctxKey string
 
 const requestIDKey ctxKey = "request_id"
-
-// WithRequestID propagates a request id across the brain boundary so one user
-// action stays one traceable line through every service it touches.
-func WithRequestID(ctx context.Context, id string) context.Context {
-	return context.WithValue(ctx, requestIDKey, id)
-}
 
 // urlSegment escapes a value for use as a single path segment. Names contain a
 // colon by construction, and an address contains a dash; neither may be allowed

@@ -82,26 +82,6 @@ func LadderFor(sourceHeight int) []Rung {
 	return out
 }
 
-// LadderNames returns the rung names for a source height, ascending.
-func LadderNames(sourceHeight int) []string {
-	rungs := LadderFor(sourceHeight)
-	names := make([]string, 0, len(rungs))
-	for _, r := range rungs {
-		names = append(names, r.Name())
-	}
-	return names
-}
-
-// LadderSummary renders the ladder as one line for a log or a report.
-func LadderSummary(sourceHeight int) string {
-	rungs := LadderFor(sourceHeight)
-	parts := make([]string, 0, len(rungs))
-	for _, r := range rungs {
-		parts = append(parts, fmt.Sprintf("%s@%dk", r.Name(), r.VideoKbps))
-	}
-	return strings.Join(parts, " ")
-}
-
 // ── the encode plan ──────────────────────────────────────────────────────────
 //
 // The rung table above used to be written out a second time, by hand, in

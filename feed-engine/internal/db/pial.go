@@ -360,28 +360,6 @@ func SetPIALUnverified(database *sql.DB, pialID, grantedBy string) error {
 	return recomputeStateHash(database, pialID)
 }
 
-// SetPIALKYCTier upgrades the KYC tier and stamps the verification time.
-// tier must be one of: none | basic | soft | full.
-func SetPIALKYCTier(database *sql.DB, pialID, tier string) error {
-	now := time.Now()
-	_, err := database.Exec(`
-		UPDATE pial_roots
-		SET kyc_tier = $1, kyc_verified_at = $2, age_verified = ($1 != 'none')
-		WHERE pial_id = $3`, tier, now, pialID)
-	if err != nil {
-		return err
-	}
-	return recomputeStateHash(database, pialID)
-}
-
-// SetPIALStatus updates the operational status of a PIAL root.
-// status must be one of: active | suspended | tombstoned.
-func SetPIALStatus(database *sql.DB, pialID, status string) error {
-	_, err := database.Exec(`
-		UPDATE pial_roots SET status = $1 WHERE pial_id = $2`, status, pialID)
-	return err
-}
-
 // PIALState is the resolved identity+authz view of a PIAL root — the single source
 // the session reads. Verification, role, and age facts all come from here, replacing
 // the old user_roles / user_profiles.is_verified / users.role triplication.
@@ -414,24 +392,6 @@ func LoadPIALState(database *sql.DB, pialID string) *PIALState {
 	return s
 }
 
-// GetPIALRoot returns the full PIAL root for a given PIAL ID.
-func GetPIALRoot(database *sql.DB, pialID string) (*model.PIALRoot, error) {
-	r := &model.PIALRoot{}
-	err := database.QueryRow(`
-		SELECT pial_id, public_key, state_hash, created_at,
-		       is_tombstoned, status, date_of_birth, kyc_tier,
-		       kyc_verified_at, age_verified
-		FROM pial_roots WHERE pial_id = $1`, pialID).Scan(
-		&r.PIALID, &r.PublicKey, &r.StateHash, &r.CreatedAt,
-		&r.IsTombstoned, &r.Status, &r.DateOfBirth, &r.KYCTier,
-		&r.KYCVerifiedAt, &r.AgeVerified,
-	)
-	if err != nil {
-		return nil, err
-	}
-	return r, nil
-}
-
 // ── Event Ledger ──────────────────────────────────────────────────────────────
 
 // LogPIALEvent appends an immutable event to the ledger. Never call UPDATE/DELETE on this table.
@@ -448,27 +408,6 @@ func LogPIALEvent(database DBTX, pialID, accountID, eventType string, payload ma
 		INSERT INTO pial_event_ledger (pial_id, account_id, event_type, payload, source)
 		VALUES ($1, $2, $3, $4, $5)`,
 		pialID, acctParam, eventType, string(b), source)
-}
-
-// GetPIALEvents returns the most recent ledger entries for a PIAL.
-func GetPIALEvents(database *sql.DB, pialID string, limit int) ([]PIALEvent, error) {
-	rows, err := database.Query(`
-		SELECT id, event_type, payload, source, created_at
-		FROM pial_event_ledger WHERE pial_id = $1
-		ORDER BY created_at DESC LIMIT $2`, pialID, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var events []PIALEvent
-	for rows.Next() {
-		var e PIALEvent
-		var payloadStr string
-		rows.Scan(&e.ID, &e.EventType, &payloadStr, &e.Source, &e.CreatedAt)
-		json.Unmarshal([]byte(payloadStr), &e.Payload)
-		events = append(events, e)
-	}
-	return events, nil
 }
 
 type PIALEvent struct {

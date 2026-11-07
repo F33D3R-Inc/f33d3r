@@ -125,11 +125,6 @@ func PublishFacetToUser(pial string, m FacetMutation) {
 	publishFacet(m, func(e SSEEvent) { PublishToUser(pial, e) })
 }
 
-// PublishFacetToAccount delivers a mutation to one persona's connections.
-func PublishFacetToAccount(account string, m FacetMutation) {
-	publishFacet(m, func(e SSEEvent) { PublishToAccount(account, e) })
-}
-
 // PublishFacetToPostWatchers delivers a mutation to everyone watching a work.
 func PublishFacetToPostWatchers(workID string, m FacetMutation) {
 	publishFacet(m, func(e SSEEvent) { PublishToPostWatchers(workID, e) })

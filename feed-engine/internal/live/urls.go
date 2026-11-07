@@ -19,21 +19,6 @@ import (
 
 // ── playback ─────────────────────────────────────────────────────────────────
 
-// MasterPlaylistURL is the ABR master playlist for a stream.
-func MasterPlaylistURL(streamID string) string {
-	return "/live/" + streamID + "/master.m3u8"
-}
-
-// VariantPlaylistURL is one rung of the ladder.
-func VariantPlaylistURL(streamID string, height int) string {
-	return fmt.Sprintf("/live/%s/%dp/index.m3u8", streamID, height)
-}
-
-// PosterURL is the periodically refreshed still frame for a stream.
-func PosterURL(streamID string) string {
-	return "/live/" + streamID + "/poster.jpg"
-}
-
 // ── publish ──────────────────────────────────────────────────────────────────
 
 // endpoints describes where a broadcaster sends video. These are the media

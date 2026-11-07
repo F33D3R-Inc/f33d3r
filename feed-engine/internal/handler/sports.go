@@ -593,8 +593,7 @@ func (h *Handler) renderSportsFacet(name string, data interface{}) (string, bool
 // publishSportsFacet puts one rendered fragment on FA Live.
 //
 // Delivery is a platform broadcast, not a per-viewer subscription, because a
-// score is public platform data identical for every viewer — the same reason
-// leaderboard_refresh broadcasts. A session whose page does not mount the facet
+// score is public platform data identical for every viewer. A session whose page does not mount the facet
 // finds no matching data-facet-id and does nothing; no browser holds any state
 // about which games it is following, and no viewer causes an upstream request.
 func publishSportsFacet(fragment string) {

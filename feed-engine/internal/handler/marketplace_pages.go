@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
-
-	dbpkg "github.com/f33d3r/feed-engine/internal/db"
 )
 
 // marketplacePage serves the public marketplace feed (GET /marketplace).
@@ -211,63 +209,5 @@ func (h *Handler) facetMarketplaceFeed(w http.ResponseWriter, r *http.Request) {
 			"URL":    "/facets/marketplace/feed?offset=" + next,
 			"Cursor": next,
 		})
-	}
-}
-
-// facetShopListings fetches a creator's Themis listings and renders them for the shop page.
-// The viewer's subscription status determines which listings are visible.
-// GET /facets/shop/{handle}/listings
-func (h *Handler) facetShopListings(w http.ResponseWriter, r *http.Request) {
-	handle := r.PathValue("handle")
-	if handle == "" || h.themisURL == "" {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-	shopUser, err := dbpkg.GetUserByHandle(h.db, handle)
-	if err != nil || shopUser == nil || shopUser.PIALID == "" {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-
-	viewer := h.userFromRequest(w, r)
-
-	req, err := http.NewRequestWithContext(r.Context(), "GET",
-		h.themisURL+"/v1/shop/"+shopUser.PIALID, nil)
-	if err != nil {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-
-	// Send viewer PIAL so Themis can include subscribers_only items if subscribed
-	if viewer != nil && viewer.PIALID != "" {
-		req.Header.Set("X-Pial-Identity", viewer.PIALID)
-	}
-
-	resp, err := h.httpClient.Do(req)
-	if err != nil || resp.StatusCode != http.StatusOK {
-		if resp != nil {
-			resp.Body.Close()
-		}
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-	defer resp.Body.Close()
-
-	var result struct {
-		Listings []PublicListing `json:"listings"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil || len(result.Listings) == 0 {
-		w.Header().Set("Content-Type", "text/html")
-		fmt.Fprint(w, `<div class="marketplace-empty-state"><p class="marketplace-empty-state__body">No listings yet.</p></div>`)
-		return
-	}
-
-	isOwner := viewer != nil && viewer.Handle == shopUser.Handle
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	for _, listing := range result.Listings {
-		if !listing.IsActive && !isOwner {
-			continue
-		}
-		h.renderPartial(w, "marketplace_listing_card", listingCardData(listing, isOwner))
 	}
 }

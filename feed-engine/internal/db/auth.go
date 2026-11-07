@@ -8,10 +8,11 @@ import (
 	"encoding/base32"
 	"encoding/hex"
 	"fmt"
-	"github.com/f33d3r/feed-engine/internal/herald"
 	"log"
 	"strings"
 	"time"
+
+	"github.com/f33d3r/feed-engine/internal/herald"
 
 	"golang.org/x/crypto/bcrypt"
 )
@@ -116,12 +117,6 @@ func GetUserIDFromSession(db *sql.DB, rawToken string) (string, error) {
 func DeleteSession(db *sql.DB, rawToken string) error {
 	hash := HashToken(rawToken)
 	_, err := db.Exec(`DELETE FROM user_sessions WHERE token_hash = $1`, hash)
-	return err
-}
-
-// DeleteAllUserSessions removes all sessions for a user (security logout).
-func DeleteAllUserSessions(db *sql.DB, userID string) error {
-	_, err := db.Exec(`DELETE FROM user_sessions WHERE user_id = $1`, userID)
 	return err
 }
 
@@ -420,30 +415,6 @@ type Notification struct {
 	CreatedAt   time.Time
 }
 
-func nullIfEmpty(s string) interface{} {
-	if s == "" {
-		return nil
-	}
-	return s
-}
-
-func GetNotifications(db *sql.DB, userID string, limit int) ([]Notification, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), heraldTimeout)
-	defer cancel()
-	rows, err := herald.List(ctx, userID, limit, time.Now())
-	if err != nil {
-		return nil, err
-	}
-	notifs := make([]Notification, 0, len(rows))
-	for _, r := range rows {
-		notifs = append(notifs, Notification{
-			ID: r.ID, Type: r.Kind, ActorID: r.ActorAccount, TargetID: r.TargetID,
-			TargetType: r.TargetType, IsRead: r.IsRead, CreatedAt: r.CreatedAt,
-		})
-	}
-	return notifs, nil
-}
-
 func MarkAllNotificationsRead(db *sql.DB, userID string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), heraldTimeout)
 	defer cancel()
@@ -498,4 +469,3 @@ func PrimaryAccountForPIAL(db *sql.DB, pial string) (string, error) {
 		LIMIT 1`, pial).Scan(&account)
 	return account, err
 }
-

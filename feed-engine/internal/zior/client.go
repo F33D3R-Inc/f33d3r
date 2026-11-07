@@ -267,64 +267,6 @@ type Signal struct {
 	HasVocals      bool      `json:"has_vocals"`
 }
 
-// Vector returns the signal's topic vector as a jung.Vector, normalised the
-// way this brain stores vectors. The second result is false when Zior sent
-// something that is not an 8-axis vector.
-func (s *Signal) Vector() (jung.Vector, bool) {
-	if s == nil {
-		return jung.Vector{}, false
-	}
-	v, ok := jung.FromSlice(s.TopicVector)
-	if !ok {
-		return v, false
-	}
-	return v.Normalise(), true
-}
-
-// Signal fetches the stored signal for a track id (GET /signal/{id}).
-func (c *Client) Signal(ctx context.Context, trackID string) (*Signal, error) {
-	if !c.Enabled() {
-		return nil, errors.New("zior: not configured")
-	}
-	trackID = strings.TrimSpace(trackID)
-	if trackID == "" || strings.ContainsAny(trackID, "/?#") {
-		return nil, errors.New("zior: invalid track id")
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if _, has := ctx.Deadline(); !has {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, FastTimeout)
-		defer cancel()
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/signal/"+trackID, nil)
-	if err != nil {
-		return nil, fmt.Errorf("zior signal request: %w", err)
-	}
-	resp, err := c.fast.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("zior signal do: %w", err)
-	}
-	defer resp.Body.Close()
-	switch resp.StatusCode {
-	case http.StatusOK:
-	case http.StatusNotFound:
-		return nil, ErrNotFound
-	default:
-		return nil, fmt.Errorf("zior signal status %d", resp.StatusCode)
-	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
-	if err != nil {
-		return nil, fmt.Errorf("zior signal read: %w", err)
-	}
-	var s Signal
-	if err := json.Unmarshal(data, &s); err != nil {
-		return nil, fmt.Errorf("zior signal unmarshal: %w", err)
-	}
-	return &s, nil
-}
-
 // PlayEventType is one of Zior's behavioural event kinds
 // (zior-engine/src/behavioral/events.rs PlayEventType, snake_case).
 type PlayEventType string

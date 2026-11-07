@@ -49,21 +49,6 @@ type TierResponse struct {
 	IsSuspended bool   `json:"is_suspended"`
 }
 
-// GetTier calls GET /v1/nexus/tier/:shard and returns the tier for a PIAL.
-// Returns tier=0 and no error if the PIAL has no NEXUS.
-func (c *Client) GetTier(pialShard string) (TierResponse, error) {
-	resp, err := c.HTTPClient.Get(fmt.Sprintf("%s/v1/nexus/tier/%s", c.BaseURL, pialShard))
-	if err != nil {
-		return TierResponse{Tier: 0}, err
-	}
-	defer resp.Body.Close()
-	var tr TierResponse
-	if err := json.NewDecoder(resp.Body).Decode(&tr); err != nil {
-		return TierResponse{Tier: 0}, err
-	}
-	return tr, nil
-}
-
 // VerifyRequest is the payload sent to POST /v1/nexus/verify.
 type VerifyRequest struct {
 	PIALShardID   string  `json:"pial_shard_id"`
@@ -78,19 +63,6 @@ type VerifyResponse struct {
 	Result    string `json:"result"` // "created" | "already_linked" | "match_found"
 	Tier      int    `json:"tier"`
 	RequestID string `json:"request_id"` // only when result == "match_found"
-}
-
-// Verify calls POST /v1/nexus/verify to create or find a NEXUS identity.
-func (c *Client) Verify(req VerifyRequest) (VerifyResponse, error) {
-	body, _ := json.Marshal(req)
-	resp, err := c.postJSON("/v1/nexus/verify", body)
-	if err != nil {
-		return VerifyResponse{}, err
-	}
-	defer resp.Body.Close()
-	var vr VerifyResponse
-	json.NewDecoder(resp.Body).Decode(&vr)
-	return vr, nil
 }
 
 // PersonaEntry is one linked persona from Verity's GET /v1/nexus/personas.

@@ -37,15 +37,6 @@ func Open(url string) (*sql.DB, error) {
 	return db, nil
 }
 
-// MustOpen opens a DB connection or fatals. Use in main() only.
-func MustOpen(url string) *sql.DB {
-	db, err := Open(url)
-	if err != nil {
-		log.Fatalf("[db] fatal: %v", err)
-	}
-	return db
-}
-
 // sanitizeURL strips password from connection string for logging.
 func sanitizeURL(url string) string {
 	// Simple sanitiser — show up to the @ sign

@@ -170,44 +170,6 @@ func Repel(a, b Vector, t float32) Vector {
 	return out.Normalise()
 }
 
-// Cosine is the cosine similarity in [-1, 1]. For two normalised vectors it
-// is in [0, 1] because no coordinate is negative.
-func Cosine(a, b Vector) float64 {
-	var dot, na, nb float64
-	for i := range a {
-		x, y := float64(a[i]), float64(b[i])
-		dot += x * y
-		na += x * x
-		nb += y * y
-	}
-	if na == 0 || nb == 0 {
-		return 0
-	}
-	return dot / (math.Sqrt(na) * math.Sqrt(nb))
-}
-
-// Distance is the Euclidean distance between two vectors.
-func Distance(a, b Vector) float64 {
-	var sum float64
-	for i := range a {
-		d := float64(a[i]) - float64(b[i])
-		sum += d * d
-	}
-	return math.Sqrt(sum)
-}
-
-// Dominant is the axis with the largest coordinate — what a work is mostly
-// about, or what a person mostly leans toward.
-func (v Vector) Dominant() Axis {
-	best := 0
-	for i := 1; i < Dim; i++ {
-		if v[i] > v[best] {
-			best = i
-		}
-	}
-	return Axis(best)
-}
-
 // Mean averages a set of vectors and normalises the result. An empty set
 // yields Neutral().
 func Mean(vs []Vector) Vector {

@@ -1,9 +1,9 @@
 package handler
 
 import (
-	"database/sql"
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -745,6 +745,11 @@ func (h *Handler) adminResetPassword(w http.ResponseWriter, r *http.Request) {
 	if err := dbpkg.SetPassword(h.db, target.ID, newPassword); err != nil {
 		log.Printf("[admin] reset password failed for @%s: %v", targetHandle, err)
 		w.Write([]byte(`<span style="color:#ef4444;font-size:12px">DB error.</span>`))
+		return
+	}
+	if err := h.endSessionsAfterPasswordChange(target.ID, ""); err != nil {
+		log.Printf("[admin] ending sessions for @%s: %v", targetHandle, err)
+		w.Write([]byte(`<span style="color:#ef4444;font-size:12px">Password reset, but sessions could not be ended.</span>`))
 		return
 	}
 	log.Printf("[admin] %s reset password for @%s", caller.Handle, targetHandle)

@@ -889,7 +889,7 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("POST /contact/start", h.rlContactInit.Limit(h.requireHandle(h.startContactByNumber)))
 	mux.HandleFunc("GET /facets/works/replies/{id}", h.facetWorkReplies)
 	mux.HandleFunc("GET /facets/works/conversation/{id}", h.facetWorkConversation)
-	mux.HandleFunc("GET /facets/work/{id}/editions", h.facetWorkEditions)
+	mux.HandleFunc("GET /facets/work/{id}/editions", h.rlRead.Limit(h.facetWorkEditions))
 	mux.HandleFunc("GET /work/{id}", h.workDetailPage)
 	mux.HandleFunc("GET /react-video/{id}", h.rlRead.Limit(h.requireHandle(h.reactVideoStudio)))
 	mux.HandleFunc("/communities", h.rlRead.Limit(h.requireHandle(h.comingSoonPage("Communities", "Connect around shared interests. Coming soon."))))

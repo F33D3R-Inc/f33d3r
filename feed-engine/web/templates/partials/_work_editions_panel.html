@@ -1,0 +1,27 @@
+{{/*
+FACET work_editions_panel
+  A work's edit history, oldest first. The last edition is what the card shows now.
+
+  data:
+    WorkID    string
+    Editions  []model.Edition
+*/}}
+{{define "work_editions_panel"}}
+{{$last := len .Editions}}
+<div class="work-editions-panel" data-facet-id="facet:f33d3r:work:{{.WorkID}}:editions">
+  <div class="editions-header">Edit history</div>
+  {{range .Editions}}
+  <div class="edition-row{{if eq .EditionNumber $last}} edition-row--current{{end}}">
+    <div class="edition-meta">
+      <span class="edition-num">Edition {{.EditionNumber}}</span>
+      <span class="edition-ts">{{timeAgo .CreatedAt}}</span>
+      {{if eq .EditionNumber $last}}<span class="edition-badge-current">Current</span>{{end}}
+    </div>
+    <div class="edition-cid">{{.CID}}</div>
+    <div class="edition-body">{{.Body}}</div>
+  </div>
+  {{else}}
+  <div class="edition-row">No edit history for this post.</div>
+  {{end}}
+</div>
+{{end}}

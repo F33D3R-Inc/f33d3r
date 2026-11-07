@@ -255,22 +255,6 @@ func AwardXP(db *sql.DB, userID, eventType, contentID string, xpDelta int) {
 	NoteUser(db, userID)
 }
 
-// GetXPState returns the current XP, Realm level, and progress to next Realm
-// for a user. The stored realm goes through Clamp before it is used to index the
-// threshold table, so a NULL, zero or out-of-scale column degrades to Default
-// instead of panicking on a negative index.
-func GetXPState(db *sql.DB, userID string) (xp int64, realmLevel int, nextThreshold int64, pct float64) {
-	if db == nil {
-		return 0, Default, NextThreshold(Default), 0
-	}
-	var stored sql.NullInt64
-	if err := db.QueryRow(`SELECT COALESCE(xp, 0), realm FROM users WHERE id = $1`, userID).Scan(&xp, &stored); err != nil {
-		return 0, Default, NextThreshold(Default), 0
-	}
-	realmLevel = Clamp(int(stored.Int64))
-	return xp, realmLevel, NextThreshold(realmLevel), float64(Progress(xp, realmLevel)) / 100
-}
-
 // SetGrant places an account on a granted realm floor, or clears one with
 // GrantNone, and restates the standing it now wears. It returns the effective
 // realm the account holds after the write.

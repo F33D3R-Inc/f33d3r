@@ -104,17 +104,6 @@ func ageFromBirthday(bday time.Time) int {
 	return years
 }
 
-// enrichWithPresence sets IsAuthorOnline on each post from the in-memory SSE presence map.
-func (h *Handler) enrichWithPresence(posts []*model.Post) {
-	for _, p := range posts {
-		if ts, ok := h.onlineUsers.Load(p.AuthorHandle); ok {
-			if t, ok := ts.(time.Time); ok && time.Since(t) < 45*time.Second {
-				p.IsAuthorOnline = true
-			}
-		}
-	}
-}
-
 // isHandleOnline reports whether handle has a live SSE connection (heartbeat < 45s ago).
 func (h *Handler) isHandleOnline(handle string) bool {
 	if ts, ok := h.onlineUsers.Load(handle); ok {

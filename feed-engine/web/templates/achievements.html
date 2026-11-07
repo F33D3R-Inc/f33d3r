@@ -99,10 +99,6 @@ function _lbSync() {
 }
 
 // FA Live — refresh leaderboard panel when XP is earned anywhere on the platform.
-window._onSSELeaderboardRefresh = function() {
-  var panel = document.getElementById('leaderboard-panel');
-  if (panel) htmx.trigger(panel, 'lbRefresh');
-};
 
 function filterAchv(btn, cat) {
   document.querySelectorAll('.achv-cat-tab').forEach(function(t) {
