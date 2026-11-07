@@ -41,98 +41,61 @@ func (h *Handler) apiV1Feed(w http.ResponseWriter, r *http.Request, u *model.Use
 		apiError(w, http.StatusBadRequest, "bad_cursor", "That page cursor is not valid.")
 		return
 	}
-	window := rankWindow(limit)
-
-	var (
-		works      []*model.Work
-		err        error
-		prov       func(*model.Work) *ProvenanceDTO
-		rankSurf   string
-		surfaceDef *model.FeedSurface
-	)
-	switch surface {
-	case "following":
-		works, err = dbpkg.GetWorksFeedFollowing(h.db, u.ID, limit, cursorRaw)
-		prov = apiFollowingProvenance(u)
-	case "foryou", "for_you":
-		works, err = dbpkg.GetWorksForYou(h.db, window, cursorRaw)
-		prov = apiDiscoveryProvenance(u)
-		rankSurf = "for_you"
-	case "nsfw":
-		// Hard-gated, the same way /nsfw is on the web: only an adult account
-		// that has turned adult content on. Refused with a code the client can
-		// branch on rather than an empty page, because "you may not see this"
-		// and "there is nothing here" are different answers.
-		if hideAdultCreators(u) {
-			apiError(w, http.StatusForbidden, "adult_content_disabled",
-				"Turn on adult content in Settings to open this feed.")
-			return
-		}
-		works, err = dbpkg.GetWorksNSFW(h.db, limit, cursorRaw)
-
-	case "trending":
-		works, err = dbpkg.GetWorksTrending(h.db, window, cursorRaw)
-		prov = apiTrendingProvenance()
-		rankSurf = "trending"
-	case "music":
-		// The music lane is the pinned interest surface of that name when the
-		// deployment defines one, so the app's lane and the web's tab select
-		// the same works; otherwise the audio works tagged music.
-		if s := h.feedSurface("music"); s != nil {
-			surfaceDef = s
-			works, err = dbpkg.GetWorksBySurface(h.db, s.Tags, s.ContentType, window, cursorRaw)
-		} else {
-			works, err = dbpkg.GetWorksBySurface(h.db, []string{"music"}, "audio", window, cursorRaw)
-		}
-		rankSurf = "music"
-	case "visions":
-		works, err = dbpkg.GetVisionsWorksForYou(h.db, limit, cursorRaw)
-	case "tag":
-		// One hashtag's works, newest first: the screen behind a tapped tag.
-		tag := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(r.URL.Query().Get("tag"), "#")))
-		if tag == "" {
-			apiError(w, http.StatusBadRequest, "tag_required", "Which tag?")
-			return
-		}
-		works, err = dbpkg.GetWorksBySurface(h.db, []string{tag}, "", limit, cursorRaw)
-	case "live":
-		// The lane is known; no works live in it. The count is the number of
-		// broadcasts on air right now.
+	if surface == "live" {
+		// The lane is known; no works live in it. The count is the number of broadcasts
+		// on air right now.
 		n := h.apiLiveCount()
 		apiJSON(w, http.StatusOK, WorkPageDTO{Works: []WorkDTO{}, LiveCount: &n})
 		return
-	default:
-		// Any other id is looked up in feed_surfaces, which is where this
-		// platform's interest lanes are defined — Sports, Art, Video, and
-		// whatever is added after them. The Music case above is this same
-		// lookup with the id written in; leaving the rest to 400 meant every
-		// lane the database already knew about was unreachable to a client
-		// that could not read HTML.
-		s, serr := dbpkg.GetSurfaceByID(h.db, surface)
-		if serr != nil || s == nil {
-			apiError(w, http.StatusBadRequest, "unknown_surface", fmt.Sprintf("No surface named %q.", surface))
+	}
+	q := &timelineQuery{Viewer: u, Limit: limit, Before: cursorRaw, SessionID: r.URL.Query().Get("session_id")}
+	var spec *timelineSpec
+	switch surface {
+	case "tag":
+		// One hashtag's works, newest first: the screen behind a tapped tag.
+		q.Tag = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(r.URL.Query().Get("tag"), "#")))
+		if q.Tag == "" {
+			apiError(w, http.StatusBadRequest, "tag_required", "Which tag?")
 			return
 		}
-		surfaceDef = s
-		works, err = dbpkg.GetWorksBySurface(h.db, s.Tags, s.ContentType, window, cursorRaw)
-		rankSurf = s.ID
+		spec = specTagLane
+	default:
+		spec = h.timelineSurface(surface, q)
+		if spec == nil && surface != "music" {
+			// The app's lanes can name any surface the database defines.
+			if def, derr := dbpkg.GetSurfaceByID(h.db, surface); derr == nil && def != nil {
+				q.Def, spec = def, specInterest
+			}
+		}
+		// The music lane is the pinned surface of that name when the deployment defines
+		// one, and otherwise the audio works tagged music.
+		if spec == nil && surface == "music" {
+			spec = specMusic
+		}
 	}
+	if spec == nil || strings.HasPrefix(spec.Name, "profile_") {
+		apiError(w, http.StatusBadRequest, "unknown_surface", fmt.Sprintf("No surface named %q.", surface))
+		return
+	}
+	result, refusal, err := h.runTimeline(r.Context(), spec, q)
 	if err != nil {
 		apiServerError(w, fmt.Errorf("feed %s: %w", surface, err))
 		return
 	}
-
-	var rankCursor time.Time
-	if rankSurf != "" && (rankable(rankSurf, surfaceDef) || surfaceDef != nil) && len(works) > 0 {
-		works, rankCursor = h.rankWorks(r.Context(), u, rankSurf, r.URL.Query().Get("session_id"), works, limit)
+	if refusal != nil {
+		apiError(w, refusal.Status, refusal.Code, refusal.Message)
+		return
 	}
-	works = h.apiPrepareWorks(works, u)
-	// Every page carries the live count so the lane strip's badge is right
-	// whichever lane the reader is on.
+	var prov func(*model.Work) *ProvenanceDTO
+	if spec.Provenance != nil {
+		prov = spec.Provenance(u)
+	}
+	// Every page carries the live count so the lane strip's badge is right whichever
+	// lane the reader is on.
 	liveCount := h.apiLiveCount()
 	apiJSON(w, http.StatusOK, WorkPageDTO{
-		Works:      workDTOs(works, prov),
-		NextCursor: apiNextCursor(works, limit, rankCursor),
+		Works:      workDTOs(result.Works, prov),
+		NextCursor: result.Next,
 		LiveCount:  &liveCount,
 	})
 }
@@ -414,61 +377,41 @@ func (h *Handler) apiV1ProfileWorks(w http.ResponseWriter, r *http.Request, view
 	if tab == "" {
 		tab = "works"
 	}
-	switch tab {
-	case "works", "replies", "media":
-	case "likes":
-		if target.ID != viewer.ID {
-			apiError(w, http.StatusForbidden, "likes_private", "Nobody but @"+target.Handle+" can see what they have liked.")
-			return
-		}
-	case "saves":
-		if target.ID != viewer.ID {
-			apiError(w, http.StatusForbidden, "saves_private", "Saves are private.")
-			return
-		}
-	default:
+	spec, known := map[string]*timelineSpec{
+		"works":   specProfilePosts,
+		"replies": specProfileReplies,
+		"media":   specProfileMedia,
+		"likes":   specProfileLikes,
+		"saves":   specProfileSaves,
+	}[tab]
+	if !known {
 		apiError(w, http.StatusBadRequest, "unknown_tab", fmt.Sprintf("No tab named %q.", tab))
 		return
 	}
-	if code, msg := h.apiProfileWall(target, viewer); code != "" {
-		apiError(w, http.StatusForbidden, code, msg)
-		return
-	}
-	before, ok := apiCursor(r.URL.Query().Get("cursor"))
-	if !ok {
+	cursor := r.URL.Query().Get("cursor")
+	if _, ok := apiCursor(cursor); !ok {
 		apiError(w, http.StatusBadRequest, "bad_cursor", "That page cursor is not valid.")
 		return
 	}
-	limit := apiLimit(r)
-	var (
-		works []*model.Work
-		err   error
-	)
-	switch tab {
-	case "works":
-		works, err = dbpkg.GetWorksForProfile(h.db, target.PIALID, limit, before.Format(time.RFC3339Nano))
-	case "replies":
-		works, err = dbpkg.GetWorkRepliesForProfile(h.db, target.PIALID, limit, before)
-	case "media":
-		works, err = dbpkg.GetWorksForProfileMedia(h.db, target.PIALID, limit, before)
-	case "likes":
-		works, err = dbpkg.GetWorksLikedByUserBefore(h.db, viewer.ID, limit, before)
-	case "saves":
-		works, err = dbpkg.GetWorksSavesFiltered(h.db, viewer.ID, limit, before.Format(time.RFC3339Nano), "")
-	}
+	result, refusal, err := h.runTimeline(r.Context(), spec, &timelineQuery{
+		Viewer: viewer, Limit: apiLimit(r), Before: cursor, Profile: target,
+	})
 	if err != nil {
 		apiServerError(w, err)
 		return
 	}
-	works = h.apiPrepareWorks(works, viewer)
+	if refusal != nil {
+		apiError(w, refusal.Status, refusal.Code, refusal.Message)
+		return
+	}
 	if tab == "works" {
 		if pinnedID := dbpkg.GetPinnedPostID(h.db, target.ID); pinnedID != "" {
-			for _, wk := range works {
+			for _, wk := range result.Works {
 				wk.IsPinned = wk.ID == pinnedID
 			}
 		}
 	}
-	apiJSON(w, http.StatusOK, WorkPageDTO{Works: workDTOs(works, nil), NextCursor: apiNextCursor(works, limit, time.Time{})})
+	apiJSON(w, http.StatusOK, WorkPageDTO{Works: workDTOs(result.Works, nil), NextCursor: result.Next})
 }
 
 // apiV1Search — GET /api/v1/search?q=&type=works|people|all
@@ -492,12 +435,14 @@ func (h *Handler) apiV1Search(w http.ResponseWriter, r *http.Request, viewer *mo
 		}
 	}
 	if kind == "" || kind == "all" || kind == "works" {
-		works, err := dbpkg.SearchWorks(h.db, term, apiV1DefaultPage, viewer.ID)
+		result, _, err := h.runTimeline(r.Context(), specSearch, &timelineQuery{
+			Viewer: viewer, Limit: apiV1DefaultPage, Terms: []string{term},
+		})
 		if err != nil {
 			apiServerError(w, err)
 			return
 		}
-		out.Works = workDTOs(h.apiPrepareWorks(works, viewer), nil)
+		out.Works = workDTOs(result.Works, nil)
 	}
 	if kind == "" || kind == "all" || kind == "people" {
 		people, err := dbpkg.SearchHandlesFiltered(h.db, term, apiV1DefaultPage, viewer.IsMinor, viewer.IsAdult)

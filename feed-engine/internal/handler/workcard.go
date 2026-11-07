@@ -161,7 +161,15 @@ func (h *Handler) renderWorkCardSet(works []*model.Work, viewer *model.User, ctx
 	if viewer != nil {
 		h.gateQuotes(viewer, works)
 	}
+	return h.renderFinishedCards(works, ctx)
+}
 
+// renderFinishedCards renders works already filtered and enriched, by runTimeline or
+// the path above. A work whose template fails is logged and dropped.
+func (h *Handler) renderFinishedCards(works []*model.Work, ctx map[string]interface{}) []workCardFragment {
+	if h.partial == nil {
+		return nil
+	}
 	out := make([]workCardFragment, 0, len(works))
 	for _, wk := range works {
 		if wk == nil {

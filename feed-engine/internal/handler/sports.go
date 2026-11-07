@@ -64,7 +64,6 @@ import (
 
 	"github.com/google/uuid"
 
-	dbpkg "github.com/f33d3r/feed-engine/internal/db"
 	"github.com/f33d3r/feed-engine/internal/model"
 	"github.com/f33d3r/feed-engine/internal/sports"
 )
@@ -533,23 +532,17 @@ func (h *Handler) sportsGamePage(w http.ResponseWriter, r *http.Request) {
 
 	var works interface{}
 	if h.db != nil {
-		// The conversation about a game is the works that name either club. The
-		// query is the club nickname ("Seahawks"), which is what people write.
+		// The conversation about a game is the works that name either club. The query is
+		// the club nickname ("Seahawks"), which is what people write.
+		var terms []string
 		seen := map[string]bool{}
-		var merged []*model.Work
 		for _, term := range sportsSearchTerms(g) {
-			if term == "" || seen[term] {
-				continue
+			if term != "" && !seen[term] {
+				seen[term] = true
+				terms = append(terms, term)
 			}
-			seen[term] = true
-			wks, sErr := dbpkg.SearchWorks(h.db, term, 20, user.ID)
-			if sErr != nil {
-				log.Printf("[sports] search works %q: %v", term, sErr)
-				continue
-			}
-			merged = append(merged, wks...)
 		}
-		works = h.gateWorks(user, dedupeWorkRows(merged))
+		works = h.readSurface(r.Context(), specSearch, &timelineQuery{Viewer: user, Limit: 20, Terms: terms}).Works
 	}
 
 	h.render(w, r, "sports_game.html", h.withRail(map[string]interface{}{
@@ -575,21 +568,6 @@ func sportsSearchTerms(g sports.Game) []string {
 		strings.TrimSpace(g.Home.Team.ShortName),
 		strings.TrimSpace(g.Away.Team.ShortName),
 	}
-}
-
-// dedupeWorkRows keeps the first occurrence of each work across several
-// searches, preserving relevance order within each term.
-func dedupeWorkRows(rows []*model.Work) []*model.Work {
-	seen := make(map[string]bool, len(rows))
-	out := make([]*model.Work, 0, len(rows))
-	for _, w := range rows {
-		if w == nil || seen[w.ID] {
-			continue
-		}
-		seen[w.ID] = true
-		out = append(out, w)
-	}
-	return out
 }
 
 // ── Stream mutation ──────────────────────────────────────────────────────────

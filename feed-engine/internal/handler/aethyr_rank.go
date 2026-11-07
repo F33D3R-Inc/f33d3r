@@ -86,32 +86,12 @@ func feedTime(w *model.Work) time.Time {
 	return w.CreatedAt
 }
 
-// rankWorks orders one candidate window for one person and returns the page
-// plus the cursor the next page must start from.
-//
-// The cursor is the oldest feed time in the WHOLE window, not in the page:
-// the next request then starts strictly below everything this request
-// considered, so no work is served twice across pages and no page overlaps
-// the last. Works the ranker did not return — dropped by its pre-ranker, or
-// held back by its safety barrier — follow the ranked ones in chronological
-// order; they are still gated per item at render time by the content gate,
-// exactly as before.
-func (h *Handler) rankWorks(ctx context.Context, user *model.User, surface, sessionID string, window []*model.Work, limit int) ([]*model.Work, time.Time) {
-	var cursor time.Time
-	for _, w := range window {
-		if t := feedTime(w); cursor.IsZero() || t.Before(cursor) {
-			cursor = t
-		}
-	}
-	// Strip what this viewer may never see before ranking, so the page the
-	// ranker fills is a full page. renderWorkCardSet applies the same filter
-	// again; it is idempotent.
-	window = h.gateWorks(user, window)
-	if len(window) == 0 {
-		return window, cursor
-	}
+// rankWorks orders one candidate window for one person and returns the page. The window
+// has already been filtered for them. Works the ranker did not return follow the ranked
+// ones in chronological order. On any ranker failure the window is served as it came.
+func (h *Handler) rankWorks(ctx context.Context, user *model.User, surface, sessionID string, window []*model.Work, limit int) []*model.Work {
 	if h.aethyr == nil || h.db == nil {
-		return trimWorks(window, limit), cursor
+		return trimWorks(window, limit)
 	}
 
 	h.ensureWorkVectors(window)
@@ -122,7 +102,7 @@ func (h *Handler) rankWorks(ctx context.Context, user *model.User, surface, sess
 	resp, err := h.aethyr.Rank(rctx, req)
 	if err != nil {
 		log.Printf("[aethyr] rank unavailable for surface=%s: %v — serving chronological window", surface, err)
-		return trimWorks(window, limit), cursor
+		return trimWorks(window, limit)
 	}
 
 	byID := make(map[string]*model.Work, len(window))
@@ -148,7 +128,7 @@ func (h *Handler) rankWorks(ctx context.Context, user *model.User, surface, sess
 			ordered = append(ordered, w)
 		}
 	}
-	return trimWorks(ordered, limit), cursor
+	return trimWorks(ordered, limit)
 }
 
 func trimWorks(works []*model.Work, limit int) []*model.Work {

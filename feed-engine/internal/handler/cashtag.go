@@ -15,7 +15,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"math"
 	"net/http"
 	"net/url"
@@ -25,8 +24,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-
-	dbpkg "github.com/f33d3r/feed-engine/internal/db"
 )
 
 // ── In-memory price cache ─────────────────────────────────────────────────────
@@ -408,12 +405,7 @@ func (h *Handler) stocksPage(w http.ResponseWriter, r *http.Request) {
 	user := h.userFromRequest(w, r)
 	var works interface{}
 	if h.db != nil {
-		// SearchWorks enriches with reactions when viewerID is non-empty.
-		wks, sErr := dbpkg.SearchWorks(h.db, ticker, 40, user.ID)
-		if sErr != nil {
-			log.Printf("[cashtag] search works %q: %v", ticker, sErr)
-		}
-		works = h.gateWorks(user, wks)
+		works = h.readSurface(r.Context(), specSearch, &timelineQuery{Viewer: user, Limit: 40, Terms: []string{ticker}}).Works
 	}
 	h.render(w, r, "stocks.html", h.withRail(map[string]interface{}{
 		"User":              user,

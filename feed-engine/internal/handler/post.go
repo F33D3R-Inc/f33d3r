@@ -47,10 +47,7 @@ func (h *Handler) searchPage(w http.ResponseWriter, r *http.Request) {
 	if query != "" && h.db != nil {
 		searchTerm := strings.TrimPrefix(strings.TrimPrefix(query, "@"), "#")
 		if searchType != "people" {
-			works, _ = dbpkg.SearchWorks(h.db, searchTerm, 30, user.ID)
-			for _, wk := range works {
-				wk.TimeAgo = TimeAgo(wk.CreatedAt)
-			}
+			works = h.readSurface(r.Context(), specSearch, &timelineQuery{Viewer: user, Limit: 30, Terms: []string{searchTerm}}).Works
 		}
 		if searchType != "posts" {
 			people, _ = dbpkg.SearchHandlesFiltered(h.db, searchTerm, 20, user.IsMinor, user.IsAdult)
@@ -73,7 +70,6 @@ func (h *Handler) searchPage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	works = h.gateWorks(user, works)
 	var frequencyResults []FrequencyCardData
 	if searchType == "top" {
 		frequencyResults = h.frequencySearchCards(r.Context(), strings.TrimPrefix(query, "#"), user)

@@ -29,14 +29,7 @@ func (h *Handler) tagPage(w http.ResponseWriter, r *http.Request) {
 	user := h.userFromRequest(w, r)
 	var works interface{}
 	if h.db != nil {
-		w2, sErr := dbpkg.SearchWorks(h.db, tag, 40, user.ID)
-		if sErr != nil {
-			log.Printf("[tag] search works %q: %v", tag, sErr)
-		}
-		// One enrichment sequence, defined once (enrichWorks) — including the
-		// ballot, so a poll found by tag draws the same as a poll in the feed.
-		h.enrichWorks(w2, user)
-		works = h.gateWorks(user, w2)
+		works = h.readSurface(r.Context(), specSearch, &timelineQuery{Viewer: user, Limit: 40, Terms: []string{tag}}).Works
 	}
 	isFollowing := h.db != nil && user.ID != "" && dbpkg.IsFollowingTopic(h.db, user.ID, strings.ToLower(tag))
 	h.render(w, r, "tag.html", h.withRail(map[string]interface{}{

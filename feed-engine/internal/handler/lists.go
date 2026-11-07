@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -44,17 +45,9 @@ func (h *Handler) listDetailPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	before := r.URL.Query().Get("before")
-	works, _ := dbpkg.GetWorksByList(h.db, listID, h.cfg.FeedPageSize+1, before)
+	result := h.readSurface(r.Context(), specList, &timelineQuery{Viewer: user, Limit: h.cfg.FeedPageSize, Before: before, ListID: listID})
 	members, _ := dbpkg.GetListMembers(h.db, listID)
-	// One enrichment sequence, defined once (enrichWorks) — a list card carries
-	// the same reactions, quotes, previews, repliers and ballots as a feed card.
-	h.enrichWorks(works, user)
-	var nextBefore string
-	if len(works) > h.cfg.FeedPageSize {
-		works = works[:h.cfg.FeedPageSize]
-		nextBefore = works[len(works)-1].CreatedAt.Format(time.RFC3339)
-	}
-	works = h.gateWorks(user, works)
+	works, nextBefore := result.Works, result.Next
 	nextURL := ""
 	if nextBefore != "" {
 		nextURL = listWorksNextURL(listID, nextBefore)
@@ -93,26 +86,20 @@ func (h *Handler) facetListWorks(w http.ResponseWriter, r *http.Request) {
 		// The sentinel's data-next-after cursor, as a native Shell sends it back.
 		before = r.URL.Query().Get("after")
 	}
-	works, err := dbpkg.GetWorksByList(h.db, listID, h.cfg.FeedPageSize+1, before)
+	result, _, err := h.runTimeline(r.Context(), specList, &timelineQuery{Viewer: user, Limit: h.cfg.FeedPageSize, Before: before, ListID: listID})
 	if err != nil {
+		log.Printf("[lists] %s: %v", listID, err)
 		http.Error(w, "server error", http.StatusInternalServerError)
 		return
 	}
-	var nextBefore string
-	if len(works) > h.cfg.FeedPageSize {
-		works = works[:h.cfg.FeedPageSize]
-		nextBefore = works[len(works)-1].CreatedAt.Format(time.RFC3339)
-	}
-	// renderWorkCardSet is the one work_card entry point: adult stripping and
-	// enrichment happen there, so a list page and a list scroll cannot produce
-	// different cards for the same work.
-	cards := h.renderWorkCardSet(works, user, h.workCardCtx(user, "list"))
+	nextBefore := result.Next
+	cards := h.renderTimelineCards(result, user, "list")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	if len(cards) == 0 && before == "" {
+	if len(cards) == 0 && before == "" && result.Next == "" {
 		h.renderPartial(w, "stateEmpty", map[string]interface{}{
-			"Title": "No posts yet",
-			"Sub":   "Works from list members will appear here.",
+			"Title": specList.Empty.Title,
+			"Sub":   specList.Empty.Sub,
 		})
 		return
 	}

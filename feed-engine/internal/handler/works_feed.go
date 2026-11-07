@@ -13,7 +13,6 @@ import (
 	"net/url"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/google/uuid"
 
@@ -58,21 +57,6 @@ func (h *Handler) facetWorksFeed(w http.ResponseWriter, r *http.Request) {
 	}
 	const limit = 20
 
-	type emptyState struct{ Title, Sub string }
-	emptyStates := map[string]emptyState{
-		"following":        {"Nothing yet", "Follow people to fill your feed"},
-		"trending":         {"No trending works", "Check back soon"},
-		"nsfw":             {"No NSFW works yet", "Adult content posted via the new pipeline will appear here"},
-		"for_you":          {"Nothing here yet", "Post something to get started"},
-		"profile_posts":    {"No posts yet", "This creator hasn't posted yet"},
-		"profile_replies":  {"No replies yet", ""},
-		"profile_media":    {"No media yet", ""},
-		"profile_saves":    {"No saves yet", "Like or bookmark works to save them"},
-		"profile_reposts":  {"No reposts yet", ""},
-		"profile_articles": {"No articles yet", ""},
-		"topics":           {"No results", "Try a different topic"},
-	}
-
 	// profile_articles: articles table — render via article_feed Facet, not work_card.
 	if surface == "profile_articles" {
 		handle := strings.TrimSpace(r.URL.Query().Get("handle"))
@@ -113,12 +97,6 @@ func (h *Handler) facetWorksFeed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// nsfw: hard-gated — only adult-enabled users.
-	if surface == "nsfw" && hideAdultCreators(user) {
-		http.Error(w, "403 Forbidden", http.StatusForbidden)
-		return
-	}
-
 	// Guard against non-UUID user IDs (dev guest mode falls back to non-UUID strings).
 	if _, err := uuid.Parse(user.ID); err != nil {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -150,145 +128,58 @@ func (h *Handler) facetWorksFeed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var works []*model.Work
-	var err error
-	// surfaceDef is set when `surface` named a user-pinnable interest surface, so
-	// the empty state and the head lane below can speak about that surface by
-	// name instead of about the Following feed.
-	var surfaceDef *model.FeedSurface
-	// A ranked surface fetches a wider chronological window than one page so
-	// AethyrRank has something to choose from; rankWorks trims it back to the
-	// page and moves the cursor below the whole window (see aethyr_rank.go).
-	// Following and the profile/NSFW lanes fetch exactly one page as before.
-	window := rankWindow(limit)
-
-	switch surface {
-	case "following":
-		works, err = dbpkg.GetWorksFeedFollowing(h.db, user.ID, limit, before)
-
-	case "trending":
-		works, err = dbpkg.GetWorksTrending(h.db, window, before)
-
-	case "nsfw":
-		works, err = dbpkg.GetWorksNSFW(h.db, limit, before)
-
-	case "for_you", "feed", "field", "focus":
-		works, err = dbpkg.GetWorksForYou(h.db, window, before)
-
-	case "topics":
-		topicsParam := r.URL.Query().Get("topics")
-		if topicsParam == "" {
-			works, err = dbpkg.GetWorksForYou(h.db, window, before)
-		} else {
-			seen := map[string]bool{}
-			for _, tag := range strings.SplitN(topicsParam, ",", 8) {
-				tag = strings.TrimSpace(strings.ToLower(tag))
-				if tag == "" {
-					continue
-				}
-				res, qerr := dbpkg.SearchWorks(h.db, tag, window/4, user.ID)
-				if qerr == nil {
-					for _, wk := range res {
-						if !seen[wk.ID] {
-							seen[wk.ID] = true
-							works = append(works, wk)
-						}
-					}
-				}
+	q := &timelineQuery{
+		Viewer:    user,
+		Limit:     limit,
+		Before:    before,
+		SessionID: r.URL.Query().Get("session_id"),
+		Handle:    r.URL.Query().Get("handle"),
+	}
+	if strings.HasPrefix(surface, "profile_") && surface != "profile_saves" && q.Handle == "" {
+		http.Error(w, "handle required", http.StatusBadRequest)
+		return
+	}
+	spec := h.timelineSurface(surface, q)
+	if spec == nil {
+		spec = specFollowing
+	}
+	if spec == specTopics {
+		for _, tag := range strings.SplitN(r.URL.Query().Get("topics"), ",", 8) {
+			if tag = strings.TrimSpace(strings.ToLower(tag)); tag != "" {
+				q.Terms = append(q.Terms, tag)
 			}
-		}
-
-	case "profile_posts", "profile_replies", "profile_media":
-		handle := r.URL.Query().Get("handle")
-		if handle == "" {
-			http.Error(w, "handle required", http.StatusBadRequest)
-			return
-		}
-		profileUser, dbErr := dbpkg.GetUserByHandle(h.db, handle)
-		if dbErr != nil || profileUser == nil {
-			http.Error(w, "user not found", http.StatusNotFound)
-			return
-		}
-		if h.profileFeedWalled(profileUser, user) {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		works, err = dbpkg.GetWorksForProfile(h.db, profileUser.PIALID, limit, before)
-		// Exclude the pinned post from the main feed to avoid duplication.
-		if surface == "profile_posts" {
-			if excludeID := r.URL.Query().Get("exclude_id"); excludeID != "" {
-				filtered := works[:0]
-				for _, wk := range works {
-					if wk.ID != excludeID {
-						filtered = append(filtered, wk)
-					}
-				}
-				works = filtered
-			}
-		}
-
-	case "profile_reposts":
-		handle := r.URL.Query().Get("handle")
-		if handle == "" {
-			http.Error(w, "handle required", http.StatusBadRequest)
-			return
-		}
-		profileUser, dbErr := dbpkg.GetUserByHandle(h.db, handle)
-		if dbErr != nil || profileUser == nil {
-			http.Error(w, "user not found", http.StatusNotFound)
-			return
-		}
-		if h.profileFeedWalled(profileUser, user) {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		works, err = dbpkg.GetWorksRepostedByUser(h.db, profileUser.ID, limit, before)
-
-	case "profile_saves":
-		// Saves are private: only ever the viewer's own, whatever handle is asked for.
-		if handle := r.URL.Query().Get("handle"); handle != "" && !strings.EqualFold(strings.TrimPrefix(handle, "@"), user.Handle) {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		works, err = dbpkg.GetWorksSaves(h.db, user.ID, limit, before)
-
-	default:
-		// A pinned interest surface. Its meaning is a server-side definition —
-		// the tag set and content type held in feed_surfaces — so the surface id
-		// is resolved to that definition and the works are selected from it.
-		// Falling through to the Following feed here (as this branch used to)
-		// made every pinned tab a relabelled copy of one timeline.
-		if s := h.feedSurface(surface); s != nil {
-			surfaceDef = s
-			works, err = dbpkg.GetWorksBySurface(h.db, s.Tags, s.ContentType, window, before)
-		} else {
-			works, err = dbpkg.GetWorksFeedFollowing(h.db, user.ID, limit, before)
 		}
 	}
-
+	result, refusal, err := h.runTimeline(r.Context(), spec, q)
 	if err != nil {
-		log.Printf("[works-feed] %v", err)
+		log.Printf("[works-feed] %s: %v", spec.Name, err)
 		http.Error(w, "server error", http.StatusInternalServerError)
 		return
 	}
-
-	// AethyrRank orders the window for this person on the Jung axes. The
-	// cursor it returns is the oldest feed time in the whole window, so the
-	// next page starts strictly below everything considered here. On any
-	// ranker failure the window is served chronologically, trimmed to a page.
-	var rankCursor time.Time
-	if rankable(surface, surfaceDef) && len(works) > 0 {
-		works, rankCursor = h.rankWorks(r.Context(), user, surface, r.URL.Query().Get("session_id"), works, limit)
+	if refusal != nil {
+		// A wall on a person's works reads as nothing to show: the page already explains
+		// the wall. A person or feed that doesn't exist or isn't allowed says so.
+		switch {
+		case refusal.Status == http.StatusNotFound:
+			http.Error(w, refusal.Message, http.StatusNotFound)
+		case spec == specNSFW:
+			http.Error(w, "403 Forbidden", http.StatusForbidden)
+		default:
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		}
+		return
 	}
-	// Adult stripping, enrichment (reactions, quotes, link previews, repliers,
-	// the viewer's pinned mark) and the vision branch all live in
-	// renderWorkCardSet — the single work_card entry point — so this feed and
-	// the stream fan-out cannot produce different cards for the same work.
-	var pageEnd *model.Work
-	if len(works) > 0 {
-		pageEnd = works[len(works)-1]
+	surfaceDef := q.Def
+	if excludeID := r.URL.Query().Get("exclude_id"); excludeID != "" && spec == specProfilePosts {
+		kept := make([]*model.Work, 0, len(result.Works))
+		for _, wk := range result.Works {
+			if wk.ID != excludeID {
+				kept = append(kept, wk)
+			}
+		}
+		result.Works = kept
 	}
-	cards := h.renderWorkCardSet(works, user, h.workCardCtx(user, surface))
+	cards := h.renderTimelineCards(result, user, surface)
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	// A tab strip that asked for this surface receives its own re-render out of
@@ -312,36 +203,26 @@ func (h *Handler) facetWorksFeed(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if len(cards) == 0 && pageEnd != nil {
-		// Everything on this page was withheld from this viewer. That is not the end of
-		// the feed, so the next page is still asked for.
-		h.writeFeedSentinel(w, r, surface, feedCursor(pageEnd, rankCursor))
-		return
-	}
-	if len(cards) == 0 && before != "" {
-		return
-	}
-	if len(cards) == 0 {
-		es := emptyStates[surface]
-		if es.Title == "" && surfaceDef != nil {
-			es = emptyState{
+	if len(cards) == 0 && before == "" && result.Next == "" {
+		empty := spec.Empty
+		if surfaceDef != nil {
+			empty = timelineEmpty{
 				"Nothing in " + surfaceDef.Label + " yet",
 				"Works tagged for this feed will appear here",
 			}
 		}
-		if es.Title == "" {
-			es = emptyState{"No works yet", "Works from people you follow will appear here"}
-		}
 		h.renderPartial(w, "stateEmpty", map[string]interface{}{
-			"Title": es.Title,
-			"Sub":   es.Sub,
+			"Title": empty.Title,
+			"Sub":   empty.Sub,
 		})
 		return
 	}
 	for _, c := range cards {
 		_, _ = w.Write([]byte(c.Fragment))
 	}
-	h.writeFeedSentinel(w, r, surface, feedCursor(pageEnd, rankCursor))
+	if result.Next != "" {
+		h.writeFeedSentinel(w, r, surface, result.Next)
+	}
 }
 
 // homeTabSurface folds the surface ids the "For You" tab answers to onto the
@@ -1097,42 +978,7 @@ func (h *Handler) facetWorkEditions(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// profileFeedWalled applies the profile page's walls to the feed endpoint, which can be
-// asked for directly. A private account shows nothing to non-followers, a block hides
-// both ways, and an adult creator's works need a verified, opted-in adult. Any doubt
-// walls: this must never allow because it could not look.
-func (h *Handler) profileFeedWalled(profile, viewer *model.User) bool {
-	access, err := h.authorWall(profile.ID, viewer)
-	if err != nil {
-		log.Printf("[feed] wall for %s: %v", profile.Handle, err)
-		return true
-	}
-	if access.IsOwner {
-		return false
-	}
-	if access.IsBlocked || (profile.IsPrivate && !access.IsFollowing) {
-		return true
-	}
-	if profile.IsAdultCreator {
-		if viewer == nil || excludeNSFW(viewer) || viewer.ContentSetting != "adult_enabled" ||
-			!(viewer.IsAgeVerified || viewer.IsVerified) {
-			return true
-		}
-	}
-	return false
-}
-
-// feedCursor is where the next page starts: below the last work read on a chronological
-// surface, whether or not this viewer could see it, and below the whole candidate window
-// on a ranked one.
-func feedCursor(last *model.Work, rankCursor time.Time) string {
-	ts := rankCursor
-	if ts.IsZero() && last != nil {
-		ts = last.CreatedAt
-	}
-	return ts.Format(time.RFC3339)
-}
-
+// writeFeedSentinel asks for the next page when the reader scrolls to it.
 func (h *Handler) writeFeedSentinel(w http.ResponseWriter, r *http.Request, surface, cursor string) {
 	sentinelURL := fmt.Sprintf("/facets/works/feed?surface=%s&before=%s", url.QueryEscape(surface), url.QueryEscape(cursor))
 	if handle := r.URL.Query().Get("handle"); handle != "" {

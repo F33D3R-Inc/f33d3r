@@ -613,12 +613,7 @@ func (h *Handler) bookmarksPage(w http.ResponseWriter, r *http.Request) {
 	user := h.userFromRequest(w, r)
 	filter := r.URL.Query().Get("filter")
 
-	works := h.fetchBookmarkWorks(user, filter)
-	works = h.gateWorks(user, works)
-	// The page template renders these works as cards itself; run the same
-	// enrichment sequence renderWorkCardSet applies so a bookmarked work looks
-	// identical on the page and on the /bookmarks/items facet fetch.
-	h.enrichWorks(works, user)
+	works := h.readSurface(r.Context(), specBookmarks, &timelineQuery{Viewer: user, Limit: h.cfg.FeedPageSize, Filter: filter}).Works
 	// The rail is one dataset with one owner. This surface used to assemble its
 	// own two-key subset of it through sidebarData, which is a second place the
 	// suggestion set could be fetched — and therefore a second place the quality
@@ -640,33 +635,20 @@ func (h *Handler) bookmarksPage(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) bookmarksItemsPartial(w http.ResponseWriter, r *http.Request) {
 	user := h.userFromRequest(w, r)
 	filter := r.URL.Query().Get("filter")
-	works := h.fetchBookmarkWorks(user, filter)
-	cards := h.renderWorkCards(works, user, h.workCardCtx(user, "bookmarks"))
+	result := h.readSurface(r.Context(), specBookmarks, &timelineQuery{Viewer: user, Limit: h.cfg.FeedPageSize, Filter: filter})
+	cards := h.renderTimelineCards(result, user, "bookmarks")
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if len(cards) == 0 {
 		h.renderPartial(w, "stateEmpty", map[string]interface{}{
-			"Title": "No bookmarks yet",
-			"Sub":   "Works you save will appear here",
+			"Title": specBookmarks.Empty.Title,
+			"Sub":   specBookmarks.Empty.Sub,
 		})
 		return
 	}
-	for _, frag := range cards {
-		_, _ = w.Write([]byte(frag))
+	for _, c := range cards {
+		_, _ = w.Write([]byte(c.Fragment))
 	}
-}
-
-func (h *Handler) fetchBookmarkWorks(user *model.User, filter string) []*model.Work {
-	if h.db == nil || user == nil {
-		return nil
-	}
-	works, err := dbpkg.GetWorksSavesFiltered(h.db, user.ID, h.cfg.FeedPageSize, "", filter)
-	if err != nil {
-		return nil
-	}
-	// Fetch only — enrichment belongs to the render path (renderWorkCardSet) or,
-	// for the full-page render, to the caller's enrichWorks call.
-	return works
 }
 
 // ── Vault recovery ────────────────────────────────────────────────────────────
