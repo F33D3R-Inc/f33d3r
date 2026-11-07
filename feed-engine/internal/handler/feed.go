@@ -220,11 +220,12 @@ func (h *Handler) nsfwFeedPage(w http.ResponseWriter, r *http.Request) {
 	}
 	sessionID := uuid.New().String()
 	h.render(w, r, "index.html", map[string]interface{}{
-		"User":      user,
-		"Title":     "NSFW · F33D3R",
-		"Surface":   "nsfw",
-		"SessionID": sessionID,
-		"Themes":    ThemesWithActive(user.ThemeID),
+		"User":          user,
+		"Title":         "NSFW · F33D3R",
+		"Surface":       "nsfw",
+		"ActiveSurface": "nsfw",
+		"SessionID":     sessionID,
+		"Themes":        ThemesWithActive(user.ThemeID),
 	})
 }
 
@@ -232,11 +233,12 @@ func (h *Handler) nsfwFeedPage(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) videoFeedPage(w http.ResponseWriter, r *http.Request) {
 	user := h.userFromRequest(w, r)
 	h.render(w, r, "index.html", map[string]interface{}{
-		"User":      user,
-		"Title":     "Video · F33D3R",
-		"Surface":   "video",
-		"SessionID": uuid.New().String(),
-		"Themes":    ThemesWithActive(user.ThemeID),
+		"User":          user,
+		"Title":         "Video · F33D3R",
+		"Surface":       "video",
+		"ActiveSurface": "video",
+		"SessionID":     uuid.New().String(),
+		"Themes":        ThemesWithActive(user.ThemeID),
 	})
 }
 

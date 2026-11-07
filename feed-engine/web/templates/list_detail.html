@@ -34,7 +34,7 @@
   {{template "list_members" (dict "ListID" .List.ID "Members" .Members)}}
 
   <div id="list-feed" role="feed" aria-live="polite">
-    {{if .Works}}
+    {{if .FeedFailed}}{{template "feed_error" (dict "URL" "")}}{{else if .Works}}
     {{$ctx := dict "CurrentUserHandle" .CurrentUserHandle "User" .User}}
     {{range .Works}}
     {{template "work_card" (dict "W" . "Ctx" $ctx)}}

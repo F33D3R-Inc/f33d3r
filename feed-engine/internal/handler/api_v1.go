@@ -201,6 +201,10 @@ func apiCursor(raw string) (t time.Time, ok bool) {
 	if raw == "" {
 		return time.Now(), true
 	}
+	if strings.HasPrefix(raw, timelinePoolPrefix) {
+		return time.Now(), true
+	}
+	raw, _, _ = strings.Cut(raw, "|")
 	for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
 		if t, err := time.Parse(layout, raw); err == nil {
 			return t, true

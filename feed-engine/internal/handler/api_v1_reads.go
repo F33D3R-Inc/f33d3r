@@ -73,7 +73,7 @@ func (h *Handler) apiV1Feed(w http.ResponseWriter, r *http.Request, u *model.Use
 			spec = specMusic
 		}
 	}
-	if spec == nil || strings.HasPrefix(spec.Name, "profile_") {
+	if spec == nil || spec.WebOnly || strings.HasPrefix(spec.Name, "profile_") {
 		apiError(w, http.StatusBadRequest, "unknown_surface", fmt.Sprintf("No surface named %q.", surface))
 		return
 	}

@@ -10321,6 +10321,9 @@ div.account-switcher-row-inner { cursor:default; }
 .freq-clip__poster { width:100%; border-radius:8px; }
 .freq-host__row { display:flex; gap:8px; flex-wrap:wrap; }
 .freq-replay-host { display:flex; gap:6px; flex-wrap:wrap; margin-top:8px; }
+.feed-error { display:flex; flex-direction:column; align-items:center; gap:10px; padding:28px 16px; text-align:center; }
+.feed-error__text { margin:0; font-size:14px; color:var(--text-secondary); }
+.feed-error__retry { min-height:40px; padding:8px 18px; border-radius:999px; border:1px solid var(--border); background:transparent; color:var(--text-primary); font:inherit; font-weight:600; cursor:pointer; }
 .freq-audio-unlock {
   position:fixed; left:50%; bottom:calc(16px + env(safe-area-inset-bottom)); transform:translateX(-50%); z-index:1000;
   padding:12px 20px; border:0; border-radius:999px; background:var(--accent); color:#fff; font:inherit; font-weight:600; cursor:pointer;

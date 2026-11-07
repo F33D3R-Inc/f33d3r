@@ -1089,6 +1089,65 @@ document.addEventListener('DOMContentLoaded', function() {
   document.body.addEventListener('htmx:sendError',     function(){ _npbar.done(); });
   document.body.addEventListener('htmx:swapError',     function(){ _npbar.done(); });
   document.body.addEventListener('htmx:historyRestore', function(){ _npbar.done(); });
+
+  // A feed page that never arrived: the server could not say so, so the Shell shows the
+  // server's own retry Facet where the page would have gone, asking for the same address.
+  function _feedRequestFailed(e) {
+    var d = e.detail || {};
+    var path = d.pathInfo && d.pathInfo.requestPath;
+    var tpl = document.getElementById('feed-error-template');
+    var sentinel = d.elt && d.elt.closest && d.elt.closest('.feed-sentinel');
+    var target = d.target;
+    var isFeed = target && (target.id === 'feed-container' || target.id === 'profile-feed');
+    if (!tpl || !path || (!sentinel && !isFeed)) return;
+    var node = tpl.content.firstElementChild.cloneNode(true);
+    var retry = node.querySelector('button');
+    retry.setAttribute('hx-get', path);
+    retry.setAttribute('hx-target', 'closest .feed-error');
+    retry.setAttribute('hx-swap', 'outerHTML');
+    retry.removeAttribute('hx-select');
+    if (sentinel) sentinel.replaceWith(node); else target.replaceChildren(node);
+    htmx.process(node);
+  }
+  document.body.addEventListener('htmx:responseError', _feedRequestFailed);
+  document.body.addEventListener('htmx:sendError', _feedRequestFailed);
+
+  // Back returns to where the person was. The Shell keeps a short-lived copy of what was
+  // on screen when they left a feed, for display only. It holds no decisions: the next
+  // page and every live change still come from the server. It lasts ten minutes and only
+  // for this tab, and anything older asks the server again.
+  (function () {
+    var KEEP_MS = 10 * 60 * 1000, KEEP_PAGES = 5;
+    var FEEDS = ['feed-container', 'profile-feed'];
+    var kept = new Map(), goingBack = false;
+    if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
+    document.body.addEventListener('htmx:beforeHistorySave', function (e) {
+      var feed = FEEDS.map(function (id) { return document.getElementById(id); }).filter(Boolean)[0];
+      if (!feed) return;
+      kept.delete(e.detail.path);
+      kept.set(e.detail.path, { id: feed.id, html: feed.cloneNode(true), y: window.scrollY, at: Date.now() });
+      if (kept.size > KEEP_PAGES) kept.delete(kept.keys().next().value);
+    });
+    window.addEventListener('popstate', function () {
+      goingBack = true;
+      setTimeout(function () { goingBack = false; }, 3000);
+    });
+    document.body.addEventListener('htmx:beforeRequest', function (e) {
+      if (!goingBack) return;
+      var elt = e.detail.elt;
+      if (!elt || FEEDS.indexOf(elt.id) === -1) return;
+      goingBack = false;
+      var path = location.pathname + location.search;
+      var entry = kept.get(path);
+      if (!entry || entry.id !== elt.id || Date.now() - entry.at > KEEP_MS) return;
+      e.preventDefault();
+      elt.replaceChildren.apply(elt, Array.from(entry.html.cloneNode(true).childNodes));
+      htmx.process(elt);
+      if (window._faObserve) window._faObserve(elt);
+      window.scrollTo(0, entry.y);
+      _npbar.done();
+    });
+  })();
   // Show progress on regular anchor navigation too (instant visual feedback)
   document.addEventListener('click', function(e) {
     var a = e.target.closest('a[href]');

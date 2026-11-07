@@ -1061,6 +1061,9 @@ type Work struct {
 	IsRepost       bool
 	RepostSourceID string // UUID of the original work; empty when not a repost
 	IsSensitive    bool
+	// FeedAt is when this work surfaced on the feed that read it, which a page's cursor
+	// follows: a save, a like or a repost, rather than when it was written.
+	FeedAt time.Time
 	// ViewerSubscribed is true when the viewer has an active subscription to the author.
 	ViewerSubscribed bool
 	SubscriberOnly   bool

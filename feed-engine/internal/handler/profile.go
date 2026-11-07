@@ -613,7 +613,7 @@ func (h *Handler) bookmarksPage(w http.ResponseWriter, r *http.Request) {
 	user := h.userFromRequest(w, r)
 	filter := r.URL.Query().Get("filter")
 
-	works := h.readSurface(r.Context(), specBookmarks, &timelineQuery{Viewer: user, Limit: h.cfg.FeedPageSize, Filter: filter}).Works
+	page := h.readSurfacePage(r.Context(), specBookmarks, &timelineQuery{Viewer: user, Limit: h.cfg.FeedPageSize, Filter: filter})
 	// The rail is one dataset with one owner. This surface used to assemble its
 	// own two-key subset of it through sidebarData, which is a second place the
 	// suggestion set could be fetched — and therefore a second place the quality
@@ -625,7 +625,10 @@ func (h *Handler) bookmarksPage(w http.ResponseWriter, r *http.Request) {
 		"Surface":           "bookmarks",
 		"ShowScores":        false,
 		"CurrentUserHandle": user.Handle,
-		"Works":             works,
+		"Works":             page.Works,
+		"NextURL":           page.NextURL,
+		"NextCursor":        page.NextCursor,
+		"FeedFailed":        page.Failed,
 		"Filter":            filter,
 		"Themes":            ThemesWithActive(user.ThemeID),
 	}, user, "default"))
@@ -635,7 +638,14 @@ func (h *Handler) bookmarksPage(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) bookmarksItemsPartial(w http.ResponseWriter, r *http.Request) {
 	user := h.userFromRequest(w, r)
 	filter := r.URL.Query().Get("filter")
-	result := h.readSurface(r.Context(), specBookmarks, &timelineQuery{Viewer: user, Limit: h.cfg.FeedPageSize, Filter: filter})
+	q := &timelineQuery{Viewer: user, Limit: h.cfg.FeedPageSize, Filter: filter}
+	result, _, err := h.runTimeline(r.Context(), specBookmarks, q)
+	if err != nil {
+		log.Printf("[bookmarks] %v", err)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		h.renderPartial(w, "feed_error", map[string]interface{}{"URL": r.URL.RequestURI()})
+		return
+	}
 	cards := h.renderTimelineCards(result, user, "bookmarks")
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -648,6 +658,9 @@ func (h *Handler) bookmarksItemsPartial(w http.ResponseWriter, r *http.Request) 
 	}
 	for _, c := range cards {
 		_, _ = w.Write([]byte(c.Fragment))
+	}
+	if result.Next != "" {
+		h.renderPartial(w, "feed_sentinel", map[string]interface{}{"URL": timelineNextURL(specBookmarks.Name, q, result.Next), "Cursor": result.Next})
 	}
 }
 

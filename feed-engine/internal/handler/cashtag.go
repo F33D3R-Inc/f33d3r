@@ -403,14 +403,17 @@ func (h *Handler) stocksPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user := h.userFromRequest(w, r)
-	var works interface{}
+	var page surfacePage
 	if h.db != nil {
-		works = h.readSurface(r.Context(), specSearch, &timelineQuery{Viewer: user, Limit: 40, Terms: []string{ticker}}).Works
+		page = h.readSurfacePage(r.Context(), specSearch, &timelineQuery{Viewer: user, Limit: 40, Terms: []string{ticker}})
 	}
 	h.render(w, r, "stocks.html", h.withRail(map[string]interface{}{
 		"User":              user,
 		"Ticker":            ticker,
-		"Works":             works,
+		"Works":             page.Works,
+		"NextURL":           page.NextURL,
+		"NextCursor":        page.NextCursor,
+		"FeedFailed":        page.Failed,
 		"Title":             "$" + ticker + " · F33D3R",
 		"SessionID":         uuid.New().String(),
 		"ShowScores":        h.cfg.ShowScores,

@@ -47,6 +47,7 @@
       {{range .SearchResults}}
       {{template "work_card" (dict "W" . "Ctx" $ctx)}}
       {{end}}
+      {{if .NextURL}}{{template "feed_sentinel" (dict "URL" .NextURL "Cursor" .NextCursor)}}{{end}}
     </div>
     {{else if .SearchQuery}}
     {{template "stateEmpty" (dict "Title" "No posts found" "Sub" (printf "No posts match \"%s\"" .SearchQuery))}}
@@ -69,9 +70,10 @@
       {{range .SearchResults}}
       {{template "work_card" (dict "W" . "Ctx" $ctx)}}
       {{end}}
+      {{if .NextURL}}{{template "feed_sentinel" (dict "URL" .NextURL "Cursor" .NextCursor)}}{{end}}
     </div>
     {{end}}
-    {{if and .SearchQuery (not .PeopleResults) (not .SearchResults)}}
+    {{if .FeedFailed}}{{template "feed_error" (dict "URL" "")}}{{else if and .SearchQuery (not .PeopleResults) (not .SearchResults)}}
     {{template "stateEmpty" (dict "Title" "No results" "Sub" (printf "Nothing found for \"%s\"" .SearchQuery))}}
     {{end}}
     {{if not .SearchQuery}}

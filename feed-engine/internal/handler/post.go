@@ -43,11 +43,13 @@ func (h *Handler) searchPage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var works []*model.Work
+	var page surfacePage
 	var people []dbpkg.MentionResult
 	if query != "" && h.db != nil {
 		searchTerm := strings.TrimPrefix(strings.TrimPrefix(query, "@"), "#")
 		if searchType != "people" {
-			works = h.readSurface(r.Context(), specSearch, &timelineQuery{Viewer: user, Limit: 30, Terms: []string{searchTerm}}).Works
+			page = h.readSurfacePage(r.Context(), specSearch, &timelineQuery{Viewer: user, Limit: 30, Terms: []string{searchTerm}})
+			works = page.Works
 		}
 		if searchType != "posts" {
 			people, _ = dbpkg.SearchHandlesFiltered(h.db, searchTerm, 20, user.IsMinor, user.IsAdult)
@@ -86,6 +88,9 @@ func (h *Handler) searchPage(w http.ResponseWriter, r *http.Request) {
 		"SearchQuery":       query,
 		"SearchType":        searchType,
 		"SearchResults":     works,
+		"NextURL":           page.NextURL,
+		"NextCursor":        page.NextCursor,
+		"FeedFailed":        page.Failed,
 		"PeopleResults":     people,
 	}, user, "search"))
 }

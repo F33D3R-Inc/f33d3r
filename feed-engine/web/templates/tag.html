@@ -13,11 +13,12 @@
     </div>
   </div>
   <div id="tag-feed" role="feed" aria-live="polite">
-    {{if .Works}}
+    {{if .FeedFailed}}{{template "feed_error" (dict "URL" "")}}{{else if .Works}}
     {{$ctx := dict "CurrentUserHandle" .CurrentUserHandle "User" .User}}
     {{range .Works}}
     {{template "work_card" (dict "W" . "Ctx" $ctx)}}
     {{end}}
+    {{if .NextURL}}{{template "feed_sentinel" (dict "URL" .NextURL "Cursor" .NextCursor)}}{{end}}
     {{else}}
     {{template "stateEmpty" (dict "Title" "No posts yet" "Sub" (printf "Be the first to post with #%s" .Tag))}}
     {{end}}

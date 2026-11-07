@@ -27,11 +27,12 @@
   </div>
 
   <div id="sports-game-feed" role="feed" aria-live="polite">
-    {{if .Works}}
+    {{if .FeedFailed}}{{template "feed_error" (dict "URL" "")}}{{else if .Works}}
     {{$ctx := dict "CurrentUserHandle" .CurrentUserHandle "User" .User}}
     {{range .Works}}
     {{template "work_card" (dict "W" . "Ctx" $ctx)}}
     {{end}}
+    {{if .NextURL}}{{template "feed_sentinel" (dict "URL" .NextURL "Cursor" .NextCursor)}}{{end}}
     {{else}}
     {{template "stateEmpty" (dict "Title" "Nothing posted about this game yet" "Sub" "Be the first to say something about it")}}
     {{end}}

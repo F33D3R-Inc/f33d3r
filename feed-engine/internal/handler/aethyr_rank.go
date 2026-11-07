@@ -80,6 +80,9 @@ func rankWindow(limit int) int {
 // here because someone reposted it, otherwise its publication time. It is
 // the quantity the `before=` cursor pages over.
 func feedTime(w *model.Work) time.Time {
+	if !w.FeedAt.IsZero() {
+		return w.FeedAt
+	}
 	if !w.RepostedAt.IsZero() {
 		return w.RepostedAt
 	}
@@ -91,7 +94,7 @@ func feedTime(w *model.Work) time.Time {
 // ones in chronological order. On any ranker failure the window is served as it came.
 func (h *Handler) rankWorks(ctx context.Context, user *model.User, surface, sessionID string, window []*model.Work, limit int) []*model.Work {
 	if h.aethyr == nil || h.db == nil {
-		return trimWorks(window, limit)
+		return window
 	}
 
 	h.ensureWorkVectors(window)
@@ -102,7 +105,7 @@ func (h *Handler) rankWorks(ctx context.Context, user *model.User, surface, sess
 	resp, err := h.aethyr.Rank(rctx, req)
 	if err != nil {
 		log.Printf("[aethyr] rank unavailable for surface=%s: %v — serving chronological window", surface, err)
-		return trimWorks(window, limit)
+		return window
 	}
 
 	byID := make(map[string]*model.Work, len(window))
@@ -128,7 +131,7 @@ func (h *Handler) rankWorks(ctx context.Context, user *model.User, surface, sess
 			ordered = append(ordered, w)
 		}
 	}
-	return trimWorks(ordered, limit)
+	return ordered
 }
 
 func trimWorks(works []*model.Work, limit int) []*model.Work {

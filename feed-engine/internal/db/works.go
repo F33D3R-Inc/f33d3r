@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/f33d3r/feed-engine/internal/herald"
+	"github.com/google/uuid"
 	"log"
 	"regexp"
 	"strings"
@@ -428,10 +429,39 @@ func parseBefore(before string) (time.Time, error) {
 	return time.Parse(time.RFC3339, before)
 }
 
+// maxCursorID sorts above every real id, so a time alone starts at the top of that instant.
+const maxCursorID = "ffffffff-ffff-ffff-ffff-ffffffffffff"
+
+// FeedCursor is an exact place in a feed: the time an item surfaced and its id, because
+// several items can share a time and none may be skipped or repeated at a page boundary.
+type FeedCursor struct {
+	TS time.Time
+	ID string
+}
+
+// parseCursor reads "time|id", or a bare time from an older link.
+func parseCursor(before string) (FeedCursor, error) {
+	if before == "" {
+		return FeedCursor{TS: time.Now(), ID: maxCursorID}, nil
+	}
+	ts, id, found := strings.Cut(before, "|")
+	t, err := time.Parse(time.RFC3339Nano, ts)
+	if err != nil {
+		return FeedCursor{}, err
+	}
+	if !found {
+		id = maxCursorID
+	}
+	if _, err := uuid.Parse(id); err != nil {
+		return FeedCursor{}, err
+	}
+	return FeedCursor{TS: t, ID: id}, nil
+}
+
 // GetWorksFeedFollowing returns works from accounts the viewer follows, cursor-paginated by created_at.
 // before is RFC3339; empty string = start from now.
 func GetWorksFeedFollowing(db *sql.DB, viewerID string, limit int, before string) ([]*model.Work, error) {
-	cursor, err := parseBefore(before)
+	c, err := parseCursor(before)
 	if err != nil {
 		return nil, err
 	}
@@ -463,17 +493,17 @@ func GetWorksFeedFollowing(db *sql.DB, viewerID string, limit int, before string
 		      AND (NOT w.subscriber_only OR w.author_id = $1::uuid
 		           OR EXISTS (SELECT 1 FROM subscriptions WHERE subscriber_id = $1::uuid AND creator_id = w.author_id AND status = 'active'))
 		  ) feed
-		  WHERE feed_ts < $2
 		  ORDER BY id, feed_ts DESC
 		) d
-		ORDER BY feed_ts DESC
+		WHERE (feed_ts, id) < ($2, $4::uuid)
+		ORDER BY feed_ts DESC, id DESC
 		LIMIT $3`
-	return collectFeedWithReposts(db, idQuery, viewerID, cursor, limit)
+	return collectFeedWithReposts(db, idQuery, viewerID, c.TS, limit, c.ID)
 }
 
 // GetWorksForProfile returns works authored by the given PIAL, newest first.
 func GetWorksForProfile(db *sql.DB, authorPIAL string, limit int, before string) ([]*model.Work, error) {
-	cursor, err := parseBefore(before)
+	c, err := parseCursor(before)
 	if err != nil {
 		return nil, err
 	}
@@ -484,10 +514,10 @@ func GetWorksForProfile(db *sql.DB, authorPIAL string, limit int, before string)
 		AND `+workNotBlockedSQL+`
 		AND w.kind != 'reply'
 		AND `+workLiveSQL+`
-		AND w.created_at < $2
-		ORDER BY w.created_at DESC
+		AND (w.created_at, w.id) < ($2, $4::uuid)
+		ORDER BY w.created_at DESC, w.id DESC
 		LIMIT $3
-	`, authorPIAL, cursor, limit)
+	`, authorPIAL, c.TS, limit, c.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -1425,7 +1455,7 @@ func EnrichWorksWithPolls(db *sql.DB, works []*model.Work, viewerID string) {
 // GetWorksForYou returns recent works from all users (global discovery feed), newest first.
 // before is RFC3339; empty = start from now.
 func GetWorksForYou(db *sql.DB, limit int, before string) ([]*model.Work, error) {
-	t, err := parseBefore(before)
+	c, err := parseCursor(before)
 	if err != nil {
 		return nil, err
 	}
@@ -1449,17 +1479,17 @@ func GetWorksForYou(db *sql.DB, limit int, before string) ([]*model.Work, error)
 		    WHERE wr.reaction_type = 'repost'
 		      AND w.deleted_at IS NULL AND ` + workNotBlockedSQL + ` AND NOT w.subscriber_only AND w.kind <> 'reply'
 		  ) feed
-		  WHERE feed_ts < $1
 		  ORDER BY id, feed_ts DESC
 		) d
-		ORDER BY feed_ts DESC
+		WHERE (feed_ts, id) < ($1, $3::uuid)
+		ORDER BY feed_ts DESC, id DESC
 		LIMIT $2`
-	return collectFeedWithReposts(db, idQuery, t, limit)
+	return collectFeedWithReposts(db, idQuery, c.TS, limit, c.ID)
 }
 
 // GetWorksNSFW returns works flagged as sensitive content, newest first. Hard-gated by caller.
 func GetWorksNSFW(db *sql.DB, limit int, before string) ([]*model.Work, error) {
-	t, err := parseBefore(before)
+	c, err := parseCursor(before)
 	if err != nil {
 		return nil, err
 	}
@@ -1473,10 +1503,10 @@ func GetWorksNSFW(db *sql.DB, limit int, before string) ([]*model.Work, error) {
 		  AND w.kind != 'reply'
 		  AND `+workLiveSQL+`
 		  AND (w.is_nsfw = TRUE OR w.is_gore = TRUE OR COALESCE(up.is_adult_creator, FALSE) = TRUE)
-		  AND w.created_at < $1
-		ORDER BY w.created_at DESC
+		  AND (w.created_at, w.id) < ($1, $3::uuid)
+		ORDER BY w.created_at DESC, w.id DESC
 		LIMIT $2
-	`, t, limit)
+	`, c.TS, limit, c.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -1486,7 +1516,7 @@ func GetWorksNSFW(db *sql.DB, limit int, before string) ([]*model.Work, error) {
 
 // GetWorksTrending returns globally recent works ordered by created_at (trending by recency; score-based ranking is done by AethyrRank on ingest).
 func GetWorksTrending(db *sql.DB, limit int, before string) ([]*model.Work, error) {
-	t, err := parseBefore(before)
+	c, err := parseCursor(before)
 	if err != nil {
 		return nil, err
 	}
@@ -1497,10 +1527,10 @@ func GetWorksTrending(db *sql.DB, limit int, before string) ([]*model.Work, erro
 		  AND w.kind != 'reply'
 		  AND `+workLiveSQL+`
 		  AND (w.scheduled_at IS NULL OR w.scheduled_at <= NOW())
-		  AND w.created_at < $1
-		ORDER BY w.created_at DESC
+		  AND (w.created_at, w.id) < ($1, $3::uuid)
+		ORDER BY w.created_at DESC, w.id DESC
 		LIMIT $2
-	`, t, limit)
+	`, c.TS, limit, c.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -1522,7 +1552,7 @@ func GetWorksTrending(db *sql.DB, limit int, before string) ([]*model.Work, erro
 // lowercase and a work carries whatever case its author typed ("#NFL"), so a
 // case-sensitive overlap would silently drop the works the surface exists for.
 func GetWorksBySurface(db *sql.DB, tags []string, contentType string, limit int, before string) ([]*model.Work, error) {
-	t, err := parseBefore(before)
+	c, err := parseCursor(before)
 	if err != nil {
 		return nil, err
 	}
@@ -1552,10 +1582,10 @@ func GetWorksBySurface(db *sql.DB, tags []string, contentType string, limit int,
 		                WHERE lower(tg) = ANY($1::text[]))
 		     OR ($2 <> '' AND lower(COALESCE(w.content_type,'')) = $2)
 		  )
-		  AND w.created_at < $3
-		ORDER BY w.created_at DESC
+		  AND (w.created_at, w.id) < ($3, $5::uuid)
+		ORDER BY w.created_at DESC, w.id DESC
 		LIMIT $4
-	`, pq.Array(lowered), contentType, t, limit)
+	`, pq.Array(lowered), contentType, c.TS, limit, c.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -1586,7 +1616,7 @@ func GetWorksLikedByUser(db *sql.DB, viewerID string, limit int) ([]*model.Work,
 // repost first, each carrying that user's "<name> reposted" attribution. Powers
 // the profile Reposts tab — same works-native repost source as the feeds.
 func GetWorksRepostedByUser(db *sql.DB, reposterID string, limit int, before string) ([]*model.Work, error) {
-	cursor, err := parseBefore(before)
+	c, err := parseCursor(before)
 	if err != nil {
 		return nil, err
 	}
@@ -1601,10 +1631,10 @@ func GetWorksRepostedByUser(db *sql.DB, reposterID string, limit int, before str
 		  AND wr.reactor_id = $1::uuid
 		  AND w.deleted_at IS NULL AND ` + workNotBlockedSQL + ` AND NOT w.subscriber_only AND w.kind <> 'reply'
 		  AND ` + workLiveSQL + `
-		  AND wr.created_at < $2
-		ORDER BY wr.created_at DESC
+		  AND (wr.created_at, wr.work_id) < ($2, $4::uuid)
+		ORDER BY wr.created_at DESC, wr.work_id DESC
 		LIMIT $3`
-	return collectFeedWithReposts(db, idQuery, reposterID, cursor, limit)
+	return collectFeedWithReposts(db, idQuery, reposterID, c.TS, limit, c.ID)
 }
 
 // GetWorksSaves returns works bookmarked by the viewer (user ID, not PIAL), newest bookmark first.
@@ -1633,16 +1663,28 @@ func GetWorksSaves(db *sql.DB, viewerID string, limit int, before string) ([]*mo
 
 // SearchWorks returns works whose body matches a full-text query, newest first.
 func SearchWorks(db *sql.DB, query string, limit int, viewerID string) ([]*model.Work, error) {
+	return SearchWorksPage(db, []string{query}, limit, "", viewerID)
+}
+
+// SearchWorksPage returns one page of works matching any of the terms, newest first.
+func SearchWorksPage(db *sql.DB, terms []string, limit int, before, viewerID string) ([]*model.Work, error) {
+	if len(terms) == 0 {
+		return nil, nil
+	}
+	c, err := parseCursor(before)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := db.Query(worksSelectSQL+`
 		WHERE w.deleted_at IS NULL
 		  AND `+workNotBlockedSQL+`
 		  AND w.kind != 'reply'
-		  AND `+workLiveSQL+`
-		  AND (w.scheduled_at IS NULL OR w.scheduled_at <= NOW())
-		  AND to_tsvector('english', w.body) @@ plainto_tsquery('english', $1)
-		ORDER BY w.created_at DESC
+		  AND EXISTS (SELECT 1 FROM unnest($1::text[]) term
+		              WHERE to_tsvector('english', w.body) @@ plainto_tsquery('english', term))
+		  AND (w.created_at, w.id) < ($3, $4::uuid)
+		ORDER BY w.created_at DESC, w.id DESC
 		LIMIT $2
-	`, query, limit)
+	`, pq.Array(terms), limit, c.TS, c.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -1734,12 +1776,41 @@ func collectFeedWithReposts(db *sql.DB, idQuery string, args ...interface{}) ([]
 		if w == nil {
 			continue // work was deleted/blocked between the two queries
 		}
+		w.FeedAt = fr.feedTS
 		if fr.reposterHandle != "" {
 			w.RepostedByHandle = fr.reposterHandle
 			w.RepostedByName = fr.reposterName
 			w.RepostedAt = fr.feedTS
 		}
 		out = append(out, w)
+	}
+	return out, nil
+}
+
+// GetWorksByIDs loads works in the order given, leaving out any no longer readable.
+func GetWorksByIDs(db *sql.DB, ids []string) ([]*model.Work, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	rows, err := db.Query(worksSelectSQL+`
+		WHERE w.id = ANY($1::uuid[]) AND w.deleted_at IS NULL AND `+workNotBlockedSQL, pq.Array(ids))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	found, err := collectWorks(rows)
+	if err != nil {
+		return nil, err
+	}
+	byID := make(map[string]*model.Work, len(found))
+	for _, w := range found {
+		byID[w.ID] = w
+	}
+	out := make([]*model.Work, 0, len(ids))
+	for _, id := range ids {
+		if w := byID[id]; w != nil {
+			out = append(out, w)
+		}
 	}
 	return out, nil
 }
@@ -1760,32 +1831,29 @@ func EnrichWorksWithPinnedState(works []*model.Work, pinnedWorkID string) {
 // GetWorksSavesFiltered returns works bookmarked by the viewer, optionally filtered by kind.
 // kind="" returns all; any other value (e.g. "text", "audio", "video") restricts to that kind.
 func GetWorksSavesFiltered(db *sql.DB, viewerID string, limit int, before, kind string) ([]*model.Work, error) {
-	t, err := parseBefore(before)
+	c, err := parseCursor(before)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := db.Query(worksSelectSQL+`
-		JOIN work_reactions wr ON wr.work_id = w.id
+	// Paged and ordered by when it was saved, not when it was written.
+	idQuery := `
+		SELECT wr.work_id AS id, NULL::text, NULL::text, wr.created_at AS feed_ts
+		FROM work_reactions wr
+		JOIN works w ON w.id = wr.work_id
 		WHERE wr.reactor_id = $1::uuid
 		  AND wr.reaction_type = 'bookmark'
 		  AND w.deleted_at IS NULL
-		  AND `+workNotBlockedSQL+`
-		  AND `+workLiveSQL+`
-		  AND w.created_at < $2
+		  AND ` + workNotBlockedSQL + `
+		  AND (wr.created_at, wr.work_id) < ($2, $5::uuid)
 		  AND ($4 = '' OR w.kind = $4)
-		ORDER BY wr.created_at DESC
-		LIMIT $3
-	`, viewerID, t, limit, kind)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return collectWorks(rows)
+		ORDER BY wr.created_at DESC, wr.work_id DESC
+		LIMIT $3`
+	return collectFeedWithReposts(db, idQuery, viewerID, c.TS, limit, kind, c.ID)
 }
 
 // GetWorksByList returns works authored by members of the given list, cursor-paginated.
 func GetWorksByList(db *sql.DB, listID string, limit int, before string) ([]*model.Work, error) {
-	t, err := parseBefore(before)
+	c, err := parseCursor(before)
 	if err != nil {
 		return nil, err
 	}
@@ -1794,10 +1862,10 @@ func GetWorksByList(db *sql.DB, listID string, limit int, before string) ([]*mod
 		  AND w.deleted_at IS NULL
 		  AND `+workNotBlockedSQL+`
 		  AND `+workLiveSQL+`
-		  AND w.created_at < $2
-		ORDER BY w.created_at DESC
+		  AND (w.created_at, w.id) < ($2, $4::uuid)
+		ORDER BY w.created_at DESC, w.id DESC
 		LIMIT $3
-	`, listID, t, limit)
+	`, listID, c.TS, limit, c.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -1858,7 +1926,7 @@ func GetVisionsWorksFeed(db *sql.DB, viewerID string, limit int, before string) 
 
 // GetVisionsWorksForYou returns all media-rich works platform-wide, newest first.
 func GetVisionsWorksForYou(db *sql.DB, limit int, before string) ([]*model.Work, error) {
-	cursor, err := parseBefore(before)
+	c, err := parseCursor(before)
 	if err != nil {
 		return nil, err
 	}
@@ -1870,10 +1938,10 @@ func GetVisionsWorksForYou(db *sql.DB, limit int, before string) ([]*model.Work,
 		AND w.deleted_at IS NULL
 		AND `+workNotBlockedSQL+`
 		AND `+workLiveSQL+`
-		AND w.created_at < $1
-		ORDER BY w.created_at DESC
+		AND (w.created_at, w.id) < ($1, $3::uuid)
+		ORDER BY w.created_at DESC, w.id DESC
 		LIMIT $2
-	`, cursor, limit)
+	`, c.TS, limit, c.ID)
 	if err != nil {
 		return nil, err
 	}

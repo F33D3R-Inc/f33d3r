@@ -10,7 +10,6 @@ import (
 	"html/template"
 	"log"
 	"net/http"
-	"net/url"
 	"sort"
 	"strings"
 
@@ -98,7 +97,7 @@ func (h *Handler) facetWorksFeed(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Guard against non-UUID user IDs (dev guest mode falls back to non-UUID strings).
-	if _, err := uuid.Parse(user.ID); err != nil {
+	if _, err := uuid.Parse(user.ID); err != nil && surface != "search" {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		h.renderPartial(w, "stateEmpty", map[string]interface{}{
 			"Title": "Sign in to view your feed",
@@ -134,6 +133,9 @@ func (h *Handler) facetWorksFeed(w http.ResponseWriter, r *http.Request) {
 		Before:    before,
 		SessionID: r.URL.Query().Get("session_id"),
 		Handle:    r.URL.Query().Get("handle"),
+		Filter:    r.URL.Query().Get("filter"),
+		ExcludeID: r.URL.Query().Get("exclude_id"),
+		Terms:     r.URL.Query()["term"],
 	}
 	if strings.HasPrefix(surface, "profile_") && surface != "profile_saves" && q.Handle == "" {
 		http.Error(w, "handle required", http.StatusBadRequest)
@@ -153,7 +155,9 @@ func (h *Handler) facetWorksFeed(w http.ResponseWriter, r *http.Request) {
 	result, refusal, err := h.runTimeline(r.Context(), spec, q)
 	if err != nil {
 		log.Printf("[works-feed] %s: %v", spec.Name, err)
-		http.Error(w, "server error", http.StatusInternalServerError)
+		// A failure says so and offers another try, in the place the page would have gone.
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		h.renderPartial(w, "feed_error", map[string]interface{}{"URL": r.URL.RequestURI()})
 		return
 	}
 	if refusal != nil {
@@ -170,10 +174,10 @@ func (h *Handler) facetWorksFeed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	surfaceDef := q.Def
-	if excludeID := r.URL.Query().Get("exclude_id"); excludeID != "" && spec == specProfilePosts {
+	if q.ExcludeID != "" && spec == specProfilePosts {
 		kept := make([]*model.Work, 0, len(result.Works))
 		for _, wk := range result.Works {
-			if wk.ID != excludeID {
+			if wk.ID != q.ExcludeID {
 				kept = append(kept, wk)
 			}
 		}
@@ -221,7 +225,7 @@ func (h *Handler) facetWorksFeed(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(c.Fragment))
 	}
 	if result.Next != "" {
-		h.writeFeedSentinel(w, r, surface, result.Next)
+		h.renderPartial(w, "feed_sentinel", map[string]interface{}{"URL": timelineNextURL(surface, q, result.Next), "Cursor": result.Next})
 	}
 }
 
@@ -976,18 +980,6 @@ func (h *Handler) facetWorkEditions(w http.ResponseWriter, r *http.Request) {
 		"Editions": editions,
 		"WorkID":   id,
 	})
-}
-
-// writeFeedSentinel asks for the next page when the reader scrolls to it.
-func (h *Handler) writeFeedSentinel(w http.ResponseWriter, r *http.Request, surface, cursor string) {
-	sentinelURL := fmt.Sprintf("/facets/works/feed?surface=%s&before=%s", url.QueryEscape(surface), url.QueryEscape(cursor))
-	if handle := r.URL.Query().Get("handle"); handle != "" {
-		sentinelURL += "&handle=" + url.QueryEscape(handle)
-	}
-	if topics := r.URL.Query().Get("topics"); topics != "" {
-		sentinelURL += "&topics=" + url.QueryEscape(topics)
-	}
-	h.renderPartial(w, "feed_sentinel", map[string]interface{}{"URL": sentinelURL, "Cursor": cursor})
 }
 
 // workReadable loads a work if this viewer may read its conversation: it exists, no wall

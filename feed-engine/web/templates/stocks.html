@@ -23,11 +23,12 @@
   </div>
 
   <div id="stocks-feed" role="feed" aria-live="polite">
-    {{if .Works}}
+    {{if .FeedFailed}}{{template "feed_error" (dict "URL" "")}}{{else if .Works}}
     {{$ctx := dict "CurrentUserHandle" .CurrentUserHandle "User" .User}}
     {{range .Works}}
     {{template "work_card" (dict "W" . "Ctx" $ctx)}}
     {{end}}
+    {{if .NextURL}}{{template "feed_sentinel" (dict "URL" .NextURL "Cursor" .NextCursor)}}{{end}}
     {{else}}
     {{template "stateEmpty" (dict "Title" (printf "No posts about $%s yet" .Ticker) "Sub" "Be the first to post about this ticker")}}
     {{end}}

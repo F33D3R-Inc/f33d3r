@@ -45,7 +45,10 @@ func (h *Handler) listDetailPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	before := r.URL.Query().Get("before")
-	result := h.readSurface(r.Context(), specList, &timelineQuery{Viewer: user, Limit: h.cfg.FeedPageSize, Before: before, ListID: listID})
+	result, _, listErr := h.runTimeline(r.Context(), specList, &timelineQuery{Viewer: user, Limit: h.cfg.FeedPageSize, Before: before, ListID: listID})
+	if listErr != nil {
+		log.Printf("[lists] %s: %v", listID, listErr)
+	}
 	members, _ := dbpkg.GetListMembers(h.db, listID)
 	works, nextBefore := result.Works, result.Next
 	nextURL := ""
@@ -58,6 +61,7 @@ func (h *Handler) listDetailPage(w http.ResponseWriter, r *http.Request) {
 		"User":              user,
 		"List":              list,
 		"Works":             works,
+		"FeedFailed":        listErr != nil,
 		"Members":           members,
 		"Before":            nextBefore,
 		"NextURL":           nextURL,

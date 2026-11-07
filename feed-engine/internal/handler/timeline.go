@@ -19,12 +19,14 @@ package handler
 
 import (
 	"context"
-	"errors"
 	"log"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
 
 	dbpkg "github.com/f33d3r/feed-engine/internal/db"
@@ -33,7 +35,20 @@ import (
 
 const timelinePageSize = 20
 
-var errBadTimelineCursor = errors.New("timeline: bad cursor")
+const (
+	// A ranked window is kept this long so its later pages come from the same order.
+	// Only the order is kept: every page is filtered again, so a block applies at once.
+	timelinePoolTTL    = 3 * time.Minute
+	timelinePoolPrefix = "pool:"
+	// Works shown recently on a ranked surface sit out, so a refresh brings new ones.
+	timelineServedTTL = 10 * time.Minute
+	timelineServedMax = 100
+)
+
+var (
+	timelinePools  = &ttlCache{max: 20000}
+	timelineServed = &ttlCache{max: 50000}
+)
 
 var (
 	timelineItems = prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -71,13 +86,14 @@ type timelineQuery struct {
 	Before    string
 	SessionID string
 
-	Handle  string // the person a profile surface is about
-	Profile *model.User
-	ListID  string
-	Filter  string // a bookmark filter
-	Tag     string
-	Terms   []string // words to find, on surfaces that search
-	Def     *model.FeedSurface
+	Handle    string // the person a profile surface is about
+	Profile   *model.User
+	ListID    string
+	Filter    string // a bookmark filter
+	ExcludeID string // a pinned work already shown above this feed
+	Tag       string
+	Terms     []string // words to find, on surfaces that search
+	Def       *model.FeedSurface
 }
 
 // timelineSpec is a surface: its parts, never its order.
@@ -88,7 +104,9 @@ type timelineSpec struct {
 	// KeepMuted is for a page about one person.
 	KeepMuted bool
 	// Paged says a later page exists to ask for.
-	Paged      bool
+	Paged bool
+	// WebOnly surfaces aren't API lanes: the API has its own routes for them.
+	WebOnly    bool
 	Prepare    func(*Handler, *timelineQuery) *timelineRefusal
 	Candidates func(*Handler, *timelineQuery, int) ([]*model.Work, error)
 	Provenance func(*model.User) func(*model.Work) *ProvenanceDTO
@@ -121,7 +139,35 @@ func (h *Handler) runTimeline(ctx context.Context, spec *timelineSpec, q *timeli
 	if spec.Ranked {
 		window = rankWindow(q.Limit)
 	}
-	read, err := spec.Candidates(h, q, window)
+	viewerKey := gateViewerID(q.Viewer) + "|" + spec.Name
+	var (
+		read []*model.Work
+		pool *timelinePoolCursor
+		err  error
+	)
+	if spec.Ranked {
+		pool = parseTimelinePool(q.Before)
+	}
+	if pool != nil {
+		// The next stretch of an order already chosen. If it has aged out, carry on
+		// below the window it came from; nothing is skipped or shown twice.
+		ids, held := timelinePools.get(viewerKey + "|" + pool.ID)
+		switch {
+		case held:
+			pool.IDs = ids.([]string)
+			end := min(pool.Offset+q.Limit, len(pool.IDs))
+			if pool.Offset < end {
+				read, err = dbpkg.GetWorksByIDs(h.db, pool.IDs[pool.Offset:end])
+			}
+		case pool.Below == "":
+			return timelineResult{}, nil, nil
+		default:
+			q.Before, pool = pool.Below, nil
+		}
+	}
+	if pool == nil {
+		read, err = spec.Candidates(h, q, window)
+	}
 	if err != nil {
 		timelineFailures.WithLabelValues(spec.Name).Inc()
 		return timelineResult{}, nil, err
@@ -129,14 +175,38 @@ func (h *Handler) runTimeline(ctx context.Context, spec *timelineSpec, q *timeli
 
 	// filter
 	shown := h.gateWorksWith(q.Viewer, read, gateOptions{keepMuted: spec.KeepMuted})
+	if spec.Ranked && pool == nil && q.Before == "" {
+		shown = withoutRecentlyServed(viewerKey, shown)
+	}
 
 	// rank
-	if spec.Ranked && len(shown) > 0 {
+	var next string
+	switch {
+	case pool != nil:
+		next = pool.Below
+		if pool.Offset+q.Limit < len(pool.IDs) {
+			next = pool.cursor(pool.Offset + q.Limit)
+		}
+	case spec.Ranked && len(shown) > 0:
 		rankSurface := spec.Name
 		if q.Def != nil {
 			rankSurface = q.Def.ID
 		}
 		shown = h.rankWorks(ctx, q.Viewer, rankSurface, q.SessionID, shown, q.Limit)
+		next = timelineNext(spec, read, window)
+		if len(shown) > q.Limit {
+			// The rest of the window stays reachable, in the order it was ranked.
+			chosen := &timelinePoolCursor{ID: uuid.NewString(), Below: next}
+			ids := make([]string, len(shown))
+			for i, w := range shown {
+				ids[i] = w.ID
+			}
+			timelinePools.put(viewerKey+"|"+chosen.ID, ids, time.Now().Add(timelinePoolTTL))
+			next = chosen.cursor(q.Limit)
+			shown = shown[:q.Limit]
+		}
+	default:
+		next = timelineNext(spec, read, window)
 	}
 
 	// enrich
@@ -144,32 +214,93 @@ func (h *Handler) runTimeline(ctx context.Context, spec *timelineSpec, q *timeli
 	h.gateQuotes(q.Viewer, shown)
 
 	// measure
+	if spec.Ranked {
+		rememberServed(viewerKey, shown)
+	}
 	timelineItems.WithLabelValues(spec.Name, "read").Add(float64(len(read)))
 	timelineItems.WithLabelValues(spec.Name, "shown").Add(float64(len(shown)))
 	timelineSeconds.WithLabelValues(spec.Name).Observe(time.Since(started).Seconds())
 
-	return timelineResult{
-		Works: shown,
-		Next:  timelineNext(spec, read, window),
-	}, nil, nil
+	return timelineResult{Works: shown, Next: next}, nil, nil
 }
 
-// timelineNext says where the next page starts. It comes from what was read, not what
-// was shown, so works withheld from this viewer can never end or repeat their feed. A
-// ranked page starts below its whole window, because the ranker chose from all of it.
+// timelinePoolCursor points into a ranked order held on the server.
+type timelinePoolCursor struct {
+	ID     string
+	Offset int
+	Below  string // where to go when the order runs out
+	IDs    []string
+}
+
+func (p *timelinePoolCursor) cursor(offset int) string {
+	return timelinePoolPrefix + p.ID + ":" + strconv.Itoa(offset) + ":" + p.Below
+}
+
+func parseTimelinePool(raw string) *timelinePoolCursor {
+	rest, ok := strings.CutPrefix(raw, timelinePoolPrefix)
+	if !ok {
+		return nil
+	}
+	parts := strings.SplitN(rest, ":", 3)
+	if len(parts) != 3 {
+		return nil
+	}
+	offset, err := strconv.Atoi(parts[1])
+	if err != nil || offset < 0 {
+		return nil
+	}
+	return &timelinePoolCursor{ID: parts[0], Offset: offset, Below: parts[2]}
+}
+
+// withoutRecentlyServed drops what this person just saw, unless that leaves nothing:
+// on a small network a repeat is better than an empty feed.
+func withoutRecentlyServed(viewerKey string, works []*model.Work) []*model.Work {
+	served, ok := timelineServed.get(viewerKey)
+	if !ok {
+		return works
+	}
+	seen := map[string]bool{}
+	for _, id := range served.([]string) {
+		seen[id] = true
+	}
+	fresh := make([]*model.Work, 0, len(works))
+	for _, w := range works {
+		if !seen[w.ID] {
+			fresh = append(fresh, w)
+		}
+	}
+	if len(fresh) == 0 {
+		return works
+	}
+	return fresh
+}
+
+func rememberServed(viewerKey string, works []*model.Work) {
+	if len(works) == 0 {
+		return
+	}
+	var ids []string
+	if served, ok := timelineServed.get(viewerKey); ok {
+		ids = append(ids, served.([]string)...)
+	}
+	for _, w := range works {
+		ids = append(ids, w.ID)
+	}
+	if len(ids) > timelineServedMax {
+		ids = ids[len(ids)-timelineServedMax:]
+	}
+	timelineServed.put(viewerKey, ids, time.Now().Add(timelineServedTTL))
+}
+
+// timelineNext says where the next page starts: the exact place of the last work read,
+// whether or not this viewer could see it, so withheld works can never end or repeat a
+// feed. A short read means the feed is finished.
 func timelineNext(spec *timelineSpec, read []*model.Work, window int) string {
 	if !spec.Paged || len(read) < window {
 		return ""
 	}
-	cursor := feedTime(read[len(read)-1])
-	if spec.Ranked {
-		for _, w := range read {
-			if t := feedTime(w); t.Before(cursor) {
-				cursor = t
-			}
-		}
-	}
-	return cursor.Format(time.RFC3339Nano)
+	last := read[len(read)-1]
+	return feedTime(last).Format(time.RFC3339Nano) + "|" + last.ID
 }
 
 // ── prepare stages ───────────────────────────────────────────────────────────
@@ -210,14 +341,6 @@ func prepareOwnOnly(code, message string) func(*Handler, *timelineQuery) *timeli
 		}
 		return nil
 	}
-}
-
-func timelineCursorTime(before string) (time.Time, error) {
-	t, ok := apiCursor(before)
-	if !ok {
-		return time.Time{}, errBadTimelineCursor
-	}
-	return t, nil
 }
 
 // ── the registry ─────────────────────────────────────────────────────────────
@@ -273,15 +396,14 @@ var (
 			return dbpkg.GetWorksBySurface(h.db, q.Def.Tags, q.Def.ContentType, n, q.Before)
 		},
 	}
-	// specTopics reads several tags at once and has no later page: it is a set, not a stream.
 	specTopics = &timelineSpec{
-		Name: "topics", Ranked: true,
+		Name: "topics", Ranked: true, Paged: true,
 		Empty: timelineEmpty{"No results", "Try a different topic"},
 		Candidates: func(h *Handler, q *timelineQuery, n int) ([]*model.Work, error) {
 			if len(q.Terms) == 0 {
 				return dbpkg.GetWorksForYou(h.db, n, q.Before)
 			}
-			return searchEachTerm(h, q, n/4)
+			return dbpkg.SearchWorksPage(h.db, q.Terms, n, q.Before, gateViewerID(q.Viewer))
 		},
 	}
 	specTagLane = &timelineSpec{
@@ -302,22 +424,14 @@ var (
 		Name: "profile_replies", KeepMuted: true, Paged: true, Prepare: prepareProfile,
 		Empty: timelineEmpty{"No replies yet", ""},
 		Candidates: func(h *Handler, q *timelineQuery, n int) ([]*model.Work, error) {
-			before, err := timelineCursorTime(q.Before)
-			if err != nil {
-				return nil, err
-			}
-			return dbpkg.GetWorkRepliesForProfile(h.db, q.Profile.PIALID, n, before)
+			return dbpkg.GetWorkRepliesForProfile(h.db, q.Profile.PIALID, n, q.Before)
 		},
 	}
 	specProfileMedia = &timelineSpec{
 		Name: "profile_media", KeepMuted: true, Paged: true, Prepare: prepareProfile,
 		Empty: timelineEmpty{"No media yet", ""},
 		Candidates: func(h *Handler, q *timelineQuery, n int) ([]*model.Work, error) {
-			before, err := timelineCursorTime(q.Before)
-			if err != nil {
-				return nil, err
-			}
-			return dbpkg.GetWorksForProfileMedia(h.db, q.Profile.PIALID, n, before)
+			return dbpkg.GetWorksForProfileMedia(h.db, q.Profile.PIALID, n, q.Before)
 		},
 	}
 	specProfileReposts = &timelineSpec{
@@ -332,11 +446,7 @@ var (
 		Prepare: prepareOwnOnly("likes_private", "Likes are private."),
 		Empty:   timelineEmpty{"No likes yet", ""},
 		Candidates: func(h *Handler, q *timelineQuery, n int) ([]*model.Work, error) {
-			before, err := timelineCursorTime(q.Before)
-			if err != nil {
-				return nil, err
-			}
-			return dbpkg.GetWorksLikedByUserBefore(h.db, gateViewerID(q.Viewer), n, before)
+			return dbpkg.GetWorksLikedByUserBefore(h.db, gateViewerID(q.Viewer), n, q.Before)
 		},
 	}
 	specProfileSaves = &timelineSpec{
@@ -348,10 +458,10 @@ var (
 		},
 	}
 	specBookmarks = &timelineSpec{
-		Name:  "bookmarks",
+		Name: "bookmarks", Paged: true, WebOnly: true,
 		Empty: timelineEmpty{"No bookmarks yet", "Works you save will appear here"},
 		Candidates: func(h *Handler, q *timelineQuery, n int) ([]*model.Work, error) {
-			return dbpkg.GetWorksSavesFiltered(h.db, gateViewerID(q.Viewer), n, "", q.Filter)
+			return dbpkg.GetWorksSavesFiltered(h.db, gateViewerID(q.Viewer), n, q.Before, q.Filter)
 		},
 	}
 	specList = &timelineSpec{
@@ -363,9 +473,9 @@ var (
 	}
 	// specSearch serves search and everything built on finding words: tags, tickers, games.
 	specSearch = &timelineSpec{
-		Name: "search",
+		Name: "search", Paged: true, WebOnly: true,
 		Candidates: func(h *Handler, q *timelineQuery, n int) ([]*model.Work, error) {
-			return searchEachTerm(h, q, n)
+			return dbpkg.SearchWorksPage(h.db, q.Terms, n, q.Before, gateViewerID(q.Viewer))
 		},
 	}
 )
@@ -388,6 +498,8 @@ var timelineSurfaces = map[string]*timelineSpec{
 	"profile_reposts": specProfileReposts,
 	"profile_likes":   specProfileLikes,
 	"profile_saves":   specProfileSaves,
+	"search":          specSearch,
+	"bookmarks":       specBookmarks,
 }
 
 // timelineSurface finds a surface by name. Anything not fixed is looked up in
@@ -403,40 +515,47 @@ func (h *Handler) timelineSurface(name string, q *timelineQuery) *timelineSpec {
 	return nil
 }
 
-// searchEachTerm finds each term, keeping each work once.
-func searchEachTerm(h *Handler, q *timelineQuery, perTerm int) ([]*model.Work, error) {
-	seen := map[string]bool{}
-	var works []*model.Work
-	var lastErr error
-	failed := 0
-	for _, term := range q.Terms {
-		found, err := dbpkg.SearchWorks(h.db, term, perTerm, gateViewerID(q.Viewer))
-		if err != nil {
-			log.Printf("[timeline] search %q: %v", term, err)
-			lastErr, failed = err, failed+1
-			continue
-		}
-		for _, w := range found {
-			if !seen[w.ID] {
-				seen[w.ID] = true
-				works = append(works, w)
-			}
-		}
-	}
-	if failed > 0 && failed == len(q.Terms) {
-		return nil, lastErr
-	}
-	return works, nil
+// surfacePage runs a surface a page draws itself, for its first screen.
+type surfacePage struct {
+	Works      []*model.Work
+	NextURL    string
+	NextCursor string
+	Failed     bool
 }
 
-// readSurface runs a page-rendered surface and logs a failure. The page still draws;
-// showing the failure honestly belongs to the error Facet.
-func (h *Handler) readSurface(ctx context.Context, spec *timelineSpec, q *timelineQuery) timelineResult {
+func (h *Handler) readSurfacePage(ctx context.Context, spec *timelineSpec, q *timelineQuery) surfacePage {
 	result, _, err := h.runTimeline(ctx, spec, q)
 	if err != nil {
 		log.Printf("[timeline] %s: %v", spec.Name, err)
+		return surfacePage{Failed: true}
 	}
-	return result
+	page := surfacePage{Works: result.Works, NextCursor: result.Next}
+	if result.Next != "" {
+		page.NextURL = timelineNextURL(spec.Name, q, result.Next)
+	}
+	return page
+}
+
+// timelineNextURL is the address of the next page, carrying what chose this one.
+func timelineNextURL(surface string, q *timelineQuery, cursor string) string {
+	v := url.Values{"surface": {surface}, "before": {cursor}}
+	if q.Handle != "" {
+		v.Set("handle", q.Handle)
+	}
+	if q.Filter != "" {
+		v.Set("filter", q.Filter)
+	}
+	if q.ExcludeID != "" {
+		v.Set("exclude_id", q.ExcludeID)
+	}
+	if surface == "topics" {
+		v.Set("topics", strings.Join(q.Terms, ","))
+	} else {
+		for _, term := range q.Terms {
+			v.Add("term", term)
+		}
+	}
+	return "/facets/works/feed?" + v.Encode()
 }
 
 // renderTimelineCards turns a finished page into Fragments.

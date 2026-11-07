@@ -28,3 +28,12 @@ FACET feed_sentinel
   <div class="spinner"></div>
 </div>
 {{end}}
+
+{{/* A page that could not load: says so, and offers another try. With no address, it
+     asks for this page again. */}}
+{{define "feed_error"}}
+<div class="feed-error" role="alert">
+  <p class="feed-error__text">This didn't load.</p>
+  <button type="button" class="feed-error__retry"{{if .URL}} hx-get="{{.URL}}" hx-target="closest .feed-error" hx-swap="outerHTML"{{else}} hx-get="" hx-target="#playground" hx-select="#playground" hx-swap="outerHTML"{{end}}>Try again</button>
+</div>
+{{end}}

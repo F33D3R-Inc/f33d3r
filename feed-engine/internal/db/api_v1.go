@@ -114,23 +114,23 @@ func GetWorkRepliesBefore(db *sql.DB, workID string, limit int, before time.Time
 
 // GetWorksLikedByUserBefore is GetWorksLikedByUser with a cursor over the
 // time of the like, so the owner's Likes tab pages the way the others do.
-func GetWorksLikedByUserBefore(db *sql.DB, viewerID string, limit int, before time.Time) ([]*model.Work, error) {
-	rows, err := db.Query(worksSelectSQL+`
-		JOIN work_reactions lr ON lr.work_id = w.id
-		WHERE lr.reactor_id = $1::uuid
-		  AND lr.reaction_type = 'like'
-		  AND lr.created_at < $3
-		  AND w.deleted_at IS NULL
-		  AND `+workNotBlockedSQL+`
-		  AND `+workLiveSQL+`
-		ORDER BY lr.created_at DESC
-		LIMIT $2
-	`, viewerID, limit, before)
+func GetWorksLikedByUserBefore(db *sql.DB, viewerID string, limit int, before string) ([]*model.Work, error) {
+	c, err := parseCursor(before)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	return collectWorks(rows)
+	idQuery := `
+		SELECT lr.work_id AS id, NULL::text, NULL::text, lr.created_at AS feed_ts
+		FROM work_reactions lr
+		JOIN works w ON w.id = lr.work_id
+		WHERE lr.reactor_id = $1::uuid
+		  AND lr.reaction_type = 'like'
+		  AND (lr.created_at, lr.work_id) < ($2, $4::uuid)
+		  AND w.deleted_at IS NULL
+		  AND ` + workNotBlockedSQL + `
+		ORDER BY lr.created_at DESC, lr.work_id DESC
+		LIMIT $3`
+	return collectFeedWithReposts(db, idQuery, viewerID, c.TS, limit, c.ID)
 }
 
 // GetWorkAuthor returns the account and PIAL behind a live work.
@@ -297,17 +297,21 @@ func GetUsersByIDs(db *sql.DB, ids []string) (map[string]*model.User, error) {
 
 // GetWorkRepliesForProfile is the Replies tab: replies authored by the PIAL,
 // newest first, strictly before the cursor.
-func GetWorkRepliesForProfile(db *sql.DB, authorPIAL string, limit int, before time.Time) ([]*model.Work, error) {
+func GetWorkRepliesForProfile(db *sql.DB, authorPIAL string, limit int, before string) ([]*model.Work, error) {
+	c, err := parseCursor(before)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := db.Query(worksSelectSQL+`
 		WHERE w.author_pial = $1::uuid
 		  AND w.deleted_at IS NULL
 		  AND w.kind = 'reply'
 		  AND `+workNotBlockedSQL+`
 		  AND `+workLiveSQL+`
-		  AND w.created_at < $2
-		ORDER BY w.created_at DESC
+		  AND (w.created_at, w.id) < ($2, $4::uuid)
+		ORDER BY w.created_at DESC, w.id DESC
 		LIMIT $3
-	`, authorPIAL, before, limit)
+	`, authorPIAL, c.TS, limit, c.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -317,7 +321,11 @@ func GetWorkRepliesForProfile(db *sql.DB, authorPIAL string, limit int, before t
 
 // GetWorksForProfileMedia is the Media tab: the PIAL's works that carry an
 // image, a video or a voice note, newest first, strictly before the cursor.
-func GetWorksForProfileMedia(db *sql.DB, authorPIAL string, limit int, before time.Time) ([]*model.Work, error) {
+func GetWorksForProfileMedia(db *sql.DB, authorPIAL string, limit int, before string) ([]*model.Work, error) {
+	c, err := parseCursor(before)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := db.Query(worksSelectSQL+`
 		WHERE w.author_pial = $1::uuid
 		  AND w.deleted_at IS NULL
@@ -326,10 +334,10 @@ func GetWorksForProfileMedia(db *sql.DB, authorPIAL string, limit int, before ti
 		       OR COALESCE(w.voice_url, '') <> '')
 		  AND `+workNotBlockedSQL+`
 		  AND `+workLiveSQL+`
-		  AND w.created_at < $2
-		ORDER BY w.created_at DESC
+		  AND (w.created_at, w.id) < ($2, $4::uuid)
+		ORDER BY w.created_at DESC, w.id DESC
 		LIMIT $3
-	`, authorPIAL, before, limit)
+	`, authorPIAL, c.TS, limit, c.ID)
 	if err != nil {
 		return nil, err
 	}

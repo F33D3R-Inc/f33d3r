@@ -27,15 +27,18 @@ func (h *Handler) tagPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user := h.userFromRequest(w, r)
-	var works interface{}
+	var page surfacePage
 	if h.db != nil {
-		works = h.readSurface(r.Context(), specSearch, &timelineQuery{Viewer: user, Limit: 40, Terms: []string{tag}}).Works
+		page = h.readSurfacePage(r.Context(), specSearch, &timelineQuery{Viewer: user, Limit: 40, Terms: []string{tag}})
 	}
 	isFollowing := h.db != nil && user.ID != "" && dbpkg.IsFollowingTopic(h.db, user.ID, strings.ToLower(tag))
 	h.render(w, r, "tag.html", h.withRail(map[string]interface{}{
 		"User":              user,
 		"Tag":               tag,
-		"Works":             works,
+		"Works":             page.Works,
+		"NextURL":           page.NextURL,
+		"NextCursor":        page.NextCursor,
+		"FeedFailed":        page.Failed,
 		"Title":             "#" + tag + " · F33D3R",
 		"SessionID":         uuid.New().String(),
 		"ShowScores":        h.cfg.ShowScores,

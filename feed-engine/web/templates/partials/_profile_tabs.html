@@ -41,7 +41,7 @@ FACET profile_tabs
   {{template "profile_tab" (dict "Surface" "profile_media"    "Label" "Media"    "Handle" $h "Active" (eq $a "profile_media"))}}
   {{template "profile_tab" (dict "Surface" "profile_articles" "Label" "Articles" "Handle" $h "Active" (eq $a "profile_articles"))}}
   {{if .IsOwner}}
-  {{template "profile_tab" (dict "Surface" "profile_saves"    "Label" "Likes"    "Handle" $h "Active" (eq $a "profile_saves"))}}
+  {{template "profile_tab" (dict "Surface" "profile_likes"    "Label" "Likes"    "Handle" $h "Active" (eq $a "profile_likes"))}}
   {{end}}
 </div>
 {{end}}

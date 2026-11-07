@@ -529,7 +529,7 @@ func (h *Handler) sportsGamePage(w http.ResponseWriter, r *http.Request) {
 	}
 	user := h.userFromRequest(w, r)
 
-	var works interface{}
+	var page surfacePage
 	if h.db != nil {
 		// The conversation about a game is the works that name either club. The query is
 		// the club nickname ("Seahawks"), which is what people write.
@@ -541,7 +541,7 @@ func (h *Handler) sportsGamePage(w http.ResponseWriter, r *http.Request) {
 				terms = append(terms, term)
 			}
 		}
-		works = h.readSurface(r.Context(), specSearch, &timelineQuery{Viewer: user, Limit: 20, Terms: terms}).Works
+		page = h.readSurfacePage(r.Context(), specSearch, &timelineQuery{Viewer: user, Limit: 20, Terms: terms})
 	}
 
 	h.render(w, r, "sports_game.html", h.withRail(map[string]interface{}{
@@ -553,7 +553,10 @@ func (h *Handler) sportsGamePage(w http.ResponseWriter, r *http.Request) {
 			Href:  sportsGameHref(g),
 			Stale: h.sportsCache.Stale(),
 		},
-		"Works":             works,
+		"Works":             page.Works,
+		"NextURL":           page.NextURL,
+		"NextCursor":        page.NextCursor,
+		"FeedFailed":        page.Failed,
 		"Title":             g.Matchup() + " · " + g.LeagueLabel + " · F33D3R",
 		"SessionID":         uuid.New().String(),
 		"CurrentUserHandle": user.Handle,

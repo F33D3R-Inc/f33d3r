@@ -73,6 +73,7 @@
 
   {{/* Frequency audio plays here. No Fragment ever replaces these, so sound keeps
        playing through navigation and every room change. */}}
+  <template id="feed-error-template">{{template "feed_error" (dict "URL" "")}}</template>
   <div id="frequency-media" hidden></div>
   <button id="frequency-audio-unlock" class="freq-audio-unlock" type="button" hidden>Tap to hear this Frequency</button>
 
