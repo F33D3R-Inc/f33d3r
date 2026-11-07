@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -290,6 +291,20 @@ func (s *Store) IsHandleTaken(ctx context.Context, handle string) (bool, error) 
 	return n > 0, err
 }
 
+// missingUserHash is compared against when a handle does not exist. It is made fresh
+// at start-up from random bytes, so it can never match any password.
+var missingUserHash = func() []byte {
+	secret := make([]byte, 32)
+	if _, err := rand.Read(secret); err != nil {
+		panic(err)
+	}
+	hash, err := bcrypt.GenerateFromPassword(secret, bcrypt.DefaultCost)
+	if err != nil {
+		panic(err)
+	}
+	return hash
+}()
+
 // CheckPassword verifies a handle/password pair and returns the account, or
 // ErrNotFound for either an unknown handle or a wrong password — one answer
 // for both, so a caller cannot enumerate handles through the login form.
@@ -299,7 +314,7 @@ func (s *Store) CheckPassword(ctx context.Context, handle, password string) (*Us
 		if errors.Is(err, ErrNotFound) {
 			// Burn the same time a real comparison would, so a missing handle
 			// is not visibly faster than a wrong password.
-			bcrypt.CompareHashAndPassword([]byte("REMOVED_BCRYPT_HASHQ"), []byte(password))
+			bcrypt.CompareHashAndPassword(missingUserHash, []byte(password))
 		}
 		return nil, ErrNotFound
 	}
