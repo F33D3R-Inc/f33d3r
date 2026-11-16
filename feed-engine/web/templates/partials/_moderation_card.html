@@ -1,0 +1,115 @@
+{{/*
+FACET moderation_card
+  version: 1.1 | status: stable | layer: 2
+
+  facet id: facet:f33d3r:moderation:<id>:card — <id> is the Abraxas review or report id
+
+  inputs:
+    moderationCard (internal/handler/moderation.go)
+      .ID .FacetID .Source (review|report) .Stage .StageLabel .Kind (content|ownership_claim)
+      .ItemKind .Decisions .Category .CurrentVerdict .MLOutcome .Evidence .CanBan
+      .SubjectKind .SubjectLink .AuthorHandle .Body .ThumbURL
+      .Reason .Detail .Scores .Signals .CreditHandle .CreditKind
+      .Reporters .MatchedOwners .ReportCount .CreatedAt .Decided .Problem
+    Every person is named by handle. No PIAL is ever rendered, and no subject id
+    is either (an account subject's id is a PIAL).
+
+  states:
+    review — only the decisions the item's kind takes:
+      content, unjudged → approve | age_gate | block
+      banned_near, report → approve | block
+      ownership, ownership_claim → credit | reject
+    report (resolve | resolve with ban | dismiss | escalate)
+    decided (.Decided — the action taken, no buttons) | problem (.Problem — the action did not reach Abraxas)
+
+  signals:
+    emits:    POST /admin/moderation/review/{id}/decide {decision, credit_handle}
+              POST /admin/moderation/report/{id}/{resolve|ban|dismiss|escalate}
+              each answers with this Facet in its decided state
+    receives: none
+
+  context:
+    admin_panel_moderation → ML review, Admin review and Reports sections
+*/}}
+{{define "moderation_card"}}
+<div class="amq-card" data-facet-id="{{.FacetID}}">
+  {{if .Decided}}
+  <div class="admin-report-resolved">✓ {{.Decided}}</div>
+  {{else}}
+
+  <div class="amq-header">
+    {{if .AuthorHandle}}<a href="/{{.AuthorHandle}}" target="_blank" rel="noopener" class="amq-handle">@{{.AuthorHandle}}</a>{{end}}
+    {{if .StageLabel}}<span class="amq-state amq-state--review">{{.StageLabel}}</span>{{end}}
+    {{if eq .Kind "ownership_claim"}}<span class="amq-risk amq-risk--review">ownership claim</span>{{end}}
+    {{if .ItemKind}}<span class="amq-risk amq-risk--review">{{.ItemKind}}</span>{{end}}
+    {{if .Category}}<span class="amq-risk amq-risk--block">{{.Category}}</span>{{end}}
+    {{if .CurrentVerdict}}<span class="amq-state">now: {{.CurrentVerdict}}</span>{{end}}
+    {{if gt .ReportCount 1}}<span class="admin-section-head-count">{{.ReportCount}} reports</span>{{end}}
+    <span class="amq-age">{{.SubjectKind}} · {{timeAgo .CreatedAt}}</span>
+  </div>
+
+  {{if .Reason}}
+  <div class="admin-report-reason">
+    <span class="admin-report-reason-label">{{.Reason}}</span>{{if .Detail}} — {{.Detail}}{{end}}
+  </div>
+  {{end}}
+  {{if .Reporters}}<div class="admin-report-meta">Reported by {{range $i, $h := .Reporters}}{{if $i}}, {{end}}@{{$h}}{{end}}</div>{{end}}
+  {{if .MatchedOwners}}<div class="admin-report-meta">Matching uploads by {{range $i, $h := .MatchedOwners}}{{if $i}}, {{end}}@{{$h}}{{end}}</div>{{end}}
+
+  {{if .Body}}<p class="amq-body">{{.Body}}</p>{{end}}
+  {{if .ThumbURL}}
+  <div class="amq-thumb-wrap">
+    <img src="{{.ThumbURL}}" alt="media preview" class="amq-thumb" loading="lazy">
+  </div>
+  {{end}}
+
+  {{if .Scores}}
+  <div class="amq-scores">
+    {{range .Scores}}<span class="amq-score{{if .Warn}} amq-score--warn{{end}}">{{.Name}} {{.Pct}}%</span>{{end}}
+    {{if .Signals}}<span class="amq-signals">{{range $i, $s := .Signals}}{{if $i}} | {{end}}{{$s}}{{end}}</span>{{end}}
+  </div>
+  {{end}}
+
+  {{if .MLOutcome}}<div class="admin-report-meta">ML review: {{.MLOutcome}}</div>{{end}}
+  {{range .Evidence}}<div class="admin-report-meta">{{.}}</div>{{end}}
+
+  {{if .CreditHandle}}
+  <div class="admin-report-meta">Original owner: <a href="/{{.CreditHandle}}" target="_blank" rel="noopener">@{{.CreditHandle}}</a>{{if .CreditKind}} ({{.CreditKind}}){{end}}</div>
+  {{end}}
+
+  {{if .Problem}}<div class="admin-alert-strip admin-alert-strip--danger">{{.Problem}}</div>{{end}}
+
+  <div class="amq-actions">
+    {{if eq .Source "review"}}
+    {{$id := .ID}}{{$credit := .CreditHandle}}
+    {{range .Decisions}}
+    <button class="admin-action-btn{{if ne .Style "plain"}} admin-action-btn--{{.Style}}{{end}}"
+            hx-post="/admin/moderation/review/{{$id}}/decide"
+            hx-vals='{"decision":"{{.Value}}","credit_handle":"{{$credit}}"}'
+            hx-target="closest [data-facet-id]" hx-swap="outerHTML"
+            {{if .Confirm}}hx-confirm="{{.Confirm}}"{{end}}>{{.Label}}</button>
+    {{end}}
+    {{else}}
+    <button class="admin-report-btn-resolve"
+            hx-post="/admin/moderation/report/{{.ID}}/resolve"
+            hx-target="closest [data-facet-id]" hx-swap="outerHTML">Resolve</button>
+    {{if .CanBan}}
+    <button class="admin-report-btn-block"
+            hx-post="/admin/moderation/report/{{.ID}}/ban"
+            hx-target="closest [data-facet-id]" hx-swap="outerHTML"
+            hx-confirm="Resolve this report and ban {{if .AuthorHandle}}@{{.AuthorHandle}}{{else}}the owner of the reported content{{end}}?">Resolve with ban</button>
+    {{end}}
+    <button class="admin-report-btn-dismiss"
+            hx-post="/admin/moderation/report/{{.ID}}/dismiss"
+            hx-target="closest [data-facet-id]" hx-swap="outerHTML">Dismiss</button>
+    {{if ne .Stage "admin_review"}}
+    <button class="admin-report-btn-agegate"
+            hx-post="/admin/moderation/report/{{.ID}}/escalate"
+            hx-target="closest [data-facet-id]" hx-swap="outerHTML">Escalate to admin review</button>
+    {{end}}
+    {{end}}
+    {{if .SubjectLink}}<a href="{{.SubjectLink}}" target="_blank" rel="noopener" class="amq-view-link">View ↗</a>{{end}}
+  </div>
+  {{end}}
+</div>
+{{end}}

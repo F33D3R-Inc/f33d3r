@@ -71,16 +71,6 @@ services:
       attempts: 1
       conditions: [ connect-failure ]
 
-  zodacare:
-    # Content reports are async — queue locally and retry.
-    timeout_ms: 2000
-    fallback: queue_report_locally
-    max_connections: 50
-    consecutive_5xx_threshold: 10
-    retry:
-      attempts: 3
-      conditions: [ connect-failure, reset, 5xx ]
-
   schema-registry:
     # Schema lookups are cached — registry going down doesn't break serving.
     timeout_ms: 500

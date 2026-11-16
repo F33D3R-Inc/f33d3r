@@ -1,34 +1,27 @@
 package handler
 
 import (
-	"crypto/rand"
-	"encoding/hex"
+	"errors"
 	"log"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
-	dbpkg "github.com/f33d3r/feed-engine/internal/db"
+	"github.com/f33d3r/feed-engine/internal/identity"
 )
 
-// ── In-memory reset token store ───────────────────────────────────────────────
-// Tokens are issued after a valid backup code is consumed and expire in 10 min.
-// They tie the code-verification step to the password-change step.
+// Backup codes and password recovery.
+//
+// Backup codes are the only way back into an account — F33D3R holds no email
+// or phone. They are issued, stored, checked and spent by elohim-veni. This
+// file renders the reveal page and carries the recovery steps; it keeps no
+// code, no hash, and no recovery token of its own.
 
-type resetEntry struct {
-	userID    string
-	expiresAt time.Time
-}
-
-var (
-	resetTokens    sync.Map
-	resetTokensTTL = 10 * time.Minute
-
-	// resetAttempts tracks per-handle attempt timestamps for rate limiting.
-	// Key: handle (string) → []time.Time of recent attempts.
-	resetAttempts sync.Map
-)
+// resetAttempts tracks per-handle recovery attempt timestamps for rate
+// limiting, on top of the per-IP and per-account limiters on the route: a
+// handle-keyed bound in front of the authority's own.
+var resetAttempts sync.Map // handle → []time.Time
 
 const (
 	resetRateWindow   = 15 * time.Minute
@@ -36,13 +29,11 @@ const (
 )
 
 // checkResetRateLimit returns true if the handle has exceeded the allowed number
-// of password-reset attempts in the sliding window. It prunes stale entries and
-// records the current attempt atomically.
+// of recovery attempts in the sliding window. It prunes stale entries and
+// records the current attempt.
 func checkResetRateLimit(handle string) bool {
 	now := time.Now()
 	cutoff := now.Add(-resetRateWindow)
-
-	// Load existing timestamps, prune entries outside the window, and append now.
 	raw, _ := resetAttempts.Load(handle)
 	var times []time.Time
 	if raw != nil {
@@ -60,46 +51,23 @@ func checkResetRateLimit(handle string) bool {
 	return false
 }
 
-func issueResetToken(userID string) (string, error) {
-	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	token := hex.EncodeToString(b)
-	resetTokens.Store(token, resetEntry{userID: userID, expiresAt: time.Now().Add(resetTokensTTL)})
-	return token, nil
-}
-
-func consumeResetToken(token string) (string, bool) {
-	v, ok := resetTokens.LoadAndDelete(token)
-	if !ok {
-		return "", false
-	}
-	e := v.(resetEntry)
-	if time.Now().After(e.expiresAt) {
-		return "", false
-	}
-	return e.userID, true
-}
-
 // ── Backup codes setup (mandatory gate after login) ───────────────────────────
 
-// backupCodesSetupPage generates 8 fresh codes, stores their hashes, and shows
-// the reveal page. Any prior codes are replaced; the user is on this page
-// precisely because they have none.
+// backupCodesSetupPage has fresh codes issued and shows them once. Any prior
+// codes are replaced; the person is on this page because they have none, or
+// have just spent one.
 func (h *Handler) backupCodesSetupPage(w http.ResponseWriter, r *http.Request) {
 	user := h.userFromRequest(w, r)
-	if user == nil {
+	if viewerAccountID(user) == "" {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-
-	codes, err := h.issueBackupCodes(user.ID)
+	codes, err := h.identity.Client().IssueBackupCodes(r.Context(), user.ID)
 	if err != nil {
-		log.Printf("[backup-codes] issue for %s: %v", user.Handle, err)
-		http.Error(w, "could not generate codes", http.StatusInternalServerError)
+		log.Printf("[backup-codes] issue for @%s: %v", user.Handle, err)
+		http.Error(w, "Your backup codes could not be generated right now — reload to try again.", http.StatusServiceUnavailable)
 		return
 	}
-
 	h.render(w, r, "backup_codes_setup.html", map[string]interface{}{
 		"Title": "Save your backup codes · F33D3R",
 		"Codes": codes,
@@ -117,15 +85,10 @@ func (h *Handler) forgotPasswordPage(w http.ResponseWriter, r *http.Request) {
 }
 
 // forgotPasswordSubmit receives a handle and returns the backup-code entry
-// fragment. Always responds the same way regardless of whether the handle
-// exists — prevents user enumeration.
+// Fragment. It answers the same way whether or not the handle exists.
 func (h *Handler) forgotPasswordSubmit(w http.ResponseWriter, r *http.Request) {
 	_ = r.ParseForm()
 	handle := strings.TrimSpace(strings.ToLower(r.FormValue("handle")))
-
-	// Render code-entry form for any non-empty handle input.
-	// The handle is passed through so step 2 can use it — but we never confirm
-	// whether it exists at this point.
 	w.Header().Set("Content-Type", "text/html")
 	h.renderPartial(w, "password_reset_code_form", map[string]interface{}{
 		"Handle": handle,
@@ -134,6 +97,9 @@ func (h *Handler) forgotPasswordSubmit(w http.ResponseWriter, r *http.Request) {
 
 // ── Forgot password — step 2: verify backup code ─────────────────────────────
 
+// forgotPasswordVerifyCode has elohim-veni spend one backup code and hands the
+// person the recovery token it returns, for the new-password step. The
+// authority answers an unknown handle and a wrong code identically.
 func (h *Handler) forgotPasswordVerifyCode(w http.ResponseWriter, r *http.Request) {
 	_ = r.ParseForm()
 	handle := strings.TrimSpace(strings.ToLower(r.FormValue("handle")))
@@ -146,7 +112,6 @@ func (h *Handler) forgotPasswordVerifyCode(w http.ResponseWriter, r *http.Reques
 			"Error":  msg,
 		})
 	}
-
 	if handle == "" || code == "" {
 		renderError("Please enter your handle and a backup code.")
 		return
@@ -160,47 +125,32 @@ func (h *Handler) forgotPasswordVerifyCode(w http.ResponseWriter, r *http.Reques
 		})
 		return
 	}
-	if h.db == nil {
-		renderError("Service unavailable — try again.")
-		return
-	}
 
-	user, _ := dbpkg.GetUserByHandle(h.db, handle)
-	// Always spend bcrypt time even on unknown handle to prevent timing attacks.
-	if user == nil {
-		// Burn ~same time as a real bcrypt check
-		dbpkg.GenerateBackupCode() //nolint:errcheck
+	rec, err := h.identity.Client().BeginRecovery(r.Context(), handle, code)
+	switch {
+	case err == nil:
+	case errors.Is(err, identity.ErrBackupCodeInvalid), errors.Is(err, identity.ErrNotFound):
 		renderError("Invalid handle or backup code.")
 		return
-	}
-
-	ok, err := dbpkg.VerifyAndConsumeBackupCode(h.db, user.ID, code)
-	if err != nil {
-		log.Printf("[backup-codes] verify: %v", err)
-		renderError("Something went wrong — try again.")
-		return
-	}
-	if !ok {
-		renderError("Invalid backup code. Check your saved codes and try again.")
-		return
-	}
-
-	resetToken, err := issueResetToken(user.ID)
-	if err != nil {
-		log.Printf("[backup-codes] issue reset token: %v", err)
-		renderError("Something went wrong — try again.")
+	default:
+		log.Printf("[recovery] begin for @%s: %v", handle, err)
+		renderError("Recovery is briefly unavailable — try again in a moment.")
 		return
 	}
 
 	w.Header().Set("Content-Type", "text/html")
 	h.renderPartial(w, "password_reset_new_password_form", map[string]interface{}{
 		"Handle":     handle,
-		"ResetToken": resetToken,
+		"ResetToken": rec.RecoveryToken,
 	})
 }
 
 // ── Forgot password — step 3: set new password ───────────────────────────────
 
+// forgotPasswordResetSubmit completes the recovery: elohim-veni sets the new
+// password, ends every session on the account — whoever else was signed in may
+// be the reason for this reset — and opens one for this device. A banned
+// account is refused there: knowing a backup code does not undo a ban.
 func (h *Handler) forgotPasswordResetSubmit(w http.ResponseWriter, r *http.Request) {
 	_ = r.ParseForm()
 	resetToken := strings.TrimSpace(r.FormValue("reset_token"))
@@ -214,7 +164,6 @@ func (h *Handler) forgotPasswordResetSubmit(w http.ResponseWriter, r *http.Reque
 			"Error":      msg,
 		})
 	}
-
 	if len(newPassword) < 8 {
 		renderError("Password must be at least 8 characters.")
 		return
@@ -224,36 +173,31 @@ func (h *Handler) forgotPasswordResetSubmit(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	userID, ok := consumeResetToken(resetToken)
-	if !ok {
-		renderError("This reset link has expired. Please start over.")
-		return
-	}
-
-	if err := dbpkg.SetPassword(h.db, userID, newPassword); err != nil {
-		log.Printf("[backup-codes] set password: %v", err)
-		renderError("Could not save password — try again.")
-		return
-	}
-
-	// Whoever else was signed in may be the reason for this reset.
-	if err := h.endSessionsAfterPasswordChange(userID, ""); err != nil {
-		log.Printf("[backup-codes] ending sessions for %s: %v", userID, err)
-	}
-
-	// Create a session so the user lands directly on the home feed.
 	deviceName := r.UserAgent()
 	if len(deviceName) > 100 {
 		deviceName = deviceName[:100]
 	}
-	token, err := dbpkg.CreateAuthSession(h.db, userID, deviceName, r.RemoteAddr)
-	if err != nil {
-		log.Printf("[backup-codes] create session post-reset: %v", err)
-	} else {
-		SetSessionCookie(w, token)
+	res, err := h.identity.Client().CompleteRecovery(r.Context(), resetToken, newPassword, deviceName, requestIP(r))
+	switch {
+	case err == nil:
+	case errors.Is(err, identity.ErrRecoveryExpired), errors.Is(err, identity.ErrNotFound):
+		renderError("This reset link has expired. Please start over.")
+		return
+	case errors.Is(err, identity.ErrWeakPassword):
+		renderError("Password must be at least 8 characters.")
+		return
+	case errors.Is(err, identity.ErrSuspended):
+		hxAwareRedirect(w, r, "/login")
+		return
+	default:
+		log.Printf("[recovery] complete: %v", err)
+		renderError("Could not save password — try again in a moment.")
+		return
 	}
 
-	// Redirect to backup-codes setup — the consumed code means they now have
-	// one fewer code; force them to generate a fresh set immediately.
-	http.Redirect(w, r, "/backup-codes/setup", http.StatusSeeOther)
+	h.evictCachedAccount(res.AccountID, "")
+	h.openedSession(w, res.SessionToken)
+	h.afterSignIn(r, res.AccountID, res.PIALID)
+	// The spent code leaves one fewer; a fresh set is issued straight away.
+	hxAwareRedirect(w, r, "/backup-codes/setup")
 }

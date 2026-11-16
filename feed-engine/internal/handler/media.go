@@ -1,215 +1,295 @@
 package handler
 
+// media.go — the upload lanes.
+//
+// Every lane ends the same way: the bytes are proved to be what they claim by
+// their magic number and streamed to Caeor, the one media-asset authority, on
+// record under the signed-in uploader. Caeor puts every upload to Abraxas, the
+// integrity authority, before it may become ready: banned bytes are refused
+// (errMediaBanned), bytes under review are stored and held (errUploadHeld).
+// This brain judges no content itself. Caeor answers with the asset — or, for
+// an exact-byte duplicate, with the ORIGINAL asset and its uploader, who keeps
+// the credit. Nothing is ever written to a local media tree, and there is no
+// fallback: an upload Caeor cannot take is an upload that failed.
+//
+// A lane hands back the watermarked object Caeor serves (Asset.ViewerURL).
+// The clean source never leaves Caeor.
+
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
-	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
-	"github.com/google/uuid"
-
+	"github.com/f33d3r/feed-engine/internal/caeor"
 	dbpkg "github.com/f33d3r/feed-engine/internal/db"
 	"github.com/f33d3r/feed-engine/internal/model"
-	"github.com/f33d3r/feed-engine/internal/scanclient"
 	"github.com/f33d3r/feed-engine/internal/sitra"
 )
 
-// VideoResult is what a successful video upload returns to the client.
-type VideoResult struct {
-	Kind      string  `json:"kind"`       // "video"
-	MasterURL string  `json:"master_url"` // HLS master.m3u8
-	PosterURL string  `json:"poster_url"` // poster.jpg
-	Duration  float32 `json:"duration_secs"`
-	Width     int     `json:"width"`
-	Height    int     `json:"height"`
+// Upload ceilings, per lane.
+const (
+	imageUploadMax     = 20 << 20
+	profileUploadMax   = 10 << 20
+	voiceUploadMax     = 50 << 20
+	videoUploadMax     = 2 << 30
+	encryptedUploadMax = 1 << 30
+)
+
+// The admission errors a caller turns into a status. Each lane words its own
+// answer; what happened is decided once, here.
+var (
+	// errMediaUnsupported: the bytes are not a type this route accepts.
+	errMediaUnsupported = errors.New("media type not accepted")
+	// errUploadStorage: the file could not be stored.
+	errUploadStorage = errors.New("upload storage error")
+	// errUploadWrite: the file had a place but could not be written there in full.
+	errUploadWrite = errors.New("upload write error")
+	// errUploadTooLarge: the file is over this lane's ceiling.
+	errUploadTooLarge = errors.New("upload is larger than this lane accepts")
+	// errUploadNoUploader: nobody signed in made the upload, so nobody could be
+	// put on record as its uploader.
+	errUploadNoUploader = errors.New("upload has no signed-in uploader")
+	// errMediaWithdrawn: the bytes are an exact duplicate of an asset that has
+	// been withdrawn from the platform. Deleting media never frees it for a new
+	// upload.
+	errMediaWithdrawn = errors.New("this media has been removed from the platform and cannot be uploaded again")
+	// errMediaBanned: the integrity authority refused the bytes. Caeor has
+	// withdrawn the asset and kept it as the record.
+	errMediaBanned = errors.New("this content cannot be uploaded")
+	// errUploadHeld: the bytes are stored, and held by the integrity authority
+	// until a review decides them. Nothing of them is shown meanwhile.
+	errUploadHeld = errors.New("this upload is being reviewed before it can be posted; try posting it again once the review is done")
+)
+
+// uploadHTTPError answers an admission failure on a cookie-session lane.
+func uploadHTTPError(w http.ResponseWriter, lane string, err error) {
+	switch {
+	case errors.Is(err, errMediaBanned):
+		http.Error(w, "This content cannot be uploaded", http.StatusUnprocessableEntity)
+	case errors.Is(err, errUploadHeld):
+		http.Error(w, errUploadHeld.Error(), http.StatusConflict)
+	case errors.Is(err, errUploadNoUploader):
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	case errors.Is(err, errMediaUnsupported):
+		http.Error(w, "unsupported or invalid file", http.StatusBadRequest)
+	case errors.Is(err, errUploadTooLarge):
+		http.Error(w, "file too large", http.StatusRequestEntityTooLarge)
+	case errors.Is(err, errMediaWithdrawn):
+		http.Error(w, errMediaWithdrawn.Error(), http.StatusConflict)
+	case errors.Is(err, caeor.ErrRefused):
+		log.Printf("[upload] %s refused by caeor: %v", lane, err)
+		http.Error(w, "the file could not be processed", http.StatusUnprocessableEntity)
+	default:
+		log.Printf("[upload] %s: %v", lane, err)
+		http.Error(w, "storage error", http.StatusInternalServerError)
+	}
 }
 
-// caeorUpload forwards a multipart file to Caeor for processing and returns
-// the primary derivative URL. Falls back to saveUpload if Caeor is unavailable.
-func (h *Handler) caeorUpload(fileBytes []byte, filename, mediaType string) (string, error) {
-	var buf bytes.Buffer
-	mw := multipart.NewWriter(&buf)
-	fw, err := mw.CreateFormFile("file", filename)
-	if err != nil {
-		return "", err
+// uploaderOf is the person an upload is put on record under, or
+// errUploadNoUploader.
+func uploaderOf(u *model.User) (caeor.Uploader, error) {
+	if u == nil || u.ID == "" || u.ID == "demo_user" || u.PIALID == "" || u.Handle == "" {
+		return caeor.Uploader{}, errUploadNoUploader
 	}
-	if _, err := fw.Write(fileBytes); err != nil {
-		return "", err
-	}
-	mw.Close()
+	return caeor.Uploader{PIAL: u.PIALID, Account: u.ID, Handle: u.Handle}, nil
+}
 
-	req, err := http.NewRequest(http.MethodPost,
-		h.caeorURL+"/v1/media/upload?type="+mediaType, &buf)
+// storeBytes streams an in-memory upload to Caeor.
+func (h *Handler) storeBytes(ctx context.Context, kind caeor.Kind, up caeor.Uploader, filename string, data []byte) (*caeor.Asset, error) {
+	asset, err := h.caeor.Upload(ctx, kind, up, filename, bytes.NewReader(data), int64(len(data)))
 	if err != nil {
-		return "", err
+		return nil, storeError(err)
 	}
-	req.Header.Set("Content-Type", mw.FormDataContentType())
+	return checkStoredAsset(asset)
+}
 
-	resp, err := h.httpClient.Do(req)
+// storeFile streams a spooled upload to Caeor without holding it in memory.
+func (h *Handler) storeFile(ctx context.Context, kind caeor.Kind, up caeor.Uploader, filename, path string) (*caeor.Asset, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("%w: opening spooled upload: %v", errUploadStorage, err)
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("%w: reading spooled upload: %v", errUploadStorage, err)
+	}
+	asset, err := h.caeor.Upload(ctx, kind, up, filename, f, st.Size())
+	if err != nil {
+		return nil, storeError(err)
+	}
+	return checkStoredAsset(asset)
+}
+
+// storeError names what a failed hand-over to Caeor was: the integrity
+// authority's refusal, or a storage failure.
+func storeError(err error) error {
+	if errors.Is(err, caeor.ErrBanned) {
+		return errMediaBanned
+	}
+	return fmt.Errorf("%w: %w", errUploadStorage, err)
+}
+
+// checkStoredAsset refuses an answer that resolved to a withdrawn original, or
+// to an asset the integrity authority is still holding.
+func checkStoredAsset(a *caeor.Asset) (*caeor.Asset, error) {
+	if a.Withdrawn {
+		return nil, errMediaWithdrawn
+	}
+	if a.Held() {
+		return nil, errUploadHeld
+	}
+	if a.Status == caeor.StatusFailed {
+		return nil, fmt.Errorf("%w: caeor could not process asset %s: %s", errUploadStorage, a.AssetID, a.Failure)
+	}
+	return a, nil
+}
+
+// spoolUpload copies an upload to a private temp file in the tus spool, so a
+// large file is never held in memory. A file over limit is errUploadTooLarge.
+// On every error nothing is left behind. Caeor hashes the bytes it receives.
+func spoolUpload(src io.Reader, limit int64) (path string, size int64, err error) {
+	if err := os.MkdirAll(tusTempDir, 0o700); err != nil {
+		return "", 0, fmt.Errorf("%w: %v", errUploadStorage, err)
+	}
+	f, err := os.CreateTemp(tusTempDir, "spool-*")
+	if err != nil {
+		return "", 0, fmt.Errorf("%w: %v", errUploadStorage, err)
+	}
+	path = f.Name()
+	size, err = io.Copy(f, io.LimitReader(src, limit+1))
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		removeSpooled(path)
+		return "", 0, fmt.Errorf("%w: %v", errUploadWrite, err)
+	}
+	if size > limit {
+		removeSpooled(path)
+		return "", 0, errUploadTooLarge
+	}
+	return path, size, nil
+}
+
+// removeSpooled deletes a spooled upload. Already gone is fine; anything else
+// is said, because a file that should not exist is still on disk.
+func removeSpooled(path string) {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		log.Printf("[upload] spooled file %s not removed: %v", path, err)
+	}
+}
+
+// ── Profile pictures ─────────────────────────────────────────────────────────
+
+// admitProfileImage is the one admission path for an avatar or a header:
+// magic number, then Caeor, which puts it to the integrity authority like any
+// upload (permanently hosted media gets the same gate a work does). Returns
+// the URL to store on the profile.
+func (h *Handler) admitProfileImage(ctx context.Context, user *model.User, kind caeor.Kind, filename string, data []byte) (string, error) {
+	up, err := uploaderOf(user)
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		return "", fmt.Errorf("caeor returned %d", resp.StatusCode)
+	if imageExtensionFor(data) == "" {
+		return "", errMediaUnsupported
 	}
-	var result struct {
-		Primary string `json:"primary"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	asset, err := h.storeBytes(ctx, kind, up, "image"+imageExtensionFor(data), data)
+	if err != nil {
 		return "", err
 	}
-	return result.Primary, nil
+	url := asset.ViewerURL()
+	if url == "" {
+		return "", fmt.Errorf("%w: caeor gave %s asset %s no viewer URL", errUploadStorage, kind, asset.AssetID)
+	}
+	return url, nil
+}
+
+// readProfileUpload reads one profile picture field, bounded.
+func readProfileUpload(r *http.Request, field string) ([]byte, string, error) {
+	file, fh, err := r.FormFile(field)
+	if err != nil {
+		return nil, "", err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, profileUploadMax+1))
+	if err != nil {
+		return nil, "", fmt.Errorf("%w: %v", errUploadWrite, err)
+	}
+	if len(data) > profileUploadMax {
+		return nil, "", errUploadTooLarge
+	}
+	return data, fh.Filename, nil
 }
 
 func (h *Handler) uploadAvatar(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseMultipartForm(10 << 20); err != nil {
-		http.Error(w, "file too large", http.StatusBadRequest)
-		return
-	}
-	user := h.userFromRequest(w, r)
-	file, fh, err := r.FormFile("avatar")
-	if err != nil {
-		http.Error(w, "no file", http.StatusBadRequest)
-		return
-	}
-	defer file.Close()
-
-	fileBytes, err := io.ReadAll(io.LimitReader(file, 10<<20))
-	if err != nil {
-		http.Error(w, "read error", http.StatusInternalServerError)
-		return
-	}
-
-	// An avatar is permanently hosted media and gets the same gate a work does.
-	avatarSum := sha256.Sum256(fileBytes)
-	if gerr := h.bannedContentGate(r.Context(), gateInput{
-		Kind:     scanclient.KindImage,
-		Filename: fh.Filename,
-		Data:     fileBytes,
-		SHA256:   hex.EncodeToString(avatarSum[:]),
-		PIALID:   user.PIALID,
-		Label:    "avatar-upload",
-	}); gerr != nil {
-		banGateHTTPError(w, gerr)
-		return
-	}
-
-	url, err := h.caeorUpload(fileBytes, fh.Filename, "avatar")
-	if err != nil {
-		// Caeor unavailable — fall back to direct storage
-		log.Printf("[caeor] unavailable, falling back: %v", err)
-		url, err = h.saveUpload(bytes.NewReader(fileBytes), fh.Filename, "avatars")
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-	}
-	if h.db != nil {
-		// Deliberate: the upload itself succeeded and the URL is still returned.
-		// Reported rather than swallowed so a profile that did not take the new
-		// avatar is visible in logs.
-		if err := dbpkg.SaveProfile(h.db, &model.ProfileSave{
-			UserID:    user.ID,
-			AvatarURL: url,
-			ThemeID:   user.ThemeID,
-		}); err != nil {
-			log.Printf("[media] avatar uploaded but not saved to profile for %s: %v", user.Handle, err)
-		} else {
-			go h.publishProfileFacets(user.ID)
-		}
-	}
-	// Bust cache so next page load reflects the new avatar.
-	if tok := GetSessionToken(r); tok != "" {
-		h.sessionCache.Delete(tok)
-	}
-	if handle := HandleFromCookie(r); handle != "" {
-		h.sessionCache.Delete("__handle__" + handle)
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"url": url})
+	h.uploadProfileImage(w, r, caeor.KindAvatar, "avatar")
 }
 
 func (h *Handler) uploadHeader(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseMultipartForm(10 << 20); err != nil {
+	h.uploadProfileImage(w, r, caeor.KindHeader, "header")
+}
+
+// uploadProfileImage is POST /upload/avatar and POST /upload/header.
+func (h *Handler) uploadProfileImage(w http.ResponseWriter, r *http.Request, kind caeor.Kind, field string) {
+	if err := r.ParseMultipartForm(profileUploadMax); err != nil {
 		http.Error(w, "file too large", http.StatusBadRequest)
 		return
 	}
 	user := h.userFromRequest(w, r)
-	file, fh, err := r.FormFile("header")
+	data, filename, err := readProfileUpload(r, field)
 	if err != nil {
-		http.Error(w, "no file", http.StatusBadRequest)
-		return
-	}
-	defer file.Close()
-
-	fileBytes, err := io.ReadAll(io.LimitReader(file, 10<<20))
-	if err != nil {
-		http.Error(w, "read error", http.StatusInternalServerError)
-		return
-	}
-
-	// A profile header is permanently hosted media and gets the same gate.
-	headerSum := sha256.Sum256(fileBytes)
-	if gerr := h.bannedContentGate(r.Context(), gateInput{
-		Kind:     scanclient.KindImage,
-		Filename: fh.Filename,
-		Data:     fileBytes,
-		SHA256:   hex.EncodeToString(headerSum[:]),
-		PIALID:   user.PIALID,
-		Label:    "header-upload",
-	}); gerr != nil {
-		banGateHTTPError(w, gerr)
-		return
-	}
-
-	url, err := h.caeorUpload(fileBytes, fh.Filename, "header")
-	if err != nil {
-		log.Printf("[caeor] unavailable, falling back: %v", err)
-		url, err = h.saveUpload(bytes.NewReader(fileBytes), fh.Filename, "headers")
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+		if errors.Is(err, http.ErrMissingFile) {
+			http.Error(w, "no file", http.StatusBadRequest)
 			return
 		}
+		uploadHTTPError(w, field, err)
+		return
 	}
-	if h.db != nil {
-		// Deliberate, same as the avatar above: reported, not fatal to the upload.
-		if err := dbpkg.SaveProfile(h.db, &model.ProfileSave{
-			UserID:    user.ID,
-			HeaderURL: url,
-			ThemeID:   user.ThemeID,
-		}); err != nil {
-			log.Printf("[media] header uploaded but not saved to profile for %s: %v", user.Handle, err)
-		}
+	url, err := h.admitProfileImage(r.Context(), user, kind, filename, data)
+	if err != nil {
+		uploadHTTPError(w, field, err)
+		return
 	}
-	if tok := GetSessionToken(r); tok != "" {
-		h.sessionCache.Delete(tok)
+	if h.db == nil {
+		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+		return
 	}
-	if handle := HandleFromCookie(r); handle != "" {
-		h.sessionCache.Delete("__handle__" + handle)
+	save := &model.ProfileSave{UserID: user.ID, ThemeID: user.ThemeID}
+	if kind == caeor.KindAvatar {
+		save.AvatarURL = url
+	} else {
+		save.HeaderURL = url
 	}
+	if err := dbpkg.SaveProfile(h.db, save); err != nil {
+		log.Printf("[media] %s stored for @%s but not saved to the profile: %v", field, user.Handle, err)
+		http.Error(w, "the picture could not be saved to your profile", http.StatusInternalServerError)
+		return
+	}
+	go h.publishProfileFacets(user.ID)
+	h.evictCachedAccount(user.ID, "")
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"url": url})
+	if err := json.NewEncoder(w).Encode(map[string]string{"url": url}); err != nil {
+		log.Printf("[media] encode %s answer: %v", field, err)
+	}
 }
+
+// ── Work media: the compose box ──────────────────────────────────────────────
 
 func (h *Handler) uploadPostMedia(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "405", 405)
+		http.Error(w, "405", http.StatusMethodNotAllowed)
 		return
 	}
-	// Memory ceiling for multipart parsing. Videos stream to disk beyond this.
+	// Memory ceiling for multipart parsing. Larger parts stream to disk.
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
 		http.Error(w, "could not parse upload", http.StatusBadRequest)
 		return
@@ -243,99 +323,56 @@ func (h *Handler) uploadPostMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
+	user := h.userFromRequest(nil, r)
 
-	// ── Video path: non-blocking — spool to disk, queue transcoding, return the
-	// upload id. The client polls /upload/tus/status/{upload_id} until the job
-	// is ready.
+	// ── Video: spooled, gated, then handed to Caeor in the background. The
+	// client polls /upload/tus/status/{upload_id} until the asset is ready.
 	if videoExtensions[ext] {
-		adm, err := h.admitVideoUpload(r.Context(), h.userFromRequest(nil, r), fh.Filename, file)
+		upload, err := h.admitVideoUpload(r.Context(), user, fh.Filename, file)
 		if err != nil {
-			if isGateRefusal(err) {
-				banGateHTTPError(w, err)
-				return
-			}
-			log.Printf("[upload] video %q: %v", fh.Filename, err)
-			if errors.Is(err, errUploadWrite) {
-				http.Error(w, "write error", http.StatusInternalServerError)
-				return
-			}
-			http.Error(w, "storage error", http.StatusInternalServerError)
+			uploadHTTPError(w, "video", err)
 			return
 		}
-		if adm.Duplicate != nil {
-			writeVideoDuplicate(w, adm.Duplicate)
-			return
-		}
+		w.Header().Set("Content-Type", "application/json")
 		if err := json.NewEncoder(w).Encode(map[string]string{
 			"kind":      "video_queued",
-			"upload_id": adm.Upload.ID,
+			"upload_id": upload.ID,
 		}); err != nil {
 			log.Printf("[upload] encode video_queued: %v", err)
 		}
 		return
 	}
 
-	// ── Image path ─────────────────────────────────────────────────────────────
-	fileBytes, err := io.ReadAll(io.LimitReader(file, 20<<20))
+	// ── Image ────────────────────────────────────────────────────────────────
+	fileBytes, err := io.ReadAll(io.LimitReader(file, imageUploadMax+1))
 	if err != nil {
 		http.Error(w, "read error", http.StatusInternalServerError)
 		return
 	}
-	mediaURL, gateErr, err := h.admitImageUpload(r, fh.Filename, ext, fileBytes)
-	if gateErr != nil {
-		banGateHTTPError(w, gateErr)
+	if len(fileBytes) > imageUploadMax {
+		uploadHTTPError(w, "image", errUploadTooLarge)
 		return
 	}
+	adm, err := h.admitImageUpload(r.Context(), user, fh.Filename, fileBytes)
 	if err != nil {
-		http.Error(w, "storage error", http.StatusInternalServerError)
+		uploadHTTPError(w, "image", err)
 		return
 	}
-
-	// Publish media.uploaded to Sitra Achra so Abraxas Shield can begin
-	// content scoring as soon as the asset is confirmed stored.
-	// postID is empty at compose-time (post not yet created) — skip in that case.
-	if postID := r.FormValue("post_id"); postID != "" {
-		uploaderPIAL := ""
-		if u := h.userFromRequest(nil, r); u != nil {
-			uploaderPIAL = u.PIALID
-		}
-		go h.publishMediaUploadedEvent(postID, mediaURL, uploaderPIAL)
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(adm.answer()); err != nil {
+		log.Printf("[upload] encode image answer: %v", err)
 	}
-
-	json.NewEncoder(w).Encode(map[string]string{"kind": "image", "url": mediaURL})
 }
 
 // ── What a file is, by its bytes ─────────────────────────────────────────────
 //
 // One sniff per medium, shared by the web compose box and the JSON lane. A
-// declared type is what the sender says; the magic number is what the file
-// is, and it is the bytes that pick the stored extension — a recorder that
-// names its output "voice.mp4" or "IMG_0412" gets the extension its bytes
-// earn, and a player reading that extension gets a file it can open.
+// declared type is what the sender says; the magic number is what the file is.
 
-// videoExtensions are the containers the transcoding brain accepts, by the
-// name the sender gave the file. Two families: ISO BMFF (.mp4 .mov .m4v) and
-// Matroska/EBML (.webm .mkv).
+// videoExtensions are the containers accepted as video, by the name the sender
+// gave the file. Two families: ISO BMFF (.mp4 .mov .m4v) and Matroska/EBML
+// (.webm .mkv).
 var videoExtensions = map[string]bool{".mp4": true, ".mov": true, ".webm": true, ".m4v": true, ".mkv": true}
-
-// The admission errors a caller turns into a status. Each lane words its own
-// answer; what happened is decided once, here.
-var (
-	// errMediaUnsupported: the bytes are not a type this route accepts.
-	errMediaUnsupported = errors.New("media type not accepted")
-	// errUploadStorage: the file could not be given a place on disk.
-	errUploadStorage = errors.New("upload storage error")
-	// errUploadWrite: the file had a place but could not be written there in full.
-	errUploadWrite = errors.New("upload write error")
-)
-
-// isGateRefusal reports whether err came out of the banned-content gate — a
-// registry match or an unanswerable lookup — as opposed to this server
-// failing at something else.
-func isGateRefusal(err error) bool {
-	return errors.Is(err, errMediaBanned) || errors.Is(err, errBanGateUnavailable)
-}
 
 // readMagic returns the first twelve bytes of an upload — enough for every
 // signature checked here — and rewinds, so the caller reads the file from the
@@ -353,9 +390,7 @@ func readMagic(file io.ReadSeeker) ([]byte, error) {
 }
 
 // isISOBMFF: an ftyp box at offset 4. MP4, MOV, M4V, M4A and 3GP all share
-// this framing; the brand inside the box tells them apart, and no route here
-// needs to, because the transcoder and the audio players read the box
-// themselves.
+// this framing.
 func isISOBMFF(head []byte) bool {
 	return len(head) >= 8 && string(head[4:8]) == "ftyp"
 }
@@ -396,12 +431,10 @@ func sniffVideo(head []byte) (string, bool) {
 	return "", false
 }
 
-// videoFilenameFor is the name a video is handed to the transcoder under. The
-// transcoder accepts a file by its extension, so the name must carry one it
-// knows: the declared extension is kept when it belongs to the container the
-// bytes prove, and replaced by that container's canonical extension when it
-// does not — a phone that uploads "IMG_0412" or "clip.tmp" still reaches the
-// transcoder as a file it accepts. false when the bytes are not video at all.
+// videoFilenameFor is the name a video is recorded under: the declared
+// extension is kept when it belongs to the container the bytes prove, and
+// replaced by that container's canonical extension when it does not. false
+// when the bytes are not video at all.
 func videoFilenameFor(declared string, head []byte) (string, bool) {
 	canonical, ok := sniffVideo(head)
 	if !ok {
@@ -422,9 +455,8 @@ func videoFilenameFor(declared string, head []byte) (string, bool) {
 // audioExtensionFor names the extension for an audio file by its bytes; ""
 // for anything that is not an accepted audio format. What the recorders send:
 // MediaRecorder gives WebM/Opus or Ogg/Opus; Safari's MediaRecorder gives AAC
-// in an ISO BMFF box (audio/mp4); iOS AVAudioRecorder gives AAC in an M4A box.
-// The last two are the same ftyp framing and store as .m4a. MP3 and raw ADTS
-// AAC are accepted for files people already have.
+// in an ISO BMFF box; iOS AVAudioRecorder gives AAC in an M4A box. MP3, FLAC,
+// WAV and raw ADTS AAC are accepted for files people already have.
 func audioExtensionFor(data []byte) string {
 	if len(data) < 4 {
 		return ""
@@ -434,6 +466,10 @@ func audioExtensionFor(data []byte) string {
 		return ".webm"
 	case string(data[:4]) == "OggS":
 		return ".ogg"
+	case string(data[:4]) == "fLaC":
+		return ".flac"
+	case len(data) >= 12 && string(data[:4]) == "RIFF" && string(data[8:12]) == "WAVE":
+		return ".wav"
 	case string(data[:3]) == "ID3":
 		return ".mp3"
 	case data[0] == 0xFF && (data[1] == 0xFB || data[1] == 0xF3 || data[1] == 0xF2):
@@ -448,280 +484,109 @@ func audioExtensionFor(data []byte) string {
 
 // ── Video admission ──────────────────────────────────────────────────────────
 
-// videoAdmission is what admitting one video came to. Exactly one field is
-// set: Upload when the file is new and now in the transcoding pipeline,
-// Duplicate when the same bytes are already on F33D3R and nothing was queued.
-type videoAdmission struct {
-	Upload    *tusUpload
-	Duplicate *videoRawDuplicate
-}
-
-// admitVideoUpload is the one admission path for a video, whichever route
-// received it: the web compose box (uploadPostMedia) and the native clients'
-// POST /api/v1/media/video both end here. The bytes have already been proved
-// a video container; filename carries an extension the transcoder accepts.
+// admitVideoUpload is the one admission path for a video sent whole (the web
+// compose box, the React With Video studio and the native clients' POST
+// /api/v1/media/video). The bytes have already been proved a video container.
 //
-// In order: the file is spooled to the tus temp directory (2 GiB cap) with its
-// SHA-256 taken on the way past, so a multi-gigabyte video is never held in
-// memory; the banned-content gate reads it from disk; the raw hash is looked
-// up against every video already admitted, and a match ends here with the
-// original's canonical media and no transcoding job; a new hash is recorded
-// so the next upload of the same bytes is caught at this same point; then the
-// upload is registered and handed to the transcoder in the background.
-//
-// A gate refusal comes back as the gate's own error (isGateRefusal); disk
-// failures are errUploadStorage or errUploadWrite. On every error the spooled
-// file is removed — nothing is kept for a video that was not admitted.
-func (h *Handler) admitVideoUpload(ctx context.Context, uploader *model.User, filename string, src io.Reader) (*videoAdmission, error) {
-	if err := os.MkdirAll(tusTempDir, 0755); err != nil {
-		return nil, fmt.Errorf("%w: %v", errUploadStorage, err)
-	}
-	uploadID := uuid.New().String()
-	tmpPath := filepath.Join(tusTempDir, uploadID)
-	tmpFile, err := os.Create(tmpPath)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %v", errUploadStorage, err)
-	}
-	hasher := sha256.New()
-	written, err := io.Copy(tmpFile, io.TeeReader(io.LimitReader(src, 2<<30), hasher))
-	if cerr := tmpFile.Close(); err == nil {
-		err = cerr
-	}
-	if err != nil {
-		removeSpooled(tmpPath)
-		return nil, fmt.Errorf("%w: %v", errUploadWrite, err)
-	}
-	videoSHA256 := hex.EncodeToString(hasher.Sum(nil))
-
-	var uploaderPIAL, uploaderHandle string
-	if uploader != nil {
-		uploaderPIAL = uploader.PIALID
-		uploaderHandle = uploader.Handle
-	}
-
-	// Synchronous, before the transcoding brain or Caeor receives the file.
-	// Nothing is stored on a match, and nothing is admitted on an unknown
-	// verdict.
-	if gerr := h.bannedContentGate(ctx, gateInput{
-		Kind:     scanclient.KindVideo,
-		Filename: filename,
-		Path:     tmpPath,
-		SHA256:   videoSHA256,
-		PIALID:   uploaderPIAL,
-		Label:    "video-upload",
-	}); gerr != nil {
-		removeSpooled(tmpPath)
-		return nil, gerr
-	}
-
-	if h.db != nil {
-		// Duplicate check, same architecture as image dedup: the raw SHA-256 is
-		// the key, one indexed lookup. Dedup is a convenience, not a safety
-		// gate — a lookup failure lets the upload continue — but the failure is
-		// recorded rather than dropped.
-		dup, dupErr := h.lookupVideoRawDuplicate(videoSHA256, uploaderHandle)
-		if dupErr != nil {
-			log.Printf("[dedup] video raw-hash lookup for pial=%s: %v", uploaderPIAL, dupErr)
-		}
-		if dup != nil {
-			removeSpooled(tmpPath)
-			log.Printf("[dedup] video duplicate blocked: uploader=@%s original=@%s work=%s", uploaderHandle, dup.OriginalHandle, dup.WorkID)
-			return &videoAdmission{Duplicate: dup}, nil
-		}
-		if serr := dbpkg.StoreVideoRawHash(h.db, videoSHA256, uploaderPIAL, uploaderHandle); serr != nil {
-			log.Printf("[dedup] video raw-hash store failed for pial=%s: %v", uploaderPIAL, serr)
-		}
-	}
-
-	upload := &tusUpload{
-		ID:             uploadID,
-		Length:         written,
-		Offset:         written,
-		Filename:       filename,
-		Created:        time.Now(),
-		UploaderPIAL:   uploaderPIAL,
-		UploaderHandle: uploaderHandle,
-		path:           tmpPath,
-	}
-	globalTusStore.mu.Lock()
-	globalTusStore.uploads[uploadID] = upload
-	globalTusStore.mu.Unlock()
-
-	go h.tusTriggerTranscode(upload)
-	return &videoAdmission{Upload: upload}, nil
-}
-
-// removeSpooled deletes a spooled upload that was not admitted. Already gone
-// is fine; anything else is said, because a file that should not exist is
-// still on disk.
-func removeSpooled(path string) {
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		log.Printf("[upload] spooled file %s not removed: %v", path, err)
-	}
-}
-
-// ── Video dedup ──────────────────────────────────────────────────────────────
-
-// videoRawDuplicate is a video whose raw bytes are already on F33D3R: who
-// uploaded it first, the work it became, and that work's canonical media, so
-// a second poster references the original instead of storing a copy. The
-// media fields stay empty while the hash is recorded but not yet linked to a
-// work, or the work is gone.
-type videoRawDuplicate struct {
-	OriginalHandle string
-	WorkID         string
-	IsSelf         bool // the first uploader is the one asking
-	MasterURL      string
-	WatermarkedURL string
-	PosterURL      string
-	DurationSecs   float32
-	Width, Height  int
-}
-
-// Status is the word the web's dedup answers have always carried: the person
-// re-uploading their own video is told something different from the person
-// re-uploading somebody else's.
-func (d *videoRawDuplicate) Status() string {
-	if d.IsSelf {
-		return "self_duplicate"
-	}
-	return "duplicate"
-}
-
-// lookupVideoRawDuplicate is the one raw-hash lookup behind every video dedup
-// answer: the upload itself and both pre-upload probes. nil, nil when the
-// bytes are new. A duplicate whose canonical media could not be read is still
-// a duplicate — it comes back with the error beside it, so the caller can
-// refuse the copy and say why the URLs are missing.
-func (h *Handler) lookupVideoRawDuplicate(sha256hex, viewerHandle string) (*videoRawDuplicate, error) {
-	origHandle, workID, found, err := dbpkg.CheckVideoRawHash(h.db, sha256hex)
+// In order: the file is spooled (2 GiB cap), so a multi-gigabyte video is
+// never held in memory; then the upload is recorded and streamed to Caeor in
+// the background (handOffVideo), where the integrity authority judges it, and
+// the caller answers with the upload id the client polls. A refusal reaches the
+// client through that poll. On every error the spooled file is removed.
+func (h *Handler) admitVideoUpload(ctx context.Context, uploader *model.User, filename string, src io.Reader) (*tusUpload, error) {
+	up, err := uploaderOf(uploader)
 	if err != nil {
 		return nil, err
 	}
-	if !found {
-		return nil, nil
+	path, size, err := spoolUpload(src, videoUploadMax)
+	if err != nil {
+		return nil, err
 	}
-	d := &videoRawDuplicate{OriginalHandle: origHandle, WorkID: workID, IsSelf: origHandle == viewerHandle}
-	if workID == "" {
-		return d, nil
-	}
-	// video_raw_hashes.post_id holds a work id (legacy column name). A deleted
-	// work has no canonical media to point at.
-	err = h.db.QueryRow(`
-		SELECT COALESCE(video_master_url,''), COALESCE(video_watermarked_url,''),
-		       COALESCE(video_poster_url,''),
-		       COALESCE(video_duration_secs,0)::REAL, COALESCE(video_width,0), COALESCE(video_height,0)
-		FROM works WHERE id = $1 AND deleted_at IS NULL`, workID).
-		Scan(&d.MasterURL, &d.WatermarkedURL, &d.PosterURL, &d.DurationSecs, &d.Width, &d.Height)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return d, fmt.Errorf("canonical media for work %s: %w", workID, err)
-	}
-	return d, nil
+	upload := newTusUpload(up, filename, path, size)
+	upload.complete = true
+	globalTusStore.put(upload)
+	go h.handOffVideo(upload, caeor.KindVideo)
+	return upload, nil
 }
 
-// videoDuplicateBody is the dedup answer the web compose box reads, from the
-// upload and from both pre-upload probes alike.
-type videoDuplicateBody struct {
-	Status         string  `json:"status"`
-	OriginalHandle string  `json:"original_handle"`
-	OriginalPostID string  `json:"original_post_id"`
-	MasterURL      string  `json:"master_url"`
-	WatermarkedURL string  `json:"watermarked_mp4_url"`
-	PosterURL      string  `json:"poster_url"`
-	DurationSecs   float32 `json:"duration_secs"`
-	Width          int     `json:"width"`
-	Height         int     `json:"height"`
+// ── Image admission ──────────────────────────────────────────────────────────
+
+// imageAdmission is what admitting one image came to.
+type imageAdmission struct {
+	URL   string
+	Asset *caeor.Asset
+	// OriginalHandle names the original uploader when the bytes were an exact
+	// duplicate of somebody else's image; Self when they were the uploader's own.
+	OriginalHandle string
+	Duplicate      bool
+	Self           bool
 }
 
-func writeVideoDuplicate(w http.ResponseWriter, d *videoRawDuplicate) {
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(videoDuplicateBody{
-		Status:         d.Status(),
-		OriginalHandle: d.OriginalHandle,
-		OriginalPostID: d.WorkID,
-		MasterURL:      d.MasterURL,
-		WatermarkedURL: d.WatermarkedURL,
-		PosterURL:      d.PosterURL,
-		DurationSecs:   d.DurationSecs,
-		Width:          d.Width,
-		Height:         d.Height,
-	}); err != nil {
-		log.Printf("[dedup] encode duplicate answer: %v", err)
+// answer is the compose box's image answer.
+func (a *imageAdmission) answer() map[string]string {
+	out := map[string]string{"kind": "image", "url": a.URL}
+	switch {
+	case a.Duplicate && a.Self:
+		out["status"] = "self_duplicate"
+	case a.Duplicate:
+		out["status"] = "duplicate"
+		out["original_handle"] = a.OriginalHandle
 	}
+	return out
 }
 
 // admitImageUpload is the one admission path for a still image, whichever
-// route received it: the web compose box (uploadPostMedia) and the native
-// clients' POST /api/v1/media both end here. The bytes have already been
-// checked against their magic number; ext names the type they proved to be.
-//
-// In order: the banned-content gate (a refusal comes back as gateErr and
-// nothing is stored), storage in Caeor with the local-disk fallback, then the
-// forensic records — canonical ownership for lineage attribution and the raw
-// SHA-256 behind duplicate detection and leak attribution. A storage failure
-// is err; the forensic writes are logged, never fatal, and never silent.
-func (h *Handler) admitImageUpload(r *http.Request, filename, ext string, fileBytes []byte) (mediaURL string, gateErr error, err error) {
-	hash := sha256.Sum256(fileBytes)
-	imgSHA256 := hex.EncodeToString(hash[:])
-
-	uploader := h.userFromRequest(nil, r)
-	uploaderPIAL, uploaderHandle := "", ""
-	if uploader != nil {
-		uploaderPIAL = uploader.PIALID
-		uploaderHandle = uploader.Handle
-	}
-
-	// Synchronous, before Caeor receives the file. Nothing is stored on a
-	// match, and nothing is admitted on an unknown verdict from the
-	// exact-bytes layer.
-	if gerr := h.bannedContentGate(r.Context(), gateInput{
-		Kind:     scanclient.KindImage,
-		Filename: filename,
-		Data:     fileBytes,
-		SHA256:   imgSHA256,
-		PIALID:   uploaderPIAL,
-		Label:    "image-upload",
-	}); gerr != nil {
-		return "", gerr, nil
-	}
-
-	mediaURL, err = h.caeorUpload(fileBytes, filename, "post")
+// route received it: the web compose box and the native clients' POST
+// /api/v1/media. In order: magic number, then Caeor, which puts the bytes to
+// the integrity authority before they can be shown. An exact-byte duplicate of somebody else's
+// image comes back as their asset: the work that uses it is a credited
+// reference, and the original uploader keeps the credit.
+func (h *Handler) admitImageUpload(ctx context.Context, uploader *model.User, filename string, data []byte) (*imageAdmission, error) {
+	up, err := uploaderOf(uploader)
 	if err != nil {
-		log.Printf("[caeor] unavailable for post media, falling back: %v", err)
-		dir := filepath.Join("web", "static", "uploads", "posts")
-		os.MkdirAll(dir, 0755)
-		name := uuid.New().String() + ext
-		if werr := os.WriteFile(filepath.Join(dir, name), fileBytes, 0644); werr != nil {
-			return "", nil, werr
-		}
-		mediaURL = "/static/uploads/posts/" + name
+		return nil, err
 	}
-
-	// Canonical ownership so lineage attribution works when a different user
-	// uploads the same image later. ON CONFLICT DO NOTHING preserves the first
-	// uploader's ownership even if called multiple times for the same URL.
-	if h.db != nil && uploader != nil {
-		if cerr := dbpkg.CreateCanonicalImage(h.db, uploader.ID, uploader.PIALID, mediaURL); cerr != nil {
-			log.Printf("[canonical] image register error for %s: %v", mediaURL, cerr)
-		}
-		// The forensic hash behind duplicate detection and leak attribution.
-		// Not fatal to the upload, but never lost quietly.
-		if herr := dbpkg.StoreImageRawHash(h.db, imgSHA256, uploaderPIAL, uploaderHandle, mediaURL); herr != nil {
-			log.Printf("[media] raw image hash NOT stored for %s (%s): %v", uploaderHandle, mediaURL, herr)
+	if imageExtensionFor(data) == "" {
+		return nil, errMediaUnsupported
+	}
+	asset, err := h.storeBytes(ctx, caeor.KindImage, up, "image"+imageExtensionFor(data), data)
+	if err != nil {
+		return nil, err
+	}
+	adm := &imageAdmission{URL: asset.ViewerURL(), Asset: asset}
+	if adm.URL == "" {
+		return nil, fmt.Errorf("%w: caeor gave image asset %s no viewer URL", errUploadStorage, asset.AssetID)
+	}
+	if asset.DuplicateOf != nil || asset.CreditTo != nil {
+		// An exact duplicate resolves to the original asset; an ownership
+		// finding names the original owner on this new asset. Either way the
+		// credit goes to the person the bytes came from.
+		owner := asset.CreditPIAL()
+		adm.Duplicate = true
+		adm.Self = owner == up.PIAL
+		if !adm.Self {
+			handle, _, err := dbpkg.UploaderCredit(h.db, owner)
+			if err != nil {
+				return nil, fmt.Errorf("%w: %v", errUploadStorage, err)
+			}
+			adm.OriginalHandle = handle
 		}
 	}
-	return mediaURL, nil, nil
+	go h.publishMediaUploadedEvent("", adm.URL, up.PIAL)
+	return adm, nil
 }
 
+// ── Voice ────────────────────────────────────────────────────────────────────
+
 // uploadVoicePost accepts a recorded audio blob for a voice post and answers
-// {kind:"voice", url:"..."}. The duration is the recorder's to report — this
-// server does not probe audio — and the compose box sends it with the post.
+// {kind:"voice", url:"..."}. The duration is the recorder's to report, and the
+// compose box sends it with the post.
 func (h *Handler) uploadVoicePost(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "405", 405)
+		http.Error(w, "405", http.StatusMethodNotAllowed)
 		return
 	}
-	if err := r.ParseMultipartForm(50 << 20); err != nil {
+	if err := r.ParseMultipartForm(voiceUploadMax); err != nil {
 		http.Error(w, "could not parse upload", http.StatusBadRequest)
 		return
 	}
@@ -731,356 +596,139 @@ func (h *Handler) uploadVoicePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer file.Close()
-
-	data, err := io.ReadAll(io.LimitReader(file, 50<<20))
+	data, err := io.ReadAll(io.LimitReader(file, voiceUploadMax+1))
 	if err != nil {
 		http.Error(w, "read error", http.StatusInternalServerError)
 		return
 	}
-
-	mediaURL, err := h.admitVoiceUpload(r.Context(), h.userFromRequest(nil, r), fh.Filename, data)
-	if err != nil {
-		switch {
-		case errors.Is(err, errMediaUnsupported):
-			http.Error(w, "unsupported or invalid audio file", http.StatusBadRequest)
-		case isGateRefusal(err):
-			banGateHTTPError(w, err)
-		default:
-			log.Printf("[upload] voice %q: %v", fh.Filename, err)
-			http.Error(w, "storage error", http.StatusInternalServerError)
-		}
+	if len(data) > voiceUploadMax {
+		uploadHTTPError(w, "voice", errUploadTooLarge)
 		return
 	}
-
+	mediaURL, err := h.admitVoiceUpload(r.Context(), h.userFromRequest(nil, r), fh.Filename, data)
+	if err != nil {
+		uploadHTTPError(w, "voice", err)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(map[string]string{
-		"kind": "voice",
-		"url":  mediaURL,
-	}); err != nil {
+	if err := json.NewEncoder(w).Encode(map[string]string{"kind": "voice", "url": mediaURL}); err != nil {
 		log.Printf("[upload] encode voice answer: %v", err)
 	}
 }
 
 // admitVoiceUpload is the one admission path for voice audio, whichever route
-// received it: the web recorder (uploadVoicePost) and the native clients'
-// POST /api/v1/media/voice both end here.
-//
-// The bytes decide the type and the stored extension (audioExtensionFor);
-// anything that is not a recognised audio container is errMediaUnsupported,
-// so an executable or a ZIP named voice.webm is never stored. Then the
-// banned-content gate — synchronous, pre-storage; the audio fingerprint layer
-// applies — then local storage, then the media.uploaded event to Sitra Achra
-// so Abraxas Shield can begin scoring. A disk failure is errUploadStorage.
+// received it: the web recorder and the native clients' POST /api/v1/media/voice.
+// The bytes decide the type; then Caeor, which puts the audio to the
+// integrity authority.
 func (h *Handler) admitVoiceUpload(ctx context.Context, uploader *model.User, filename string, data []byte) (string, error) {
-	ext := audioExtensionFor(data)
-	if ext == "" {
+	return h.admitAudio(ctx, uploader, caeor.KindVoice, filename, data, "voice-upload")
+}
+
+// admitAudio stores one audio file of kind (a voice recording or a music
+// track) and returns the audio object Caeor serves.
+func (h *Handler) admitAudio(ctx context.Context, uploader *model.User, kind caeor.Kind, filename string, data []byte, label string) (string, error) {
+	if audioExtensionFor(data) == "" {
 		return "", errMediaUnsupported
 	}
-	uploaderPIAL := ""
-	if uploader != nil {
-		uploaderPIAL = uploader.PIALID
-	}
-
-	sum := sha256.Sum256(data)
-	if gerr := h.bannedContentGate(ctx, gateInput{
-		Kind:     scanclient.KindAudio,
-		Filename: filename,
-		Data:     data,
-		SHA256:   hex.EncodeToString(sum[:]),
-		PIALID:   uploaderPIAL,
-		Label:    "voice-upload",
-	}); gerr != nil {
-		return "", gerr
-	}
-
-	dir := filepath.Join("web", "static", "uploads", "voice")
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return "", fmt.Errorf("%w: %v", errUploadStorage, err)
-	}
-	name := uuid.New().String() + ext
-	if err := os.WriteFile(filepath.Join(dir, name), data, 0644); err != nil {
-		return "", fmt.Errorf("%w: %v", errUploadStorage, err)
-	}
-	mediaURL := "/static/uploads/voice/" + name
-
-	if uploaderPIAL != "" {
-		go h.publishMediaUploadedEvent("", mediaURL, uploaderPIAL)
-	}
-	return mediaURL, nil
-}
-
-func (h *Handler) saveUpload(file io.Reader, filename, folder string) (string, error) {
-	ext := strings.ToLower(filepath.Ext(filename))
-	allowed := map[string]bool{".jpg": true, ".jpeg": true, ".png": true, ".gif": true, ".webp": true}
-	if !allowed[ext] {
-		return "", fmt.Errorf("unsupported file type %q — use jpg, png, gif or webp", ext)
-	}
-	dir := filepath.Join("web", "static", "uploads", folder)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return "", err
-	}
-	name := uuid.New().String() + ext
-	dst, err := os.Create(filepath.Join(dir, name))
+	up, err := uploaderOf(uploader)
 	if err != nil {
 		return "", err
 	}
-	defer dst.Close()
-	if _, err := io.Copy(dst, io.LimitReader(file, 10<<20)); err != nil {
+	asset, err := h.storeBytes(ctx, kind, up, audioFilename(filename, data), data)
+	if err != nil {
 		return "", err
 	}
-	return "/static/uploads/" + folder + "/" + name, nil
+	url := asset.ViewerURL()
+	if url == "" {
+		return "", fmt.Errorf("%w: caeor gave %s asset %s no audio URL", errUploadStorage, kind, asset.AssetID)
+	}
+	go h.publishMediaUploadedEvent("", url, up.PIAL)
+	return url, nil
 }
 
-// checkVideoHashHandler is the pre-upload hash gate for video files.
-// The client computes SHA-256 locally and posts only the hex here.
-// If the hash matches a known file the upload is skipped entirely.
-// POST /upload/check-video-hash  body: sha256=<hex>
-func (h *Handler) checkVideoHashHandler(w http.ResponseWriter, r *http.Request) {
-	user := h.userFromRequest(w, r)
-	if user == nil {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
+// audioFilename is the name an audio file is handed to Caeor under: the bytes
+// pick the extension, whatever the recorder called the file.
+func audioFilename(declared string, data []byte) string {
+	ext := audioExtensionFor(data)
+	base := strings.TrimSuffix(filepath.Base(declared), filepath.Ext(declared))
+	if base == "" || base == "." {
+		base = "audio"
 	}
-	if h.db == nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"status":"unknown"}`))
-		return
-	}
-
-	sha256hex := r.FormValue("sha256")
-	if sha256hex == "" {
-		http.Error(w, "sha256 required", http.StatusBadRequest)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-
-	dup, err := h.lookupVideoRawDuplicate(sha256hex, user.Handle)
-	if err != nil {
-		// Fail-open: the upload proceeds rather than blocking on a DB error,
-		// and the error is recorded. A duplicate found before the error is
-		// still reported, with whatever of its media could be read.
-		log.Printf("[check-video-hash] %v", err)
-	}
-	if dup == nil {
-		w.Write([]byte(`{"status":"unknown"}`))
-		return
-	}
-	writeVideoDuplicate(w, dup)
+	return base + ext
 }
 
-// checkImageHashHandler is the pre-upload hash gate for image files.
-// The client computes SHA-256 locally and posts only the hex here.
-// If the hash matches a known file the canonical URL is returned immediately.
-// POST /upload/check-image-hash  body: sha256=<hex>
-func (h *Handler) checkImageHashHandler(w http.ResponseWriter, r *http.Request) {
-	user := h.userFromRequest(w, r)
-	if user == nil {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-	if h.db == nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"status":"unknown"}`))
-		return
-	}
+// ── Encrypted (marketplace paid content) ─────────────────────────────────────
 
-	sha256hex := r.FormValue("sha256")
-	if sha256hex == "" {
-		http.Error(w, "sha256 required", http.StatusBadRequest)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-
-	// Banned-hash gate — the exact-bytes layer of the upload gate, on a digest
-	// the client computed. The perceptual layer cannot run on a digest, so it
-	// runs when the bytes themselves arrive at the upload handler. A lookup
-	// failure refuses the probe rather than reporting an unknown file.
-	if gerr := h.bannedContentGate(r.Context(), gateInput{
-		Kind:     scanclient.KindImage,
-		Filename: "(pre-upload probe)",
-		SHA256:   sha256hex,
-		PIALID:   user.PIALID,
-		Label:    "check-image-hash",
-	}); gerr != nil {
-		if errors.Is(gerr, errMediaBanned) {
-			http.Error(w, "This content cannot be uploaded", http.StatusForbidden)
-			return
-		}
-		banGateHTTPError(w, gerr)
-		return
-	}
-
-	mediaURL, origHandle, found, err := dbpkg.CheckImageRawHash(h.db, sha256hex)
-	if err != nil {
-		log.Printf("[check-image-hash] DB error: %v", err)
-		w.Write([]byte(`{"status":"unknown"}`))
-		return
-	}
-	if !found {
-		w.Write([]byte(`{"status":"unknown"}`))
-		return
-	}
-
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":          "duplicate",
-		"url":             mediaURL,
-		"original_handle": origHandle,
-	})
-}
-
-// checkVideoDedupHandler is the pre-upload gate for video dedup.
-// The client hashes the full file locally before starting the TUS upload and
-// calls this endpoint. If the raw SHA-256 is already in video_raw_hashes the
-// upload is blocked before a single byte is transferred — matching the image
-// dedup architecture exactly.
-// POST /upload/check-dedup  body: {"sha256":"<hex>","type":"video"}
-func (h *Handler) checkVideoDedupHandler(w http.ResponseWriter, r *http.Request) {
-	user := h.userFromRequest(w, r)
-	if user == nil {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-	if h.db == nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"status":"clean"}`))
-		return
-	}
-
-	var req struct {
-		SHA256 string `json:"sha256"`
-		Type   string `json:"type"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.SHA256 == "" {
-		http.Error(w, "sha256 required", http.StatusBadRequest)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-
-	dup, err := h.lookupVideoRawDuplicate(req.SHA256, user.Handle)
-	if err != nil {
-		// Fail-open: the upload proceeds rather than blocking on a DB error,
-		// and the error is recorded. A duplicate found before the error is
-		// still reported, with whatever of its media could be read.
-		log.Printf("[check-dedup] %v", err)
-	}
-	if dup == nil {
-		w.Write([]byte(`{"status":"clean"}`))
-		return
-	}
-	writeVideoDuplicate(w, dup)
-}
-
-// duplicateVideoInfo holds the result of a synchronous duplicate check.
-// All fields match the required JSON response shape for the compose box.
-type duplicateVideoInfo struct {
-	// Legacy / internal fields kept for backward-compat with tusJobStatus.
-	OriginalPIAL      string
-	OriginalHandle    string
-	OriginalPostID    string // work UUID (legacy column name)
-	ExistingMasterURL string
-	ExistingPosterURL string
-	DurationSecs      float64
-	Width             int
-	Height            int
-	// Extended fields — populated by CheckVideoDuplicateByWork.
-	CreatorName string
-	WorkID      string
-}
-
-// checkVideoDuplicateByBytes checks whether the raw file bytes match a video
-// already stored on F33D3R by comparing SHA-256 against video_raw_hashes.
-// Returns nil when the file is original (not a duplicate).
-// Fail-open: any DB error returns nil so transcoding proceeds.
-func (h *Handler) checkVideoDuplicateByBytes(fileBytes []byte, filename, uploaderPIAL, uploaderHandle string) *duplicateVideoInfo {
-	if h.db == nil || len(fileBytes) == 0 {
-		return nil
-	}
-	hasher := sha256.New()
-	hasher.Write(fileBytes)
-	rawHash := hex.EncodeToString(hasher.Sum(nil))
-
-	res, err := dbpkg.CheckVideoDuplicateByWork(h.db, rawHash)
-	if err != nil {
-		log.Printf("[dedup] CheckVideoDuplicateByWork error: %v", err)
-		return nil // fail-open
-	}
-	if res == nil {
-		return nil // not a duplicate
-	}
-	return &duplicateVideoInfo{
-		OriginalPIAL:      res.CreatorPIAL,
-		OriginalHandle:    res.CreatorHandle,
-		OriginalPostID:    res.WorkID,
-		ExistingMasterURL: res.MasterURL,
-		ExistingPosterURL: res.PosterURL,
-		DurationSecs:      res.DurationSecs,
-		Width:             res.Width,
-		Height:            res.Height,
-		CreatorName:       res.CreatorName,
-		WorkID:            res.WorkID,
-	}
-}
-
-// uploadEncryptedMedia stores a client-encrypted blob (marketplace paid content).
-// The bytes are already AES-256-GCM encrypted by the browser, so the server stays
-// zero-knowledge; it only persists opaque
-// ciphertext and hands back a URL. No server-side processing. Up to 1 GiB.
-// Returns {"url": "/static/uploads/encrypted/<uuid>.enc"}
-// POST /api/media/upload-encrypted
+// uploadEncryptedMedia stores a client-encrypted blob (marketplace paid
+// content). The bytes are AES-256-GCM ciphertext made in the browser, so the
+// server stays zero-knowledge: the blob is registered with Caeor as kind
+// encrypted, exactly as it arrived, and the content key is delivered only on
+// payment confirmation. Caeor puts the ciphertext to the integrity authority
+// like every upload; only its exact bytes can be matched.
+// Up to 1 GiB, streamed — never held in memory.
+// POST /api/media/upload-encrypted → {"url": "..."}
 func (h *Handler) uploadEncryptedMedia(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
 	user := h.userFromRequest(w, r)
-	if user == nil || user.PIALID == "" {
-		w.Header().Set("Content-Type", "application/json")
+	up, err := uploaderOf(user)
+	if err != nil {
 		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 		return
 	}
-	// Keep only 32 MB in memory; anything larger spills to a temp file, so a 600 MB–1 GiB encrypted
-	// blob streams through without buffering the whole payload in RAM.
+	// Keep only 32 MB in memory; anything larger spills to a temp file.
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
-		w.Header().Set("Content-Type", "application/json")
 		http.Error(w, `{"error":"file_too_large"}`, http.StatusBadRequest)
 		return
 	}
 	file, _, err := r.FormFile("file")
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
 		http.Error(w, `{"error":"no_file"}`, http.StatusBadRequest)
 		return
 	}
 	defer file.Close()
 
-	dir := filepath.Join("web", "static", "uploads", "encrypted")
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		http.Error(w, `{"error":"storage_error"}`, http.StatusInternalServerError)
-		return
-	}
-	name := uuid.New().String() + ".enc"
-	dst, err := os.Create(filepath.Join(dir, name))
+	path, _, err := spoolUpload(file, encryptedUploadMax)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
+		if errors.Is(err, errUploadTooLarge) {
+			http.Error(w, `{"error":"file_too_large"}`, http.StatusRequestEntityTooLarge)
+			return
+		}
+		log.Printf("[upload] encrypted spool for @%s: %v", up.Handle, err)
 		http.Error(w, `{"error":"storage_error"}`, http.StatusInternalServerError)
 		return
 	}
-	defer dst.Close()
-	if _, err := io.Copy(dst, io.LimitReader(file, 1<<30)); err != nil { // 1 GiB ceiling (clears the 600 MB floor)
-		w.Header().Set("Content-Type", "application/json")
-		http.Error(w, `{"error":"write_error"}`, http.StatusInternalServerError)
+	defer removeSpooled(path)
+
+	asset, err := h.storeFile(r.Context(), caeor.KindEncrypted, up, "content.bin", path)
+	if errors.Is(err, errMediaBanned) {
+		http.Error(w, `{"error":"content_refused"}`, http.StatusUnprocessableEntity)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{
-		"url": "/static/uploads/encrypted/" + name,
-	})
+	if errors.Is(err, errUploadHeld) {
+		http.Error(w, `{"error":"held_for_review"}`, http.StatusConflict)
+		return
+	}
+	if err != nil {
+		log.Printf("[upload] encrypted for @%s: %v", up.Handle, err)
+		http.Error(w, `{"error":"storage_error"}`, http.StatusInternalServerError)
+		return
+	}
+	url := asset.ViewerURL()
+	if url == "" {
+		log.Printf("[upload] encrypted asset %s for @%s has no URL", asset.AssetID, up.Handle)
+		http.Error(w, `{"error":"storage_error"}`, http.StatusInternalServerError)
+		return
+	}
+	if err := json.NewEncoder(w).Encode(map[string]string{"url": url}); err != nil {
+		log.Printf("[upload] encode encrypted answer: %v", err)
+	}
 }
 
 // publishMediaUploadedEvent fires a content.events message to Sitra Achra
-// after a media asset is confirmed stored in Caeor.
+// after a media asset is confirmed stored in Caeor, so Abraxas Shield begins
+// scoring it.
 func (h *Handler) publishMediaUploadedEvent(postID, mediaURL, pialID string) {
-	if h.sitra == nil {
+	if h.sitra == nil || pialID == "" {
 		return
 	}
 	payload, err := json.Marshal(map[string]string{
@@ -1090,6 +738,7 @@ func (h *Handler) publishMediaUploadedEvent(postID, mediaURL, pialID string) {
 		"pial_id":   pialID,
 	})
 	if err != nil {
+		log.Printf("[sitra] encode media.uploaded for %s: %v", mediaURL, err)
 		return
 	}
 	h.sitra.Publish(context.Background(), sitra.TopicContent, []byte(pialID), payload)

@@ -521,17 +521,17 @@ async fn apply_answers_one_verdict_per_op_and_holds_order() {
     assert_eq!(outcomes(&r), ["applied", "applied", "already", "refused", "applied"], "{r:?}");
     assert_eq!(r[3].1.as_deref(), Some("edge_cycle"));
 
-    // A handle bound by the registrar, replayed, then claimed for someone else.
+    // A handle bound by the registrar (elohim-veni since 0010), replayed, then claimed for someone else.
     let bind = |handle: &str, to: &str| {
         op("name", json!({"node_name": to, "name": handle, "namespace": "handle"}))
     };
-    let r = apply(&db, "registry-brain", vec![
+    let r = apply(&db, "elohim-veni", vec![
         bind("handle:alice", "pial:alice"),
         bind("handle:alice", "pial:alice"),
     ]).await;
     assert_eq!(outcomes(&r), ["applied", "already"], "{r:?}");
     apply(&db, "elohim-veni", vec![node("identity", "pial:mallory")]).await;
-    let r = apply(&db, "registry-brain", vec![
+    let r = apply(&db, "elohim-veni", vec![
         bind("handle:alice", "pial:mallory"),
         bind("handle:other", "pial:mallory"),
     ]).await;
@@ -539,7 +539,7 @@ async fn apply_answers_one_verdict_per_op_and_holds_order() {
     assert_eq!(r[0].1.as_deref(), Some("name_held_elsewhere"));
 
     // A bind whose node is not registered yet is a dependency, not a refusal.
-    let r = apply(&db, "registry-brain", vec![bind("handle:ghost", "pial:nobody")]).await;
+    let r = apply(&db, "elohim-veni", vec![bind("handle:ghost", "pial:nobody")]).await;
     assert_eq!(outcomes(&r), ["retry"]);
     assert_eq!(r[0].1.as_deref(), Some("node_unresolved"));
 

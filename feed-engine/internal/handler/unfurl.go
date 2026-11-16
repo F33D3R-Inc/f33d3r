@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/netip"
@@ -277,25 +278,33 @@ func fetchOGMetadata(rawURL string) (*model.LinkPreview, error) {
 // preview from link_previews by the URL it extracts from the body itself. One
 // cache, keyed by the thing it caches.
 
-// triggerWorkLinkPreview is called as a goroutine after a work is created.
-// It fetches OG metadata for the first external URL in body and stores it in the
-// link_previews cache so EnrichWorksWithLinkPreviews can serve it at display time.
-// YouTube URLs are now supported via the oEmbed API in fetchOGMetadata.
-func (h *Handler) triggerWorkLinkPreview(body string) {
-	if h.db == nil {
-		return
-	}
+// triggerWorkLinkPreview is the link_preview obligation: it fetches the Open
+// Graph metadata of the first external URL in a body into the link_previews cache
+// EnrichWorksWithLinkPreviews serves from. A site that cannot be read is an
+// answer — the work has no preview — not a failure; the cache failing is a
+// failure, and is retried.
+func (h *Handler) triggerWorkLinkPreview(body string) error {
 	rawURL := extractFirstExternalURL(body)
 	if rawURL == "" {
-		return
+		return nil
 	}
-	// Already cached — nothing to do.
-	if cached, err := dbpkg.GetCachedLinkPreview(h.db, rawURL); err == nil && cached != nil {
-		return
+	cached, err := dbpkg.GetCachedLinkPreview(h.db, rawURL)
+	if err != nil {
+		return fmt.Errorf("link preview cache lookup %s: %w", rawURL, err)
+	}
+	if cached != nil {
+		return nil
 	}
 	preview, err := fetchOGMetadata(rawURL)
-	if err != nil || preview == nil {
-		return
+	if err != nil {
+		log.Printf("[unfurl] %s has no preview: %v", rawURL, err)
+		return nil
 	}
-	_ = dbpkg.UpsertLinkPreview(h.db, preview)
+	if preview == nil {
+		return nil
+	}
+	if err := dbpkg.UpsertLinkPreview(h.db, preview); err != nil {
+		return fmt.Errorf("storing link preview %s: %w", rawURL, err)
+	}
+	return nil
 }

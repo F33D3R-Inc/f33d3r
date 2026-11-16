@@ -1,10 +1,12 @@
 package handler
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/f33d3r/feed-engine/internal/caeor"
 	"github.com/f33d3r/feed-engine/internal/model"
 )
 
@@ -174,14 +176,21 @@ func TestVisionSharedWorkID(t *testing.T) {
 	}
 }
 
-func TestVisionLocalAssetURL(t *testing.T) {
-	if got, err := visionLocalAssetURL("/static/media/posts/a.webp"); err != nil || got != "/static/media/posts/a.webp" {
-		t.Errorf("same-origin path should pass: %q %v", got, err)
-	}
+// TestVisionHeldMediaRefusesForeignPaths pins the shape check that runs before
+// Caeor is asked anything: a Vision names only a canonical path this platform
+// serves, never a remote asset nothing here can scan, watermark or withdraw.
+func TestVisionHeldMediaRefusesForeignPaths(t *testing.T) {
+	h := &Handler{}
+	user := &model.User{ID: "u", PIALID: "p", Handle: "h"}
 	for _, raw := range []string{"", "https://evil.example/x.jpg", "//evil.example/x.jpg", "/static/../../etc/passwd"} {
-		if _, err := visionLocalAssetURL(raw); err == nil {
-			t.Errorf("visionLocalAssetURL(%q) should have failed", raw)
+		if _, err := h.visionHeldMedia(context.Background(), user, raw, caeor.KindImage); err == nil {
+			t.Errorf("visionHeldMedia(%q) should have failed", raw)
 		}
+	}
+	// A well-formed path goes on to Caeor; with no Caeor configured that is an
+	// error, never an admission.
+	if _, err := h.visionHeldMedia(context.Background(), user, "/static/media/a/x/feed.webp", caeor.KindImage); err == nil {
+		t.Error("a path nobody could resolve was admitted")
 	}
 }
 

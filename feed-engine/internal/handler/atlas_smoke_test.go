@@ -7,7 +7,7 @@ FACET btn_follow
   version: 1.0 | status: stable | layer: 5
 
   inputs:
-    TargetPIAL    string — PIAL ID of the user to follow/unfollow
+    TargetAccount string — account id of the user to follow/unfollow
     TargetHandle  string — handle (for aria-label)
     IsFollowing   bool   — current follow state
 
@@ -39,7 +39,7 @@ func TestParseFacetHeader(t *testing.T) {
 	if len(m.Inputs) != 3 {
 		t.Fatalf("inputs = %d: %+v", len(m.Inputs), m.Inputs)
 	}
-	if m.Inputs[0].Name != "TargetPIAL" || m.Inputs[0].Type != "string" {
+	if m.Inputs[0].Name != "TargetAccount" || m.Inputs[0].Type != "string" {
 		t.Fatalf("input0 = %+v", m.Inputs[0])
 	}
 	if m.States != "default | following (is-on)" {

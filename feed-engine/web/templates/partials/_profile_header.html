@@ -5,7 +5,7 @@ FACET profile_header
   inputs:
     ProfileUser   User    — .Handle .DisplayName .AvatarURL .HeaderURL .Bio .Pronouns
                             .Location .Website .SocialLinksRaw .Role .OfficialType .IsVerified
-                            .IsCreator .FollowingCount .FollowerCount .Realm .XP .PIALID .ID
+                            .IsCreator .FollowingCount .FollowerCount .Realm .XP .ID
     IsOwner       bool    — true when viewer is viewing their own profile
     IsFollowing   bool    — true when viewer follows ProfileUser
     IsSubscribed  bool    — true when viewer subscribes to ProfileUser
@@ -72,7 +72,7 @@ FACET profile_header
                 hx-swap="innerHTML">Edit profile</button>
         {{else}}
         {{/* Follow / Unfollow */}}
-        {{template "btn_follow" (dict "TargetPIAL" .ProfileUser.PIALID "TargetHandle" .ProfileUser.Handle "IsFollowing" .IsFollowing "Surface" "profile")}}
+        {{template "btn_follow" (dict "TargetAccount" .ProfileUser.ID "TargetHandle" .ProfileUser.Handle "IsFollowing" .IsFollowing "Surface" "profile")}}
         {{/* Subscribe — creators only */}}
         {{if .ProfileUser.IsCreator}}
         {{template "btn_subscribe" (dict "CreatorID" .ProfileUser.ID "CreatorHandle" .ProfileUser.Handle "IsSubscribed" .IsSubscribed)}}

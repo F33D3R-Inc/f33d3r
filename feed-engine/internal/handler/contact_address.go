@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/f33d3r/feed-engine/internal/manhattan"
+	"github.com/f33d3r/feed-engine/internal/model"
 )
 
 // ── Contact addresses ────────────────────────────────────────────────────────
@@ -47,7 +48,7 @@ func (h *Handler) facetContactAddresses(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	h.renderContactAddresses(w, r, user.PIALID, "")
+	h.renderContactAddresses(w, r, user, "")
 }
 
 // mintContactAddress — POST /identity/addresses/mint
@@ -63,15 +64,15 @@ func (h *Handler) mintContactAddress(w http.ResponseWriter, r *http.Request) {
 
 	node, err := h.identityNode(r, user.PIALID)
 	if err != nil {
-		h.renderContactAddresses(w, r, user.PIALID, addressErrorMessage(err))
+		h.renderContactAddresses(w, r, user, addressErrorMessage(err))
 		return
 	}
 	if err := h.elohimMintAddress(r.Context(), node.NodeID); err != nil {
 		log.Printf("[contact-address] minting for pial %s: %v", user.PIALID, err)
-		h.renderContactAddresses(w, r, user.PIALID, "Could not mint an address right now.")
+		h.renderContactAddresses(w, r, user, "Could not mint an address right now.")
 		return
 	}
-	h.renderContactAddresses(w, r, user.PIALID, "")
+	h.renderContactAddresses(w, r, user, "")
 }
 
 // revokeContactAddress — POST /identity/addresses/revoke
@@ -93,7 +94,7 @@ func (h *Handler) revokeContactAddress(w http.ResponseWriter, r *http.Request) {
 	// viewer's own identity before it is touched.
 	node, err := h.identityNode(r, user.PIALID)
 	if err != nil {
-		h.renderContactAddresses(w, r, user.PIALID, addressErrorMessage(err))
+		h.renderContactAddresses(w, r, user, addressErrorMessage(err))
 		return
 	}
 	target, err := h.manhattan.ResolveAddress(r.Context(), addr)
@@ -103,10 +104,10 @@ func (h *Handler) revokeContactAddress(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := h.elohimRevokeAddress(r.Context(), addr, node.NodeID); err != nil {
 		log.Printf("[contact-address] revoking %s: %v", addr, err)
-		h.renderContactAddresses(w, r, user.PIALID, "Could not revoke that address right now.")
+		h.renderContactAddresses(w, r, user, "Could not revoke that address right now.")
 		return
 	}
-	h.renderContactAddresses(w, r, user.PIALID, "")
+	h.renderContactAddresses(w, r, user, "")
 }
 
 // contactKeyBundle — GET /api/contact/{address}
@@ -155,16 +156,54 @@ func (h *Handler) contactKeyBundle(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(bundle)
 }
 
-// contactBundleFor fetches an identity's signed messaging key bundle from
-// elohim-veni, which owns key material and assembles and signs the bundle.
-// Public halves only.
-func (h *Handler) contactBundleFor(ctx context.Context, pialID string) (map[string]interface{}, error) {
-	var out map[string]interface{}
+// contactKeyDevice is one device's public messaging key.
+type contactKeyDevice struct {
+	DeviceID     string `json:"device_id"`
+	PublicKeyB64 string `json:"public_key_b64"`
+	Algorithm    string `json:"algorithm"`
+}
+
+// contactBundle is the messaging key bundle as a client receives it: public key
+// halves only, and no identity. elohim-veni assembles its bundle around the
+// target's pial_id and signs those bytes with its service key; handing that
+// bundle on would give anyone who holds a contact address or a Number the
+// person's root identity, which is exactly the harvesting the address and
+// Number layers exist to prevent. So the bundle is projected here, the pial_id
+// is left on the server, and elohim's signature — which covers the pial_id and
+// could no longer be checked — is not forwarded either: Signed is false until
+// elohim-veni signs a PIAL-free bundle.
+type contactBundle struct {
+	IssuedAt         string             `json:"issued_at"`
+	Devices          []contactKeyDevice `json:"devices"`
+	SigningPubkeyB64 *string            `json:"signing_pubkey_b64"`
+	SigningAlgorithm *string            `json:"signing_algorithm"`
+	Signed           bool               `json:"signed"`
+}
+
+// contactBundleFor fetches an identity's messaging key bundle from
+// elohim-veni, which owns key material, and projects it for a client.
+func (h *Handler) contactBundleFor(ctx context.Context, pialID string) (contactBundle, error) {
+	var out struct {
+		Bundle struct {
+			IssuedAt         string             `json:"issued_at"`
+			Devices          []contactKeyDevice `json:"devices"`
+			SigningPubkeyB64 *string            `json:"signing_pubkey_b64"`
+			SigningAlgorithm *string            `json:"signing_algorithm"`
+		} `json:"bundle"`
+	}
 	if err := h.callElohim(ctx, http.MethodPost, "/v1/contact/keybundle",
 		map[string]string{"pial_id": pialID}, &out); err != nil {
-		return nil, err
+		return contactBundle{}, err
 	}
-	return out, nil
+	if len(out.Bundle.Devices) == 0 {
+		return contactBundle{}, fmt.Errorf("key bundle for an identity carried no device keys")
+	}
+	return contactBundle{
+		IssuedAt:         out.Bundle.IssuedAt,
+		Devices:          out.Bundle.Devices,
+		SigningPubkeyB64: out.Bundle.SigningPubkeyB64,
+		SigningAlgorithm: out.Bundle.SigningAlgorithm,
+	}, nil
 }
 
 // identityNode returns the Manhattan node for a PIAL, registering it if the
@@ -185,17 +224,20 @@ func (h *Handler) identityNode(r *http.Request, pialID string) (*manhattan.Node,
 // renderContactAddresses draws the contact_addresses Facet for one identity.
 // Every mutation above ends here, so the fragment the browser swaps in is
 // always the server's current account of the address set.
-func (h *Handler) renderContactAddresses(w http.ResponseWriter, r *http.Request, pialID, notice string) {
-	h.renderPartial(w, "contact_addresses", h.contactAddressesData(r, pialID, notice))
+func (h *Handler) renderContactAddresses(w http.ResponseWriter, r *http.Request, user *model.User, notice string) {
+	h.renderPartial(w, "contact_addresses", h.contactAddressesData(r, user, notice))
 }
 
 // contactAddressesData hydrates the contact_addresses Facet. Shared by the
 // standalone facet endpoint and by the settings contact section, so both render
-// from one account of the address set.
-func (h *Handler) contactAddressesData(r *http.Request, pialID, notice string) map[string]interface{} {
+// from one account of the address set. The PIAL resolves the identity node only;
+// the Facet is addressed by the account id, because a PIAL is never written into
+// a page.
+func (h *Handler) contactAddressesData(r *http.Request, user *model.User, notice string) map[string]interface{} {
+	pialID := user.PIALID
 	data := map[string]interface{}{
-		"PIALID": pialID,
-		"Notice": notice,
+		"AccountID": user.ID,
+		"Notice":    notice,
 	}
 
 	node, err := h.identityNode(r, pialID)

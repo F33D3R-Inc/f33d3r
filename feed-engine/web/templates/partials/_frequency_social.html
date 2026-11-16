@@ -273,7 +273,6 @@
     {{if .Poster}}<img class="freq-clip__poster" src="{{.Poster}}" alt="Your clip">{{end}}
     <div class="freq-host__row">
       <button type="button" class="freq-btn freq-btn--primary" data-post-video="{{.VideoJSON}}">Post clip</button>
-      {{if .Download}}<a class="freq-btn freq-btn--ghost" href="{{.Download}}" download>Download</a>{{end}}
     </div>
   {{else}}
     <p class="freq-people__more">Making your clip. You can leave this page; we'll notify you when it's ready.</p>

@@ -2,16 +2,17 @@
 FACET wallet_tx_list
   version: 1.0 | status: stable | layer: 2
 
-  inputs: none (JS loadTxHistory() populates #tx-list from Ain Soph API)
+  inputs: none (the rows are the wallet_tx_rows Facet, fetched on load)
 
   states:
     default | loading | empty
 
-  children: none (rows injected by JS)
+  children: wallet_tx_rows (GET /facets/wallet/tx)
 
   signals:
     emits:    none
-    receives: balance (SSE — triggers balance refresh alongside tx list reload)
+    receives: fa:wallet-moved (raised by the balance SSE event and by a sent tip),
+              fa:resync — each re-requests wallet_tx_rows
 
   context:
     wallet_panel_history → history panel body
@@ -22,7 +23,8 @@ FACET wallet_tx_list
   <span class="wallet-section-sub">Last 20</span>
 </div>
 <div class="wallet-tx-list">
-  <div id="tx-list">
+  <div id="tx-list" hx-get="/facets/wallet/tx"
+       hx-trigger="load, fa:resync from:body, fa:wallet-moved from:body" hx-swap="innerHTML">
     <p class="wallet-tx-loading">Loading…</p>
   </div>
 </div>

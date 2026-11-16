@@ -24,13 +24,13 @@
 !herald
 !themis
 !verity
-!zodacare
+!abraxas-shield
 !ain-soph
 !astraon
 !lore
-!registry-brain
 !elohim-veni
 !frequencies
+!caeor
 
 # Drop local build output / noise inside the included trees.
 **/target

@@ -76,10 +76,9 @@ type SuggestedUser struct {
 	Handle        string
 	DisplayName   string
 	AvatarURL     string
-	FollowerCount int    // counted from the follows edges, not the drifting cache
-	PIALID        string // required for D-070 follow event: {"event_type":"follow","target_pial":"..."}
-	Realm         int    // effective standing as written by internal/realm; drives the ring
-	IsVerified    bool   // PIAL kyc_tier=='full' — the documented-identity badge
+	FollowerCount int  // counted from the follows edges, not the drifting cache
+	Realm         int  // effective standing as written by internal/realm; drives the ring
+	IsVerified    bool // PIAL kyc_tier=='full' — the documented-identity badge
 	IsCreator     bool
 	ViewerFollows bool // resolved by FollowStateFor — the row renders its own follow state
 }
@@ -143,7 +142,7 @@ const suggestPublishedSQL = `EXISTS (
 	      FROM works w
 	      WHERE w.author_id = u.id
 	        AND w.deleted_at IS NULL
-	        AND w.kind <> 'reply'
+	        AND NOT w.is_reply
 	        AND ` + workNotBlockedSQL + `
 	        AND ` + workLiveSQL + `
 	        AND (w.scheduled_at IS NULL OR w.scheduled_at <= NOW())
@@ -196,7 +195,7 @@ func SuggestPeople(database *sql.DB, viewer SuggestionViewer, q SuggestionQuery)
 	for rows.Next() {
 		var s SuggestedUser
 		if err := rows.Scan(&s.ID, &s.Handle, &s.DisplayName, &s.AvatarURL,
-			&s.FollowerCount, &s.PIALID, &s.Realm, &s.IsVerified, &s.IsCreator); err != nil {
+			&s.FollowerCount, &s.Realm, &s.IsVerified, &s.IsCreator); err != nil {
 			return nil, err
 		}
 		out = append(out, s)
@@ -300,13 +299,12 @@ func buildSuggestionQuery(viewer SuggestionViewer, q SuggestionQuery) (string, [
 		       COALESCE(NULLIF(TRIM(p.display_name), ''), INITCAP(REPLACE(u.handle, '_', ' '))),
 		       p.avatar_url,
 		       fc.followers,
-		       COALESCE(u.pial_id::text, ''),
 		       COALESCE(u.realm, 1),
 		       (COALESCE(pr.kyc_tier, 'none') = 'full'),
 		       COALESCE(p.is_creator, FALSE)
 		FROM users u
 		JOIN user_profiles p ON p.user_id = u.id
-		LEFT JOIN pial_roots pr ON pr.pial_id = u.pial_id
+		LEFT JOIN identity_facts pr ON pr.pial_id = u.pial_id
 		LEFT JOIN trust_scores ts ON ts.pial_id = u.pial_id
 		LEFT JOIN LATERAL (
 		    SELECT COUNT(*)::int AS followers
@@ -317,7 +315,7 @@ func buildSuggestionQuery(viewer SuggestionViewer, q SuggestionQuery) (string, [
 		    FROM works w
 		    WHERE w.author_id = u.id
 		      AND w.deleted_at IS NULL
-		      AND w.kind <> 'reply'
+		      AND NOT w.is_reply
 		      AND ` + workNotBlockedSQL + `
 		      AND ` + workLiveSQL + `
 		      AND (w.scheduled_at IS NULL OR w.scheduled_at <= NOW())

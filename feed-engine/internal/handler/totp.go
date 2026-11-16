@@ -1,142 +1,80 @@
 package handler
 
 import (
-	"crypto/hmac"
-	"crypto/rand"
-	"crypto/sha1"
-	"encoding/base32"
-	"encoding/binary"
+	"context"
+	"errors"
 	"fmt"
 	"html/template"
-	"math"
+	"log"
 	"net/http"
-	"net/url"
-	"strconv"
 	"strings"
-	"time"
 
-	dbpkg "github.com/f33d3r/feed-engine/internal/db"
+	"github.com/f33d3r/feed-engine/internal/identity"
 	"github.com/f33d3r/feed-engine/internal/model"
 )
 
-// ── Pure-stdlib TOTP (RFC 6238 / RFC 4226) ───────────────────────────────────
-
-func totpGenSecret() (string, error) {
-	b := make([]byte, 20)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	return base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(b), nil
-}
-
-func totpCode(secret string, t time.Time) (string, error) {
-	key, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(
-		strings.ToUpper(strings.TrimSpace(secret)),
-	)
-	if err != nil {
-		return "", err
-	}
-	counter := uint64(math.Floor(float64(t.Unix()) / 30))
-	buf := make([]byte, 8)
-	binary.BigEndian.PutUint64(buf, counter)
-	mac := hmac.New(sha1.New, key)
-	mac.Write(buf)
-	h := mac.Sum(nil)
-	offset := h[len(h)-1] & 0x0f
-	code := (binary.BigEndian.Uint32(h[offset:offset+4]) & 0x7fffffff) % 1_000_000
-	return fmt.Sprintf("%06d", code), nil
-}
-
-func totpVerify(secret, code string) bool {
-	now := time.Now()
-	for _, delta := range []int{-1, 0, 1} {
-		t := now.Add(time.Duration(delta) * 30 * time.Second)
-		if c, err := totpCode(secret, t); err == nil && c == code {
-			return true
-		}
-	}
-	return false
-}
-
-func totpProvisioningURI(secret, handle, issuer string) string {
-	return fmt.Sprintf(
-		"otpauth://totp/%s?secret=%s&issuer=%s&algorithm=SHA1&digits=6&period=30",
-		url.PathEscape(issuer+":@"+handle),
-		secret,
-		url.PathEscape(issuer),
-	)
-}
-
-// ── HTTP handlers ─────────────────────────────────────────────────────────────
+// ── Second factor ─────────────────────────────────────────────────────────────
+//
+// TOTP secrets are minted, stored and checked by elohim-veni. The functions
+// below are the rule with no transport — the cookie routes and the /api/v1
+// events both call them, so the web and the phones answer from one place. A
+// non-200 status carries the sentence to show.
 
 // totpBeginSetup mints a fresh secret for an account that has not enabled 2FA
-// yet and returns its provisioning URI. It is the rule, with no transport: the
-// cookie route below and GET /api/v1/2fa/setup both call it, so the QR the web
-// draws and the QR the phone draws are the same secret from the same check.
-// A non-200 status carries the sentence to show.
-func (h *Handler) totpBeginSetup(user *model.User) (uri, secret string, status int, msg string) {
-	if h.db == nil {
-		return "", "", http.StatusServiceUnavailable, "Database unavailable."
-	}
-	if _, enabled := dbpkg.GetTOTPSecret(h.db, user.ID); enabled {
+// and returns its provisioning URI.
+func (h *Handler) totpBeginSetup(ctx context.Context, user *model.User) (uri, secret string, status int, msg string) {
+	enr, err := h.identity.Client().TOTPEnroll(ctx, user.ID)
+	switch {
+	case err == nil:
+		return enr.URI, enr.Secret, http.StatusOK, ""
+	case errors.Is(err, identity.ErrTOTPAlreadyEnabled):
 		return "", "", http.StatusConflict, "2FA is already enabled."
+	default:
+		log.Printf("[2fa] enroll @%s: %v", user.Handle, err)
+		return "", "", http.StatusServiceUnavailable, "Could not start 2FA setup — try again."
 	}
-	secret, err := totpGenSecret()
-	if err != nil {
-		return "", "", http.StatusInternalServerError, "Could not generate a secret — try again."
-	}
-	if err := dbpkg.SetTOTPSecret(h.db, user.ID, secret); err != nil {
-		return "", "", http.StatusInternalServerError, "Could not save the secret — try again."
-	}
-	return totpProvisioningURI(secret, user.Handle, "F33D3R"), secret, http.StatusOK, ""
 }
 
-// totpEnableCore verifies a code against the secret minted by totpBeginSetup
-// and turns 2FA on. 200 means it is on; any other status carries the sentence.
-func (h *Handler) totpEnableCore(user *model.User, code string) (int, string) {
-	if h.db == nil {
-		return http.StatusServiceUnavailable, "Database unavailable."
-	}
+// totpEnableCore confirms a code from the enrolled secret and turns 2FA on.
+func (h *Handler) totpEnableCore(ctx context.Context, user *model.User, code string) (int, string) {
 	code = strings.ReplaceAll(strings.TrimSpace(code), " ", "")
 	if code == "" {
 		return http.StatusBadRequest, "Enter the 6-digit code."
 	}
-	if _, err := strconv.Atoi(code); err != nil || len(code) != 6 {
+	if !isTOTPCode(code) {
 		return http.StatusBadRequest, "Enter a 6-digit code."
 	}
-	secret, enabled := dbpkg.GetTOTPSecret(h.db, user.ID)
-	if enabled {
+	err := h.identity.Client().TOTPConfirm(ctx, user.ID, code)
+	switch {
+	case err == nil:
+		return http.StatusOK, ""
+	case errors.Is(err, identity.ErrTOTPAlreadyEnabled):
 		return http.StatusConflict, "2FA is already enabled."
-	}
-	if secret == "" {
+	case errors.Is(err, identity.ErrTOTPNotEnrolled):
 		return http.StatusBadRequest, "Set up 2FA first."
-	}
-	if !totpVerify(secret, code) {
+	case errors.Is(err, identity.ErrTOTPInvalid):
 		return http.StatusUnauthorized, "Invalid code."
+	default:
+		log.Printf("[2fa] confirm @%s: %v", user.Handle, err)
+		return http.StatusServiceUnavailable, "Could not enable 2FA — try again."
 	}
-	if err := dbpkg.EnableTOTP(h.db, user.ID); err != nil {
-		return http.StatusInternalServerError, "Could not enable 2FA — try again."
-	}
-	return http.StatusOK, ""
 }
 
-// totpDisableCore verifies a current code and turns 2FA off.
-func (h *Handler) totpDisableCore(user *model.User, code string) (int, string) {
-	if h.db == nil {
-		return http.StatusServiceUnavailable, "Database unavailable."
-	}
+// totpDisableCore checks a current code and turns 2FA off.
+func (h *Handler) totpDisableCore(ctx context.Context, user *model.User, code string) (int, string) {
 	code = strings.ReplaceAll(strings.TrimSpace(code), " ", "")
-	secret, enabled := dbpkg.GetTOTPSecret(h.db, user.ID)
-	if !enabled {
+	err := h.identity.Client().TOTPDisable(ctx, user.ID, code)
+	switch {
+	case err == nil:
+		return http.StatusOK, ""
+	case errors.Is(err, identity.ErrTOTPNotEnabled):
 		return http.StatusBadRequest, "2FA is not enabled."
-	}
-	if !totpVerify(secret, code) {
+	case errors.Is(err, identity.ErrTOTPInvalid):
 		return http.StatusUnauthorized, "Invalid code."
+	default:
+		log.Printf("[2fa] disable @%s: %v", user.Handle, err)
+		return http.StatusServiceUnavailable, "Could not disable 2FA — try again."
 	}
-	if err := dbpkg.DisableTOTP(h.db, user.ID); err != nil {
-		return http.StatusInternalServerError, "Could not disable 2FA — try again."
-	}
-	return http.StatusOK, ""
 }
 
 // GET /api/2fa/setup — generates a new TOTP secret and returns a provisioning URI.
@@ -146,7 +84,7 @@ func (h *Handler) totpSetup(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	uri, secret, status, msg := h.totpBeginSetup(user)
+	uri, secret, status, msg := h.totpBeginSetup(r.Context(), user)
 	if status != http.StatusOK {
 		http.Error(w, msg, status)
 		return
@@ -172,7 +110,7 @@ func (h *Handler) totpEnable(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	if status, msg := h.totpEnableCore(user, r.FormValue("code")); status != http.StatusOK {
+	if status, msg := h.totpEnableCore(r.Context(), user, r.FormValue("code")); status != http.StatusOK {
 		h.totpRefuse(w, r, msg, status)
 		return
 	}
@@ -218,7 +156,7 @@ func (h *Handler) totpDisable(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	if status, msg := h.totpDisableCore(user, r.FormValue("code")); status != http.StatusOK {
+	if status, msg := h.totpDisableCore(r.Context(), user, r.FormValue("code")); status != http.StatusOK {
 		h.totpRefuse(w, r, msg, status)
 		return
 	}

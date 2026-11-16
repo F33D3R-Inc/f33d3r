@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"io"
@@ -15,8 +16,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/f33d3r/feed-engine/internal/abraxas"
 	"github.com/f33d3r/feed-engine/internal/cron"
 	dbpkg "github.com/f33d3r/feed-engine/internal/db"
+	"github.com/f33d3r/feed-engine/internal/identity"
 	"github.com/f33d3r/feed-engine/internal/model"
 	"github.com/f33d3r/feed-engine/internal/realm"
 )
@@ -28,15 +31,9 @@ func (h *Handler) adminPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var userCount, postCount, pialCount, activeSessions int
-	if h.db != nil {
-		h.db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&userCount)
-		h.db.QueryRow(`SELECT COUNT(*) FROM works WHERE deleted_at IS NULL`).Scan(&postCount)
-		h.db.QueryRow(`SELECT COUNT(*) FROM pial_roots WHERE is_tombstoned = FALSE`).Scan(&pialCount)
-		h.db.QueryRow(`SELECT COUNT(*) FROM user_sessions WHERE expires_at > NOW()`).Scan(&activeSessions)
-	}
+	userCount, postCount, pialCount, activeDevices := h.adminHeadlineCounts()
 
-	pendingReports, _ := dbpkg.GetPendingReports(h.db, 50)
+	pendingReportCount := h.openReportCount(r.Context())
 	siteAnalytics, _ := dbpkg.GetSiteAnalytics(h.db)
 
 	var dmcaCount, orgCount int
@@ -61,14 +58,39 @@ func (h *Handler) adminPage(w http.ResponseWriter, r *http.Request) {
 		"UserCount":            userCount,
 		"PostCount":            postCount,
 		"PIALCount":            pialCount,
-		"ActiveSessions":       activeSessions,
-		"PendingReports":       pendingReports,
-		"PendingReportCount":   len(pendingReports),
+		"ActiveDevices":        activeDevices,
+		"PendingReportCount":   pendingReportCount,
 		"PendingDMCACount":     dmcaCount,
+		"PendingCSAMCount":     h.openCSAMReportCount(),
 		"PendingOrgCount":      orgCount,
 		"PendingSecurityCount": securityCount,
 		"SiteAnalytics":        siteAnalytics,
 	})
+}
+
+// adminHeadlineCounts are the overview's four headline numbers. Sessions are
+// elohim-veni's and are not counted here; the devices this brain saw accounts
+// sign in from in the last day stand in as the activity figure. A count that
+// cannot be read is logged and shown as zero.
+func (h *Handler) adminHeadlineCounts() (users, works, pials, devices int) {
+	if h.db == nil {
+		return
+	}
+	for _, q := range []struct {
+		name string
+		sql  string
+		dst  *int
+	}{
+		{"users", `SELECT COUNT(*) FROM users`, &users},
+		{"works", `SELECT COUNT(*) FROM works WHERE deleted_at IS NULL`, &works},
+		{"identities", `SELECT COUNT(*) FROM identity_facts WHERE status <> 'purged'`, &pials},
+		{"devices", `SELECT COUNT(*) FROM user_devices WHERE last_seen > NOW() - INTERVAL '24 hours'`, &devices},
+	} {
+		if err := h.db.QueryRow(q.sql).Scan(q.dst); err != nil {
+			log.Printf("[admin] counting %s: %v", q.name, err)
+		}
+	}
+	return
 }
 
 // adminPanelOverview renders the Overview tab panel for HTMX swap.
@@ -79,15 +101,9 @@ func (h *Handler) adminPanelOverview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var userCount, postCount, pialCount, activeSessions int
-	if h.db != nil {
-		h.db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&userCount)
-		h.db.QueryRow(`SELECT COUNT(*) FROM works WHERE deleted_at IS NULL`).Scan(&postCount)
-		h.db.QueryRow(`SELECT COUNT(*) FROM pial_roots WHERE is_tombstoned = FALSE`).Scan(&pialCount)
-		h.db.QueryRow(`SELECT COUNT(*) FROM user_sessions WHERE expires_at > NOW()`).Scan(&activeSessions)
-	}
+	userCount, postCount, pialCount, activeDevices := h.adminHeadlineCounts()
 
-	pendingReports, _ := dbpkg.GetPendingReports(h.db, 50)
+	pendingReportCount := h.openReportCount(r.Context())
 	siteAnalytics, _ := dbpkg.GetSiteAnalytics(h.db)
 
 	var dmcaCount, orgCount int
@@ -102,9 +118,10 @@ func (h *Handler) adminPanelOverview(w http.ResponseWriter, r *http.Request) {
 		"UserCount":            userCount,
 		"PostCount":            postCount,
 		"PIALCount":            pialCount,
-		"ActiveSessions":       activeSessions,
-		"PendingReportCount":   len(pendingReports),
+		"ActiveDevices":        activeDevices,
+		"PendingReportCount":   pendingReportCount,
 		"PendingDMCACount":     dmcaCount,
+		"PendingCSAMCount":     h.openCSAMReportCount(),
 		"PendingOrgCount":      orgCount,
 		"PendingSecurityCount": secCount,
 		"SiteAnalytics":        siteAnalytics,
@@ -151,14 +168,7 @@ func (h *Handler) adminPanelModeration(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	pendingReports, _ := dbpkg.GetPendingReports(h.db, 50)
-	reviewQueue, _ := dbpkg.GetHumanReviewPosts(h.db, 50)
-
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	h.renderPartial(w, "admin_panel_moderation", map[string]interface{}{
-		"PendingReports": pendingReports,
-		"ReviewQueue":    reviewQueue,
-	})
+	h.renderModerationPanel(w, r)
 }
 
 // adminPanelDMCA renders the DMCA tab panel for HTMX swap.
@@ -244,9 +254,18 @@ func (h *Handler) adminSetCap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := dbpkg.SetCapability(h.db, target.PIALID, capability, state, reason, caller.Handle, nil); err != nil {
-		log.Printf("[admin] set-cap error for @%s: %v", targetHandle, err)
-		w.Write([]byte(`<span style="color:#ef4444;font-size:12px">DB error — check logs.</span>`))
+	switch state {
+	case model.CapStateGranted, model.CapStateRestricted, model.CapStateRevoked:
+	default:
+		w.Write([]byte(`<span style="color:#ef4444;font-size:12px">Unknown capability state.</span>`))
+		return
+	}
+	// Capabilities are elohim-veni's. The admin sees whether it accepted.
+	if err := h.identity.Client().PutCapability(r.Context(), target.PIALID, capability, identity.CapabilityWrite{
+		State: state, Reason: reason, By: "admin:" + caller.Handle,
+	}); err != nil {
+		log.Printf("[admin] set-cap for @%s: %v", targetHandle, err)
+		fmt.Fprintf(w, `<span style="color:#ef4444;font-size:12px">%s</span>`, template.HTMLEscapeString(adminIdentityRefusal(err)))
 		return
 	}
 
@@ -254,19 +273,54 @@ func (h *Handler) adminSetCap(w http.ResponseWriter, r *http.Request) {
 		"capability": capability, "state": state, "reason": reason, "by": caller.Handle,
 	}, "admin")
 
-	// Evict the target's session cache so the new capability applies on their next request
-	// instead of lagging up to the 30s TTL. (Token-keyed entries self-expire; the handle key
-	// is evicted immediately.)
-	h.sessionCache.Delete("__handle__" + targetHandle)
+	// Evict the target's cached sessions so the new capability applies on their next request
+	// instead of lagging up to the 30s TTL.
+	h.evictCachedAccount(target.ID, "")
 
 	log.Printf("[admin] %s set capability %s=%s on @%s (%s)", caller.Handle, capability, state, targetHandle, reason)
 	fmt.Fprintf(w, `<span style="color:#22c55e;font-size:12px;font-weight:500">✓ %s → %s for @%s</span>`, capability, state, targetHandle)
 }
 
+// adminIdentityRefusal is the sentence an admin sees when elohim-veni did not
+// accept an identity write.
+func adminIdentityRefusal(err error) string {
+	if identity.IsUnavailable(err) {
+		return "The identity authority is unreachable — nothing was changed. Try again."
+	}
+	if e := identity.Refusal(err); e != nil {
+		if e.Message != "" {
+			return "Refused by the identity authority: " + e.Message
+		}
+		return "Refused by the identity authority (" + e.Code + ")."
+	}
+	return "Identity write failed — check logs."
+}
+
+// adminVerificationChange is the facts write the admin Verified checkbox calls
+// for, if any: verify an identity not yet at the identity tier, or withdraw a
+// verification from one that is. Withdrawing drops the tier to basic, not none —
+// a self-reported date of birth is still on file; only the documented-identity
+// claim goes.
+func adminVerificationChange(database *sql.DB, pialID string, verify bool, by string) (identity.FactsUpdate, bool) {
+	current := dbpkg.LoadPIALState(database, pialID)
+	isVerified := current != nil && model.KYCTierIsIdentity(current.KYCTier)
+	switch {
+	case verify && !isVerified:
+		tier, yes := model.KYCTierFull, true
+		return identity.FactsUpdate{KYCTier: &tier, AgeVerified: &yes, DOBLocked: &yes, Source: by}, true
+	case !verify && isVerified:
+		tier, no := model.KYCTierBasic, false
+		return identity.FactsUpdate{KYCTier: &tier, AgeVerified: &no, Source: by}, true
+	default:
+		return identity.FactsUpdate{}, false
+	}
+}
+
 // adminSetRole updates a user's platform role, identity badge, and permission flags.
 // Form fields:
 //
-//	platform_role  — "user" | "admin" | "founder"
+//	platform_role  — "user" | "admin" to assign; "founder" only as the founder's own
+//	                 current role, re-posted by the badge and permission forms
 //	badge_type     — "" | "business" | "government"
 //	is_verified    — "1" if checked
 //	is_creator     — "1" if checked
@@ -287,15 +341,14 @@ func (h *Handler) adminSetRole(w http.ResponseWriter, r *http.Request) {
 	isVerified := r.FormValue("is_verified") == "1"
 	isCreator := r.FormValue("is_creator") == "1"
 
-	// platform_role: only these three are valid — creator is a perm, not a role.
-	allowedRoles := map[string]bool{"user": true, "admin": true, "founder": true}
-	if !allowedRoles[platformRole] {
-		platformRole = "user"
-	}
-	// Founder role can only be held by @tehanibentley — prevent accidental or malicious assignment.
-	if platformRole == "founder" && targetHandle != "tehanibentley" {
+	// platform_role names the three roles; creator is a perm, not a role. Anything
+	// else is refused rather than read as "user", which would silently demote an
+	// admin on a malformed form.
+	switch platformRole {
+	case model.RoleUser, model.RoleAdmin, model.RoleFounder:
+	default:
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write([]byte(`<span style="color:#ef4444;font-size:12px">Founder role cannot be assigned to this account.</span>`))
+		w.Write([]byte(`<span style="color:#ef4444;font-size:12px">Unknown platform role.</span>`))
 		return
 	}
 
@@ -316,47 +369,58 @@ func (h *Handler) adminSetRole(w http.ResponseWriter, r *http.Request) {
 			w.Write([]byte(`<span style="color:#ef4444;font-size:12px">User not found.</span>`))
 			return
 		}
-		// Surface write failures instead of discarding them behind a green "✓ Updated".
-		if err := dbpkg.SetPIALRole(h.db, target.PIALID, platformRole); err != nil {
-			log.Printf("[admin] SetPIALRole failed for @%s: %v", targetHandle, err)
-			w.Write([]byte(`<span style="color:#ef4444;font-size:12px">Role write failed — check logs.</span>`))
+		// Founder is never assigned here and never taken away: it belongs to the
+		// first account created on the database (db.CreateAccount). The badge and
+		// permission forms re-post the account's current role, so the founder's own
+		// "founder" passes through with no role write; every other combination
+		// involving it is refused.
+		switch {
+		case target.IsFounder() && platformRole != model.RoleFounder:
+			w.Write([]byte(`<span style="color:#ef4444;font-size:12px">The founder role is permanent.</span>`))
 			return
-		}
-		if isVerified {
-			if err := dbpkg.SetPIALVerified(h.db, target.PIALID, "full", "admin:"+caller.Handle); err != nil {
-				log.Printf("[admin] SetPIALVerified failed for @%s: %v", targetHandle, err)
-				w.Write([]byte(`<span style="color:#ef4444;font-size:12px">Verify write failed — check logs.</span>`))
+		case !target.IsFounder() && platformRole == model.RoleFounder:
+			w.Write([]byte(`<span style="color:#ef4444;font-size:12px">Founder cannot be assigned — it belongs to the first account created.</span>`))
+			return
+		case !target.IsFounder() && target.Role != platformRole:
+			// Roles are elohim-veni's, and so is the founder rule: it refuses to
+			// touch the founder role in either direction, which also covers an
+			// account whose identity holds it.
+			if err := h.identity.Client().PutRole(r.Context(), target.PIALID, platformRole, "admin:"+caller.Handle); err != nil {
+				log.Printf("[admin] role %s for @%s: %v", platformRole, targetHandle, err)
+				if errors.Is(err, identity.ErrFounderPermanent) {
+					w.Write([]byte(`<span style="color:#ef4444;font-size:12px">This account belongs to the founder's identity; its role is permanent.</span>`))
+					return
+				}
+				fmt.Fprintf(w, `<span style="color:#ef4444;font-size:12px">%s</span>`, template.HTMLEscapeString(adminIdentityRefusal(err)))
 				return
 			}
-		} else {
-			// De-verify through the PIAL setter (records the reversal in the ledger and
-			// recomputes the state hash — the raw UPDATE it replaces skipped both).
-			if err := dbpkg.SetPIALUnverified(h.db, target.PIALID, "admin:"+caller.Handle); err != nil {
-				log.Printf("[admin] SetPIALUnverified failed for @%s: %v", targetHandle, err)
-				w.Write([]byte(`<span style="color:#ef4444;font-size:12px">De-verify write failed — check logs.</span>`))
+		}
+		// The admin "Verified" checkbox is the manual KYC override: a trusted human
+		// stands in for eKYC. It is an identity fact, written to elohim-veni with
+		// admin provenance, and only when it changes what is recorded — the badge
+		// and permission forms re-post it unchanged on every save.
+		if update, changed := adminVerificationChange(h.db, target.PIALID, isVerified, "admin:"+caller.Handle); changed {
+			if err := h.identity.Client().PutFacts(r.Context(), target.PIALID, update); err != nil {
+				log.Printf("[admin] verification=%v for @%s: %v", isVerified, targetHandle, err)
+				fmt.Fprintf(w, `<span style="color:#ef4444;font-size:12px">%s</span>`, template.HTMLEscapeString(adminIdentityRefusal(err)))
 				return
 			}
 		}
-		// is_creator and official_type are separate axes (perm/badge), not part of the
-		// verification/role fold — they stay on user_profiles. The is_verified and role
-		// projections are kept in sync by the PIAL setters above.
+		// is_creator and official_type are separate axes (perm/badge) this brain
+		// owns on user_profiles. The role and verification projections follow from
+		// identity.events, which also restates the realm a role change moves.
 		if _, err := h.db.Exec(`
 			UPDATE user_profiles
 			SET is_creator = $1, official_type = $2
-			WHERE user_id = (SELECT id FROM users WHERE handle = $3)`,
-			isCreator, badgeType, targetHandle); err != nil {
+			WHERE user_id = $3`,
+			isCreator, badgeType, target.ID); err != nil {
 			log.Printf("[admin] user_profiles badge/creator write failed for @%s: %v", targetHandle, err)
+			w.Write([]byte(`<span style="color:#ef4444;font-size:12px">Badge write failed — check logs.</span>`))
+			return
 		}
-		// The founder role carries a permanent realm floor (realm.FounderFloor), so a
-		// role change moves standing. Restate it here rather than waiting for the
-		// account's next XP award: promotion raises the ring immediately, and demotion
-		// lets it fall back to exactly what the account has earned.
-		if _, err := realm.Restate(h.db, target.ID); err != nil {
-			log.Printf("[admin] realm restate after role change for @%s: %v", targetHandle, err)
-		}
-		// Evict the target's session cache so role/verification apply on their next request
+		// Evict the target's cached sessions so role/verification apply on their next request
 		// instead of lagging up to the 30s TTL.
-		h.sessionCache.Delete("__handle__" + targetHandle)
+		h.evictCachedAccount(target.ID, "")
 		log.Printf("[admin] %s set platform_role=%s badge=%q verified=%v creator=%v on @%s",
 			caller.Handle, platformRole, badgeType, isVerified, isCreator, targetHandle)
 	}
@@ -473,7 +537,7 @@ func (h *Handler) adminSetRealmGrant(w http.ResponseWriter, r *http.Request) {
 
 	// Evict the target's cached session so the standing on their own next
 	// request is the new one rather than lagging the 30s TTL.
-	h.sessionCache.Delete("__handle__" + targetHandle)
+	h.evictCachedAccount(target.ID, "")
 
 	log.Printf("[admin] %s set realm_grant=%d on @%s → effective R%d (%s)",
 		caller.Handle, level, targetHandle, effective, reason)
@@ -487,48 +551,23 @@ func (h *Handler) adminSetRealmGrant(w http.ResponseWriter, r *http.Request) {
 		template.HTMLEscapeString(targetHandle), level, effective, realm.RealmName(effective))
 }
 
-func (h *Handler) resolveReport(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "405", 405)
-		return
-	}
-	user := h.userFromRequest(w, r)
-	if !user.IsAdmin() {
-		http.Error(w, "403 Forbidden", http.StatusForbidden)
-		return
-	}
-	_ = r.ParseForm()
-	contentID := strings.TrimSpace(r.FormValue("content_id"))
-	status := r.FormValue("status") // "resolved" or "dismissed"
-	if contentID == "" || (status != "resolved" && status != "dismissed") {
-		http.Error(w, "invalid request", http.StatusBadRequest)
-		return
-	}
-	if h.db != nil {
-		// Close every open report on this item, then unstick the post if it was
-		// only in human_review because of the report (no independent AI hold).
-		if _, err := dbpkg.ResolveReportsForContent(h.db, contentID, status, user.Handle); err != nil {
-			log.Printf("[admin] reports NOT resolved for content=%s by @%s: %v", contentID, user.Handle, err)
-			http.Error(w, "could not resolve reports", http.StatusInternalServerError)
-			return
-		}
-		if err := dbpkg.ClearReportDrivenReview(h.db, contentID, user.Handle); err != nil {
-			log.Printf("[admin] report-driven review NOT cleared for content=%s by @%s: %v", contentID, user.Handle, err)
-			http.Error(w, "could not clear review hold", http.StatusInternalServerError)
-			return
-		}
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprintf(w, `<div id="admin-report-%s" class="admin-report-resolved">✓ %s by @%s</div>`,
-		contentID, status, user.Handle)
+// reportReasons are the reasons a person may give. "stolen" is an ownership
+// claim: the reporter says the content is theirs.
+var reportReasons = map[string]bool{
+	"spam": true, "harassment": true, "hate": true, "nsfw": true, "violence": true,
+	"illegal": true, "misinformation": true, "stolen": true, "other": true,
 }
 
+// reportContent — POST /api/report, the web report sheet.
 func (h *Handler) reportContent(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "405", 405)
+		http.Error(w, "405", http.StatusMethodNotAllowed)
 		return
 	}
-	_ = r.ParseForm()
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
 	user := h.userFromRequest(w, r)
 
 	contentID := strings.TrimSpace(r.FormValue("content_id"))
@@ -536,7 +575,7 @@ func (h *Handler) reportContent(w http.ResponseWriter, r *http.Request) {
 	reason := r.FormValue("reason")
 	detail := truncate(r.FormValue("detail"), 500)
 
-	if contentID == "" || reason == "" {
+	if contentID == "" || !reportReasons[reason] {
 		http.Error(w, "missing fields", http.StatusBadRequest)
 		return
 	}
@@ -545,81 +584,110 @@ func (h *Handler) reportContent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.fileContentReport(user, contentID, contentType, reason, detail); err != nil {
-		http.Error(w, "could not file report", http.StatusInternalServerError)
+		http.Error(w, "could not file report", http.StatusBadGateway)
 		return
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if reason == "stolen" {
+		w.Write([]byte(`<span style="font-size:12px;color:var(--accent)">Claim sent — an admin will review it.</span>`))
+		return
+	}
 	w.Write([]byte(`<span style="font-size:12px;color:var(--accent)">Reported — thank you.</span>`))
 }
 
+// reportSubject names a reported item the way Abraxas names subjects: a work
+// by its id, a person by their PIAL (server to server only — Abraxas keys
+// people by identity root), a Frequency by its host. A Frequency and its
+// participants are not subjects of their own, so the Frequency they happened
+// in is carried into the report's detail.
+func (h *Handler) reportSubject(ctx context.Context, contentID, contentType string) (abraxas.Subject, string, error) {
+	pialOf := func(accountID string) (string, error) {
+		if h.db == nil {
+			return "", errors.New("report: no database")
+		}
+		u, err := dbpkg.GetUserByID(h.db, accountID)
+		if err != nil {
+			return "", fmt.Errorf("report: account %s: %w", accountID, err)
+		}
+		if u.PIALID == "" {
+			return "", fmt.Errorf("report: account %s has no identity", accountID)
+		}
+		return u.PIALID, nil
+	}
+	switch contentType {
+	case "post", "work":
+		return abraxas.Subject{Kind: "work", ID: contentID}, "", nil
+	case "user", "profile":
+		pial, err := pialOf(contentID)
+		return abraxas.Subject{Kind: "account", ID: pial}, "", err
+	case "frequency":
+		ans, err := h.auralis.Get(ctx, contentID, "")
+		if err != nil {
+			return abraxas.Subject{}, "", fmt.Errorf("report: frequency %s: %w", contentID, err)
+		}
+		host := ans.Frequency.Frequency.HostPialID
+		if host == "" {
+			return abraxas.Subject{}, "", fmt.Errorf("report: frequency %s has no host", contentID)
+		}
+		return abraxas.Subject{Kind: "account", ID: host}, "Frequency " + contentID + " (host): ", nil
+	case "frequency_participant":
+		freq, account, ok := strings.Cut(contentID, ":")
+		if !ok {
+			return abraxas.Subject{}, "", fmt.Errorf("report: frequency participant %q is not <frequency>:<account>", contentID)
+		}
+		pial, err := pialOf(account)
+		return abraxas.Subject{Kind: "account", ID: pial}, "In Frequency " + freq + ": ", err
+	}
+	return abraxas.Subject{}, "", fmt.Errorf("report: content type %q names nothing Abraxas judges", contentType)
+}
+
 // fileContentReport is the one way a report is filed, whichever surface took
-// it: the web report form (reportContent) and the `report` event the native
-// clients send both end here. It records the report, logs it on the
-// reporter's PIAL, moves adult/hate reports on works into human review and
-// tells the admins, forwards to Zodacare, and checks the author's
-// report-based achievements. The one failure that is the caller's to answer
-// is the human-review transition: silently dropping it would accept the
-// report, thank the reporter, and leave the content untouched.
+// it: the web report sheet (reportContent), the `report` event the native
+// clients send, and a Frequency's report. The report goes to Abraxas, the
+// integrity authority, which keeps it, decides whether the content is held,
+// and puts it on the moderators' queue. Reason "stolen" is filed as an
+// ownership claim, which Abraxas sends straight to admin review with the
+// reporter's own matching uploads attached when it finds them. A report
+// Abraxas did not take is an error the caller answers: the reporter is never
+// thanked for a report nobody holds.
 func (h *Handler) fileContentReport(user *model.User, contentID, contentType, reason, detail string) error {
+	if user == nil || user.PIALID == "" {
+		return errors.New("report: the reporter has no identity")
+	}
+	kind := abraxas.ReportKindContent
+	if reason == "stolen" {
+		kind = abraxas.ReportKindOwnershipClaim
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	subject, where, err := h.reportSubject(ctx, contentID, contentType)
+	if err != nil {
+		log.Printf("[report] @%s reporting %s %s: %v", user.Handle, contentType, contentID, err)
+		return err
+	}
+	filed, err := h.abraxas.CreateReport(ctx, abraxas.NewReport{
+		ReporterPIAL: user.PIALID,
+		Subject:      subject,
+		Kind:         kind,
+		Reason:       reason,
+		Detail:       strings.TrimSpace(where + detail),
+	})
+	if err != nil {
+		log.Printf("[report] @%s reporting %s %s (%s) NOT filed: %v", user.Handle, contentType, contentID, reason, err)
+		return err
+	}
 	if h.db != nil {
-		// One open report per reporter per item — the partial-unique index
-		// uq_reports_pending_per_reporter backs this ON CONFLICT so a user mashing
-		// the report button can't stack duplicate pending cards into the queue.
-		h.db.Exec(`
-			INSERT INTO content_reports (reporter_id, content_id, content_type, reason, detail)
-			VALUES ($1, $2, $3, $4, $5)
-			ON CONFLICT (reporter_id, content_id) WHERE status = 'pending' DO NOTHING`,
-			user.ID, contentID, contentType, reason, detail)
-
 		dbpkg.LogPIALEvent(h.db, user.PIALID, user.ID, "content_reported", map[string]interface{}{
-			"content_id": contentID, "reason": reason,
-		}, "elohim-veni")
-
-		// Reports for adult content or hate speech go straight to the human review
-		// queue — admin must explicitly approve, age-gate, or block them.
-		if contentType == "post" && (reason == "nsfw" || reason == "hate") {
-			if err := dbpkg.ApplyScanState(h.db, contentID, "human_review", "user report: "+reason, "report_system",
-				dbpkg.ScanOutcome{NotifyModerators: true}); err != nil {
-				log.Printf("[admin] report on %s (%s): content NOT moved to human_review: %v",
-					contentID, reason, err)
-				return err
+			"content_id": contentID, "reason": reason, "report_id": filed.ReportID,
+		}, "abraxas")
+		// An ownership claim opens straight at admin review: the admins are
+		// told now, through the same notices every review item uses.
+		if kind == abraxas.ReportKindOwnershipClaim && filed.Created {
+			if err := dbpkg.NotifyReviewers(h.db, "report-"+filed.ReportID); err != nil {
+				log.Printf("[report] claim %s filed; telling the admins failed: %v", filed.ReportID, err)
 			}
 		}
-	}
-
-	// Forward to Zodacare safety brain (non-blocking).
-	if h.cfg.ZodacareURL != "" {
-		go func() {
-			payload, _ := json.Marshal(map[string]interface{}{
-				"reporter_pial_id": user.PIALID,
-				"content_id":       contentID,
-				"content_type":     contentType,
-				"reason":           reason,
-				"detail":           detail,
-			})
-			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			defer cancel()
-			req, err := http.NewRequestWithContext(ctx, http.MethodPost, h.cfg.ZodacareURL+"/v1/reports", bytes.NewReader(payload))
-			if err == nil {
-				req.Header.Set("Content-Type", "application/json")
-				resp, err := http.DefaultClient.Do(req)
-				if err == nil {
-					resp.Body.Close()
-				}
-			}
-		}()
-	}
-
-	// Troll achievement: check report-based achievements on the content author
-	if h.db != nil && contentType == "post" {
-		go func() {
-			var authorID string
-			h.db.QueryRow(`SELECT author_id FROM works WHERE id = $1::uuid`, contentID).Scan(&authorID)
-			if authorID != "" {
-				dbpkg.TryAwardTrollOnReported(h.db, authorID)
-			}
-		}()
 	}
 	return nil
 }
@@ -742,16 +810,13 @@ func (h *Handler) adminResetPassword(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`<span style="color:#ef4444;font-size:12px">User not found.</span>`))
 		return
 	}
-	if err := dbpkg.SetPassword(h.db, target.ID, newPassword); err != nil {
-		log.Printf("[admin] reset password failed for @%s: %v", targetHandle, err)
-		w.Write([]byte(`<span style="color:#ef4444;font-size:12px">DB error.</span>`))
+	// elohim-veni sets the password and ends every session on the account.
+	if err := h.identity.Client().ResetPassword(r.Context(), target.ID, newPassword, "admin:"+caller.Handle); err != nil {
+		log.Printf("[admin] reset password for @%s: %v", targetHandle, err)
+		fmt.Fprintf(w, `<span style="color:#ef4444;font-size:12px">%s</span>`, template.HTMLEscapeString(adminIdentityRefusal(err)))
 		return
 	}
-	if err := h.endSessionsAfterPasswordChange(target.ID, ""); err != nil {
-		log.Printf("[admin] ending sessions for @%s: %v", targetHandle, err)
-		w.Write([]byte(`<span style="color:#ef4444;font-size:12px">Password reset, but sessions could not be ended.</span>`))
-		return
-	}
+	h.evictCachedAccount(target.ID, "")
 	log.Printf("[admin] %s reset password for @%s", caller.Handle, targetHandle)
 	fmt.Fprintf(w, `<span style="color:#22c55e;font-size:12px;font-weight:500">✓ Password reset for @%s</span>`, targetHandle)
 }
@@ -785,7 +850,6 @@ func (h *Handler) adminSetEmail(w http.ResponseWriter, r *http.Request) {
 }
 
 const ainSophFeesAccount = "ain_soph_fees"
-const tehanibentleyPIAL = "93d563af-856c-4bf8-a69b-4f7da08cd18e"
 
 type adminFeeTx struct {
 	FromUserID  string `json:"from_user_id"`
@@ -838,15 +902,29 @@ func (h *Handler) adminPanelTreasury(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// The sweep pays the founder, so the panel names who that is. A database
+	// with no founder account renders the panel without a sweep destination.
+	founder, ferr := dbpkg.GetFounder(h.db)
+	if ferr != nil {
+		log.Printf("[admin] treasury: founder lookup: %v", ferr)
+		http.Error(w, "Could not load the treasury — check logs.", http.StatusInternalServerError)
+		return
+	}
+	founderHandle := ""
+	if founder != nil {
+		founderHandle = founder.Handle
+	}
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	h.renderPartial(w, "admin_panel_treasury", map[string]interface{}{
 		"FeeBalance":      balanceAet,
 		"FeeBalanceUnits": balanceUnits,
 		"FeeTxs":          txs,
+		"FounderHandle":   founderHandle,
 	})
 }
 
-// adminSweepFees transfers the entire ain_soph_fees balance to @tehanibentley's PIAL.
+// adminSweepFees transfers the entire ain_soph_fees balance to the founder's PIAL.
 func (h *Handler) adminSweepFees(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "405", http.StatusMethodNotAllowed)
@@ -859,6 +937,16 @@ func (h *Handler) adminSweepFees(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+
+	// The destination is looked up by role, never named. The caller is the
+	// founder, but the founder's identity is resolved through the one function
+	// that answers "who is the founder" so the payee cannot drift from it.
+	founder, ferr := dbpkg.GetFounder(h.db)
+	if ferr != nil || founder == nil || founder.PIALID == "" {
+		log.Printf("[admin] fee sweep: founder account unresolved (account found: %v): %v", founder != nil, ferr)
+		w.Write([]byte(`<span style="color:#ef4444;font-size:12px">Founder account could not be resolved — nothing swept.</span>`))
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
@@ -884,7 +972,7 @@ func (h *Handler) adminSweepFees(w http.ResponseWriter, r *http.Request) {
 
 	payload, _ := json.Marshal(map[string]interface{}{
 		"from_user_id":    ainSophFeesAccount,
-		"to_user_id":      tehanibentleyPIAL,
+		"to_user_id":      founder.PIALID,
 		"amount_cents":    balResp.BalanceUnits,
 		"idempotency_key": fmt.Sprintf("sweep-%d", time.Now().Unix()),
 		"tx_meta":         "admin_sweep",
@@ -911,14 +999,16 @@ func (h *Handler) adminSweepFees(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	xferResp.Body.Close()
-	log.Printf("[admin] %s swept %d units (%s) to tehanibentley PIAL", caller.Handle, balResp.BalanceUnits, balResp.BalanceAet)
-	fmt.Fprintf(w, `<span style="color:#22c55e;font-size:12px;font-weight:500">✓ Swept %s to @tehanibentley — vault now empty.</span>`, balResp.BalanceAet)
+	log.Printf("[admin] %s swept %d units (%s) to founder @%s (PIAL %s)",
+		caller.Handle, balResp.BalanceUnits, balResp.BalanceAet, founder.Handle, founder.PIALID)
+	fmt.Fprintf(w, `<span style="color:#22c55e;font-size:12px;font-weight:500">✓ Swept %s to @%s — vault now empty.</span>`,
+		balResp.BalanceAet, template.HTMLEscapeString(founder.Handle))
 }
 
-// adminScanSweep manually rescues posts stuck in either pending_scan (>15 min) or
-// human_review (>2 hours). The pending_scan path re-triggers the content scanner
-// or falls back to clean. The human_review path auto-approves to clean — a human
-// clearly hasn't reviewed them in that window.
+// adminScanSweep reports works still waiting on a verdict from Abraxas. It
+// writes nothing: a verdict is Abraxas's to give and a moderator's to decide
+// in the review queue, never a timer's. A stale backlog means Abraxas is not
+// answering, and the operator alert (cron.SweepPendingScanOnce) says so.
 func (h *Handler) adminScanSweep(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "405", http.StatusMethodNotAllowed)
@@ -938,33 +1028,15 @@ func (h *Handler) adminScanSweep(w http.ResponseWriter, r *http.Request) {
 		).Scan(&stalePendingScan)
 	}
 
-	// Auto-release human_review posts older than 2 hours.
-	var releasedIDs []string
-	if h.db != nil {
-		var err error
-		releasedIDs, err = dbpkg.ReleaseStaleHumanReviewPosts(h.db, 2*time.Hour)
-		if err != nil {
-			log.Printf("[admin] %s scan sweep — human_review release error: %v", caller.Handle, err)
-		}
-	}
-
-	log.Printf("[admin] %s triggered rescue sweep: %d pending_scan stale, %d human_review released",
-		caller.Handle, stalePendingScan, len(releasedIDs))
-
-	// Run the existing pending_scan sweep logic.
+	log.Printf("[admin] %s checked the verdict backlog: %d work(s) pending over 15 minutes", caller.Handle, stalePendingScan)
 	cron.SweepPendingScanOnce(h.db, h.cfg, h.httpClient)
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	switch {
-	case stalePendingScan == 0 && len(releasedIDs) == 0:
-		w.Write([]byte(`<span style="color:var(--text-muted);font-size:12px">✓ No stuck posts found — feeds are clear.</span>`))
-	case stalePendingScan > 0 && len(releasedIDs) == 0:
-		fmt.Fprintf(w, `<span style="color:#22c55e;font-size:12px;font-weight:500">✓ Re-triggered scan for %d pending_scan post(s). No stale human_review posts.</span>`, stalePendingScan)
-	case stalePendingScan == 0 && len(releasedIDs) > 0:
-		fmt.Fprintf(w, `<span style="color:#22c55e;font-size:12px;font-weight:500">✓ Released %d human_review post(s) to clean. No pending_scan backlog.</span>`, len(releasedIDs))
-	default:
-		fmt.Fprintf(w, `<span style="color:#22c55e;font-size:12px;font-weight:500">✓ Re-triggered scan for %d pending_scan post(s) and released %d human_review post(s) to clean.</span>`, stalePendingScan, len(releasedIDs))
+	if stalePendingScan == 0 {
+		w.Write([]byte(`<span style="color:var(--text-muted);font-size:12px">✓ No work is waiting on a verdict.</span>`))
+		return
 	}
+	fmt.Fprintf(w, `<span style="color:#f59e0b;font-size:12px;font-weight:500">%d work(s) have waited over 15 minutes for a verdict from Abraxas — they stay visible to their authors only until it answers.</span>`, stalePendingScan)
 }
 
 // adminHumanReviewCount returns a small inline HTML fragment showing the current
@@ -987,46 +1059,17 @@ func (h *Handler) adminHumanReviewCount(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
-// adminBulkApproveReview approves ALL posts currently in human_review — used when
-// the admin wants to clear the queue in one click from the moderation panel.
-func (h *Handler) adminBulkApproveReview(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "405", http.StatusMethodNotAllowed)
-		return
-	}
-	caller := h.userFromRequest(w, r)
-	if !caller.IsAdmin() {
-		http.Error(w, "403 Forbidden", http.StatusForbidden)
-		return
-	}
-
-	// Release all human_review posts immediately (0 age threshold = all of them).
-	released, err := dbpkg.ReleaseStaleHumanReviewPosts(h.db, 0)
-	if err != nil {
-		log.Printf("[admin] %s bulk-approve-review error: %v", caller.Handle, err)
-		http.Error(w, "db_error", http.StatusInternalServerError)
-		return
-	}
-	log.Printf("[admin] %s bulk-approved %d human_review posts", caller.Handle, len(released))
-
-	// Return a fresh moderation panel so the queue shows as empty immediately.
-	pendingReports, _ := dbpkg.GetPendingReports(h.db, 50)
-	reviewQueue, _ := dbpkg.GetHumanReviewPosts(h.db, 50)
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	h.renderPartial(w, "admin_panel_moderation", map[string]interface{}{
-		"PendingReports": pendingReports,
-		"ReviewQueue":    reviewQueue,
-	})
-}
-
 // adminUserAction applies a moderation action to a user account.
 // POST /api/admin/user-action  form fields: target_handle, action, reason
 //
 // action values:
 //
 //	warn      — sets enforcement_state = 'warning' in trust_scores; sends violation notification
-//	suspend   — sets enforcement_state = 'suspended', cooldown_until = NOW()+7d; revokes posting cap
-//	ban       — sets users.role = 'banned', enforcement_state = 'terminated'; revokes all caps
+//	suspend   — sets enforcement_state = 'suspended', cooldown_until = NOW()+7d; queues a
+//	            7-day posting cooldown for elohim-veni
+//	ban       — sets enforcement_state = 'terminated'; queues the ban for elohim-veni, which
+//	            revokes every capability and session and reports role 'banned' back
+//	            through identity.events
 func (h *Handler) adminUserAction(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "405", http.StatusMethodNotAllowed)
@@ -1094,8 +1137,8 @@ func (h *Handler) adminUserAction(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, `<span style="color:#f59e0b;font-size:12px;font-weight:500">⚠ @%s warned — violation notification sent.</span>`, targetHandle)
 
 	case "suspend":
-		// Set enforcement_state = suspended, cooldown_until = 7 days, revoke posting cap.
-		// The revocation IS the suspension, so the whole action commits or none of it.
+		// Set enforcement_state = suspended, cooldown_until = 7 days, and stop posting for
+		// that long. The cooldown IS the suspension, so the whole action commits or none of it.
 		_, nsfwTier, _ := dbpkg.GetTrustScore(h.db, target.PIALID)
 		err := dbpkg.WithTx(h.db, func(tx *sql.Tx) error {
 			if err := dbpkg.SetTrustScore(tx, target.PIALID, 20, nsfwTier, "suspended"); err != nil {
@@ -1106,7 +1149,13 @@ func (h *Handler) adminUserAction(w http.ResponseWriter, r *http.Request) {
 				WHERE pial_id = $1`, target.PIALID); err != nil {
 				return err
 			}
-			if err := dbpkg.SetCapability(tx, target.PIALID, "posting", "revoked", reason, caller.Handle, nil); err != nil {
+			// The posting cooldown is elohim-veni's to apply; it is queued on this
+			// commit so the suspension and its record stand or fall together.
+			until := time.Now().Add(7 * 24 * time.Hour)
+			if err := dbpkg.EnqueueIdentityCommand(tx, identity.CommandCapability, target.PIALID, identity.CapabilityCommand{
+				Capability: model.CapPosting,
+				Write:      identity.CapabilityWrite{State: model.CapStateCooldown, Reason: reason, By: "admin:" + caller.Handle, ExpiresAt: &until},
+			}); err != nil {
 				return err
 			}
 			if _, err := dbpkg.WriteNotice(tx, dbpkg.Notice{Recipient: target.ID, Kind: "violation", TargetType: "moderation"}); err != nil {
@@ -1123,36 +1172,25 @@ func (h *Handler) adminUserAction(w http.ResponseWriter, r *http.Request) {
 			w.Write([]byte(`<span style="color:#ef4444;font-size:12px">Suspension failed — check logs.</span>`))
 			return
 		}
+		h.identityRelay.Kick()
+		h.evictCachedAccount(target.ID, "")
 		log.Printf("[admin] %s suspended @%s (7d): %s", caller.Handle, targetHandle, reason)
 		fmt.Fprintf(w, `<span style="color:#ef4444;font-size:12px;font-weight:500">⛔ @%s suspended for 7 days — posting revoked.</span>`, targetHandle)
 
 	case "ban":
-		// Set role = banned, enforcement_state = terminated, revoke all caps. A ban
-		// that half-applied is the worst of both, so the whole action commits or none of it.
-		_, nsfwTier, _ := dbpkg.GetTrustScore(h.db, target.PIALID)
 		err := dbpkg.WithTx(h.db, func(tx *sql.Tx) error {
-			if _, err := tx.Exec(`UPDATE users SET role = 'banned' WHERE handle = $1`, targetHandle); err != nil {
-				return err
-			}
-			if err := dbpkg.SetTrustScore(tx, target.PIALID, 0, nsfwTier, "terminated"); err != nil {
-				return err
-			}
-			for _, cap := range []string{"posting", "messaging", "tipping", "subscribing", "live_streaming"} {
-				if err := dbpkg.SetCapability(tx, target.PIALID, cap, "revoked", reason, caller.Handle, nil); err != nil {
-					return fmt.Errorf("capability %s: %w", cap, err)
-				}
-			}
-			dbpkg.LogEnforcementAction(tx, target.PIALID, "ban", reason, caller.Handle, nil)
-			dbpkg.LogPIALEvent(tx, target.PIALID, target.ID, "account_banned", map[string]interface{}{
-				"reason": reason, "by": caller.Handle,
-			}, "moderation")
-			return nil
+			return dbpkg.BanAccount(tx, target.PIALID, reason, caller.Handle, nil)
 		})
 		if err != nil {
 			log.Printf("[admin] ban failed for @%s: %v", targetHandle, err)
 			w.Write([]byte(`<span style="color:#ef4444;font-size:12px">Ban failed — check logs.</span>`))
 			return
 		}
+		accounts, aerr := dbpkg.AccountsOfPIAL(h.db, target.PIALID)
+		if aerr != nil {
+			log.Printf("[admin] ban of @%s: listing accounts to sign out: %v", targetHandle, aerr)
+		}
+		h.applyQueuedIdentityAction(accounts)
 		log.Printf("[admin] %s banned @%s: %s", caller.Handle, targetHandle, reason)
 		fmt.Fprintf(w, `<span style="color:#ef4444;font-size:12px;font-weight:500">✕ @%s banned — all capabilities revoked.</span>`, targetHandle)
 
@@ -1163,7 +1201,7 @@ func (h *Handler) adminUserAction(w http.ResponseWriter, r *http.Request) {
 
 // adminResyncFollowCounts recomputes every user's follower/following count
 // directly from the follows table, fixing drift caused by the duplicate-follow
-// counter bug (FollowUser was incrementing even on ON CONFLICT DO NOTHING).
+// counter bug (the old follow writer incremented even on ON CONFLICT DO NOTHING).
 func (h *Handler) adminResyncFollowCounts(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "405", http.StatusMethodNotAllowed)
@@ -1190,93 +1228,6 @@ func (h *Handler) adminResyncFollowCounts(w http.ResponseWriter, r *http.Request
 	n, _ := res.RowsAffected()
 	log.Printf("[admin] %s resynced follow counts for %d profiles", caller.Handle, n)
 	fmt.Fprintf(w, `<span style="color:#22c55e;font-size:12px;font-weight:500">✓ Resynced follower/following counts for %d profiles from live data.</span>`, n)
-}
-
-// adminMediaFingerprintSweep fingerprints all video posts that have never been indexed,
-// and fixes lineage attribution for posts sharing the same video URL.
-// Processes in created_at ASC order so the oldest post is always the canonical original.
-// Returns immediately — the sweep runs in a background goroutine so the browser isn't
-// blocked while content-scan processes each video (which can take several seconds each).
-// POST /api/admin/media-fingerprint-sweep
-func (h *Handler) adminMediaFingerprintSweep(w http.ResponseWriter, r *http.Request) {
-	caller := h.userFromRequest(w, r)
-	if !caller.IsAdmin() {
-		http.Error(w, "forbidden", http.StatusForbidden)
-		return
-	}
-	if h.db == nil {
-		http.Error(w, "db unavailable", http.StatusServiceUnavailable)
-		return
-	}
-
-	type postRow struct {
-		ID             string
-		Handle         string
-		PIAL           string
-		VideoMasterURL string
-	}
-
-	// All video posts not yet in media_fingerprints, oldest-first.
-	dbRows, err := h.db.Query(`
-		SELECT p.id::text, u.handle, u.pial_id::text, p.video_master_url
-		FROM works p
-		JOIN users u ON u.id = p.author_id
-		LEFT JOIN media_fingerprints mf ON mf.post_id = p.id::text
-		WHERE p.video_master_url IS NOT NULL AND p.video_master_url != ''
-		  AND mf.id IS NULL
-		  AND p.deleted_at IS NULL
-		ORDER BY p.created_at ASC
-	`)
-	if err != nil {
-		http.Error(w, "db_error", http.StatusInternalServerError)
-		return
-	}
-	var posts []postRow
-	for dbRows.Next() {
-		var p postRow
-		dbRows.Scan(&p.ID, &p.Handle, &p.PIAL, &p.VideoMasterURL)
-		posts = append(posts, p)
-	}
-	dbRows.Close()
-
-	if len(posts) == 0 {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write([]byte(`<span style="color:#22c55e;font-size:12px;font-weight:500">✓ All videos already indexed — nothing to sweep.</span>`))
-		return
-	}
-
-	// Run the sweep in a background goroutine so the browser gets an immediate response.
-	// Each content-scan /scan/video call can take 5-30s; 32 videos = minutes of wall time.
-	callerHandle := caller.Handle
-	go func() {
-		type origInfo struct{ PostID, PIAL, Handle string }
-		canonicals := map[string]*origInfo{}
-		var fingerprintedCount, lineageFixed, errCount int
-
-		for _, p := range posts {
-			if orig, ok := canonicals[p.VideoMasterURL]; ok {
-				if setErr := dbpkg.SetPostLineage(h.db, p.ID, orig.PIAL, orig.Handle); setErr != nil {
-					log.Printf("[sweep] SetPostLineage error post=%s: %v", p.ID, setErr)
-					errCount++
-				} else {
-					lineageFixed++
-					log.Printf("[sweep] lineage fixed: post=%s → @%s", p.ID, orig.Handle)
-				}
-				continue
-			}
-
-			// Video fingerprint sweep via content-scan HTTP is removed.
-			// Abraxas Shield Phase 3.1 will handle media hash events via Kafka.
-			canonicals[p.VideoMasterURL] = &origInfo{PostID: p.ID, PIAL: p.PIAL, Handle: p.Handle}
-		}
-		log.Printf("[admin] %s media-fingerprint-sweep complete: fingerprinted=%d lineage_fixed=%d errors=%d",
-			callerHandle, fingerprintedCount, lineageFixed, errCount)
-	}()
-
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprintf(w,
-		`<span style="color:#22c55e;font-size:12px;font-weight:500">✓ Sweep started — processing %d videos in background. Watch server logs for completion.</span>`,
-		len(posts))
 }
 
 // adminNSFWToggle sets is_adult_creator on a user's profile (admin only).
@@ -1567,32 +1518,9 @@ func (h *Handler) adminGrantFoundingCreator(w http.ResponseWriter, r *http.Reque
 	fmt.Fprintf(w, `{"ok":true,"handle":%q,"message":"Founding Creator badge granted + 500 XP awarded"}`, handle)
 }
 
-// adminClearOrphanHashes deletes video_raw_hashes rows older than 2 hours with no linked post.
-// These are left behind when an upload gets stuck, times out, or the browser closes before posting.
-func (h *Handler) adminClearOrphanHashes(w http.ResponseWriter, r *http.Request) {
-	caller := h.userFromRequest(w, r)
-	if !caller.IsAdmin() {
-		http.Error(w, "403 Forbidden", http.StatusForbidden)
-		return
-	}
-	result, err := h.db.Exec(`
-		DELETE FROM video_raw_hashes
-		WHERE (post_id IS NULL OR post_id = '')
-		  AND created_at < NOW() - INTERVAL '2 hours'
-	`)
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err != nil {
-		log.Printf("[admin] clear-orphan-hashes error: %v", err)
-		w.Write([]byte(`<span style="color:#ef4444;font-size:12px">DB error — check logs.</span>`))
-		return
-	}
-	n, _ := result.RowsAffected()
-	log.Printf("[admin] %s cleared %d orphan video hashes", caller.Handle, n)
-	fmt.Fprintf(w, `<span style="color:#22c55e;font-size:12px;font-weight:500">✓ %d orphan hash(es) cleared</span>`, n)
-}
-
 // adminDeletePost hard-deletes a work by ID without checking author ownership.
-// Also purges associated video/image hashes so the media can be re-uploaded.
+// AdminDeleteWork withdraws its author's own media from Caeor; ownership credit
+// and the raw-byte record stay with Caeor, so the media is never freed for re-upload.
 func (h *Handler) adminDeletePost(w http.ResponseWriter, r *http.Request) {
 	caller := h.userFromRequest(w, r)
 	if !caller.IsAdmin() {
@@ -1644,6 +1572,9 @@ func (h *Handler) adminPurgeUser(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`<span style="color:#ef4444;font-size:12px">DB error — check logs.</span>`))
 		return
 	}
+	// The identity erasure was queued with the purge; deliver it now.
+	h.identityRelay.Kick()
+	h.evictCachedAccount(target.ID, "")
 	log.Printf("[admin] PURGE: %s hard-deleted account @%s (user_id=%s)", caller.Handle, targetHandle, target.ID)
 	fmt.Fprintf(w, `<span style="color:#22c55e;font-size:12px;font-weight:500">✓ @%s and all associated data permanently purged.</span>`, targetHandle)
 }

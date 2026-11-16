@@ -14,7 +14,7 @@ func GetWorksPopular(db *sql.DB, limit int) ([]*model.Work, error) {
 		SELECT w.id::text
 		FROM works w
 		WHERE w.deleted_at IS NULL AND `+workNotBlockedSQL+`
-		  AND NOT w.subscriber_only AND w.kind <> 'reply'
+		  AND NOT w.subscriber_only AND NOT w.is_reply
 		  AND w.created_at > NOW() - INTERVAL '7 days'
 		ORDER BY (1
 		    + COALESCE((SELECT SUM(CASE wr.reaction_type WHEN 'like' THEN 1 WHEN 'repost' THEN 3

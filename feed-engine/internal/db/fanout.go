@@ -26,6 +26,9 @@ import (
 // the work $2 live. $1 is the account whose followers are being fanned to (the
 // author for an original, the reposter for a repost); $2 is the work.
 //
+// A reply is never a feed item (works.is_reply, the same column every feed
+// reads), so it is never announced as one.
+//
 // The subscriber-only, moderation and expiry clauses are the feed's own
 // constants; the visibility of the work is decided per follower, because
 // subscriber-only means something different to each of them.
@@ -37,6 +40,7 @@ const fanoutEligibleSQL = `
 	WHERE f.following_id = $1::uuid
 	  AND u.pial_id IS NOT NULL
 	  AND w.deleted_at IS NULL
+	  AND NOT w.is_reply
 	  AND ` + workNotBlockedSQL + `
 	  AND ` + workLiveSQL + `
 	  AND (NOT w.subscriber_only
@@ -82,18 +86,15 @@ func FanoutFollowerPIALs(db *sql.DB, sourceUserID, workID string) ([]string, err
 	return out, rows.Err()
 }
 
-// WorkKindAndAuthor returns a work's kind, its author's account id and its
-// author's handle. Used by the fan-out to decide whether a work is a feed item
-// at all before it goes looking for an audience.
-func WorkKindAndAuthor(db *sql.DB, workID string) (kind, authorID, authorHandle string, err error) {
-	if db == nil || workID == "" {
-		return "", "", "", sql.ErrNoRows
-	}
+// WorkFanoutFacts returns whether a work is a reply, its author's account id and
+// its author's handle. A reply is never a feed item, so the fan-out asks this
+// before it goes looking for an audience. sql.ErrNoRows when the work is gone.
+func WorkFanoutFacts(db *sql.DB, workID string) (isReply bool, authorID, authorHandle string, err error) {
 	err = db.QueryRow(`
-		SELECT w.kind, w.author_id::text, COALESCE(u.handle, '')
+		SELECT w.is_reply, w.author_id::text, COALESCE(u.handle, '')
 		FROM works w
 		LEFT JOIN users u ON u.id = w.author_id
 		WHERE w.id = $1::uuid AND w.deleted_at IS NULL`, workID).
-		Scan(&kind, &authorID, &authorHandle)
-	return kind, authorID, authorHandle, err
+		Scan(&isReply, &authorID, &authorHandle)
+	return isReply, authorID, authorHandle, err
 }

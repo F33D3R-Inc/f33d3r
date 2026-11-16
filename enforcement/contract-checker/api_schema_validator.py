@@ -24,7 +24,6 @@ SERVICES = {
     "vovin": "http://localhost:8092/health",
     "ain-soph": "http://localhost:8089/health",
     "elohim-veni": "http://localhost:8093/health",
-    "zodacare": "http://localhost:8090/health",
     "schema-reg": "http://localhost:8079/health",
 }
 

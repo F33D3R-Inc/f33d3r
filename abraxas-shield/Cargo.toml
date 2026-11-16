@@ -1,36 +1,39 @@
 [package]
 name = "abraxas-shield"
-version = "0.1.0"
+version = "4.0.0"
 edition = "2021"
+description = "Abraxas — the integrity authority: banned-content gate, PIAL-keyed fingerprints and ownership, verdicts, review, reports"
 
 [[bin]]
 name = "abraxas-shield"
 path = "src/main.rs"
 
-[features]
-# visual-nsfw: enable ONNX-based image scanning via the ort crate.
-# Disabled by default — requires AVX2-capable CPU and a model file at MODEL_PATH.
-# Enable with: cargo build --features visual-nsfw
-visual-nsfw = ["ort", "image", "ndarray", "reqwest"]
-
 [dependencies]
-rdkafka = { version = "*", features = ["cmake-build", "ssl"] }
-tokio = { version = "*", features = ["full"] }
-tokio-postgres = { version = "*", features = ["with-uuid-1", "with-serde_json-1", "with-chrono-0_4"] }
-deadpool-postgres = "*"
-serde = { version = "*", features = ["derive"] }
-serde_json = "*"
-uuid = { version = "*", features = ["v4"] }
-tracing = "*"
-tracing-subscriber = { version = "*", features = ["json", "env-filter"] }
-regex = "*"
-chrono = { version = "*", features = ["serde"] }
-ort     = { version = "2.0.0-rc.12", features = ["download-binaries"], optional = true }
-image   = { version = "0", default-features = false, features = ["jpeg", "png", "webp"], optional = true }
-reqwest = { version = "0", default-features = false, features = ["blocking", "rustls-tls"], optional = true }
-ndarray = { version = "*", optional = true }
+manhattan-client = { path = "../libs/manhattan-client" }
+manhattan-outbox = { path = "../libs/manhattan-outbox" }
+axum = { version = "0.7", features = ["json"] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "json"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rdkafka = { version = "0.39", features = ["cmake-build"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+sha2 = "0.10"
+hex = "0.4"
+base64 = "0.22"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+anyhow = "1"
+metrics = "0.23"
+metrics-exporter-prometheus = "0.15"
+once_cell = "1"
 
 [profile.release]
 opt-level = 3
 lto = true
 codegen-units = 1
+
+[profile.dev]
+opt-level = 1

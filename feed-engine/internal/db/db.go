@@ -3,6 +3,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log"
@@ -10,6 +11,9 @@ import (
 
 	_ "github.com/lib/pq"
 )
+
+// pingTimeout bounds the connectivity check in Open.
+const pingTimeout = 5 * time.Second
 
 // Open opens a PostgreSQL connection pool and verifies connectivity.
 // url format: postgres://user:pass@host:port/dbname?sslmode=disable
@@ -29,7 +33,15 @@ func Open(url string) (*sql.DB, error) {
 	db.SetConnMaxLifetime(5 * time.Minute)
 	db.SetConnMaxIdleTime(2 * time.Minute)
 
-	if err := db.Ping(); err != nil {
+	// Bounded, so a caller retrying a database that is not up yet gets an
+	// answer per attempt instead of hanging on one connect. A failed pool is
+	// closed here: the caller only ever receives a pool that works.
+	ctx, cancel := context.WithTimeout(context.Background(), pingTimeout)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
+		if cerr := db.Close(); cerr != nil {
+			return nil, fmt.Errorf("db.Ping: %w (closing the pool also failed: %v)", err, cerr)
+		}
 		return nil, fmt.Errorf("db.Ping: %w", err)
 	}
 

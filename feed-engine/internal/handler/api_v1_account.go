@@ -321,7 +321,7 @@ func (h *Handler) apiNotificationPrefsEvent(w http.ResponseWriter, r *http.Reque
 // ── GET /api/v1/2fa/setup ────────────────────────────────────────────────────
 
 func (h *Handler) apiV12FASetup(w http.ResponseWriter, r *http.Request, u *model.User) {
-	uri, secret, status, msg := h.totpBeginSetup(u)
+	uri, secret, status, msg := h.totpBeginSetup(r.Context(), u)
 	if status != http.StatusOK {
 		code := "server_error"
 		if status == http.StatusConflict {
@@ -340,9 +340,9 @@ func (h *Handler) api2FAEvent(w http.ResponseWriter, r *http.Request, u *model.U
 	var status int
 	var msg string
 	if enable {
-		status, msg = h.totpEnableCore(u, code)
+		status, msg = h.totpEnableCore(r.Context(), u, code)
 	} else {
-		status, msg = h.totpDisableCore(u, code)
+		status, msg = h.totpDisableCore(r.Context(), u, code)
 	}
 	if status != http.StatusOK {
 		apiError(w, status, twoFAErrorCode(status), msg)
@@ -351,7 +351,7 @@ func (h *Handler) api2FAEvent(w http.ResponseWriter, r *http.Request, u *model.U
 	if tok := GetSessionToken(r); tok != "" {
 		h.sessionCache.Delete(tok)
 	}
-	apiJSON(w, http.StatusOK, h.meDTOFor(u))
+	h.apiMe(w, r, u)
 }
 
 func twoFAErrorCode(status int) string {
@@ -369,33 +369,13 @@ func twoFAErrorCode(status int) string {
 
 // ── Backup codes ─────────────────────────────────────────────────────────────
 
-// backupCodeCount is how many single-use recovery codes an account holds.
-const backupCodeCount = 8
-
-// issueBackupCodes replaces the account's recovery codes with a fresh set and
-// returns them in the clear — the only moment they exist in the clear, since
-// only their hashes are stored. One issuer for the web's reveal page and for
-// the two_fa_backup_codes event.
-func (h *Handler) issueBackupCodes(userID string) ([]string, error) {
-	codes := make([]string, backupCodeCount)
-	for i := range codes {
-		c, err := dbpkg.GenerateBackupCode()
-		if err != nil {
-			return nil, fmt.Errorf("generate: %w", err)
-		}
-		codes[i] = c
-	}
-	if err := dbpkg.StoreBackupCodes(h.db, userID, codes); err != nil {
-		return nil, fmt.Errorf("store: %w", err)
-	}
-	return codes, nil
-}
-
+// apiBackupCodesEvent has elohim-veni replace the account's recovery codes and
+// answers with them — the one moment they exist in the clear.
 func (h *Handler) apiBackupCodesEvent(w http.ResponseWriter, r *http.Request, u *model.User) {
-	codes, err := h.issueBackupCodes(u.ID)
+	codes, err := h.identity.Client().IssueBackupCodes(r.Context(), u.ID)
 	if err != nil {
 		log.Printf("[backup-codes] issue for %s: %v", u.Handle, err)
-		apiServerError(w, err)
+		apiError(w, http.StatusServiceUnavailable, "identity_unavailable", "Your backup codes could not be generated right now. Try again in a moment.")
 		return
 	}
 	apiJSON(w, http.StatusOK, BackupCodesDTO{Codes: codes})
@@ -429,19 +409,23 @@ func (h *Handler) apiAccountDeleteEvent(w http.ResponseWriter, r *http.Request, 
 	dbpkg.LogPIALEvent(h.db, u.PIALID, u.ID, "account_delete_requested", map[string]interface{}{
 		"reason": truncate(eventField(r, rawBodyMap, "reason"), 500),
 	}, "gdpr")
-	h.endEverySession(r, u)
+	if err := h.endEverySession(r, u); err != nil {
+		// The deletion is queued and stands; the devices still signed in are
+		// the part that did not happen, and the client is told.
+		apiError(w, http.StatusServiceUnavailable, "sessions_not_ended",
+			"Your deletion is queued, but your other devices could not be signed out. Try again in a moment.")
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// endEverySession signs the account out everywhere and drops the cached
-// resolutions of the token this request arrived on, so the very next request
-// resolves to nobody rather than to a cached account.
-func (h *Handler) endEverySession(r *http.Request, u *model.User) {
-	if err := dbpkg.RevokeAllSessions(h.db, u.ID); err != nil {
+// endEverySession signs the account out everywhere and drops every cached
+// resolution of it, so the very next request on any device resolves to nobody
+// rather than to a cached account.
+func (h *Handler) endEverySession(r *http.Request, u *model.User) error {
+	if err := h.endAccountSessions(r, u.ID, ""); err != nil {
 		log.Printf("[sessions] revoke all for %s: %v", u.Handle, err)
+		return err
 	}
-	if tok := GetSessionToken(r); tok != "" {
-		h.sessionCache.Delete(tok)
-	}
-	h.sessionCache.Delete("__handle__" + u.Handle)
+	return nil
 }

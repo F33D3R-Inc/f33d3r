@@ -19,7 +19,7 @@
       "title": "Brains Up",
       "gridPos": {"h":4,"w":4,"x":0,"y":1},
       "datasource": {"type":"prometheus","uid":"prometheus"},
-      "targets": [{"expr":"count(up{job=~\"nantar|aethyrrank|zior|caeor|ain-soph|aethyr-ledger|verity|elohim-veni|zodacare|schema-registry|registrar\"} == 1)","refId":"A","instant":true}],
+      "targets": [{"expr":"count(up{job=~\"nantar|aethyrrank|zior|caeor|ain-soph|aethyr-ledger|verity|elohim-veni|abraxas-shield|schema-registry|registrar\"} == 1)","refId":"A","instant":true}],
       "options": {"reduceOptions":{"calcs":["lastNotNull"]},"colorMode":"value","graphMode":"none","textMode":"auto"},
       "fieldConfig": {"defaults":{"thresholds":{"mode":"absolute","steps":[{"color":"red","value":null},{"color":"yellow","value":10},{"color":"green","value":13}]},"mappings":[]}}
     },
@@ -29,7 +29,7 @@
       "title": "Brains Down",
       "gridPos": {"h":4,"w":4,"x":4,"y":1},
       "datasource": {"type":"prometheus","uid":"prometheus"},
-      "targets": [{"expr":"count(up{job=~\"nantar|aethyrrank|zior|caeor|ain-soph|aethyr-ledger|verity|elohim-veni|zodacare|schema-registry|registrar\"} == 0) OR vector(0)","refId":"A","instant":true}],
+      "targets": [{"expr":"count(up{job=~\"nantar|aethyrrank|zior|caeor|ain-soph|aethyr-ledger|verity|elohim-veni|abraxas-shield|schema-registry|registrar\"} == 0) OR vector(0)","refId":"A","instant":true}],
       "options": {"reduceOptions":{"calcs":["lastNotNull"]},"colorMode":"background","graphMode":"none"},
       "fieldConfig": {"defaults":{"thresholds":{"mode":"absolute","steps":[{"color":"green","value":null},{"color":"red","value":1}]},"mappings":[]}}
     },
@@ -81,7 +81,7 @@
       "title": "Brain Up / Down",
       "gridPos": {"h":7,"w":24,"x":0,"y":6},
       "datasource": {"type":"prometheus","uid":"prometheus"},
-      "targets": [{"expr":"up{job=~\"nantar|aethyrrank|zior|caeor|ain-soph|aethyr-ledger|verity|elohim-veni|zodacare|schema-registry|registrar\"}","refId":"A","instant":true,"legendFormat":"{{job}}"}],
+      "targets": [{"expr":"up{job=~\"nantar|aethyrrank|zior|caeor|ain-soph|aethyr-ledger|verity|elohim-veni|abraxas-shield|schema-registry|registrar\"}","refId":"A","instant":true,"legendFormat":"{{job}}"}],
       "options": {"sortBy":[{"displayName":"Value","desc":false}]},
       "transformations": [
         {"id":"labelsToFields","options":{"valueLabel":"job"}},

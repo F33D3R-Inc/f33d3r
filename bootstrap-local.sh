@@ -167,32 +167,6 @@ export COMPOSE_DOCKER_CLI_BUILD=1
 
 docker compose -f docker-compose.local.yml --env-file .env.local up --build -d
 
-# ── 7b. Seed the founder account ─────────────────────────────────────────────
-# The seed needs tables feed-engine creates through its migrations, so it runs
-# once feed-engine reports healthy, never during Postgres's first boot.
-section "Seeding founder account"
-COMPOSE=(docker compose -f docker-compose.local.yml --env-file .env.local)
-FEED_ID=$("${COMPOSE[@]}" ps -q feed-engine)
-FEED_HEALTH=""
-for _ in $(seq 1 90); do
-  FEED_HEALTH=$(docker inspect --format '{{.State.Health.Status}}' "$FEED_ID")
-  [ "$FEED_HEALTH" = "healthy" ] && break
-  sleep 2
-done
-if [ "$FEED_HEALTH" != "healthy" ]; then
-  err "feed-engine is not healthy (status: ${FEED_HEALTH}), cannot seed."
-  err "  docker compose -f docker-compose.local.yml logs feed-engine"
-  exit 1
-fi
-# The password lives only in .env.local, which git ignores.
-if ! grep -q '^FOUNDER_PASSWORD=' .env.local; then
-  printf 'FOUNDER_PASSWORD=%s\n' "$(openssl rand -hex 16)" >> .env.local
-fi
-FOUNDER_PASSWORD=$(grep '^FOUNDER_PASSWORD=' .env.local | cut -d= -f2-)
-{ printf "SET f33d3r.founder_password = '%s';\n" "$FOUNDER_PASSWORD"; cat infra/postgres/seed/founder-account.sql; } \
-  | "${COMPOSE[@]}" exec -T postgres sh -c 'psql -q -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d f33d3r_feed'
-info "Founder account ready: @tehanibentley (password: FOUNDER_PASSWORD in .env.local)"
-
 # ── 8. Wait + health check ───────────────────────────────────────────────────
 section "Waiting for services to come online"
 # First-boot can take a while for Postgres init scripts; give a generous wait.
@@ -228,10 +202,9 @@ check_service "transcoding"            "8085"
 check_service "caeor"                  "8086"
 check_service "astraon"                "8088"
 check_service "ain-soph"               "8089"
-check_service "zodacare"               "8090"
+check_service "abraxas-shield"         "8109"
 check_service "live-edge"              "8092" "/healthz"
 check_service "elohim-veni"            "8093"
-check_service "registry-brain"         "8094"
 check_service "verity"                 "8095"
 check_service "aethyr-ledger"          "8096"
 check_service "content-scan"           "8097" "/ready"

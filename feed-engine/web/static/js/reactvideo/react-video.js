@@ -166,17 +166,41 @@
     var fd = new FormData();
     fd.append('video', file, 'reaction.webm');
 
+    // The recording is processed by the media authority into its watermarked
+    // stream; the studio waits for the server to say it is ready, then signs.
+    function waitReady(uploadId) {
+      return new Promise(function (resolve, reject) {
+        (function poll() {
+          fetch('/upload/tus/status/' + uploadId)
+            .then(function (r) { if (!r.ok) throw new Error('status ' + r.status); return r.json(); })
+            .then(function (job) {
+              if (job.status === 'ready' && job.output) { resolve(job.output); return; }
+              if (job.status === 'failed' || job.status === 'duplicate') { reject(new Error(job.error || job.status)); return; }
+              setTimeout(poll, 2000);
+            })
+            .catch(reject);
+        })();
+      });
+    }
+
     fetch('/upload/react-video', { method: 'POST', body: fd })
       .then(function (r) { if (!r.ok) throw new Error('upload ' + r.status); return r.json(); })
       .then(function (d) {
-        if (!d.url) throw new Error('no url');
+        if (!d.upload_id) throw new Error('no upload');
+        return waitReady(d.upload_id);
+      })
+      .then(function (out) {
         if (!window.Malkuth || !window._malkuthReady) throw new Error('Malkuth not loaded');
         return window._malkuthReady.then(function (mk) {
           if (!mk || !mk.hasKey) throw new Error('signing key unavailable');
           return window.Malkuth.buildSignedWork('post', caption, 'react_video', [], null, {
-            quoted_work_id:   self.workId,
-            video_master_url: d.url,
-            react_layout:     self.layout
+            quoted_work_id:      self.workId,
+            video_master_url:    out.master_url,
+            video_poster_url:    out.poster_url || null,
+            video_duration_secs: out.duration_seconds || null,
+            video_width:         out.source_width || 0,
+            video_height:        out.source_height || 0,
+            react_layout:        self.layout
           });
         });
       })

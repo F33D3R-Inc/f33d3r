@@ -1,10 +1,8 @@
 package cron
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -14,57 +12,31 @@ import (
 	"strings"
 	"time"
 
+	"github.com/f33d3r/feed-engine/internal/caeor"
 	"github.com/f33d3r/feed-engine/internal/config"
 	dbpkg "github.com/f33d3r/feed-engine/internal/db"
 	"github.com/f33d3r/feed-engine/internal/manhattan"
-	"github.com/f33d3r/feed-engine/internal/registry"
 )
 
 // Start launches all background cron goroutines. Call once from main after DB is ready.
 func Start(database *sql.DB, cfg *config.Config, client *http.Client) {
-	go sessionCleanup(database)
 	go notificationMonitor(database)
 	go healthMonitor(cfg, client)
 	go pendingScanSweep(database, cfg, client)
-	go publishScheduledPosts(database)
-	go orphanHashSweep(database)
+	// Scheduled works are released by the work outbox worker
+	// (handler.StartWorkOutbox), in the same transaction that records what each
+	// one is owed on publication.
 	// Messages written to somebody who never answered. They are held so the
 	// sender does not have to type them again while the knock is outstanding;
 	// they are not held for ever.
 	go gnosisPendingSweep(database)
 	// The Vision lane's object collector. Expiry itself is enforced in SQL on every
 	// read, so this only reclaims bytes and is allowed to lag.
-	go visionMediaSweep(database, cfg, client)
+	go visionMediaSweep(database, cfg)
 	// The Manhattan outbox drain. Registrations are queued transactionally by
 	// database triggers; this is what delivers them to the naming plane.
 	go manhattan.StartDrain(context.Background(), database, manhattan.New(cfg.ManhattanURL))
-	// Handles allocated before this brain learned to ask registry-brain exist
-	// only in users.handle, so the registrar never published their names and
-	// handle:<handle> resolves to nothing. This hands those allocations to the
-	// authority that owns them; once done it is a no-op on every later boot.
-	go registry.StartReconcile(context.Background(), database, registry.New(cfg.RegistryBrainURL))
-	// Accounts whose date of birth was captured at signup but never reached the
-	// PIAL root read as non-adult to every age gate on the platform. This
-	// completes them from the signup audit trail, and never invents one.
-	go dbpkg.StartPIALBirthdayReconcile(database)
-	log.Println("[cron] background jobs started: session-cleanup, health-monitor, stale-scan-alert, scheduled-posts, orphan-hash-sweep, gnosis-pending-sweep, vision-media-purge, manhattan-outbox-drain, registry-handle-reconcile, pial-birthday-reconcile")
-}
-
-// sessionCleanup deletes expired auth sessions every hour.
-func sessionCleanup(database *sql.DB) {
-	tick := time.NewTicker(1 * time.Hour)
-	defer tick.Stop()
-	for range tick.C {
-		if database == nil {
-			continue
-		}
-		n, err := dbpkg.CleanExpiredSessions(database)
-		if err != nil {
-			log.Printf("[cron] session cleanup error: %v", err)
-		} else if n > 0 {
-			log.Printf("[cron] session cleanup: removed %d expired sessions", n)
-		}
-	}
+	log.Println("[cron] background jobs started: health-monitor, stale-scan-alert, gnosis-pending-sweep, vision-media-purge, manhattan-outbox-drain")
 }
 
 // healthMonitor pings critical services every 5 minutes and logs if any are down.
@@ -72,7 +44,7 @@ func healthMonitor(cfg *config.Config, client *http.Client) {
 	endpoints := []struct{ name, url string }{
 		{"aethyrrank", cfg.AethyrRankURL + "/health"},
 		{"ain-soph", cfg.AinSophURL + "/health"},
-		{"zodacare", cfg.ZodacareURL + "/health"},
+		{"abraxas", cfg.AbraxasURL + "/health"},
 		{"elohim-veni", cfg.ElohimVeniURL + "/health"},
 		{"verity", cfg.VerityURL + "/health"},
 		{"caeor", cfg.CaeorURL + "/health"},
@@ -132,8 +104,10 @@ const staleScanSampleMax = 10
 // that is still coming. The honest action is to leave the row exactly as the
 // scanner left it and raise a loud operational alert.
 //
-// Nothing is hidden by this: only 'blocked' takes a work out of the feed, so a
-// work waiting on a verdict is still readable while it waits.
+// A work waiting on a verdict is visible to its author only and is neither
+// fanned out nor ranked (db.workNotBlockedSQL, ClaimWorkOutbox), so a stale
+// verdict is a work its author can see and nobody else can: this alert is how
+// an operator learns Abraxas is not answering.
 func pendingScanSweep(database *sql.DB, cfg *config.Config, client *http.Client) {
 	sweepPendingScanOnce(database, cfg, client)
 	tick := time.NewTicker(5 * time.Minute)
@@ -210,15 +184,15 @@ func sweepPendingScanOnce(database *sql.DB, cfg *config.Config, client *http.Cli
 // collected yet. A row is stamped purged only when its object was actually
 // deleted, so a failed delete is retried on the next pass instead of leaking the
 // object forever.
-func visionMediaSweep(database *sql.DB, cfg *config.Config, client *http.Client) {
+func visionMediaSweep(database *sql.DB, cfg *config.Config) {
 	tick := time.NewTicker(10 * time.Minute)
 	defer tick.Stop()
 	for range tick.C {
-		sweepVisionMediaOnce(database, cfg, client)
+		sweepVisionMediaOnce(database, cfg)
 	}
 }
 
-func sweepVisionMediaOnce(database *sql.DB, cfg *config.Config, client *http.Client) {
+func sweepVisionMediaOnce(database *sql.DB, cfg *config.Config) {
 	if database == nil {
 		return
 	}
@@ -231,10 +205,11 @@ func sweepVisionMediaOnce(database *sql.DB, cfg *config.Config, client *http.Cli
 		return
 	}
 
+	cc := caeor.New(cfg.CaeorURL, cfg.InternalAPIKey)
 	purged := make([]string, 0, len(refs))
 	failed := 0
 	for _, m := range refs {
-		if err := deleteVisionObject(cfg, client, m); err != nil {
+		if err := deleteVisionObject(database, cc, m); err != nil {
 			failed++
 			log.Printf("[cron][vision-purge] vision %s object %s: %v", dbpkg.VisionRef{AuthorPIAL: m.AuthorPIAL, Seq: m.Seq}, m.ObjectKey, err)
 			continue
@@ -254,25 +229,33 @@ func sweepVisionMediaOnce(database *sql.DB, cfg *config.Config, client *http.Cli
 	log.Printf("[cron][vision-purge] purged %d expired vision objects, %d failed", len(purged), failed)
 }
 
-// visionLocalMediaPrefix is the path a Vision object served from this platform's
-// own disk carries. Anything else is a Caeor asset.
+// visionLocalMediaPrefix is the path a Vision object stored on this platform's
+// own disk carried, before Caeor was the one media authority. Nothing writes
+// there any more; expired legacy objects are still reclaimed.
 const visionLocalMediaPrefix = "/static/uploads/visions/"
 
-// visionLocalMediaDir is where those objects actually live.
+// visionLocalMediaDir is where those legacy objects live.
 var visionLocalMediaDir = filepath.Join("web", "static", "uploads", "visions")
 
-// deleteVisionObject removes one stored Vision object. An object that is already
-// gone is a success — the point of the sweep is that it is not there.
-func deleteVisionObject(cfg *config.Config, client *http.Client, m dbpkg.VisionMediaRef) error {
+// visionPurgeTimeout bounds the Caeor calls for one expired Vision object.
+const visionPurgeTimeout = 15 * time.Second
+
+// deleteVisionObject reclaims one expired Vision object. An object that is
+// already gone is a success — the point of the sweep is that it is not there.
+//
+// A Caeor asset is withdrawn only when it is the Vision author's own upload and
+// nothing else of theirs still carries it: a Vision that showed a photo the
+// author also posted as a work leaves the work's media alone.
+func deleteVisionObject(database *sql.DB, cc *caeor.Client, m dbpkg.VisionMediaRef) error {
 	key := strings.TrimSpace(m.ObjectKey)
 	if key == "" {
 		key = strings.TrimSpace(m.AssetURL)
 	}
-	if key == "" {
+	if key == "" && m.CaeorAssetID == "" {
 		return errors.New("vision media row names no object")
 	}
 
-	if strings.HasPrefix(key, visionLocalMediaPrefix) {
+	if strings.HasPrefix(key, visionLocalMediaPrefix) && m.CaeorAssetID == "" {
 		name := strings.TrimPrefix(key, visionLocalMediaPrefix)
 		// The name is one path segment written by this process. Anything else is
 		// refused rather than handed to os.Remove.
@@ -285,62 +268,46 @@ func deleteVisionObject(cfg *config.Config, client *http.Client, m dbpkg.VisionM
 		return nil
 	}
 
-	if cfg == nil || cfg.CaeorURL == "" {
-		return errors.New("caeor is not configured, cannot purge stored object")
+	if !cc.Configured() {
+		return errors.New("caeor is not configured, cannot withdraw the object")
 	}
-	if client == nil {
-		return errors.New("no http client, cannot reach caeor")
-	}
-	body, err := json.Marshal(map[string]string{"url": key})
-	if err != nil {
-		return err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), visionPurgeTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, cfg.CaeorURL+"/v1/media", bytes.NewReader(body))
-	if err != nil {
-		return err
+
+	assetID := strings.TrimSpace(m.CaeorAssetID)
+	if assetID == "" {
+		obj, err := cc.Resolve(ctx, key)
+		if errors.Is(err, caeor.ErrNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		assetID = obj.AssetID
 	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNotFound {
+	asset, err := cc.Get(ctx, assetID)
+	if errors.Is(err, caeor.ErrNotFound) {
 		return nil
 	}
-	if resp.StatusCode >= 300 {
-		return fmt.Errorf("caeor returned %d", resp.StatusCode)
+	if err != nil {
+		return err
+	}
+	if asset.Withdrawn || asset.UploaderPIAL != m.AuthorPIAL {
+		// Already off the platform, or somebody else's upload the Vision only
+		// referenced: nothing of this Vision's to withdraw.
+		return nil
+	}
+	carried, err := dbpkg.AssetStillCarried(database, assetID, m.AuthorPIAL, m.ID)
+	if err != nil {
+		return err
+	}
+	if carried {
+		return nil
+	}
+	if err := cc.Withdraw(ctx, assetID, "vision expired"); err != nil && !errors.Is(err, caeor.ErrNotFound) {
+		return err
 	}
 	return nil
-}
-
-// orphanHashSweep deletes video_raw_hashes rows that were never linked to a live post.
-// This happens when an upload gets stuck, the browser closes, or transcoding fails —
-// the hash was stored speculatively but the post was never created. Without this sweep
-// the user can never re-upload that same video.
-// Runs every 30 minutes; only clears hashes older than 2 hours with no post_id.
-func orphanHashSweep(database *sql.DB) {
-	tick := time.NewTicker(30 * time.Minute)
-	defer tick.Stop()
-	for range tick.C {
-		if database == nil {
-			continue
-		}
-		result, err := database.Exec(`
-			DELETE FROM video_raw_hashes
-			WHERE (post_id IS NULL OR post_id = '')
-			  AND created_at < NOW() - INTERVAL '2 hours'
-		`)
-		if err != nil {
-			log.Printf("[cron] orphan hash sweep error: %v", err)
-			continue
-		}
-		if n, _ := result.RowsAffected(); n > 0 {
-			log.Printf("[cron] orphan hash sweep: removed %d stale video hashes", n)
-		}
-	}
 }
 
 // gnosisPendingMaxAge is how long a message written to somebody who has not
@@ -384,24 +351,6 @@ func gnosisPendingSweep(database *sql.DB) {
 		}
 		if n, _ := result.RowsAffected(); n > 0 {
 			log.Printf("[cron] gnosis pending sweep: released %d undelivered message(s) older than %s", n, gnosisPendingMaxAge)
-		}
-	}
-}
-
-// publishScheduledPosts fires every minute, moves scheduled posts with scheduled_at <= NOW()
-// into the public feed by clearing their scheduled_at column.
-func publishScheduledPosts(database *sql.DB) {
-	tick := time.NewTicker(1 * time.Minute)
-	defer tick.Stop()
-	for range tick.C {
-		if database == nil {
-			continue
-		}
-		n, err := dbpkg.PublishScheduledPosts(database)
-		if err != nil {
-			log.Printf("[cron] scheduled posts publish error: %v", err)
-		} else if n > 0 {
-			log.Printf("[cron] published %d scheduled posts", n)
 		}
 	}
 }

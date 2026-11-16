@@ -1,8 +1,10 @@
-# F33D3R content-scan — visual/audio/text content classifier.
+# F33D3R content-scan — the private ML worker of abraxas-shield: fingerprints
+# and detector scores over files on the read-only media private volume. No
+# database, no callbacks, no decisions.
 #
 # Python is pinned to 3.11 rather than :latest because every model stack in this
 # image (onnxruntime, torch/torchvision behind EasyOCR, ctranslate2 behind
-# faster-whisper, lightgbm) publishes wheels for it. On an unpinned :latest the
+# faster-whisper) publishes wheels for it. On an unpinned :latest the
 # interpreter moves ahead of those wheels and pip silently falls back to source
 # builds that do not complete — a build that used to work stops working with no
 # change to this file.
@@ -12,9 +14,11 @@
 # not a download.
 FROM python:3.11-slim-bookworm
 
-# ffmpeg + chromaprint (fpcalc) for video probing, audio extraction, and
-# fingerprinting. libgl1 + libglib2.0-0 are required by OpenCV behind NudeNet
-# and EasyOCR. libgomp1 is the OpenMP runtime lightgbm and torch link against.
+# ffmpeg + chromaprint (fpcalc): probing, frame sampling, shot detection, the
+# 8 kHz decode behind the audio landmarks, and the full-length chromaprint.
+# libgl1 + libglib2.0-0 are required by OpenCV behind NudeNet and EasyOCR.
+# libgomp1 is the OpenMP runtime torch and ctranslate2 link against. curl serves
+# the healthcheck.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     libchromaprint-tools \
@@ -26,7 +30,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Model weights live under /models and data (fingerprint scratch) under /data.
+# Model weights live under /models.
 # Pointing every library's cache at a fixed path is what makes the pre-warm
 # below land inside the image instead of in a throwaway home directory.
 ENV EASYOCR_MODULE_PATH=/models/easyocr \
@@ -35,7 +39,7 @@ ENV EASYOCR_MODULE_PATH=/models/easyocr \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
-RUN mkdir -p /models/easyocr /models/hf /models/cache /data
+RUN mkdir -p /models/easyocr /models/hf /models/cache
 
 # ONNX Runtime build. The default CPU package has no CUDAExecutionProvider; to
 # run NudeNet on a GPU, build with --build-arg ONNXRUNTIME_PACKAGE=onnxruntime-gpu.
@@ -56,10 +60,7 @@ RUN pip install --no-cache-dir --timeout 120 --retries 10 \
  && pip install --no-cache-dir --timeout 120 --retries 10 -r requirements.txt \
  && pip install --no-cache-dir --timeout 120 --retries 10 "${ONNXRUNTIME_PACKAGE}"
 
-COPY scanner.py .
-COPY server.py .
-COPY sweep.py .
-COPY prewarm.py .
+COPY errors.py media.py scanner.py audio_landmarks.py fingerprint.py server.py prewarm.py ./
 
 # Bake NudeNet, EasyOCR (~300 MB) and faster-whisper base (~150 MB) into the
 # image. Three attempts absorb a flaky model host; after that the build FAILS.
@@ -83,8 +84,11 @@ EXPOSE 8097
 # gunicorn, not the Werkzeug development server. One worker: each worker holds a
 # full copy of NudeNet, EasyOCR and Whisper in memory, so a second worker doubles
 # the resident set for no throughput gain. Threads carry the concurrency —
-# ONNX Runtime and torch release the GIL during inference. The long timeout
-# covers a full video pass (transcription of up to five minutes of audio).
+# ONNX Runtime, torch, ctranslate2 and numpy's FFT release the GIL. With the
+# gthread worker the timeout is a liveness check on the worker process, not a
+# limit on one request: a deep pass over a long file runs as long as its own
+# per-stage deadlines (media.budget) allow, and abraxas's client timeout is the
+# outer bound.
 # exec keeps gunicorn as PID 1 so it receives SIGTERM directly; sh -c is only
 # there so the bind address follows PORT instead of hardcoding it twice.
 CMD ["sh", "-c", "exec gunicorn --bind 0.0.0.0:${PORT:-8097} --workers 1 --threads 8 --timeout 600 --graceful-timeout 30 --access-logfile - --error-logfile - server:app"]

@@ -174,7 +174,7 @@ func (h *Handler) sseEvents(w http.ResponseWriter, r *http.Request) {
 		if h.partial != nil {
 			var buf bytes.Buffer
 			if err := h.partial.ExecuteTemplate(&buf, "notif_badge", map[string]interface{}{
-				"PIALID": user.PIALID, "UnreadCount": count,
+				"ID": user.ID, "UnreadCount": count,
 			}); err != nil {
 				log.Printf("[notify] rendering notif_badge: %v", err)
 				return

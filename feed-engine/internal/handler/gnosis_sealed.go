@@ -76,12 +76,6 @@ func (h *Handler) gnosisProvision(w http.ResponseWriter, r *http.Request) {
 	// there first — a failure here must not leave a local key the directory has
 	// never heard of.
 	if user.PIALID != "" {
-		// The directory keys every entry to the identity, so the identity has to
-		// exist in the authority before a key can be filed under it.
-		if err := h.assertPIAL(r.Context(), user.PIALID); err != nil {
-			http.Error(w, "key directory unavailable", http.StatusBadGateway)
-			return
-		}
 		if err := h.callElohim(r.Context(), http.MethodPost, "/v1/pial/messaging-key/register",
 			map[string]string{"pial_id": user.PIALID, "public_key_b64": req.PubB64}, nil); err != nil {
 			log.Printf("[gnosis] registering messaging key for pial %s: %v", user.PIALID, err)

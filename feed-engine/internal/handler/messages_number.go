@@ -239,7 +239,7 @@ func (h *Handler) handleCreateConvoByNumber(w http.ResponseWriter, r *http.Reque
 	gate := func(state string) {
 		holdFloor(started, numberResolveFloor)
 		h.renderPartial(w, "gnosis_number_gate", map[string]interface{}{
-			"PIALID": user.PIALID, "State": state})
+			"AccountID": user.ID, "State": state})
 	}
 
 	number, wellFormed := canonicalNumber(r.FormValue("number"))
@@ -313,11 +313,11 @@ func (h *Handler) facetGnosisContactRequests(w http.ResponseWriter, r *http.Requ
 	if err != nil {
 		log.Printf("[gnosis] contact requests for pial %s: %v", user.PIALID, err)
 		h.renderPartial(w, "gnosis_contact_requests", map[string]interface{}{
-			"PIALID": user.PIALID, "Unavailable": true})
+			"AccountID": user.ID, "Unavailable": true})
 		return
 	}
 	h.renderPartial(w, "gnosis_contact_requests", map[string]interface{}{
-		"PIALID": user.PIALID, "Requests": rows})
+		"AccountID": user.ID, "Requests": rows})
 }
 
 // pendingContactRequests reads the requests waiting on one identity from the

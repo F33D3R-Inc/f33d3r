@@ -81,16 +81,10 @@ ain_soph:
   max_transfer_amount_aet_cents: 100000  # 1000 AET per transfer
   daily_transfer_limit_aet_cents: 1000000  # 10,000 AET per day
 
-# ── Zodacare limits ───────────────────────────────────────────────────────────
-
-zodacare:
-  reports_per_hour_per_pial: 10     # prevent report flooding
-  max_pending_reports_per_content: 500
-
 # ── Abuse thresholds → automatic action ───────────────────────────────────────
 
 auto_action_thresholds:
-  # If a PIAL hits these thresholds, trigger Zodacare risk re-score
+  # If a PIAL hits these thresholds, trigger an integrity re-score
   posts_per_hour: 50          # likely spam
   follows_per_hour: 100       # likely follow-bot
   reports_submitted_per_day: 20  # report abuse

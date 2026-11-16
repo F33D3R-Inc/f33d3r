@@ -15,7 +15,7 @@
     {{if .Users}}
       {{$viewer := .User}}
       {{range .Users}}
-        {{template "follow_list_row" (dict "Handle" .Handle "DisplayName" .DisplayName "AvatarURL" .AvatarURL "PIALID" .PIALID "ViewerFollows" .ViewerFollows "ViewerHandle" $viewer.Handle)}}
+        {{template "follow_list_row" (dict "Handle" .Handle "DisplayName" .DisplayName "AvatarURL" .AvatarURL "AccountID" .ID "ViewerFollows" .ViewerFollows "ViewerHandle" $viewer.Handle)}}
       {{end}}
     {{else}}
       <div class="follow-list-empty">

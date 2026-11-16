@@ -1,0 +1,21 @@
+{{/*
+FACET compose_gating
+  version: 1.0 | status: stable | layer: 1
+
+  inputs:
+    Account   string — the posting account's id; the Facet is facet:f33d3r:compose:<Account>:gating
+    Selected  string — the gating chosen; empty selects "everyone"
+
+  states:
+    everyone | followers | circle | verified | none
+
+  children: none
+
+  signals:
+    emits:    none (read by submitCompose as #compose-gating and signed as comment_gating)
+    receives: none
+
+  context:
+    compose_modal → compose_meta_row, beside the audience pill
+*/}}
+{{define "compose_gating"}}<label class="compose-gating" data-facet-id="facet:f33d3r:compose:{{.Account}}:gating"><span class="compose-gating-label">Who can reply</span><select id="compose-gating" name="comment_gating" class="compose-gating-select">{{range commentGatingOptions}}<option value="{{.Value}}"{{if or (eq .Value $.Selected) (and (eq $.Selected "") (eq .Value "everyone"))}} selected{{end}}>{{.Label}}</option>{{end}}</select></label>{{end}}

@@ -18,38 +18,10 @@ import (
 //
 //	key    → elohim-veni. Signing and ECDH keys belong to the identity that
 //	         holds them. feed-engine keeps no copy of either.
-//	handle → registry-brain binds it; elohim-veni owns the identity it points
-//	         at. Neither of those is users.handle, so a handle is resolved
+//	handle → elohim-veni allocates and binds it, along with the identity it
+//	         points at. users.handle is only a projection of that, so a handle is resolved
 //	         through the naming plane and never by joining this brain's own
 //	         mirror of someone else's grant.
-
-// resolveHandleToPIAL resolves a @handle to the PIAL it currently names.
-//
-// This used to read users.handle and discard the error, which made every
-// caller's answer as old as the row: a handle that had since been transferred
-// still resolved to whoever held it when the copy was written, and a resolution
-// that failed outright was indistinguishable from a handle nobody owns. The
-// resolution now crosses the process boundary to Manhattan, because the
-// boundary is what stops a stale copy being consulted.
-//
-// Returns manhattan.ErrNotFound when the handle names nothing live. Every other
-// error is the plane being unreachable and must be surfaced, never swallowed
-// into "no such handle".
-func (h *Handler) resolveHandleToPIAL(ctx context.Context, handle string) (string, error) {
-	handle = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(handle, "@")))
-	if handle == "" {
-		return "", manhattan.ErrNotFound
-	}
-	named, err := h.manhattan.Resolve(ctx, manhattan.HandleName(handle))
-	if err != nil {
-		return "", err
-	}
-	pial, err := h.pialOfNode(ctx, named.NodeID)
-	if err != nil {
-		return "", err
-	}
-	return pial, nil
-}
 
 // resolveHandlesToPIALs resolves a set of @handles in one round trip, returning
 // only those that name a live identity, keyed by the lowercased handle.
@@ -163,32 +135,4 @@ func (h *Handler) registerPIALSigningKey(w http.ResponseWriter, r *http.Request)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(`{"ok":true}`))
-}
-
-// pialByHandle resolves a @handle to its PIAL for the wallet send/tip flow.
-// GET /api/pial/by-handle/{handle} → {"identity":"<pial>","handle":"<h>"} or 404.
-func (h *Handler) pialByHandle(w http.ResponseWriter, r *http.Request) {
-	if user := h.userFromRequest(w, r); user == nil || user.PIALID == "" {
-		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
-		return
-	}
-	handle := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(r.PathValue("handle"), "@")))
-	if handle == "" {
-		http.Error(w, `{"error":"handle_required"}`, http.StatusBadRequest)
-		return
-	}
-	pial, err := h.resolveHandleToPIAL(r.Context(), handle)
-	if err != nil {
-		if errors.Is(err, manhattan.ErrNotFound) {
-			http.Error(w, `{"error":"not_found"}`, http.StatusNotFound)
-			return
-		}
-		// The plane being unreachable is not "no such handle". Sending money to
-		// the wrong answer is the failure this distinction prevents.
-		log.Printf("[pial] resolving handle %q through the naming plane failed: %v", handle, err)
-		http.Error(w, `{"error":"naming_plane_unavailable"}`, http.StatusServiceUnavailable)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]string{"identity": pial, "handle": handle})
 }

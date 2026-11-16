@@ -1,8 +1,6 @@
 package handler
 
 import (
-	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -324,120 +322,6 @@ func (h *Handler) create2257Record(pialID, contentID string) {
 			log.Printf("[2257] record non-2xx for content %s: %d", contentID, resp.StatusCode)
 		}
 	}()
-}
-
-// ── CSAM detection ────────────────────────────────────────────────────────────
-// Azure Content Moderator for image/video scanning on every upload.
-// PhotoDNA-level hash matching is the gold standard — request access at
-// https://www.microsoft.com/en-us/photodna. For now: Azure CM adult classifier.
-
-type CSAMResult struct {
-	Clean     bool
-	Score     float64
-	ReviewURL string
-}
-
-func (h *Handler) csamScan(mediaURL, pialID, contentType string) CSAMResult {
-	log.Printf("[csam] scan: type=%s pial=%s url=%s", contentType, pialID, mediaURL)
-
-	if h.cfg.AzureCMEndpoint == "" || h.cfg.AzureCMKey == "" {
-		// Not configured — audit log only, return clean (dev mode)
-		if h.db != nil {
-			h.db.Exec(`
-				INSERT INTO csam_scan_log (media_url, pial_id, content_type, result, score)
-				VALUES ($1, $2, $3, 'unchecked', 0)`,
-				mediaURL, pialID, contentType)
-		}
-		return CSAMResult{Clean: true, Score: 0.0}
-	}
-
-	// Azure Content Moderator — Evaluate endpoint
-	payload, _ := json.Marshal(map[string]string{
-		"DataRepresentation": "URL",
-		"Value":              mediaURL,
-	})
-	endpoint := h.cfg.AzureCMEndpoint +
-		"/contentmoderator/moderate/v1.0/ProcessImage/Evaluate?CacheImage=true"
-
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
-	if err != nil {
-		log.Printf("[csam] request build error: %v", err)
-		return CSAMResult{Clean: true, Score: 0.0}
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Ocp-Apim-Subscription-Key", h.cfg.AzureCMKey)
-
-	resp, err := h.httpClient.Do(req)
-	if err != nil {
-		log.Printf("[csam] azure cm error: %v", err)
-		return CSAMResult{Clean: true, Score: 0.0}
-	}
-	defer resp.Body.Close()
-
-	var cmResult struct {
-		IsImageAdultClassified   bool    `json:"IsImageAdultClassified"`
-		AdultClassificationScore float64 `json:"AdultClassificationScore"`
-		IsImageRacyClassified    bool    `json:"IsImageRacyClassified"`
-		RacyClassificationScore  float64 `json:"RacyClassificationScore"`
-		Result                   bool    `json:"Result"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&cmResult); err != nil {
-		log.Printf("[csam] azure cm decode error: %v", err)
-		return CSAMResult{Clean: true, Score: 0.0}
-	}
-
-	score := cmResult.AdultClassificationScore
-	flagged := cmResult.IsImageAdultClassified && score > 0.9
-	result := "clean"
-	if flagged {
-		result = "flagged"
-	}
-
-	// Audit log — every scan recorded
-	if h.db != nil {
-		h.db.Exec(`
-			INSERT INTO csam_scan_log (media_url, pial_id, content_type, result, score)
-			VALUES ($1, $2, $3, $4, $5)`,
-			mediaURL, pialID, contentType, result, score)
-	}
-
-	if !flagged {
-		return CSAMResult{Clean: true, Score: score}
-	}
-
-	log.Printf("[csam] FLAGGED content: score=%.3f pial=%s url=%s — initiating enforcement", score, pialID, mediaURL)
-
-	// Enforcement cascade (async so upload response isn't blocked)
-	go h.csamEnforce(mediaURL, pialID, score)
-
-	return CSAMResult{Clean: false, Score: score}
-}
-
-// csamEnforce runs the mandatory enforcement cascade on confirmed CSAM detection.
-// Per 18 U.S.C. § 2258A, CyberTipline reporting is mandatory within 24 hours.
-func (h *Handler) csamEnforce(mediaURL, pialID string, score float64) {
-	if h.db == nil {
-		return
-	}
-	// 1. Log to law enforcement queue (NCMEC CyberTipline submission required)
-	h.db.Exec(`
-		INSERT INTO law_enforcement_queue (pial_id, media_url, report_type)
-		VALUES ($1, $2, 'csam')`,
-		pialID, mediaURL)
-
-	// 2. Revoke all capabilities — PIAL terminated
-	for _, cap := range []string{"posting", "messaging", "tipping", "subscribing", "live_streaming"} {
-		dbpkg.SetCapability(h.db, pialID, cap, "revoked", "csam_enforcement", "system", nil)
-	}
-
-	// 3. Log PIAL event — immutable record
-	dbpkg.LogPIALEvent(h.db, pialID, "", "csam_detected", map[string]interface{}{
-		"media_url": mediaURL, "score": score, "action": "pial_terminated",
-	}, "zodacare")
-
-	log.Printf("[csam] enforcement complete for pial=%s — queued for NCMEC CyberTipline", pialID)
 }
 
 // ── GDPR / CCPA data deletion request ────────────────────────────────────────

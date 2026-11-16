@@ -213,7 +213,7 @@ func (h *Handler) buyerLibraryFacet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data := map[string]interface{}{
-		"FacetID":  "facet:f33d3r:library:" + user.PIALID + ":list",
+		"FacetID":  "facet:f33d3r:library:" + user.ID + ":list",
 		"Rows":     []libraryRow{},
 		"Error":    "",
 		"RetryURL": "/themis/v1/library",
@@ -331,7 +331,7 @@ func (h *Handler) facetSellerStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data := map[string]interface{}{
-		"FacetID": "facet:f33d3r:shop:" + user.PIALID + ":stats",
+		"FacetID": "facet:f33d3r:shop:" + user.ID + ":stats",
 		"Sales":   "—",
 		"Revenue": "—",
 		"Pending": "—",
@@ -369,7 +369,7 @@ func (h *Handler) facetSellerListings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data := map[string]interface{}{
-		"FacetID":  "facet:f33d3r:shop:" + user.PIALID + ":listings",
+		"FacetID":  "facet:f33d3r:shop:" + user.ID + ":listings",
 		"Listings": []PublicListing{},
 		"Count":    0,
 		"Limit":    sellerListingLimit,

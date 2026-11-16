@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/f33d3r/feed-engine/internal/caeor"
 	dbpkg "github.com/f33d3r/feed-engine/internal/db"
 	"github.com/f33d3r/feed-engine/internal/model"
 )
@@ -21,9 +22,9 @@ import (
 // visionCreate applies, and a Vision posted here shows in the web's rail the
 // same as one posted there.
 //
-// A Vision has no id of its own — the wire "id" is the canonical
-// `<author_pial>.<seq>` address (dbpkg.VisionRef.String()), the same string
-// devserver's store.VisionRef carries.
+// A Vision has no id of its own — the wire "id" is the
+// `<author_account>.<seq>` address (dbpkg.VisionAddress.String()). The lane's
+// PIAL is resolved from the account server-side; a PIAL never reaches a client.
 //
 // Shape is F33D3RKit/Sources/F33D3RKit/Models/Vision.swift.
 
@@ -117,7 +118,7 @@ func (h *Handler) visionDTO(v *model.Vision, viewer *model.User) VisionDTO {
 		author = userAuthorDTO(viewer)
 	}
 	d := VisionDTO{
-		ID:          visionRef(v).String(),
+		ID:          visionAddress(v).String(),
 		Author:      author,
 		ContentType: v.ContentType,
 		Body:        v.Body,
@@ -232,8 +233,7 @@ func (h *Handler) apiV1Visions(w http.ResponseWriter, r *http.Request, u *model.
 			continue
 		}
 		author := visionAuthorDTO(ring.AuthorHandle, ring.AuthorName, ring.AvatarURL)
-		authorID, _ := dbpkg.GetUserIDFromPIAL(h.db, ring.AuthorPIAL)
-		out.Rings = append(out.Rings, h.visionRingDTO(author, ring.AuthorPIAL, visions, u, liveByID[authorID]))
+		out.Rings = append(out.Rings, h.visionRingDTO(author, ring.AuthorPIAL, visions, u, liveByID[ring.AuthorAccountID]))
 	}
 	apiJSON(w, http.StatusOK, out)
 }
@@ -241,9 +241,13 @@ func (h *Handler) apiV1Visions(w http.ResponseWriter, r *http.Request, u *model.
 // apiV1VisionViewers — GET /api/v1/visions/{id}/viewers: who watched. The
 // author's alone.
 func (h *Handler) apiV1VisionViewers(w http.ResponseWriter, r *http.Request, u *model.User) {
-	ref, err := dbpkg.ParseVisionRef(r.PathValue("id"))
-	if err != nil {
+	ref, err := h.resolveVisionWire(r.PathValue("id"))
+	if errors.Is(err, errVisionAddressUnknown) {
 		apiError(w, http.StatusNotFound, "not_found", "That vision is gone.")
+		return
+	}
+	if err != nil {
+		apiServerError(w, err)
 		return
 	}
 	v, err := dbpkg.GetVisionByRef(h.db, ref, u.PIALID)
@@ -313,9 +317,14 @@ func (h *Handler) apiV1VisionEvent(w http.ResponseWriter, r *http.Request, event
 		w.WriteHeader(http.StatusNoContent)
 	case "vision_delete":
 		id := eventField(r, rawBodyMap, "vision_id")
-		ref, perr := dbpkg.ParseVisionRef(id)
-		if perr != nil {
+		ref, perr := h.resolveVisionWire(id)
+		if errors.Is(perr, errVisionAddressUnknown) {
 			http.Error(w, perr.Error(), http.StatusBadRequest)
+			return true
+		}
+		if perr != nil {
+			log.Printf("[vision] resolving %q: %v", id, perr)
+			http.Error(w, "server error", http.StatusInternalServerError)
 			return true
 		}
 		if err := dbpkg.SoftDeleteVision(h.db, ref, user.PIALID); err != nil {
@@ -345,15 +354,11 @@ func (h *Handler) apiV1VisionEvent(w http.ResponseWriter, r *http.Request, event
 		if runes := []rune(text); len(runes) > 500 {
 			text = string(runes[:500])
 		}
-		authorID, err := dbpkg.GetUserIDFromPIAL(h.db, v.AuthorPIAL)
-		if err != nil {
-			log.Printf("[vision] reply author for %s: %v", ref.String(), err)
-			http.Error(w, "server error", http.StatusInternalServerError)
-			return true
-		}
+		// The notice names the Vision by its wire address: Herald hands target_id
+		// to a client, and a client is never handed a PIAL.
 		if _, err := dbpkg.WriteNotice(h.db, dbpkg.Notice{
-			Recipient: authorID, Kind: "vision_reply", Actor: user.ID,
-			TargetID: ref.String(), TargetType: "vision",
+			Recipient: v.AuthorAccountID, Kind: "vision_reply", Actor: user.ID,
+			TargetID: visionAddress(v).String(), TargetType: "vision",
 			Payload: map[string]interface{}{"preview": text},
 		}); err != nil {
 			log.Printf("[vision] reply to %s: %v", ref.String(), err)
@@ -409,9 +414,14 @@ func (h *Handler) visionForViewer(w http.ResponseWriter, r *http.Request, user *
 		http.Error(w, "vision_id required", http.StatusBadRequest)
 		return nil, dbpkg.VisionRef{}, false
 	}
-	ref, perr := dbpkg.ParseVisionRef(id)
-	if perr != nil {
+	ref, perr := h.resolveVisionWire(id)
+	if errors.Is(perr, errVisionAddressUnknown) {
 		http.Error(w, perr.Error(), http.StatusBadRequest)
+		return nil, dbpkg.VisionRef{}, false
+	}
+	if perr != nil {
+		log.Printf("[vision] resolving %q: %v", id, perr)
+		http.Error(w, "server error", http.StatusInternalServerError)
 		return nil, dbpkg.VisionRef{}, false
 	}
 	v, err := dbpkg.GetVisionByRef(h.db, ref, user.PIALID)
@@ -425,9 +435,13 @@ func (h *Handler) visionForViewer(w http.ResponseWriter, r *http.Request, user *
 		return nil, dbpkg.VisionRef{}, false
 	}
 	if v.Audience == "followers" && v.AuthorPIAL != user.PIALID {
-		authorID, _ := dbpkg.GetUserIDFromPIAL(h.db, v.AuthorPIAL)
-		follows, ferr := dbpkg.IsFollowing(h.db, user.ID, authorID)
-		if ferr != nil || !follows {
+		follows, ferr := dbpkg.IsFollowing(h.db, user.ID, v.AuthorAccountID)
+		if ferr != nil {
+			log.Printf("[vision] follow check %s for %s: %v", ref, user.ID, ferr)
+			http.Error(w, "server error", http.StatusInternalServerError)
+			return nil, dbpkg.VisionRef{}, false
+		}
+		if !follows {
 			http.Error(w, "vision not found", http.StatusNotFound)
 			return nil, dbpkg.VisionRef{}, false
 		}
@@ -470,6 +484,11 @@ func (h *Handler) visionCreateEvent(w http.ResponseWriter, r *http.Request, user
 	align, err := visionPresetOrError("artboard_align", eventField(r, rawBodyMap, "artboard_align"), visionAlignSet, visionDefaultAlign)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if !h.mayPublish(user) {
+		http.Error(w, publishRestricted, http.StatusForbidden)
 		return
 	}
 
@@ -560,16 +579,17 @@ func (h *Handler) visionCreateEvent(w http.ResponseWriter, r *http.Request, user
 			return
 		}
 	case "image":
-		mediaURL, uErr := visionLocalAssetURL(eventField(r, rawBodyMap, "media_url"))
+		media, uErr := h.visionHeldMedia(r.Context(), user, eventField(r, rawBodyMap, "media_url"), caeor.KindImage)
 		if uErr != nil {
 			http.Error(w, uErr.Error(), http.StatusBadRequest)
 			return
 		}
-		in.MediaURLs = []string{mediaURL}
+		in.MediaURLs = []string{media.URL}
 		in.Media = []dbpkg.VisionMediaInput{{
-			ObjectKey: mediaURL,
-			AssetURL:  mediaURL,
-			MediaKind: "image",
+			ObjectKey:    media.URL,
+			CaeorAssetID: media.AssetID,
+			AssetURL:     media.URL,
+			MediaKind:    "image",
 		}}
 	case "share":
 		workID, idErr := visionSharedWorkID(eventField(r, rawBodyMap, "shared_work_id"))
@@ -601,9 +621,11 @@ func (h *Handler) visionCreateEvent(w http.ResponseWriter, r *http.Request, user
 	}
 
 	go dbpkg.TryAwardVisionAchievements(h.db, user.ID, user.PIALID)
-	go h.publishVisionContentEvent(ref.String(), user.PIALID, in.Body, in.MediaURLs)
+	go h.publishVisionContentEvent(ref.String(), user.PIALID, user.ID, in.Body, in.MediaURLs)
 
-	apiJSON(w, http.StatusCreated, map[string]string{"vision_id": ref.String()})
+	apiJSON(w, http.StatusCreated, map[string]string{
+		"vision_id": dbpkg.VisionAddress{AuthorAccount: user.ID, Seq: ref.Seq}.String(),
+	})
 }
 
 // eventBool reads a boolean field under any of names, whether it arrived as

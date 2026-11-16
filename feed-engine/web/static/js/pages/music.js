@@ -5,7 +5,6 @@
 F33D3R.page('music', function () {
   // Server values from <meta> tags — no template injection in JS
   const SESSION_ID    = document.querySelector('meta[name="f33d3r:session"]')?.content || '';
-  const MY_PIAL       = document.querySelector('meta[name="f33d3r:pial"]')?.content || '';
   const MY_HANDLE     = document.querySelector('meta[name="f33d3r:handle"]')?.content || '';
   const CURRENT_SURFACE = document.querySelector('meta[name="f33d3r:surface"]')?.content || 'feed';
 
@@ -44,41 +43,35 @@ F33D3R.page('music', function () {
   }
 
   // ── Track deletion ────────────────────────────────────────────────────────────
+  // The server answers with the card's tombstone Fragment and pushes the same
+  // Fragment to everyone watching the track; this page only applies it.
   async function deleteTrack(trackId) {
     if (!confirm('Delete this track? This cannot be undone.')) return;
-    try {
-      const fd = new FormData();
-      fd.append('track_id', trackId);
-      const res = await fetch('/api/track/delete', { method: 'POST', body: fd });
-      if (res.ok) {
-        document.getElementById('crt-track-' + trackId)?.remove();
-        toast('Track deleted');
-      } else {
-        toast('Failed to delete track', 'error');
-      }
-    } catch (e) {
+    const fd = new FormData();
+    fd.append('track_id', trackId);
+    const res = await fetch('/api/track/delete', { method: 'POST', body: fd });
+    if (res.ok) {
+      document.getElementById('crt-track-' + trackId)?.remove();
+      document.getElementById('music-track-' + trackId)?.remove();
+      toast('Track deleted');
+    } else {
       toast('Failed to delete track', 'error');
     }
   }
 
   // ── Audio player ──────────────────────────────────────────────────────────────
+  // Playback only. The page reports what happened — the track started, ended,
+  // or was left at a position — and the server decides what that means (a
+  // play, a completion, a skip), counts it and pushes the counts back as
+  // Fragments. No listening state is kept here.
   const audio = document.getElementById('player-audio');
   let currentTrackID = null;
-  // Set once the current track has played to its end; a fresh play of the same
-  // track after that is a replay, and leaving it is not a skip.
-  let currentEnded = false;
-  // Track id whose play report is waiting for the duration to be known.
-  let pendingPlayReport = null;
 
-  // Every listening event goes to the same lane the play counter uses; the
-  // server forwards position/duration/session to Zior, whose behavioural
-  // vector (retention, skip timing, replay) is blended into the track's
-  // psych vector. keepalive lets a skip fired on navigation still leave.
-  function reportTrackEvent(type, id) {
-    if (!id || !/^[0-9a-f-]{36}$/.test(id) || !audio) return;
+  function report(event, id) {
+    if (!id || !audio) return;
     const body = new URLSearchParams({
       track_id: id,
-      event_type: type,
+      event: event,
       position_secs: String(isFinite(audio.currentTime) ? audio.currentTime : 0),
       duration_secs: String(isFinite(audio.duration) ? audio.duration : 0),
       session_id: window._sessionID || SESSION_ID
@@ -91,52 +84,35 @@ F33D3R.page('music', function () {
     }).catch(() => {});
   }
 
-  // A track left before its end, after it actually started, is a skip.
-  function reportSkipIfAbandoned() {
-    if (!audio || !currentTrackID || currentEnded) return;
-    if (audio.currentTime > 0.5 && !audio.ended) reportTrackEvent('track_skip', currentTrackID);
+  function setCardPlaying(id, playing) {
+    const card = id && document.querySelector(`[data-track-id="${id}"]`);
+    if (!card) return;
+    card.querySelector('.play-icon')?.classList.toggle('hidden', playing);
+    card.querySelector('.pause-icon')?.classList.toggle('hidden', !playing);
   }
 
   function playTrack(id, url, title, artist, cover) {
     if (!audio) return;
-    const isReplay = currentTrackID === id && currentEnded;
     if (currentTrackID && currentTrackID !== id) {
-      reportSkipIfAbandoned();
-      const prev = document.querySelector(`[data-track-id="${currentTrackID}"]`);
-      if (prev) {
-        prev.querySelector('.play-icon')?.classList.remove('hidden');
-        prev.querySelector('.pause-icon')?.classList.add('hidden');
-      }
+      report('left', currentTrackID);
+      setCardPlaying(currentTrackID, false);
     }
     currentTrackID = id;
-    currentEnded = false;
-    pendingPlayReport = isReplay ? null : id;
-    if (isReplay) reportTrackEvent('track_replay', id);
     audio.src = url;
     audio.load();
     document.getElementById('player-title').textContent  = title || '--';
     document.getElementById('player-artist').textContent = artist || '--';
-
     const coverEl = document.getElementById('player-cover-img');
     if (coverEl) {
-      coverEl.style.backgroundImage   = cover ? `url(${CSS.escape ? cover : cover})` : '';
-      coverEl.style.backgroundSize    = 'cover';
+      coverEl.style.backgroundImage    = cover ? `url(${cover})` : '';
+      coverEl.style.backgroundSize     = 'cover';
       coverEl.style.backgroundPosition = 'center';
     }
     document.getElementById('player-bar')?.classList.remove('hidden');
     audio.play().then(() => {
       updatePlayPauseUI(true);
-      // The play report carries the duration; wait for metadata when it is
-      // not known yet so Zior can normalise positions against it.
-      if (pendingPlayReport === id && isFinite(audio.duration) && audio.duration > 0) {
-        pendingPlayReport = null;
-        reportTrackEvent('track_play', id);
-      }
-      const card = document.querySelector(`[data-track-id="${id}"]`);
-      if (card) {
-        card.querySelector('.play-icon')?.classList.add('hidden');
-        card.querySelector('.pause-icon')?.classList.remove('hidden');
-      }
+      setCardPlaying(id, true);
+      report('started', id);
     }).catch(() => {});
   }
 
@@ -151,17 +127,11 @@ F33D3R.page('music', function () {
   }
   function closePlayer() {
     if (!audio) return;
-    reportSkipIfAbandoned();
+    if (currentTrackID && !audio.ended) report('left', currentTrackID);
     audio.pause();
     audio.src = '';
     document.getElementById('player-bar')?.classList.add('hidden');
-    if (currentTrackID) {
-      const card = document.querySelector(`[data-track-id="${currentTrackID}"]`);
-      if (card) {
-        card.querySelector('.play-icon')?.classList.remove('hidden');
-        card.querySelector('.pause-icon')?.classList.add('hidden');
-      }
-    }
+    setCardPlaying(currentTrackID, false);
     currentTrackID = null;
   }
   function seekRelative(secs) {
@@ -171,12 +141,7 @@ F33D3R.page('music', function () {
   function seekToClick(event) {
     if (!audio || !audio.duration) return;
     const rect = event.currentTarget.getBoundingClientRect();
-    const target = ((event.clientX - rect.left) / rect.width) * audio.duration;
-    // Dragging back to the start after hearing most of the track is a replay.
-    if (target < 1 && audio.currentTime > audio.duration * 0.5 && currentTrackID) {
-      reportTrackEvent('track_replay', currentTrackID);
-    }
-    audio.currentTime = target;
+    audio.currentTime = ((event.clientX - rect.left) / rect.width) * audio.duration;
   }
   function setVolume(val) {
     if (audio) audio.volume = val / 100;
@@ -190,13 +155,6 @@ F33D3R.page('music', function () {
 
   if (audio) {
     audio.volume = 0.8;
-    audio.addEventListener('loadedmetadata', () => {
-      if (pendingPlayReport && pendingPlayReport === currentTrackID) {
-        const id = pendingPlayReport;
-        pendingPlayReport = null;
-        reportTrackEvent('track_play', id);
-      }
-    });
     audio.addEventListener('timeupdate', () => {
       const pct = audio.duration ? (audio.currentTime / audio.duration) * 100 : 0;
       const fill = document.getElementById('player-progress-fill');
@@ -208,15 +166,8 @@ F33D3R.page('music', function () {
     });
     audio.addEventListener('ended', () => {
       updatePlayPauseUI(false);
-      currentEnded = true;
-      if (currentTrackID) reportTrackEvent('track_complete', currentTrackID);
-      if (currentTrackID) {
-        const card = document.querySelector(`[data-track-id="${currentTrackID}"]`);
-        if (card) {
-          card.querySelector('.play-icon')?.classList.remove('hidden');
-          card.querySelector('.pause-icon')?.classList.add('hidden');
-        }
-      }
+      report('ended', currentTrackID);
+      setCardPlaying(currentTrackID, false);
     });
   }
 
@@ -231,8 +182,8 @@ F33D3R.page('music', function () {
   window.setVolume        = setVolume;
 
   return function teardown() {
-    // Leaving the page mid-track is a skip; keepalive carries it out.
-    reportSkipIfAbandoned();
+    // Leaving the page mid-track is reported as left; keepalive carries it out.
+    if (audio && currentTrackID && !audio.ended && audio.currentTime > 0) report('left', currentTrackID);
     if (audio) { try { audio.pause(); audio.removeAttribute('src'); audio.load(); } catch (e) {} }
   };
 });

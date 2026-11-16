@@ -90,6 +90,12 @@ const MIGRATIONS: &[Migration] = &[
         filename: "0009_resolution_notify.sql",
         body: include_str!("../migrations/0009_resolution_notify.sql"),
     },
+    Migration {
+        version: 10,
+        name: "handle_namespace_to_elohim_veni",
+        filename: "0010_handle_namespace_to_elohim_veni.sql",
+        body: include_str!("../migrations/0010_handle_namespace_to_elohim_veni.sql"),
+    },
 ];
 
 fn checksum(body: &str) -> String {

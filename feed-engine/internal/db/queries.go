@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"regexp"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/lib/pq"
 
+	"github.com/f33d3r/feed-engine/internal/identity"
 	"github.com/f33d3r/feed-engine/internal/model"
 	"github.com/f33d3r/feed-engine/internal/realm"
 )
@@ -131,7 +133,7 @@ const userSelectSQL = `
 	       COALESCE(p.is_private, FALSE)
 	FROM users u
 	LEFT JOIN user_profiles p ON p.user_id = u.id
-	LEFT JOIN pial_roots plr ON plr.pial_id = u.pial_id
+	LEFT JOIN identity_facts plr ON plr.pial_id = u.pial_id
 `
 
 // userRowScanner is *sql.Row or *sql.Rows: scanUser reads one account the same
@@ -287,7 +289,7 @@ func orgMemberRows(database *sql.DB, orgUserID, status string) []model.OrgApplic
 		FROM org_memberships om
 		JOIN users u ON u.id = om.user_id
 		LEFT JOIN user_profiles p ON p.user_id = om.user_id
-		LEFT JOIN pial_roots plr ON plr.pial_id = u.pial_id
+		LEFT JOIN identity_facts plr ON plr.pial_id = u.pial_id
 		WHERE om.org_user_id = $1 AND om.status = $2
 		ORDER BY om.created_at ASC
 	`, orgUserID, status)
@@ -339,7 +341,7 @@ func SearchOrgs(database *sql.DB, query string) []model.OrgInfo {
 		       COALESCE(p.avatar_url,''), COALESCE(p.official_type,'')
 		FROM users u
 		JOIN user_profiles p ON p.user_id = u.id
-		LEFT JOIN pial_roots plr ON plr.pial_id = u.pial_id
+		LEFT JOIN identity_facts plr ON plr.pial_id = u.pial_id
 		WHERE p.official_type IN ('business','government')
 		  AND (u.handle ILIKE '%'||$1||'%' OR p.display_name ILIKE '%'||$1||'%')
 		  AND COALESCE(plr.age_verified, FALSE) = TRUE
@@ -416,28 +418,35 @@ func GetPendingOrgVerifications(database *sql.DB) []model.OrgVerificationApplica
 }
 
 func ApproveOrgVerification(database *sql.DB, appID, adminUserID, orgType string) error {
-	tx, err := database.Begin()
-	if err != nil {
-		return err
+	return WithTx(database, func(tx *sql.Tx) error {
+		var userID string
+		if err := tx.QueryRow(`UPDATE org_verification_applications SET status='approved', reviewed_at=NOW(), reviewed_by=$1 WHERE id=$2 RETURNING user_id`, adminUserID, appID).Scan(&userID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`INSERT INTO user_profiles (user_id, official_type) VALUES ($1,$2) ON CONFLICT (user_id) DO UPDATE SET official_type=$2, updated_at=NOW()`, userID, orgType); err != nil {
+			return err
+		}
+		return enqueueOrgIdentityConfirmation(tx, `SELECT COALESCE(pial_id::text,'') FROM users WHERE id = $1`, userID)
+	})
+}
+
+// enqueueOrgIdentityConfirmation records, in the badge's own transaction, the
+// identity confirmation an approved organisation carries: the verified badge
+// is kyc_tier 'full', the same bar as eKYC and an admin verify, and the badge
+// must never stand without it. elohim-veni owns the fact; the identity
+// command relay delivers it after commit.
+func enqueueOrgIdentityConfirmation(tx DBTX, lookup string, arg interface{}) error {
+	var pialID string
+	if err := tx.QueryRow(lookup, arg).Scan(&pialID); err != nil {
+		return fmt.Errorf("org verification: account lookup: %w", err)
 	}
-	var userID string
-	if err = tx.QueryRow(`UPDATE org_verification_applications SET status='approved', reviewed_at=NOW(), reviewed_by=$1 WHERE id=$2 RETURNING user_id`, adminUserID, appID).Scan(&userID); err != nil {
-		tx.Rollback()
-		return err
+	if pialID == "" {
+		return fmt.Errorf("org verification: account %v has no identity", arg)
 	}
-	if _, err = tx.Exec(`INSERT INTO user_profiles (user_id, official_type) VALUES ($1,$2) ON CONFLICT (user_id) DO UPDATE SET official_type=$2, updated_at=NOW()`, userID, orgType); err != nil {
-		tx.Rollback()
-		return err
-	}
-	// Verified badge == PIAL kyc_tier='full' — an approved org verification is a
-	// deliberate identity confirmation, same bar as eKYC/admin verify. age_verified
-	// and dob_locked come along for the ride: an org account has a confirmed identity,
-	// so treat it exactly like the other full-tier grant paths.
-	if _, err = tx.Exec(`UPDATE pial_roots pr SET age_verified=TRUE, kyc_tier='full', kyc_verified_at=NOW(), dob_locked=TRUE, is_adult=TRUE, is_minor=FALSE FROM users u WHERE u.id=$1 AND u.pial_id=pr.pial_id`, userID); err != nil {
-		tx.Rollback()
-		return err
-	}
-	return tx.Commit()
+	tier, verified, locked := model.KYCTierFull, true, true
+	return EnqueueIdentityCommand(tx, identity.CommandFacts, pialID, identity.FactsUpdate{
+		KYCTier: &tier, AgeVerified: &verified, DOBLocked: &locked, Source: "org_verification",
+	})
 }
 
 func RejectOrgVerification(database *sql.DB, appID, adminUserID, notes string) error {
@@ -469,20 +478,25 @@ func GetAllVerifiedOrgs(database *sql.DB) []model.OrgInfo {
 	return out
 }
 
-// GrantOrgBadge sets official_type on a user by handle and marks is_verified.
+// GrantOrgBadge sets official_type on an account by handle and records the
+// identity confirmation the badge carries, in one transaction.
 func GrantOrgBadge(database *sql.DB, handle, orgType string) error {
-	if _, err := database.Exec(`
-		INSERT INTO user_profiles (user_id, official_type)
-		SELECT id, $1 FROM users WHERE handle = $2
-		ON CONFLICT (user_id) DO UPDATE
-		  SET official_type = EXCLUDED.official_type,
-		      updated_at    = NOW()`,
-		orgType, handle); err != nil {
-		return err
-	}
-	// Verified badge == PIAL kyc_tier='full' — see ApproveOrgVerification for why.
-	_, err := database.Exec(`UPDATE pial_roots pr SET age_verified=TRUE, kyc_tier='full', kyc_verified_at=NOW(), dob_locked=TRUE, is_adult=TRUE, is_minor=FALSE FROM users u WHERE u.handle=$1 AND u.pial_id=pr.pial_id`, handle)
-	return err
+	return WithTx(database, func(tx *sql.Tx) error {
+		res, err := tx.Exec(`
+			INSERT INTO user_profiles (user_id, official_type)
+			SELECT id, $1 FROM users WHERE handle = $2
+			ON CONFLICT (user_id) DO UPDATE
+			  SET official_type = EXCLUDED.official_type,
+			      updated_at    = NOW()`,
+			orgType, handle)
+		if err != nil {
+			return err
+		}
+		if n, err := res.RowsAffected(); err != nil || n != 1 {
+			return fmt.Errorf("org badge for @%s: no such account (%d rows, %v)", handle, n, err)
+		}
+		return enqueueOrgIdentityConfirmation(tx, `SELECT COALESCE(pial_id::text,'') FROM users WHERE handle = $1`, handle)
+	})
 }
 
 // RevokeOrgBadge clears official_type from a user by handle.
@@ -710,7 +724,8 @@ func GetPollResults(database *sql.DB, postID, voterID string) (*model.Poll, erro
 	return poll, nil
 }
 
-// Canonical media records who first uploaded an asset. It records that as a
+// Canonical media records who uploaded an asset — the uploader registry the
+// media gate decides from (media_assets.go). It records that as an account and a
 // PIAL and nothing else.
 //
 // The creator_handle column is deliberately left unwritten. A handle is
@@ -720,93 +735,6 @@ func GetPollResults(database *sql.DB, postID, voterID string) (*model.Poll, erro
 // learn that it had. The durable name for the same person is the PIAL, which is
 // already on the row, and the handle it currently answers to is resolved from
 // the naming plane at the point of display.
-
-// CreateCanonicalImage registers a new image asset with its original uploader.
-// ON CONFLICT DO NOTHING so the first uploader always retains ownership.
-func CreateCanonicalImage(database *sql.DB, creatorUserID, creatorPIAL, imageURL string) error {
-	if database == nil || imageURL == "" {
-		return nil
-	}
-	_, err := database.Exec(`
-		INSERT INTO canonical_media (creator_user_id, creator_pial_id, image_url)
-		VALUES ($1, NULLIF($2,'')::uuid, $3)
-		ON CONFLICT (image_url) WHERE image_url != '' DO NOTHING`,
-		creatorUserID, creatorPIAL, imageURL,
-	)
-	return err
-}
-
-// SetPostLineage stores the original uploader's PIAL and handle on a post when
-// content-scan detects the video is a duplicate of an earlier upload.
-// Called async after transcoding — safe to fire-and-forget.
-func SetPostLineage(database *sql.DB, postID, lineagePIAL, lineageHandle string) error {
-	if database == nil {
-		return nil
-	}
-	_, err := database.Exec(
-		`UPDATE works SET lineage_pial = $1, lineage_handle = $2 WHERE id = $3`,
-		lineagePIAL, lineageHandle, postID,
-	)
-	return err
-}
-
-// RedirectDuplicatePost re-points a duplicate post's video at the original post's
-// transcoded asset and canonical_media record. The uploader's post still exists and
-// belongs to them (caption, tags, interactions are preserved) but the video served
-// is the original — making the duplicate act like a repost wrapper around the
-// canonical asset. Called when a duplicate is confirmed via dedup logic.
-func RedirectDuplicatePost(database *sql.DB, duplicatePostID, originalPostID string) error {
-	if database == nil || duplicatePostID == originalPostID {
-		return nil
-	}
-	var masterURL, posterURL string
-	var dur float32
-	var w, h int
-	err := database.QueryRow(`
-		SELECT COALESCE(video_master_url,''), COALESCE(video_poster_url,''),
-		       COALESCE(video_duration_secs,0)::REAL, COALESCE(video_width,0), COALESCE(video_height,0)
-		FROM works WHERE id = $1 AND video_master_url IS NOT NULL AND video_master_url != ''
-	`, originalPostID).Scan(&masterURL, &posterURL, &dur, &w, &h)
-	if err != nil || masterURL == "" {
-		return err
-	}
-	// Redirect duplicate to original's video asset (works has no canonical_media_id;
-	// the served video URLs are the canonical link).
-	_, err = database.Exec(`
-		UPDATE works
-		SET video_master_url    = $1,
-		    video_poster_url    = $2,
-		    video_duration_secs = $3,
-		    video_width         = $4,
-		    video_height        = $5
-		WHERE id = $6
-	`, masterURL, posterURL, dur, w, h, duplicatePostID)
-	return err
-}
-
-// PublishScheduledPosts clears scheduled_at on every work whose publish time has
-// passed, making it visible to the feed queries. Returns the number published.
-func PublishScheduledPosts(database *sql.DB) (int, error) {
-	res, err := database.Exec(`
-		WITH published AS (
-			UPDATE works
-			SET scheduled_at = NULL
-			WHERE scheduled_at IS NOT NULL
-			  AND scheduled_at <= NOW()
-			  AND deleted_at IS NULL
-			RETURNING author_id
-		)
-		UPDATE user_profiles up
-		SET post_count = post_count + cnt.n
-		FROM (SELECT author_id, COUNT(*) AS n FROM published GROUP BY author_id) cnt
-		WHERE up.user_id = cnt.author_id
-	`)
-	if err != nil {
-		return 0, err
-	}
-	n, _ := res.RowsAffected()
-	return int(n), nil
-}
 
 // ── Follows ───────────────────────────────────────────────────────────────────
 
@@ -866,34 +794,15 @@ func FollowStateFor(database *sql.DB, viewerID string, targetIDs []string) (map[
 	return out, rows.Err()
 }
 
-// FollowUser records follower → following and returns whether a NEW follow was
-// created (false means the follow already existed and nothing changed).
+// UnfollowUser removes follower → following and returns whether a follow was
+// actually removed.
 //
 // The counters are NOT touched here. user_profiles.follower_count and
 // following_count are maintained by the trg_follows_counters trigger (migration
 // 0016), because this function is not the only thing that writes follows: the
 // follower_id/following_id foreign keys are ON DELETE CASCADE, so deleting an
 // account removes its follow edges inside the database with no Go code running.
-// Maintaining the counters here left them permanently wrong every time an
-// account was deleted. A trigger fires for cascades too, so it cannot be
-// bypassed by any writer.
-func FollowUser(database *sql.DB, followerID, followingID string) (bool, error) {
-	res, err := database.Exec(`
-		INSERT INTO follows (follower_id, following_id)
-		VALUES ($1::uuid, $2::uuid)
-		ON CONFLICT DO NOTHING`, followerID, followingID)
-	if err != nil {
-		return false, err
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return false, err
-	}
-	return n > 0, nil
-}
-
-// UnfollowUser removes follower → following and returns whether a follow was
-// actually removed. Counters are the trigger's job — see FollowUser.
+// A trigger fires for cascades too, so it cannot be bypassed by any writer.
 func UnfollowUser(database *sql.DB, followerID, followingID string) (bool, error) {
 	res, err := database.Exec(`
 		DELETE FROM follows
@@ -914,7 +823,6 @@ type FollowListEntry struct {
 	Handle        string
 	DisplayName   string
 	AvatarURL     string
-	PIALID        string
 	ViewerFollows bool // viewer already follows this user — drives FOLLOW vs UNFOLLOW button
 }
 
@@ -945,8 +853,7 @@ func GetFollowers(database *sql.DB, userID, viewerID string, limit int) ([]Follo
 		SELECT u.id::text,
 		       u.handle,
 		       COALESCE(NULLIF(TRIM(p.display_name),''), CASE WHEN LENGTH(u.handle)>=40 THEN 'User '||LEFT(u.handle,6) ELSE INITCAP(REPLACE(u.handle,'_',' ')) END),
-		       COALESCE(p.avatar_url, ''),
-		       COALESCE(u.pial_id::text, '')
+		       COALESCE(p.avatar_url, '')
 		FROM follows f
 		JOIN users u ON u.id = f.follower_id
 		LEFT JOIN user_profiles p ON p.user_id = u.id
@@ -959,7 +866,7 @@ func GetFollowers(database *sql.DB, userID, viewerID string, limit int) ([]Follo
 	var out []FollowListEntry
 	for rows.Next() {
 		var e FollowListEntry
-		if err := rows.Scan(&e.ID, &e.Handle, &e.DisplayName, &e.AvatarURL, &e.PIALID); err != nil {
+		if err := rows.Scan(&e.ID, &e.Handle, &e.DisplayName, &e.AvatarURL); err != nil {
 			return nil, err
 		}
 		out = append(out, e)
@@ -975,8 +882,7 @@ func GetFollowing(database *sql.DB, userID, viewerID string, limit int) ([]Follo
 		SELECT u.id::text,
 		       u.handle,
 		       COALESCE(NULLIF(TRIM(p.display_name),''), CASE WHEN LENGTH(u.handle)>=40 THEN 'User '||LEFT(u.handle,6) ELSE INITCAP(REPLACE(u.handle,'_',' ')) END),
-		       COALESCE(p.avatar_url, ''),
-		       COALESCE(u.pial_id::text, '')
+		       COALESCE(p.avatar_url, '')
 		FROM follows f
 		JOIN users u ON u.id = f.following_id
 		LEFT JOIN user_profiles p ON p.user_id = u.id
@@ -989,7 +895,7 @@ func GetFollowing(database *sql.DB, userID, viewerID string, limit int) ([]Follo
 	var out []FollowListEntry
 	for rows.Next() {
 		var e FollowListEntry
-		if err := rows.Scan(&e.ID, &e.Handle, &e.DisplayName, &e.AvatarURL, &e.PIALID); err != nil {
+		if err := rows.Scan(&e.ID, &e.Handle, &e.DisplayName, &e.AvatarURL); err != nil {
 			return nil, err
 		}
 		out = append(out, e)
@@ -1069,138 +975,6 @@ type MentionTarget struct {
 // live here were deleted in the posts→works cutover. They wrote to tables the
 // render never read, so every one of them returned success while changing
 // nothing a viewer could see — a failure that looked exactly like a feature.
-
-// ── Tracks ────────────────────────────────────────────────────────────────────
-
-func InsertTrack(database *sql.DB, authorID, title, description, audioURL, coverURL string, durationSecs int, genre string, tags []string, priceCents int) (string, error) {
-	isFree := priceCents == 0
-	var id string
-	err := database.QueryRow(`
-		INSERT INTO tracks (author_id, title, description, audio_url, cover_url, duration_secs, genre, tags, price_cents, is_free)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-		RETURNING id
-	`, authorID, title, description, audioURL, coverURL, durationSecs, genre, pq.Array(tags), priceCents, isFree).Scan(&id)
-	return id, err
-}
-
-func GetRecentTracks(database *sql.DB, genre string, limit int, afterID string) ([]*model.Track, error) {
-	query := `
-		SELECT t.id, t.author_id, u.handle,
-		       COALESCE(NULLIF(TRIM(p.display_name),''), CASE WHEN LENGTH(u.handle)>=40 THEN 'User '||LEFT(u.handle,6) ELSE INITCAP(REPLACE(u.handle,'_',' ')) END),
-		       COALESCE(p.avatar_url, ''),
-		       (COALESCE(plr.kyc_tier, 'none') = 'full'),
-		       t.title, t.description, t.audio_url, t.cover_url,
-		       t.duration_secs, t.genre, t.tags, t.price_cents, t.is_free,
-		       t.play_count, t.like_count, t.created_at
-		FROM tracks t
-		JOIN users u ON u.id = t.author_id
-		LEFT JOIN user_profiles p ON p.user_id = t.author_id
-		LEFT JOIN pial_roots plr ON plr.pial_id = u.pial_id
-		WHERE ($1 = '' OR t.genre = $1)
-		AND ($2::uuid IS NULL OR t.created_at < (SELECT created_at FROM tracks WHERE id=$2::uuid))
-		ORDER BY t.created_at DESC LIMIT $3
-	`
-	var afterParam interface{}
-	if afterID != "" {
-		afterParam = afterID
-	}
-	rows, err := database.Query(query, genre, afterParam, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return scanTracks(rows)
-}
-
-func GetTracksByAuthor(database *sql.DB, authorID string, limit int) ([]*model.Track, error) {
-	rows, err := database.Query(`
-		SELECT t.id, t.author_id, u.handle,
-		       COALESCE(NULLIF(TRIM(p.display_name),''), CASE WHEN LENGTH(u.handle)>=40 THEN 'User '||LEFT(u.handle,6) ELSE INITCAP(REPLACE(u.handle,'_',' ')) END),
-		       COALESCE(p.avatar_url, ''),
-		       (COALESCE(plr.kyc_tier, 'none') = 'full'),
-		       t.title, t.description, t.audio_url, t.cover_url,
-		       t.duration_secs, t.genre, t.tags, t.price_cents, t.is_free,
-		       t.play_count, t.like_count, t.created_at
-		FROM tracks t
-		JOIN users u ON u.id = t.author_id
-		LEFT JOIN user_profiles p ON p.user_id = t.author_id
-		LEFT JOIN pial_roots plr ON plr.pial_id = u.pial_id
-		WHERE t.author_id = $1
-		ORDER BY t.created_at DESC LIMIT $2
-	`, authorID, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return scanTracks(rows)
-}
-
-func ToggleTrackLike(database *sql.DB, userID, trackID string) (bool, error) {
-	var exists bool
-	_ = database.QueryRow(`SELECT EXISTS(SELECT 1 FROM track_likes WHERE user_id=$1 AND track_id=$2)`, userID, trackID).Scan(&exists)
-	if exists {
-		_, err := database.Exec(`DELETE FROM track_likes WHERE user_id=$1 AND track_id=$2`, userID, trackID)
-		_, _ = database.Exec(`UPDATE tracks SET like_count = GREATEST(0, like_count-1) WHERE id=$1`, trackID)
-		return false, err
-	}
-	_, err := database.Exec(`INSERT INTO track_likes (user_id, track_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, userID, trackID)
-	_, _ = database.Exec(`UPDATE tracks SET like_count = like_count+1 WHERE id=$1`, trackID)
-	return true, err
-}
-
-func IncrementTrackPlay(database *sql.DB, trackID string) error {
-	_, err := database.Exec(`UPDATE tracks SET play_count = play_count+1 WHERE id=$1`, trackID)
-	return err
-}
-
-func IsTrackLiked(database *sql.DB, userID, trackID string) (bool, error) {
-	var exists bool
-	err := database.QueryRow(`SELECT EXISTS(SELECT 1 FROM track_likes WHERE user_id=$1 AND track_id=$2)`, userID, trackID).Scan(&exists)
-	return exists, err
-}
-
-type ArtistStats struct {
-	TotalTracks int
-	TotalPlays  int
-	TotalLikes  int
-}
-
-func GetArtistStats(database *sql.DB, authorID string) ArtistStats {
-	var s ArtistStats
-	_ = database.QueryRow(`
-		SELECT COUNT(*), COALESCE(SUM(play_count),0), COALESCE(SUM(like_count),0)
-		FROM tracks WHERE author_id = $1`, authorID).Scan(&s.TotalTracks, &s.TotalPlays, &s.TotalLikes)
-	return s
-}
-
-func DeleteTrack(database *sql.DB, trackID, authorID string) (bool, error) {
-	res, err := database.Exec(`DELETE FROM tracks WHERE id=$1 AND author_id=$2`, trackID, authorID)
-	if err != nil {
-		return false, err
-	}
-	n, _ := res.RowsAffected()
-	return n > 0, nil
-}
-
-func scanTracks(rows *sql.Rows) ([]*model.Track, error) {
-	var tracks []*model.Track
-	for rows.Next() {
-		t := &model.Track{}
-		var tags pq.StringArray
-		err := rows.Scan(
-			&t.ID, &t.AuthorID, &t.AuthorHandle, &t.AuthorName, &t.AvatarURL, &t.IsVerified,
-			&t.Title, &t.Description, &t.AudioURL, &t.CoverURL,
-			&t.DurationSecs, &t.Genre, &tags, &t.PriceCents, &t.IsFree,
-			&t.PlayCount, &t.LikeCount, &t.CreatedAt,
-		)
-		if err != nil {
-			return nil, err
-		}
-		t.Tags = []string(tags)
-		tracks = append(tracks, t)
-	}
-	return tracks, rows.Err()
-}
 
 // NOTE: content deletion is SoftDeleteWork (works.deleted_at), reached through
 // the work_delete event. The hard DELETE against the posts table that used to
@@ -1360,7 +1134,7 @@ func SearchHandlesFiltered(database *sql.DB, prefix string, limit int, viewerIsM
 		       (COALESCE(plr.kyc_tier, 'none') = 'full')
 		FROM users u
 		LEFT JOIN user_profiles pr ON pr.user_id = u.id
-		LEFT JOIN pial_roots plr ON plr.pial_id = u.pial_id
+		LEFT JOIN identity_facts plr ON plr.pial_id = u.pial_id
 		WHERE (u.handle ILIKE $1 OR COALESCE(pr.display_name,'') ILIKE $2)
 		`+minorClause+` `+adultClause+`
 		ORDER BY COALESCE(pr.follower_count, 0) DESC, u.handle
@@ -1434,19 +1208,29 @@ func GetBlockedUserIDs(database *sql.DB, viewerID string) (map[string]bool, erro
 
 // ── Reply restrictions ────────────────────────────────────────────────────────
 
-// SetCommentGating updates a post's comment_gating. Verifies ownership.
-// gating values: "open" | "followers" | "verified" | "none"
-func SetCommentGating(database *sql.DB, postID, userID, gating string) error {
+// ErrWorkNotOwned reports a change to a work that does not exist, is deleted,
+// or belongs to somebody else.
+var ErrWorkNotOwned = errors.New("work not found or not owned by user")
+
+// SetCommentGating changes who may reply to a work its author owns. gating must
+// be in CommentGatings; the column's CHECK refuses anything else.
+func SetCommentGating(database *sql.DB, workID, userID, gating string) error {
+	if !ValidCommentGating(gating) {
+		return fmt.Errorf("comment gating %q is not in the vocabulary", gating)
+	}
 	res, err := database.Exec(`
 		UPDATE works SET comment_gating = $1
-		WHERE id = $2 AND author_id = $3`,
-		gating, postID, userID)
+		 WHERE id = $2::uuid AND author_id = $3::uuid AND deleted_at IS NULL`,
+		gating, workID, userID)
 	if err != nil {
-		return err
+		return fmt.Errorf("setting comment gating of work %s: %w", workID, err)
 	}
-	n, _ := res.RowsAffected()
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("setting comment gating of work %s: %w", workID, err)
+	}
 	if n == 0 {
-		return fmt.Errorf("work not found or not owned by user")
+		return ErrWorkNotOwned
 	}
 	return nil
 }
@@ -1540,36 +1324,12 @@ func FollowListEntriesFor(database *sql.DB, viewerID string, users []*model.User
 			Handle:      u.Handle,
 			DisplayName: u.DisplayName,
 			AvatarURL:   u.AvatarURL,
-			PIALID:      u.PIALID,
 		})
 	}
 	if err := markViewerFollows(database, viewerID, entries); err != nil {
 		log.Printf("[follow-list] mark viewer follows: %v", err)
 	}
 	return entries
-}
-
-// RevokeAllSessions ends every session of userID — the account is leaving,
-// by deactivation or by a queued deletion, so no device stays signed in.
-func RevokeAllSessions(database *sql.DB, userID string) error {
-	_, err := database.Exec(`DELETE FROM user_sessions WHERE user_id = $1`, userID)
-	return err
-}
-
-// GetPIALKYCVerifiedAt returns the instant the identity tier on this PIAL root
-// was recorded, or nil when it never was.
-func GetPIALKYCVerifiedAt(database *sql.DB, pialID string) *time.Time {
-	if database == nil || pialID == "" {
-		return nil
-	}
-	var at sql.NullTime
-	if err := database.QueryRow(
-		`SELECT kyc_verified_at FROM pial_roots WHERE pial_id = $1::uuid`, pialID,
-	).Scan(&at); err != nil || !at.Valid {
-		return nil
-	}
-	t := at.Time
-	return &t
 }
 
 // ── Post pinning ──────────────────────────────────────────────────────────────
@@ -1697,8 +1457,7 @@ func GetSubscribers(database *sql.DB, creatorID, viewerID string, limit int) ([]
 		SELECT u.id::text,
 		       u.handle,
 		       COALESCE(NULLIF(TRIM(p.display_name),''), CASE WHEN LENGTH(u.handle)>=40 THEN 'User '||LEFT(u.handle,6) ELSE INITCAP(REPLACE(u.handle,'_',' ')) END),
-		       COALESCE(p.avatar_url, ''),
-		       COALESCE(u.pial_id::text, '')
+		       COALESCE(p.avatar_url, '')
 		FROM subscriptions s
 		JOIN users u ON u.id = s.subscriber_id
 		LEFT JOIN user_profiles p ON p.user_id = u.id
@@ -1712,7 +1471,7 @@ func GetSubscribers(database *sql.DB, creatorID, viewerID string, limit int) ([]
 	var out []FollowListEntry
 	for rows.Next() {
 		var e FollowListEntry
-		if err := rows.Scan(&e.ID, &e.Handle, &e.DisplayName, &e.AvatarURL, &e.PIALID); err != nil {
+		if err := rows.Scan(&e.ID, &e.Handle, &e.DisplayName, &e.AvatarURL); err != nil {
 			return nil, err
 		}
 		out = append(out, e)
@@ -1831,7 +1590,7 @@ func GetCreatorAnalyticsSummary(database *sql.DB, pialID string) (*CreatorAnalyt
 		FROM works w
 		JOIN users u ON u.id = w.author_id
 		WHERE u.pial_id = $1::uuid
-		  AND w.kind <> 'reply'
+		  AND NOT w.is_reply
 		  AND w.deleted_at IS NULL
 	`, pialID)
 	s := &CreatorAnalyticsSummary{}
@@ -1875,7 +1634,7 @@ func GetCreatorTopPosts(database *sql.DB, pialID string, limit int) ([]Analytics
 		    FROM works w
 		    JOIN users u ON u.id = w.author_id
 		    WHERE u.pial_id = $1::uuid
-		      AND w.kind <> 'reply'
+		      AND NOT w.is_reply
 		      AND w.deleted_at IS NULL
 		) t
 		ORDER BY (likes + reposts + comments) DESC, created_at DESC
@@ -1939,11 +1698,11 @@ func GetSiteAnalytics(database *sql.DB) (*SiteAnalytics, error) {
 	}
 	s := &SiteAnalytics{}
 	database.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&s.TotalUsers)
-	database.QueryRow(`SELECT COUNT(*) FROM works WHERE kind <> 'reply' AND deleted_at IS NULL`).Scan(&s.TotalPosts)
+	database.QueryRow(`SELECT COUNT(*) FROM works WHERE NOT is_reply AND deleted_at IS NULL`).Scan(&s.TotalPosts)
 	database.QueryRow(`SELECT COALESCE(SUM(view_count),0) FROM works WHERE deleted_at IS NULL`).Scan(&s.TotalImpressions)
 	database.QueryRow(`SELECT COUNT(*) FROM work_reactions WHERE reaction_type = 'like'`).Scan(&s.TotalLikes)
 	database.QueryRow(`SELECT COUNT(*) FROM users WHERE created_at > NOW() - INTERVAL '7 days'`).Scan(&s.NewUsersWeek)
-	database.QueryRow(`SELECT COUNT(*) FROM works WHERE kind <> 'reply' AND deleted_at IS NULL AND created_at > NOW() - INTERVAL '7 days'`).Scan(&s.NewPostsWeek)
+	database.QueryRow(`SELECT COUNT(*) FROM works WHERE NOT is_reply AND deleted_at IS NULL AND created_at > NOW() - INTERVAL '7 days'`).Scan(&s.NewPostsWeek)
 	return s, nil
 }
 
@@ -1969,7 +1728,7 @@ func GetRecentUsers(database *sql.DB, limit int) ([]AdminUserRow, error) {
 		       u.created_at
 		FROM users u
 		LEFT JOIN user_profiles p ON p.user_id = u.id
-		LEFT JOIN pial_roots plr ON plr.pial_id = u.pial_id
+		LEFT JOIN identity_facts plr ON plr.pial_id = u.pial_id
 		ORDER BY u.created_at DESC
 		LIMIT $1
 	`, limit)
@@ -1984,15 +1743,6 @@ func GetRecentUsers(database *sql.DB, limit int) ([]AdminUserRow, error) {
 		out = append(out, r)
 	}
 	return out, nil
-}
-
-func CleanExpiredSessions(database *sql.DB) (int64, error) {
-	res, err := database.Exec(`DELETE FROM user_sessions WHERE expires_at < NOW()`)
-	if err != nil {
-		return 0, err
-	}
-	n, _ := res.RowsAffected()
-	return n, nil
 }
 
 // ── Feed surfaces ─────────────────────────────────────────────────────────────
@@ -2283,7 +2033,7 @@ func scanSurfaces(rows *sql.Rows, isPinned bool) ([]model.FeedSurface, error) {
 // ── Trust & Safety: Content Moderation ───────────────────────────────────────
 
 // SetPostScanState transitions a work's scan_state and appends to the moderation log.
-// actor should be "system", a moderator handle, or "zodacare".
+// actor should be "system", "abraxas", or a moderator handle.
 //
 // works is the only content table: this used to probe posts first and fall through,
 // which meant a lookup miss on an empty table on every single moderation decision.
@@ -2320,160 +2070,6 @@ func SetPostScanState(database DBTX, postID, toState, reason, actor string) erro
 	return nil
 }
 
-// ScanResult holds the full output of a content-scan risk assessment.
-type ScanResult struct {
-	PostID          string
-	ScanVersion     string
-	NudityScore     float64
-	GoreScore       float64
-	ClickbaitScore  float64
-	OCRText         string
-	Transcript      string
-	HateSignals     []string
-	ViolenceSignals []string
-	SelfHarmSignals []string
-	RiskLevel       string
-	Recommendation  string
-	Signals         []string
-	IsDuplicate     bool
-	DuplicateType   string
-	OriginalPostID  string
-}
-
-// StoreScanResult saves raw scan signals for a post (upsert).
-func StoreScanResult(database *sql.DB, r *ScanResult) error {
-	_, err := database.Exec(`
-		INSERT INTO content_scan_results
-		  (post_id, scan_version, nudity_score, gore_score, clickbait_score,
-		   ocr_text, transcript, hate_signals, risk_level, recommendation, signals,
-		   is_duplicate, duplicate_type, original_post_id, scanned_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NOW())
-		ON CONFLICT (post_id) DO UPDATE SET
-		  scan_version     = EXCLUDED.scan_version,
-		  nudity_score     = EXCLUDED.nudity_score,
-		  gore_score       = EXCLUDED.gore_score,
-		  clickbait_score  = EXCLUDED.clickbait_score,
-		  ocr_text         = EXCLUDED.ocr_text,
-		  transcript       = EXCLUDED.transcript,
-		  hate_signals     = EXCLUDED.hate_signals,
-		  risk_level       = EXCLUDED.risk_level,
-		  recommendation   = EXCLUDED.recommendation,
-		  signals          = EXCLUDED.signals,
-		  is_duplicate     = EXCLUDED.is_duplicate,
-		  duplicate_type   = EXCLUDED.duplicate_type,
-		  original_post_id = EXCLUDED.original_post_id,
-		  scanned_at       = NOW()`,
-		r.PostID, r.ScanVersion, r.NudityScore, r.GoreScore, r.ClickbaitScore,
-		r.OCRText, r.Transcript, pq.Array(r.HateSignals), r.RiskLevel, r.Recommendation,
-		pq.Array(r.Signals), r.IsDuplicate, r.DuplicateType, r.OriginalPostID,
-	)
-	return err
-}
-
-// ReleaseStaleHumanReviewPosts auto-approves works that have been sitting in
-// human_review longer than minAge — a human clearly hasn't reviewed them.
-// Returns the IDs of every work that was released.
-func ReleaseStaleHumanReviewPosts(database *sql.DB, minAge time.Duration) ([]string, error) {
-	rows, err := database.Query(
-		`UPDATE works SET scan_state = 'clean'
-		 WHERE scan_state = 'human_review'
-		   AND deleted_at IS NULL
-		   AND created_at < NOW() - make_interval(secs => $1)
-		 RETURNING id`,
-		minAge.Seconds(),
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var released []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err == nil {
-			released = append(released, id)
-		}
-	}
-
-	// Write an audit log entry for each released work and close any reports that
-	// pointed at it — clearing the work must clear its reports, or the report
-	// cards resurrect on the next queue poll.
-	for _, id := range released {
-		if _, err := database.Exec(
-			`INSERT INTO content_moderation_log (post_id, from_state, to_state, reason, actor)
-			 VALUES ($1, 'human_review', 'clean', 'sweep:stale_human_review_timeout', 'system')`,
-			id,
-		); err != nil {
-			log.Printf("[sweep] moderation log NOT written for released work %s: %v", id, err)
-		}
-		if _, err := ResolveReportsForContent(database, id, "resolved", "system"); err != nil {
-			log.Printf("[sweep] reports NOT resolved for released work %s — its report cards will "+
-				"resurrect on the next queue poll: %v", id, err)
-		}
-	}
-	return released, nil
-}
-
-// GetHumanReviewPosts returns works in human_review state for the moderation queue.
-// Includes scan signals, media thumbnail URL (first media asset if any), and author avatar.
-func GetHumanReviewPosts(database *sql.DB, limit int) ([]map[string]interface{}, error) {
-	if limit <= 0 || limit > 200 {
-		limit = 200
-	}
-	rows, err := database.Query(`
-		SELECT w.id, w.body, u.handle, w.scan_state, w.created_at,
-		       COALESCE(r.risk_level,'unknown'), COALESCE(r.nudity_score,0),
-		       COALESCE(r.gore_score,0), COALESCE(r.clickbait_score,0),
-		       COALESCE(array_to_string(r.signals,'|'),''),
-		       COALESCE(w.media_urls, '{}'),
-		       COALESCE(up.avatar_url, '')
-		FROM works w
-		JOIN users u ON u.id = w.author_id
-		LEFT JOIN user_profiles up ON up.user_id = u.id
-		LEFT JOIN content_scan_results r ON r.post_id = w.id::text
-		WHERE w.scan_state IN ('human_review','flagged','pending')
-		  AND w.deleted_at IS NULL
-		ORDER BY created_at ASC
-		LIMIT $1`, limit,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []map[string]interface{}
-	for rows.Next() {
-		var id, body, handle, state, riskLevel, signalStr, avatarURL string
-		var createdAt time.Time
-		var nudity, gore, clickbait float64
-		var mediaURLs pq.StringArray
-		if err := rows.Scan(&id, &body, &handle, &state, &createdAt,
-			&riskLevel, &nudity, &gore, &clickbait, &signalStr,
-			&mediaURLs, &avatarURL); err != nil {
-			continue
-		}
-		// Surface the first media URL as a preview thumbnail.
-		thumbURL := ""
-		if len(mediaURLs) > 0 {
-			thumbURL = mediaURLs[0]
-		}
-		out = append(out, map[string]interface{}{
-			"post_id":         id,
-			"body":            body,
-			"author_handle":   handle,
-			"author_avatar":   avatarURL,
-			"scan_state":      state,
-			"created_at":      createdAt,
-			"risk_level":      riskLevel,
-			"nudity_score":    nudity,
-			"gore_score":      gore,
-			"clickbait_score": clickbait,
-			"signals":         signalStr,
-			"thumb_url":       thumbURL,
-		})
-	}
-	return out, nil
-}
-
 // GetAdminUserIDs returns the IDs of all users with role = 'admin'.
 // Used to fan-out moderation notifications when a post enters human_review.
 func GetAdminUserIDs(database DBTX) []string {
@@ -2491,29 +2087,6 @@ func GetAdminUserIDs(database DBTX) []string {
 		}
 	}
 	return ids
-}
-
-// IsBannedHash checks whether a hash appears in the banned_content_hashes registry.
-func IsBannedHash(database *sql.DB, hashType, hashValue string) (bool, string, error) {
-	var category string
-	err := database.QueryRow(
-		`SELECT category FROM banned_content_hashes WHERE hash_type = $1 AND hash_value = $2 LIMIT 1`,
-		hashType, hashValue,
-	).Scan(&category)
-	if err == sql.ErrNoRows {
-		return false, "", nil
-	}
-	return err == nil, category, err
-}
-
-// AddBannedHash registers a hash in the banned_content_hashes registry.
-func AddBannedHash(database *sql.DB, hashType, hashValue, category, addedBy, note string) error {
-	_, err := database.Exec(
-		`INSERT INTO banned_content_hashes (hash_type, hash_value, category, added_by, note)
-		 VALUES ($1,$2,$3,$4,$5) ON CONFLICT (hash_type,hash_value) DO NOTHING`,
-		hashType, hashValue, category, addedBy, note,
-	)
-	return err
 }
 
 // ── Link preview ──────────────────────────────────────────────────────────────
@@ -2704,7 +2277,7 @@ func GetListMembers(database *sql.DB, listID string) ([]model.User, error) {
 		FROM list_members lm
 		JOIN users u ON u.id = lm.user_id
 		LEFT JOIN user_profiles p ON p.user_id = u.id
-		LEFT JOIN pial_roots plr ON plr.pial_id = u.pial_id
+		LEFT JOIN identity_facts plr ON plr.pial_id = u.pial_id
 		WHERE lm.list_id = $1
 		ORDER BY lm.added_at`, listID)
 	if err != nil {
@@ -2883,163 +2456,6 @@ FROM my_score m`, userID).Scan(&xpToday, &rank)
 		err = nil
 	}
 	return
-}
-
-// StoreVideoRawHash records the SHA-256 of a raw uploaded video file.
-// Called at TUS assembly time — before transcoding — so future uploads of the
-// same file can be blocked client-side before a single byte is transferred.
-// ON CONFLICT DO NOTHING: the first uploader's record is authoritative.
-func StoreVideoRawHash(database *sql.DB, sha256, uploaderPIAL, uploaderHandle string) error {
-	if sha256 == "" || database == nil {
-		return nil
-	}
-	_, err := database.Exec(`
-		INSERT INTO video_raw_hashes (sha256, uploader_pial, uploader_handle)
-		VALUES ($1, $2, $3)
-		ON CONFLICT (sha256) DO NOTHING`,
-		sha256, uploaderPIAL, uploaderHandle)
-	return err
-}
-
-// CheckVideoRawHash looks up a raw-file SHA-256 in the dedup store.
-// Returns (originalHandle, postID, found, err).
-// found=false means the file is new and upload may proceed.
-func CheckVideoRawHash(database *sql.DB, sha256 string) (originalHandle, postID string, found bool, err error) {
-	if sha256 == "" || database == nil {
-		return "", "", false, nil
-	}
-	err = database.QueryRow(
-		`SELECT uploader_handle, post_id FROM video_raw_hashes WHERE sha256 = $1`, sha256).
-		Scan(&originalHandle, &postID)
-	if err == sql.ErrNoRows {
-		return "", "", false, nil
-	}
-	if err != nil {
-		return "", "", false, err
-	}
-	return originalHandle, postID, true, nil
-}
-
-// ── Image raw-hash dedup store ────────────────────────────────────────────────
-
-// CheckImageRawHash looks up a raw file SHA-256 in image_raw_hashes.
-// Returns the canonical media URL, original uploader handle, and whether it was found.
-func CheckImageRawHash(database *sql.DB, sha256 string) (mediaURL, uploaderHandle string, found bool, err error) {
-	if sha256 == "" || database == nil {
-		return "", "", false, nil
-	}
-	err = database.QueryRow(
-		`SELECT media_url, uploader_handle FROM image_raw_hashes WHERE sha256 = $1`, sha256).
-		Scan(&mediaURL, &uploaderHandle)
-	if err == sql.ErrNoRows {
-		return "", "", false, nil
-	}
-	if err != nil {
-		return "", "", false, err
-	}
-	return mediaURL, uploaderHandle, true, nil
-}
-
-// StoreImageRawHash seeds image_raw_hashes after a successful image upload.
-// ON CONFLICT DO NOTHING: first uploader's record is authoritative.
-func StoreImageRawHash(database *sql.DB, sha256, uploaderPIAL, uploaderHandle, mediaURL string) error {
-	if sha256 == "" || database == nil {
-		return nil
-	}
-	_, err := database.Exec(`
-		INSERT INTO image_raw_hashes (sha256, uploader_pial, uploader_handle, media_url)
-		VALUES ($1, $2, $3, $4)
-		ON CONFLICT (sha256) DO NOTHING`,
-		sha256, uploaderPIAL, uploaderHandle, mediaURL)
-	return err
-}
-
-// ── Video raw-hash dedup store ────────────────────────────────────────────────
-
-// AssociateVideoRawHashPost links a video_raw_hashes row to its work once the
-// work is created. The post_id column stores the work UUID — naming is legacy.
-// Best-effort — callers should log but not fail on error.
-func AssociateVideoRawHashPost(database *sql.DB, uploaderPIAL, workID string) {
-	if database == nil || uploaderPIAL == "" || workID == "" {
-		return
-	}
-	database.Exec(`
-		UPDATE video_raw_hashes SET post_id = $1
-		WHERE uploader_pial = $2 AND post_id = '' AND created_at > NOW() - INTERVAL '2 hours'`,
-		workID, uploaderPIAL)
-}
-
-// VideoDuplicateResult holds the original work's video info returned when a
-// duplicate raw-file hash is detected.
-type VideoDuplicateResult struct {
-	MasterURL     string
-	PosterURL     string
-	DurationSecs  float64
-	Width         int
-	Height        int
-	WorkID        string
-	CreatorHandle string
-	CreatorName   string
-	CreatorPIAL   string
-}
-
-// CheckVideoDuplicateByWork looks up a raw-file SHA-256 and, if found, returns
-// the original work's video metadata so the compose box can reference it.
-// Returns nil, nil when the hash is not in the store (i.e. the file is new).
-// post_id in video_raw_hashes stores the work UUID (legacy column name).
-func CheckVideoDuplicateByWork(database *sql.DB, rawSHA256 string) (*VideoDuplicateResult, error) {
-	if rawSHA256 == "" || database == nil {
-		return nil, nil
-	}
-
-	// Look up the work_id stored in the post_id column (legacy name).
-	var workID string
-	err := database.QueryRow(
-		`SELECT post_id FROM video_raw_hashes WHERE sha256 = $1 AND post_id != '' LIMIT 1`,
-		rawSHA256,
-	).Scan(&workID)
-	if err == sql.ErrNoRows {
-		return nil, nil // not a duplicate, or hash not yet linked to a work
-	}
-	if err != nil {
-		return nil, err
-	}
-
-	// Fetch the original work's video metadata, author handle, and display name.
-	var res VideoDuplicateResult
-	err = database.QueryRow(`
-		SELECT
-		    COALESCE(w.video_master_url, w.video_watermarked_url, ''),
-		    COALESCE(w.video_poster_url, ''),
-		    COALESCE(w.video_duration_secs, 0)::float8,
-		    COALESCE(w.video_width, 0),
-		    COALESCE(w.video_height, 0),
-		    w.id::text,
-		    u.handle,
-		    COALESCE(up.display_name, u.handle),
-		    w.author_pial::text
-		FROM works w
-		JOIN users u ON u.id = w.author_id
-		LEFT JOIN user_profiles up ON up.user_id = w.author_id
-		WHERE w.id = $1::uuid AND w.deleted_at IS NULL`,
-		workID,
-	).Scan(
-		&res.MasterURL, &res.PosterURL,
-		&res.DurationSecs, &res.Width, &res.Height,
-		&res.WorkID, &res.CreatorHandle, &res.CreatorName, &res.CreatorPIAL,
-	)
-	if err == sql.ErrNoRows {
-		// Work was deleted — treat as not a duplicate.
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	if res.MasterURL == "" {
-		// Work exists but has no video — hash collision or race; treat as clean.
-		return nil, nil
-	}
-	return &res, nil
 }
 
 func GetPostAnalytics(database *sql.DB, postID, ownerID string) (*PostAnalytics, error) {
@@ -3274,17 +2690,6 @@ func GetAbraxasConfig(database *sql.DB) (*AbraxasConfig, error) {
 	return cfg, err
 }
 
-// RecordScanFeedback writes an admin moderation decision alongside the signals
-// that triggered the flag. This is the training signal for Abraxas.
-func RecordScanFeedback(database *sql.DB, postID, decision, actionedBy string, signals []string) error {
-	_, err := database.Exec(`
-		INSERT INTO scan_feedback (post_id, signals, admin_decision, actioned_by)
-		VALUES ($1, $2, $3, $4)
-		ON CONFLICT DO NOTHING`,
-		postID, pq.Array(signals), decision, actionedBy)
-	return err
-}
-
 // SignalAccuracy describes how accurate a signal has been across admin decisions.
 type SignalAccuracy struct {
 	Signal         string
@@ -3323,29 +2728,6 @@ func GetSignalAccuracy(database *sql.DB) ([]SignalAccuracy, error) {
 		out = append(out, a)
 	}
 	return out, rows.Err()
-}
-
-// GetPIALKYCTier returns the kyc_tier for a PIAL root. Returns "none" on any error.
-func GetPIALKYCTier(db *sql.DB, pialID string) string {
-	var tier string
-	if err := db.QueryRow(`SELECT kyc_tier FROM pial_roots WHERE pial_id = $1::uuid`, pialID).Scan(&tier); err != nil {
-		return "none"
-	}
-	return tier
-}
-
-// MintContentReceipt inserts a content_receipts row for a work. Idempotent via ON CONFLICT.
-//
-// The column is work_id: until migration 0006 it was post_id with a foreign key
-// into the posts table, so passing a work id here violated that key and every
-// mint failed. The receipt now references the row it is a receipt for.
-func MintContentReceipt(db *sql.DB, pialID, workID, bodyHash, kycTier string) error {
-	_, err := db.Exec(`
-		INSERT INTO content_receipts (pial_id, work_id, body_hash, kyc_tier_at_mint)
-		VALUES ($1::uuid, $2::uuid, $3, $4)
-		ON CONFLICT DO NOTHING
-	`, pialID, workID, bodyHash, kycTier)
-	return err
 }
 
 // SaveAbraxasConfig writes updated Abraxas Shield settings (upsert on id=1).

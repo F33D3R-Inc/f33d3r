@@ -2,7 +2,7 @@
 FACET wallet_send_sheet
   version: 1.0 | status: stable | layer: 3
 
-  inputs: none (JS openSendSheet() populates #wss-recipient from caller context)
+  inputs: none (openSendSheet() only shows the sheet)
 
   states:
     hidden (default) | open | sending | success | error
@@ -10,7 +10,8 @@ FACET wallet_send_sheet
   children: none
 
   signals:
-    emits:    tip (POST /events)
+    emits:    tip (POST /events — answered with the tip_result Facet; the server
+              resolves the handle to its identity)
     receives: none
 
   context:
@@ -28,12 +29,13 @@ FACET wallet_send_sheet
       <span class="wss-title">Send AET</span>
     </div>
 
-    <div class="wss-body">
+    <form class="wss-body" hx-post="/events" hx-vals='{"event_type":"tip"}'
+          hx-target="#wss-result" hx-swap="innerHTML">
       <div class="wss-field">
         <label class="wallet-field-label" for="wss-recipient">Recipient</label>
         <div class="wss-input-wrap" style="position:relative">
           <span class="wss-at">@</span>
-          <input id="wss-recipient" class="wss-input wss-input--handle" type="text"
+          <input id="wss-recipient" name="target_handle" class="wss-input wss-input--handle" type="text" required
                  placeholder="handle" autocomplete="off" autocorrect="off" autocapitalize="off"
                  oninput="onSendRecipientInput(this.value)">
           <div id="wss-recipient-dd" class="wss-dd" style="display:none"></div>
@@ -43,20 +45,20 @@ FACET wallet_send_sheet
       <div class="wss-field">
         <label class="wallet-field-label" for="wss-amount">Amount</label>
         <div class="wss-amount-row">
-          <input id="wss-amount" class="wss-input" type="number"
+          <input id="wss-amount" name="amount" class="wss-input" type="number" required
                  step="0.01" min="0.01" placeholder="0.00">
           <span class="wss-unit">AET</span>
         </div>
         <p class="wss-fee-note">Network fee: 0.001 AET · Transfers are final</p>
       </div>
 
-      <p class="wss-result" id="wss-result"></p>
+      <div class="wss-result" id="wss-result"></div>
 
-      <button class="btn-primary wss-send-btn" type="button" onclick="sendTip()">
+      <button class="btn-primary wss-send-btn" type="submit">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M22 2L11 13"/><path d="M22 2L15 22 11 13 2 9l20-7z"/></svg>
         Send AET
       </button>
-    </div>
+    </form>
 
     <p class="wallet-footer-note" style="padding:0 20px 20px">
       To receive AET, share your handle with anyone — they can tip from their wallet or from any post.

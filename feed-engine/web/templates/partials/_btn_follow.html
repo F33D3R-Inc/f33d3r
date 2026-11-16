@@ -3,8 +3,8 @@ FACET btn_follow
   version: 2.0 | status: stable | layer: 5
 
   inputs:
-    TargetPIAL    string — PIAL ID of the user to follow/unfollow (primary address)
-    TargetHandle  string — handle; aria-label, and the fallback address when TargetPIAL is empty
+    TargetAccount string — account id of the person to follow/unfollow (the address)
+    TargetHandle  string — handle; aria-label, and sent alongside the account id
     IsFollowing   bool   — current follow state
     Surface       string — where this instance is drawn: profile | compact | card | dot
 
@@ -25,19 +25,21 @@ FACET btn_follow
     work_card           → author row inline pill (Surface=card)
     work_detail_focus   → header action (Surface=profile)
     work_focus_sidebar  → avatar overlay dot (Surface=dot)
+
+  note:
+    The control names an account, never a PIAL. The server resolves the PIAL
+    from the account or handle inside followEvent; nothing a viewer can read
+    links two accounts to one person.
 */}}
 {{define "btn_follow"}}
 {{- $surface := .Surface -}}
 {{- if not $surface}}{{$surface = "profile"}}{{end -}}
-{{- $entity := .TargetPIAL -}}
-{{- if not $entity}}{{$entity = .TargetHandle}}{{end -}}
-<button data-facet-id="facet:f33d3r:identity:{{$entity}}:btn_follow"
-        data-pial="{{.TargetPIAL}}"
+<button data-facet-id="facet:f33d3r:account:{{.TargetAccount}}:btn_follow"
         data-surface="{{$surface}}"
         type="button"
         class="btn-follow{{if ne $surface "profile"}} btn-follow--{{$surface}}{{end}}{{if .IsFollowing}} is-on{{end}}"
         hx-post="/events"
-        hx-vals='{"event_type":"{{if .IsFollowing}}unfollow{{else}}follow{{end}}","target_pial":"{{.TargetPIAL}}","target_handle":"{{.TargetHandle}}","source":"{{$surface}}"}'
+        hx-vals='{"event_type":"{{if .IsFollowing}}unfollow{{else}}follow{{end}}","target_account":"{{.TargetAccount}}","target_handle":"{{.TargetHandle}}","source":"{{$surface}}"}'
         hx-target="this" hx-swap="outerHTML"
         onclick="event.stopPropagation()"
         aria-label="{{if .IsFollowing}}Unfollow @{{.TargetHandle}}{{else}}Follow @{{.TargetHandle}}{{end}}"

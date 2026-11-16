@@ -8,13 +8,14 @@ package handler
 // upload coordination is infrastructure, not a social event.
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
-	"os"
 	"path/filepath"
 	"sync"
-	"time"
 
 	"github.com/google/uuid"
 )
@@ -140,33 +141,25 @@ func (h *Handler) bulkInit(w http.ResponseWriter, r *http.Request) {
 		UploadSlots: make([]bulkSlotResponse, 0, req.Count),
 	}
 
+	up, err := uploaderOf(user)
+	if err != nil {
+		http.Error(w, "authentication required", http.StatusUnauthorized)
+		return
+	}
 	for _, filename := range handles {
-		uploadID := uuid.New().String()
-		path := filepath.Join(tusTempDir, uploadID)
-
-		f, err := os.Create(path)
+		path, err := createSpool()
 		if err != nil {
-			log.Printf("[bulk_upload] create temp file error: %v", err)
+			log.Printf("[bulk_upload] create spool: %v", err)
 			http.Error(w, "storage error", http.StatusInternalServerError)
 			return
 		}
-		f.Close()
-
-		// Register in the global TUS store so PATCH /upload/tus/{id} works.
-		// Length is 0 here; the client sends Upload-Length on the TUS POST/PATCH.
-		upload := &tusUpload{
-			ID:             uploadID,
-			Length:         0,
-			Offset:         0,
-			Filename:       filename,
-			Created:        time.Now(),
-			UploaderPIAL:   user.PIALID,
-			UploaderHandle: user.Handle,
-			path:           path,
-		}
-		globalTusStore.mu.Lock()
-		globalTusStore.uploads[uploadID] = upload
-		globalTusStore.mu.Unlock()
+		// Registered in the tus store so PATCH /upload/tus/{id} appends to it. The
+		// length is unknown until the client's first PATCH states it; the last
+		// chunk hands the file to Caeor through the same gated path as any tus
+		// upload.
+		upload := newTusUpload(up, filename, path, 0)
+		globalTusStore.put(upload)
+		uploadID := upload.ID
 
 		slot := &batchSlot{
 			UploadID: uploadID,
@@ -208,8 +201,15 @@ func (h *Handler) bulkInit(w http.ResponseWriter, r *http.Request) {
 }
 
 // bulkStatus handles GET /api/upload/bulk-status/{batch_id}.
-// Returns current status of all slots by consulting the live TUS store + transcoding brain.
+// Returns the current status of every slot from the one upload state
+// (videoJobState). A batch is its creator's; anyone else is told it does not
+// exist.
 func (h *Handler) bulkStatus(w http.ResponseWriter, r *http.Request) {
+	user := h.userFromRequest(w, r)
+	if user == nil || user.ID == "" || user.ID == "demo_user" {
+		http.Error(w, "authentication required", http.StatusUnauthorized)
+		return
+	}
 	batchID := r.PathValue("batch_id")
 	if batchID == "" {
 		http.Error(w, "batch_id required", http.StatusBadRequest)
@@ -219,16 +219,19 @@ func (h *Handler) bulkStatus(w http.ResponseWriter, r *http.Request) {
 	batchStoreMu.RLock()
 	batch, ok := batchStore[batchID]
 	batchStoreMu.RUnlock()
-
-	if !ok {
-		// Fall back to DB (post-restart recovery).
-		if h.db != nil {
-			batch = h.loadBatchFromDB(batchID)
-		}
-		if batch == nil {
-			http.Error(w, "batch not found", http.StatusNotFound)
+	if !ok && h.db != nil {
+		// Post-restart recovery.
+		loaded, err := h.loadBatchFromDB(batchID)
+		if err != nil {
+			log.Printf("[bulk_upload] loading batch %s: %v", batchID, err)
+			http.Error(w, "service unavailable", http.StatusServiceUnavailable)
 			return
 		}
+		batch = loaded
+	}
+	if batch == nil || batch.UserID != user.ID {
+		http.Error(w, "batch not found", http.StatusNotFound)
+		return
 	}
 
 	statusResp := bulkStatusResponse{
@@ -237,45 +240,18 @@ func (h *Handler) bulkStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, slot := range batch.Slots {
-		liveStatus := slot.Status
-		masterURL := slot.MasterURL
+		liveStatus, masterURL := h.bulkSlotStatus(r.Context(), slot)
 
-		globalTusStore.mu.RLock()
-		tusUp, hasTus := globalTusStore.uploads[slot.UploadID]
-		globalTusStore.mu.RUnlock()
-
-		if hasTus {
-			switch {
-			case tusUp.DupInfo != nil:
-				liveStatus = "ready"
-				masterURL = tusUp.DupInfo.ExistingMasterURL
-			case tusUp.JobID != "":
-				liveStatus, masterURL = h.bulkPollJobStatus(tusUp.JobID, liveStatus, masterURL)
-			case tusUp.Length > 0 && tusUp.Offset >= tusUp.Length:
-				liveStatus = "processing"
-			case tusUp.Offset > 0:
-				liveStatus = "uploading"
+		if h.db != nil && (liveStatus != slot.Status || masterURL != slot.MasterURL) {
+			if _, err := h.db.Exec(
+				`UPDATE upload_batch_slots SET status=$1, master_url=$2, updated_at=NOW()
+				 WHERE tus_upload_id=$3`,
+				liveStatus, masterURL, slot.UploadID,
+			); err != nil {
+				// The next poll re-derives it; said, not swallowed.
+				log.Printf("[bulk-upload] slot status not synced for upload %s: %v", slot.UploadID, err)
 			}
 		}
-
-		// Persist status change to DB (fire-and-forget).
-		if h.db != nil && (liveStatus != slot.Status || masterURL != slot.MasterURL) {
-			uploadID := slot.UploadID
-			st := liveStatus
-			mu := masterURL
-			go func() {
-				// Detached status sync; the next poll re-derives it, so a failure is
-				// recoverable — but it is said out loud rather than swallowed.
-				if _, err := h.db.Exec(
-					`UPDATE upload_batch_slots SET status=$1, master_url=$2, updated_at=NOW()
-					 WHERE tus_upload_id=$3`,
-					st, mu, uploadID,
-				); err != nil {
-					log.Printf("[bulk-upload] slot status not synced for upload %s: %v", uploadID, err)
-				}
-			}()
-		}
-
 		slot.Status = liveStatus
 		slot.MasterURL = masterURL
 
@@ -291,7 +267,6 @@ func (h *Handler) bulkStatus(w http.ResponseWriter, r *http.Request) {
 		case "failed":
 			statusResp.Failed++
 		}
-
 		statusResp.Items = append(statusResp.Items, bulkStatusItem{
 			UploadID:  slot.UploadID,
 			Filename:  slot.Filename,
@@ -301,39 +276,39 @@ func (h *Handler) bulkStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(statusResp)
+	if err := json.NewEncoder(w).Encode(statusResp); err != nil {
+		log.Printf("[bulk_upload] encode status of %s: %v", batchID, err)
+	}
 }
 
-// bulkPollJobStatus fetches current transcoding status for a job ID.
-// Returns (status, masterURL) — status is one of: processing | ready | failed.
-func (h *Handler) bulkPollJobStatus(jobID, currentStatus, currentMasterURL string) (string, string) {
-	if h.transcodingURL == "" {
-		return "processing", ""
+// bulkSlotStatus is one slot's status in the batch vocabulary
+// (queued | uploading | processing | ready | failed) and its master URL once
+// ready. A slot this process no longer holds keeps the status last recorded.
+func (h *Handler) bulkSlotStatus(ctx context.Context, slot *batchSlot) (string, string) {
+	upload, ok := globalTusStore.get(slot.UploadID)
+	if !ok {
+		return slot.Status, slot.MasterURL
 	}
-	resp, err := h.httpClient.Get(h.transcodingURL + "/v1/video/job/" + jobID)
-	if err != nil {
-		return currentStatus, currentMasterURL
+	globalTusStore.mu.RLock()
+	complete, offset := upload.complete, upload.Offset
+	globalTusStore.mu.RUnlock()
+	if !complete {
+		if offset > 0 {
+			return "uploading", ""
+		}
+		return "queued", ""
 	}
-	defer resp.Body.Close()
-
-	var jobResp struct {
-		Status string `json:"status"`
-		Output struct {
-			MasterURL string `json:"master_url"`
-		} `json:"output"`
+	st, ok := h.videoJobState(ctx, slot.UploadID)
+	if !ok {
+		return slot.Status, slot.MasterURL
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&jobResp); err != nil {
-		return currentStatus, currentMasterURL
-	}
-
-	switch jobResp.Status {
-	case "ready":
-		return "ready", jobResp.Output.MasterURL
-	case "failed", "error":
+	switch st.Status {
+	case videoJobReady, videoJobDuplicate:
+		return "ready", st.Output.MasterURL
+	case videoJobFailed:
 		return "failed", ""
-	default:
-		return "processing", ""
 	}
+	return "processing", ""
 }
 
 // bulkUploadPage serves GET /create/bulk-upload — the standalone bulk import page.
@@ -349,35 +324,41 @@ func (h *Handler) bulkUploadPage(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// loadBatchFromDB reconstructs a batchState from Postgres (used after server restart).
-func (h *Handler) loadBatchFromDB(batchID string) *batchState {
+// loadBatchFromDB reconstructs a batchState from Postgres (used after server
+// restart). nil, nil when there is no such batch.
+func (h *Handler) loadBatchFromDB(batchID string) (*batchState, error) {
+	var userID string
+	err := h.db.QueryRow(`SELECT user_id::text FROM upload_batches WHERE batch_id=$1`, batchID).Scan(&userID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
 	rows, err := h.db.Query(
-		`SELECT tus_upload_id, filename, status, master_url
+		`SELECT tus_upload_id, filename, status, COALESCE(master_url, '')
 		 FROM upload_batch_slots WHERE batch_id=$1 ORDER BY created_at`,
 		batchID,
 	)
 	if err != nil {
-		log.Printf("[bulk_upload] loadBatchFromDB query error: %v", err)
-		return nil
+		return nil, err
 	}
 	defer rows.Close()
-
-	var userID string
-	_ = h.db.QueryRow(`SELECT user_id FROM upload_batches WHERE batch_id=$1`, batchID).Scan(&userID)
 
 	batch := &batchState{BatchID: batchID, UserID: userID}
 	for rows.Next() {
 		slot := &batchSlot{}
-		if err := rows.Scan(&slot.UploadID, &slot.Filename, &slot.Status, &slot.MasterURL); err == nil {
-			batch.Slots = append(batch.Slots, slot)
+		if err := rows.Scan(&slot.UploadID, &slot.Filename, &slot.Status, &slot.MasterURL); err != nil {
+			return nil, err
 		}
+		batch.Slots = append(batch.Slots, slot)
 	}
-	if len(batch.Slots) == 0 {
-		return nil
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 
 	batchStoreMu.Lock()
 	batchStore[batchID] = batch
 	batchStoreMu.Unlock()
-	return batch
+	return batch, nil
 }

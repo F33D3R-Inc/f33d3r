@@ -299,7 +299,6 @@ func railFullDataset() map[string]interface{} {
 				ID:          prefix + itoaRail(i),
 				Handle:      prefix + itoaRail(i),
 				DisplayName: prefix + itoaRail(i),
-				PIALID:      "pial-" + prefix + itoaRail(i),
 			})
 		}
 		return out

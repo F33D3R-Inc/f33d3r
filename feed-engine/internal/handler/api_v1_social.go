@@ -13,6 +13,7 @@ import (
 	"time"
 
 	dbpkg "github.com/f33d3r/feed-engine/internal/db"
+	"github.com/f33d3r/feed-engine/internal/identity"
 	"github.com/f33d3r/feed-engine/internal/model"
 )
 
@@ -124,27 +125,22 @@ func (h *Handler) apiV1TrendingTags(w http.ResponseWriter, r *http.Request, _ *m
 // apiV1Sessions — GET /api/v1/sessions → SessionListDTO, the device that
 // asked first.
 func (h *Handler) apiV1Sessions(w http.ResponseWriter, r *http.Request, u *model.User) {
-	list, err := dbpkg.ListUserSessions(h.db, u.ID)
+	list, err := h.accountSessions(r, u)
 	if err != nil {
-		apiServerError(w, err)
+		log.Printf("[sessions] listing for @%s: %v", u.Handle, err)
+		apiError(w, http.StatusServiceUnavailable, "identity_unavailable", "Your devices could not be listed right now. Try again in a moment.")
 		return
 	}
-	current := dbpkg.SessionIDForToken(h.db, GetSessionToken(r))
 	out := make([]SessionInfoDTO, 0, len(list))
 	for _, s := range list {
-		d := SessionInfoDTO{
+		out = append(out, SessionInfoDTO{
 			ID:         s.ID,
 			DeviceName: s.DeviceName,
 			IPAddress:  strPtr(s.IPAddress),
 			CreatedAt:  s.CreatedAt,
 			LastSeenAt: s.LastSeenAt,
-			IsCurrent:  current != "" && s.ID == current,
-		}
-		if d.IsCurrent {
-			out = append([]SessionInfoDTO{d}, out...)
-			continue
-		}
-		out = append(out, d)
+			IsCurrent:  s.IsCurrent,
+		})
 	}
 	apiJSON(w, http.StatusOK, SessionListDTO{Sessions: out})
 }
@@ -323,7 +319,7 @@ func (h *Handler) apiV1AccountEvent(w http.ResponseWriter, r *http.Request, even
 		h.apiProfileUpdateEvent(w, r, user, rawBodyMap)
 	case "password_change":
 		next := eventField(r, rawBodyMap, "new_password")
-		status, msg := h.changePassword(user, eventField(r, rawBodyMap, "current_password"), next, next, GetSessionToken(r))
+		status, msg := h.changePassword(r, user, eventField(r, rawBodyMap, "current_password"), next, next)
 		if status != http.StatusOK {
 			http.Error(w, msg, status)
 			return true
@@ -341,15 +337,19 @@ func (h *Handler) apiV1AccountEvent(w http.ResponseWriter, r *http.Request, even
 			http.Error(w, "session_id required", http.StatusBadRequest)
 			return true
 		}
-		if err := dbpkg.RevokeSession(h.db, id, user.ID); err != nil {
+		if err := h.revokeOneSession(r, user, id); err != nil {
+			if identity.IsUnavailable(err) {
+				http.Error(w, "identity authority unavailable", http.StatusServiceUnavailable)
+				return true
+			}
 			http.Error(w, "session not found", http.StatusNotFound)
 			return true
 		}
 		w.WriteHeader(http.StatusNoContent)
 	case "sessions_revoke_others":
-		if err := dbpkg.RevokeOtherSessions(h.db, user.ID, GetSessionToken(r)); err != nil {
+		if err := h.endAccountSessions(r, user.ID, GetSessionToken(r)); err != nil {
 			log.Printf("[sessions] revoke others for %s: %v", user.Handle, err)
-			http.Error(w, "server error", http.StatusInternalServerError)
+			http.Error(w, "identity authority unavailable", http.StatusServiceUnavailable)
 			return true
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -515,7 +515,7 @@ func (h *Handler) apiProfileUpdateEvent(w http.ResponseWriter, r *http.Request, 
 	if viewerAccountID(fresh) == "" {
 		fresh = user
 	}
-	apiJSON(w, http.StatusOK, h.meDTOFor(fresh))
+	h.apiMe(w, r, fresh)
 }
 
 // linkGroupReader resolves one group of profile links out of whichever body
@@ -549,13 +549,11 @@ func linkGroupReader(r *http.Request, rawBodyMap map[string]json.RawMessage, obj
 // ── Shared rules: password change, work edit ─────────────────────────────────
 
 // changePassword is the one set of rules for changing a password, whichever
-// surface asked. 200 means it changed; any other status carries the sentence
-// to show.
-func (h *Handler) changePassword(user *model.User, current, next, confirm, keepToken string) (int, string) {
-	if h.db == nil {
-		return http.StatusServiceUnavailable, "Database unavailable."
-	}
-	if user == nil || user.ID == "" {
+// surface asked. elohim-veni checks the current password, stores the new one
+// and ends every session but this one. 200 means it changed; any other status
+// carries the sentence to show.
+func (h *Handler) changePassword(r *http.Request, user *model.User, current, next, confirm string) (int, string) {
+	if viewerAccountID(user) == "" {
 		return http.StatusUnauthorized, "Sign in to change your password."
 	}
 	if next == "" || len(next) < 8 {
@@ -564,23 +562,24 @@ func (h *Handler) changePassword(user *model.User, current, next, confirm, keepT
 	if next != confirm {
 		return http.StatusBadRequest, "Passwords do not match."
 	}
-	if dbpkg.HasPassword(h.db, user.ID) {
+	keep := GetSessionToken(r)
+	err := h.identity.Client().ChangePassword(r.Context(), user.ID, current, next, keep)
+	switch {
+	case err == nil:
+	case errors.Is(err, identity.ErrWrongPassword), errors.Is(err, identity.ErrInvalidCredentials):
 		if current == "" {
 			return http.StatusBadRequest, "Please enter your current password."
 		}
-		confirmedUID, err := dbpkg.CheckPassword(h.db, user.Handle, current)
-		if err != nil || confirmedUID == "" {
-			return http.StatusForbidden, "Current password is incorrect."
-		}
+		return http.StatusForbidden, "Current password is incorrect."
+	case errors.Is(err, identity.ErrWeakPassword):
+		return http.StatusBadRequest, "New password must be at least 8 characters."
+	default:
+		log.Printf("[settings] password change for @%s: %v", user.Handle, err)
+		return http.StatusServiceUnavailable, "Could not save password — try again."
 	}
-	if err := dbpkg.SetPassword(h.db, user.ID, next); err != nil {
-		log.Printf("[settings] SetPassword error: %v", err)
-		return http.StatusInternalServerError, "Could not save password — try again."
-	}
-	if err := h.endSessionsAfterPasswordChange(user.ID, keepToken); err != nil {
-		log.Printf("[settings] ending sessions for %s: %v", user.Handle, err)
-		return http.StatusInternalServerError, "Password saved, but other devices could not be signed out. Sign them out in Settings."
-	}
+	// The authority has ended the other sessions; this process's cached copies
+	// of them go too.
+	h.evictCachedAccount(user.ID, keep)
 	return http.StatusOK, "Password updated successfully."
 }
 

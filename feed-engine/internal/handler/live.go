@@ -348,7 +348,7 @@ type liveStreamView struct {
 	AuthorHandle string
 	AuthorName   string
 	AvatarURL    string
-	AuthorPIAL   string
+	AuthorID     string
 	AuthorRealm  int
 	IsVerified   bool
 	VerifiedType string
@@ -379,7 +379,7 @@ func (h *Handler) buildLiveView(s *model.LiveStream, viewer *model.User, heartbe
 		AuthorHandle: s.AuthorHandle,
 		AuthorName:   s.AuthorName,
 		AvatarURL:    s.AvatarURL,
-		AuthorPIAL:   s.AuthorPIAL,
+		AuthorID:     s.AuthorID,
 		// The broadcaster's own words. live_author_row has always rendered this;
 		// nothing had ever filled it, so every stream read as untitled prose.
 		Description:  s.Description,
@@ -1262,6 +1262,10 @@ func (h *Handler) liveStartHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if user.PIALID == "" {
 		h.renderGoComposer(w, r, user, goComposerDraft{}, "Your identity is not fully set up yet. Finish onboarding to broadcast.", http.StatusForbidden)
+		return
+	}
+	if !h.mayPublish(user) {
+		h.renderGoComposer(w, r, user, goComposerDraft{}, publishRestricted, http.StatusForbidden)
 		return
 	}
 

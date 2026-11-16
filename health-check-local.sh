@@ -27,10 +27,9 @@ check "transcoding"             8085
 check "caeor"                   8086
 check "astraon"                 8088
 check "ain-soph"                8089
-check "zodacare"                8090
+check "abraxas-shield"          8109
 check "live-edge"               8092 "/healthz"
 check "elohim-veni"             8093
-check "registry-brain"          8094
 check "verity"                  8095
 check "aethyr-ledger"           8096
 check "content-scan"            8097 "/ready"

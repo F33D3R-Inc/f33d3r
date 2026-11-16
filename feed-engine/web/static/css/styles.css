@@ -1209,6 +1209,18 @@ body::before {
 /* ─── Facet(compose_audience_pill) ─── */
 .compose-audience-pill { display:inline-flex;align-items:center;gap:5px;padding:4px 10px 4px 8px;border-radius:var(--radius-full);border:1.5px solid var(--border);background:transparent;color:var(--text-secondary);font-size:12px;font-weight:600;font-family:inherit;cursor:pointer;transition:border-color 120ms,color 120ms;white-space:nowrap; }
 .compose-audience-pill:hover { border-color:var(--accent);color:var(--accent); }
+/* compose_gating Facet — who may reply, signed into the work as comment_gating */
+.compose-gating { display:inline-flex;align-items:center;gap:6px;margin-left:8px;font-size:12px;color:var(--text-secondary); }
+.compose-gating-label { font-weight:600; }
+.compose-gating-select { padding:3px 8px;border-radius:var(--radius-full);border:1.5px solid var(--border);background:transparent;color:inherit;font:inherit;font-size:12px;cursor:pointer; }
+/* compose_status Facet — the server's answer to the last post */
+.compose-status { padding:0 16px;font-size:13px;line-height:1.4; }
+.compose-status--idle { display:none; }
+.compose-status--ok { color:var(--accent); }
+.compose-status--duplicate, .compose-status--text_too_long, .compose-status--text_blank,
+.compose-status--invalid_field, .compose-status--cited_not_found, .compose-status--replies_restricted,
+.compose-status--posting_restricted, .compose-status--rate_limited, .compose-status--server_error { color:var(--destructive, #ef4444);padding-top:6px;padding-bottom:6px; }
+.compose-status-link { color:inherit;text-decoration:underline; }
 /* ─── Facet(compose_gating_select) ─── */
 .compose-gating-wrap { }
 .compose-gating-select { background:transparent;border:none;color:var(--text-muted);font-size:12px;font-family:inherit;cursor:pointer;outline:none;padding:0 4px;-webkit-appearance:none; }
@@ -2846,6 +2858,7 @@ body::before {
 .admin-report-reason-label { color:var(--accent); }
 .admin-report-body { font-size:11px; background:var(--bg); border-radius:6px; padding:8px; border:1px solid var(--border); color:var(--text-secondary); white-space:pre-wrap; max-height:80px; overflow:hidden; }
 .admin-report-actions { display:flex; gap:8px; margin-top:4px; }
+.admin-nav-icon { width:16px; height:16px; }
 .admin-report-btn-resolve { font-size:11px; padding:4px 12px; border-radius:6px; border:none; background:var(--accent); color:#fff; cursor:pointer; }
 .admin-report-btn-dismiss { font-size:11px; padding:4px 12px; border-radius:6px; border:1px solid var(--border); background:transparent; color:var(--text-secondary); cursor:pointer; }
 .admin-report-btn-agegate { font-size:11px; padding:4px 12px; border-radius:6px; border:none; background:#a855f7; color:#fff; cursor:pointer; }
@@ -3023,6 +3036,24 @@ body::before {
   transition:background 100ms;
 }
 .wallet-tx-item:last-child { border-bottom:none; }
+.wallet-network-status--online { color:#22c55e; }
+.gov-empty { font-size:12px; color:var(--text-muted); text-align:center; padding:8px 0; }
+.gov-row { display:block; width:100%; text-align:left; padding:12px; background:rgba(255,255,255,.03); border:1px solid var(--border); border-radius:12px; cursor:pointer; margin-bottom:8px; }
+.gov-row-status { display:block; font-size:11px; font-weight:600; color:var(--text-muted); }
+.gov-row-status--active { color:#22c55e; }
+.gov-row-title { display:block; font-size:13px; font-weight:500; color:var(--text-primary); margin:4px 0; }
+.gov-row-votes { display:block; font-size:11px; color:var(--text-secondary); }
+.gov-detail { background:var(--panel); border:1px solid var(--border); border-radius:20px; padding:24px; }
+.gov-detail-title { font-size:15px; font-weight:600; color:var(--text-primary); margin-bottom:8px; }
+.gov-detail-desc { font-size:13px; color:var(--text-secondary); margin-bottom:14px; }
+.gov-option { margin-bottom:8px; }
+.gov-option-head { display:flex; justify-content:space-between; margin-bottom:3px; }
+.gov-option-label { font-size:12px; color:var(--text-primary); }
+.gov-option--leading .gov-option-label { font-weight:600; }
+.gov-option-meta { font-size:11px; color:var(--text-muted); }
+.gov-bar { display:block; width:100%; height:4px; }
+.gov-vote-btn { margin-top:6px; font-size:11px; padding:4px 12px; }
+.gov-detail-foot { font-size:10px; color:var(--text-muted); margin-top:12px; }
 .wallet-tx-item:hover { background:var(--bg-sunk); }
 .wallet-tx-icon {
   width:36px; height:36px; border-radius:50%; flex-shrink:0;

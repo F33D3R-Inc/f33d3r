@@ -227,8 +227,8 @@ func TestNumbersFacetShowsTheOwnerTheirLabelCountdownAndRemainingBudget(t *testi
 	secs := int64(6 * secondsPerDay)
 	budget := 40
 	out := render(t, tmpl, "f33d3r_numbers", map[string]interface{}{
-		"PIALID":   "pial-1",
-		"Policies": []string{"number_only", "mutuals"},
+		"AccountID": "acct-1",
+		"Policies":  []string{"number_only", "mutuals"},
 		"Numbers": []map[string]interface{}{{
 			"Number":  "H8K29QRT4VMXC",
 			"Display": "H8K2 9QRT 4VMXC",
@@ -243,7 +243,7 @@ func TestNumbersFacetShowsTheOwnerTheirLabelCountdownAndRemainingBudget(t *testi
 		"BudgetMax":           numberBudgetMax,
 	})
 	for _, want := range []string{
-		`data-facet-id="facet:f33d3r:identity:pial-1:numbers"`,
+		`data-facet-id="facet:f33d3r:account:acct-1:numbers"`,
 		"ACL Conference 2026",
 		"6 days left",
 		"28 of 40 left",
@@ -262,8 +262,8 @@ func TestNumbersFacetTellsTheOwnerWhyANumberStoppedAdmittingPeople(t *testing.T)
 		{"exhausted", "Full"},
 	} {
 		out := render(t, tmpl, "f33d3r_numbers", map[string]interface{}{
-			"PIALID":   "pial-1",
-			"Policies": []string{"number_only"},
+			"AccountID": "acct-1",
+			"Policies":  []string{"number_only"},
 			"Numbers": []map[string]interface{}{{
 				"Number": "H8K29QRT4VMXC", "Display": "H8K2 9QRT 4VMXC",
 				"Live": true, "Policy": "number_only", "Label": "ACL",
@@ -290,11 +290,11 @@ func TestResolveFacetRendersOneIdenticalRefusalWhateverCausedIt(t *testing.T) {
 	// nothing that names a cause reaches the template, and the bytes match.
 	tmpl := partialSet(t, "_number_resolve.html")
 	base := render(t, tmpl, "number_resolve", map[string]interface{}{
-		"PIALID": "pial-1", "Decision": "deny", "Number": "H8K2-9QRT-4VMXC",
+		"AccountID": "acct-1", "Decision": "deny", "Number": "H8K2-9QRT-4VMXC",
 	})
 	for _, cause := range []string{"expired", "exhausted", "revoked", "unknown", "closed"} {
 		out := render(t, tmpl, "number_resolve", map[string]interface{}{
-			"PIALID": "pial-1", "Decision": "deny", "Number": "H8K2-9QRT-4VMXC",
+			"AccountID": "acct-1", "Decision": "deny", "Number": "H8K2-9QRT-4VMXC",
 			// Even if a future caller mistakenly passed the cause through, the
 			// facet must not render it.
 			"LeaseState": cause,
@@ -320,7 +320,7 @@ func TestResolveFacetNeverRendersALabelACountdownOrABudget(t *testing.T) {
 	budget := 40
 	for _, decision := range []string{"allow", "request", "deny"} {
 		out := render(t, tmpl, "number_resolve", map[string]interface{}{
-			"PIALID": "pial-1", "Decision": decision, "Number": "H8K2-9QRT-4VMXC",
+			"AccountID": "acct-1", "Decision": decision, "Number": "H8K2-9QRT-4VMXC",
 			"Label": "ACL Conference 2026",
 			"Lease": numberLeaseFrom("live", &secs, &budget, 12),
 		})

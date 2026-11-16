@@ -183,40 +183,6 @@ brains:
             /v1/decisions/log                   auth:
               internal  query: { pial_id, limit, offset }
 
-  zodacare:
-    base_url: "http://localhost:8090"
-    endpoints:
-      - method:
-          GET  path:
-            /health                      auth: none
-      - method:
-          GET  path:
-            /v1/stats                   auth: internal
-      - method:
-          POST path:
-            /v1/reports                 auth:
-              internal  body: { reporter_pial, content_id, content_type, reason, detail }
-      - method:
-          GET  path:
-            /v1/reports                 auth:
-              internal  query: { status, limit, offset }
-      - method:
-          GET  path:
-            /v1/reports/{id}            auth: internal
-      - method:
-          POST path:
-            /v1/reports/{id}/resolve    auth: internal
-      - method:
-          POST path:
-            /v1/reports/{id}/escalate   auth: internal
-      - method:
-          GET  path:
-            /v1/user/{pial_id}/risk     auth: internal
-      - method:
-          POST path:
-            /v1/user/{pial_id}/action   auth:
-              internal  body: { action, reason }
-
   schema-registry:
     base_url: "http://localhost:8079"
     endpoints:

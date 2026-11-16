@@ -7,7 +7,7 @@ FACET react_video_player (composite, layer 2)
   The original is reused via the quote template ("paste like quotes").
 
   inputs:
-    .W   model.Work — the react_video work (.VideoMasterURL = reaction WebM,
+    .W   model.Work — the react_video work (.VideoMasterURL = the reaction's watermarked HLS master,
           .ReactLayout, .QuotedWork = the original)
     .Ctx PageCtx
 
@@ -19,10 +19,11 @@ FACET react_video_player (composite, layer 2)
 <div class="rv-view" data-layout="{{if $w.ReactLayout}}{{$w.ReactLayout}}{{else}}presenter{{end}}"
      onclick="event.stopPropagation()">
 
-  {{/* Reaction — the camera clip (plain WebM; alpha shows the original through it) */}}
+  {{/* Reaction — the camera clip, played from its watermarked HLS master */}}
   <div class="rv-reaction">
-    <video class="rv-reaction-video" src="{{$w.VideoMasterURL}}" preload="metadata"
-           autoplay muted loop playsinline></video>
+    <video class="rv-reaction-video" data-f33d-hls="{{$w.VideoMasterURL}}"
+           {{if $w.VideoPosterURL}}poster="{{$w.VideoPosterURL}}"{{end}}
+           preload="metadata" autoplay muted loop playsinline></video>
   </div>
 
   {{/* Original work — the whole works facet, pasted by id (renders itself, any kind) */}}

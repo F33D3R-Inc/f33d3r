@@ -1,5 +1,5 @@
 # F33D3R Rust Brain Deployments
-# AethyrRank · Zior · Ain Soph · Elohim Veni · Zodacare · Schema Registry
+# AethyrRank · Zior · Ain Soph · Elohim Veni · Schema Registry
 # All use identical deployment structure with brain-specific config.
 
 ---
@@ -285,77 +285,6 @@ spec:
   ports:
     - port: 8093
       targetPort: 8093
-
----
-# ── Zodacare ──────────────────────────────────────────────────────────────────
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: zodacare
-  namespace: f33d3r
-  labels:
-    brain: zodacare
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      brain: zodacare
-  template:
-    metadata:
-      labels:
-        brain: zodacare
-    spec:
-      containers:
-        - name: zodacare
-          image: registry.gitlab.com/f33d3r-core/platform/zodacare:latest
-          imagePullPolicy: Always
-          ports:
-            - containerPort: 8090
-          env:
-            - name: DATABASE_URL
-              valueFrom:
-                secretKeyRef:
-                  name: f33d3r-secrets
-                  key: safety-db-url
-            - name: INTERNAL_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: f33d3r-secrets
-                  key: internal-api-key
-            - name: ELOHIM_VENI_URL
-              value: "http://elohim-veni:8093"
-            - name: RUST_LOG
-              value: "info"
-          resources:
-            requests:
-              cpu: "100m"
-              memory: "128Mi"
-            limits:
-              cpu: "500m"
-              memory: "256Mi"
-          livenessProbe:
-            httpGet:
-              path: /health
-              port: 8090
-            initialDelaySeconds: 10
-            periodSeconds: 10
-      imagePullSecrets:
-        - name: gitlab-registry-secret
-
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: zodacare
-  namespace: f33d3r
-  labels:
-    brain: zodacare
-spec:
-  selector:
-    brain: zodacare
-  ports:
-    - port: 8090
-      targetPort: 8090
 
 ---
 # ── Themis — private Bitcoin marketplace brain ────────────────────────────────

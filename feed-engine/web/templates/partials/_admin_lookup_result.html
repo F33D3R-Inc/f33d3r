@@ -147,7 +147,10 @@ FACET admin_lookup_result
   {{/* ── Platform Role ── */}}
   <div class="admin-action-card">
     <div class="admin-action-title">Platform role</div>
-    <div class="admin-action-hint">Controls admin access. Founder is unique to @tehanibentley.</div>
+    <div class="admin-action-hint">Controls admin access. Founder belongs to the first account ever created; it is never assigned and never removed.</div>
+    {{if eq .LookupUser.Role "founder"}}
+    <div class="admin-devtool-row">Founder — the first account created. This role is permanent.</div>
+    {{else}}
     <form class="admin-devtool-row"
           hx-post="/api/admin/set-role"
           hx-target="#admin-setrole-result-{{.LookupHandle}}"
@@ -159,10 +162,10 @@ FACET admin_lookup_result
       <select name="platform_role" class="form-input admin-select-sm">
         <option value="user"{{if eq .LookupUser.Role "user"}} selected{{end}}>User</option>
         <option value="admin"{{if eq .LookupUser.Role "admin"}} selected{{end}}>Admin</option>
-        <option value="founder"{{if eq .LookupUser.Role "founder"}} selected{{end}}>Founder</option>
       </select>
       <button type="submit" class="btn-primary" style="font-size:12px;padding:8px 14px">Save role</button>
     </form>
+    {{end}}
     <div class="admin-action-result" id="admin-setrole-result-{{.LookupHandle}}"></div>
   </div>
 

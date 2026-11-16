@@ -2,10 +2,12 @@
 FACET wallet_hero
   version: 1.0 | status: stable | layer: 2
 
-  inputs: none (JS loadBalance() populates #wallet-balance on load)
+  inputs:
+    Wallet  walletData — .Amount (balance without the unit, server-fetched with the
+                         session's identity) .Online (Ain Soph answered)
 
   states:
-    default | loading (while JS fetches balance)
+    default | offline
 
   children: none
 
@@ -20,9 +22,9 @@ FACET wallet_hero
 <div class="wallet-hero">
   <p class="wallet-label">AET Balance</p>
   <div class="wallet-balance">
-    <span class="pixel-balance">—</span><span class="pixel-balance-unit">AET</span>
+    <span class="pixel-balance">{{with .Wallet}}{{.Amount}}{{else}}—{{end}}</span><span class="pixel-balance-unit">AET</span>
   </div>
-  <p class="wallet-hero-status">Network: <span id="wallet-network-status">—</span></p>
+  <p class="wallet-hero-status">Network: {{with .Wallet}}{{if .Online}}<span id="wallet-network-status" class="wallet-network-status--online">Online</span>{{else}}<span id="wallet-network-status">Offline</span>{{end}}{{else}}<span id="wallet-network-status">Offline</span>{{end}}</p>
   <div class="wallet-actions">
     <button class="btn primary" onclick="openSendSheet()">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M22 2L11 13"/><path d="M22 2L15 22 11 13 2 9l20-7z"/></svg>

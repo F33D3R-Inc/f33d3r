@@ -1,6 +1,6 @@
 {{/*
 FACET report_flow_sheet
-  version: 2.0 | status: stable | layer: 3
+  version: 2.1 | status: stable | layer: 3
 
   inputs:
     PostID  string — work UUID being reported
@@ -13,6 +13,9 @@ FACET report_flow_sheet
 
   signals:
     emits:    POST /api/report {content_id, content_type:post, reason, detail} → #report-flow-form
+              reason "stolen" is an ownership claim: Abraxas files it as kind ownership_claim,
+              which goes straight to admin review with the reporter's own matching uploads
+              attached when it finds them
     receives: none
 
   close:
@@ -63,6 +66,9 @@ FACET report_flow_sheet
         </label>
         <label class="report-flow-reason-row">
           <input type="radio" name="reason" value="misinformation" class="report-flow-radio"> Misinformation
+        </label>
+        <label class="report-flow-reason-row">
+          <input type="radio" name="reason" value="stolen" class="report-flow-radio"> This is my content (stolen)
         </label>
         <label class="report-flow-reason-row">
           <input type="radio" name="reason" value="other" class="report-flow-radio"> Something else

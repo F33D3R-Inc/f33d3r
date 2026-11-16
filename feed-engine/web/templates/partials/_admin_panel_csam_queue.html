@@ -1,0 +1,74 @@
+{{/*
+FACET admin_panel_csam_queue
+  Reports waiting to be filed with NCMEC. The content was refused and not stored, so
+  there is nothing to view here, only what a report needs.
+
+  data:
+    Reports  []dbpkg.CSAMReport
+    Open     int
+*/}}
+{{define "admin_panel_csam_queue"}}
+<div class="admin-panel-inner" data-facet-id="facet:f33d3r:admin:csam_queue:panel">
+  <div class="admin-panel-section">
+    <div class="admin-section-head">
+      <span class="admin-section-head-title">CSAM reports</span>
+      {{if .Open}}<span class="admin-section-head-count">{{.Open}}</span>{{end}}
+    </div>
+    {{if .Reports}}
+    <div class="admin-report-list">
+      {{range .Reports}}{{template "admin_csam_report" .}}{{end}}
+    </div>
+    {{else}}
+    <div class="admin-report-body">Nothing has matched.</div>
+    {{end}}
+  </div>
+</div>
+{{end}}
+
+{{define "admin_csam_report"}}
+<div class="admin-report-card" data-facet-id="facet:f33d3r:csam_report:{{.ID}}:row">
+  <div class="admin-report-head">
+    <span class="admin-report-reporter">{{if .Handles}}{{.Handles}}{{else}}Unknown account{{end}}</span>
+    <span class="admin-report-meta">{{.Surface}} · {{timeAgo .ReportedAt}} · {{.ReportedAt.UTC.Format "2006-01-02 15:04:05"}} UTC</span>
+  </div>
+  <div class="admin-report-reason">
+    <span class="admin-report-reason-label">
+      {{if eq .Status "submitted"}}Filed with NCMEC: {{.NCMECRef}}
+      {{else if eq .Status "dismissed"}}Dismissed as a false match
+      {{else if eq .Action "banned"}}Account banned. Report not filed yet.
+      {{else}}Account held. Confirm or dismiss, then file if confirmed.{{end}}
+    </span>
+  </div>
+  <div class="admin-report-body">
+    <strong>Match:</strong> {{.HashType}}<br>
+    <strong>SHA-256:</strong> {{.SHA256}}<br>
+    <strong>Arrived as:</strong> {{.MediaRef}}
+    {{if .Sessions}}<br><strong>Sessions:</strong>
+    {{range .Sessions}}<br>@{{.Handle}} · {{.IPAddress}} · {{.LastSeenAt.UTC.Format "2006-01-02 15:04"}} UTC · {{.DeviceName}}{{end}}{{end}}
+    {{if .ResolvedBy}}<br><strong>Closed by:</strong> {{.ResolvedBy}}{{if .Note}} · {{.Note}}{{end}}{{end}}
+  </div>
+  {{if eq .Status "pending"}}
+  <div class="admin-report-actions">
+    <form class="admin-report-actions" hx-post="/admin/csam-queue/{{.ID}}/submit"
+          hx-target="closest .admin-report-card" hx-swap="outerHTML">
+      <input class="admin-input-sm" type="text" name="ncmec_ref" maxlength="100" placeholder="NCMEC reference" required>
+      <button type="submit" class="admin-report-btn-resolve">Record as filed</button>
+    </form>
+    {{if and (eq .Action "held") .PIALID}}
+    <form class="admin-report-actions" hx-post="/admin/csam-queue/{{.ID}}/ban"
+          hx-confirm="Ban this person's accounts?"
+          hx-target="closest .admin-report-card" hx-swap="outerHTML">
+      <button type="submit" class="admin-report-btn-block">Confirm and ban</button>
+    </form>
+    {{end}}
+    {{if eq .Action "held"}}
+    <form class="admin-report-actions" hx-post="/admin/csam-queue/{{.ID}}/dismiss"
+          hx-target="closest .admin-report-card" hx-swap="outerHTML">
+      <input class="admin-input-sm" type="text" name="note" maxlength="500" placeholder="Why this is a false match" required>
+      <button type="submit" class="admin-report-btn-dismiss">Dismiss and release</button>
+    </form>
+    {{end}}
+  </div>
+  {{end}}
+</div>
+{{end}}

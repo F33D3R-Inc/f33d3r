@@ -65,51 +65,9 @@ use crate::contact::ContactFacts;
 use manhattan_client::{ConflictCode, Manhattan, ManhattanError};
 
 // ── Schema ────────────────────────────────────────────────────────────────────
-
-/// Applied by `db::migrate` after the contact plane, and idempotent like every
-/// other blob this brain replays on boot.
-pub const SCHEMA: &str = r#"
--- ── The lease on a Number ────────────────────────────────────────────────────
--- Both columns are NULL by default, and NULL means "no limit". A Number that
--- existed before this migration keeps behaving exactly as it did: a lease is an
--- offer, never something applied retroactively to a promise already made.
-ALTER TABLE number_policies ADD COLUMN IF NOT EXISTS expires_at     TIMESTAMPTZ;
-ALTER TABLE number_policies ADD COLUMN IF NOT EXISTS max_admissions INT;
-
-ALTER TABLE number_policies DROP CONSTRAINT IF EXISTS number_policies_budget_positive;
-ALTER TABLE number_policies ADD CONSTRAINT number_policies_budget_positive
-    CHECK (max_admissions IS NULL OR max_admissions > 0);
-
-COMMENT ON COLUMN number_policies.expires_at IS
-    'When this Number stops admitting new contact. NULL is never, and never is the default. Compared against the database''s own NOW() at decision time, so there is one clock and no skew.';
-COMMENT ON COLUMN number_policies.max_admissions IS
-    'How many DISTINCT identities this Number may admit. NULL is unlimited. Counted in admissions, never in resolve attempts: a counter a stranger can burn down is a denial of service on the owner.';
-
--- The sweeper's only query.
-CREATE INDEX IF NOT EXISTS idx_number_policies_expiring
-    ON number_policies (expires_at) WHERE expires_at IS NOT NULL;
-
--- ── The admission ledger ─────────────────────────────────────────────────────
--- One row per (Number, identity admitted). The primary key is the whole budget
--- rule: an identity admitted twice through the same Number is the same
--- admission, so a person who re-resolves a Number they already used spends
--- nothing. The row is a fact about an introduction that happened, so it is
--- never removed to give a slot back — a later mutual follow does not un-admit
--- anybody.
---
--- ON DELETE CASCADE from number_policies: retiring a Number drops its policy
--- row, and the `number` namespace is not reusable, so this Number can never
--- come back and its ledger has nothing left to say.
-CREATE TABLE IF NOT EXISTS number_admissions (
-    number_node_id UUID        NOT NULL
-                   REFERENCES number_policies(number_node_id) ON DELETE CASCADE,
-    initiator_pial UUID        NOT NULL,
-    admitted_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (number_node_id, initiator_pial)
-);
-CREATE INDEX IF NOT EXISTS idx_number_admissions_initiator
-    ON number_admissions (initiator_pial);
-"#;
+//
+// The lease columns and the admission ledger are part of
+// migrations/0001_baseline.sql; this module reads and writes them.
 
 // ── Limits ────────────────────────────────────────────────────────────────────
 

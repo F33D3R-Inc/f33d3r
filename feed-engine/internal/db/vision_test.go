@@ -26,20 +26,21 @@ func TestVisionLiveClauseIsSingleDefinition(t *testing.T) {
 	}
 }
 
-func TestParseVisionRef(t *testing.T) {
-	ref, err := ParseVisionRef("11111111-1111-1111-1111-111111111111.7")
+func TestParseVisionAddress(t *testing.T) {
+	addr, err := ParseVisionAddress("11111111-1111-1111-1111-111111111111.7")
 	if err != nil {
-		t.Fatalf("ParseVisionRef: %v", err)
+		t.Fatalf("ParseVisionAddress: %v", err)
 	}
-	if ref.AuthorPIAL != "11111111-1111-1111-1111-111111111111" || ref.Seq != 7 {
-		t.Fatalf("ref = %+v, want pial 11111111-1111-1111-1111-111111111111 seq 7", ref)
+	if addr.AuthorAccount != "11111111-1111-1111-1111-111111111111" || addr.Seq != 7 {
+		t.Fatalf("addr = %+v, want account 11111111-1111-1111-1111-111111111111 seq 7", addr)
 	}
-	if ref.String() != "11111111-1111-1111-1111-111111111111.7" {
-		t.Fatalf("String() = %q", ref.String())
+	if addr.String() != "11111111-1111-1111-1111-111111111111.7" {
+		t.Fatalf("String() = %q", addr.String())
 	}
-	for _, bad := range []string{"", "no-dot", "pial.", ".7", "pial.notanumber", "pial.0", "pial.-1"} {
-		if _, err := ParseVisionRef(bad); err == nil {
-			t.Errorf("ParseVisionRef(%q) accepted, want an error", bad)
+	for _, bad := range []string{"", "no-dot", "acct.", ".7", "acct.7", "11111111-1111-1111-1111-111111111111.notanumber",
+		"11111111-1111-1111-1111-111111111111.0", "11111111-1111-1111-1111-111111111111.-1"} {
+		if _, err := ParseVisionAddress(bad); err == nil {
+			t.Errorf("ParseVisionAddress(%q) accepted, want an error", bad)
 		}
 	}
 }
@@ -200,8 +201,8 @@ func seedVisionUser(t *testing.T, database *sql.DB) (userID, pialID string) {
 	handle := fmt.Sprintf("visiontest_%d_%d", time.Now().UnixNano(), visionTestSeq.Add(1))
 
 	if err := database.QueryRow(
-		`INSERT INTO pial_roots DEFAULT VALUES RETURNING pial_id::text`).Scan(&pialID); err != nil {
-		t.Fatalf("seeding pial_roots: %v", err)
+		`INSERT INTO identity_facts (pial_id) VALUES (gen_random_uuid()) RETURNING pial_id::text`).Scan(&pialID); err != nil {
+		t.Fatalf("seeding identity_facts: %v", err)
 	}
 	if err := database.QueryRow(
 		`INSERT INTO users (handle, pial_id) VALUES ($1, $2::uuid) RETURNING id::text`,

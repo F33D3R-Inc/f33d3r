@@ -45,8 +45,8 @@ func TestVisionRailSeparatesTheViewersOwnEntry(t *testing.T) {
 	if !hasOwn {
 		t.Fatal("the viewer's own live Vision must produce the rail's own entry")
 	}
-	if own.R.AuthorPIAL != visionTestViewerID {
-		t.Fatalf("own entry = %s", own.R.AuthorPIAL)
+	if own.R.AuthorAccountID != visionTestViewerID {
+		t.Fatalf("own entry = %s", own.R.AuthorAccountID)
 	}
 	if own.OpenURL == "" || !strings.Contains(own.OpenURL, "/facets/vision/viewer?vision=") {
 		t.Fatalf("own entry must carry a server-resolved resume address, got %q", own.OpenURL)
@@ -54,11 +54,11 @@ func TestVisionRailSeparatesTheViewersOwnEntry(t *testing.T) {
 	if own.Label != "Open your Vision" {
 		t.Fatalf("own label = %q", own.Label)
 	}
-	if len(row) != 1 || row[0].R.AuthorPIAL != visionTestAuthorA {
+	if len(row) != 1 || row[0].R.AuthorAccountID != visionTestAuthorA {
 		t.Fatalf("row = %+v, want the followed author alone", row)
 	}
 	for _, e := range row {
-		if e.R.AuthorPIAL == visionTestViewerID {
+		if e.R.AuthorAccountID == visionTestViewerID {
 			t.Error("the viewer appears twice on their own rail")
 		}
 	}
@@ -192,7 +192,7 @@ func TestVisionFacetsNeverSayFleetToTheViewer(t *testing.T) {
 	for _, v := range seq {
 		v.Body = "fgfgf"
 	}
-	ref0, ref1 := visionRef(seq[0]).String(), visionRef(seq[1]).String()
+	ref0, ref1 := visionAddress(seq[0]).String(), visionAddress(seq[1]).String()
 	still := buildVisionStill(seq[0], nil)
 	frame := visionFrameView{
 		Still: still, Scope: visionScopeFollowing,

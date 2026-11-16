@@ -4,8 +4,8 @@
 /// no ML inference in v1. Every outcome is reproducible from the audit log.
 ///
 /// Decision ladder (highest precedence first):
-///   1. PIAL status is not ACTIVE → DENY (immediate)
-///   2. PIAL is SUSPENDED         → DENY
+///   1. PIAL status is not active → DENY (immediate; covers suspended,
+///      revoked, tombstoned and purged)
 ///   3. Explicit capability revoke for this action → DENY
 ///   4. Anomaly score > 0.85 (combined)   → QUARANTINE
 ///   5. Content risk > 0.80               → QUARANTINE
@@ -17,16 +17,16 @@
 use chrono::Utc;
 use uuid::Uuid;
 
-// Capabilities required per action (for non-BASIC tiers the bar is lower).
-const GATED_ACTIONS: &[(&str, &str)] = &[
-    ("monetize", "monetize"),
-    ("adult_content", "adult_content"),
-    ("node_relay", "node_relay"),
-];
+// Actions that need an explicit grant. The grant is the capability the
+// caller maps the action to (handlers::capability_for_action), in the one
+// vocabulary. node_relay maps to no capability: only the PRIVILEGED tier relays.
+const GATED_ACTIONS: &[&str] = &["monetize", "adult_content", "node_relay"];
 
 pub struct EvalInput<'a> {
     pub pial_id: Uuid,
     pub action: &'a str,
+    /// The capability this action is gated on, when it has one.
+    pub capability: Option<&'a str>,
     pub pial_status: &'a str,
     pub tier: &'a str,
     pub cap_grant: Option<(bool, Option<chrono::DateTime<Utc>>)>,
@@ -48,7 +48,7 @@ pub fn evaluate(input: EvalInput<'_>) -> EvalOutput {
     let _ = input.pial_id; // referenced for future audit use
 
     // Rule 1 & 2: PIAL status gate.
-    if input.pial_status != "ACTIVE" {
+    if input.pial_status != "active" {
         return EvalOutput {
             decision: "DENY".into(),
             confidence: 1.0,
@@ -66,9 +66,9 @@ pub fn evaluate(input: EvalInput<'_>) -> EvalOutput {
                 confidence: 1.0,
                 reason: format!(
                     "capability '{}' explicitly revoked or expired",
-                    input.action
+                    input.capability.unwrap_or(input.action)
                 ),
-                capability_required: Some(input.action.to_string()),
+                capability_required: input.capability.map(str::to_string),
             };
         }
     }
@@ -116,24 +116,20 @@ pub fn evaluate(input: EvalInput<'_>) -> EvalOutput {
     }
 
     // Rule 7: gated capability check.
-    for (gated_action, cap_name) in GATED_ACTIONS {
-        if input.action == *gated_action {
-            // PRIVILEGED tier gets implicit access; all others need an explicit grant.
-            let has_access = input.tier == "PRIVILEGED"
-                || matches!(&input.cap_grant, Some((true, exp)) if
-                    exp.map(|e| e > Utc::now()).unwrap_or(true));
-
-            if !has_access {
-                return EvalOutput {
-                    decision: "DENY".into(),
-                    confidence: 1.0,
-                    reason: format!(
-                        "action '{}' requires capability '{}' which has not been granted",
-                        input.action, cap_name
-                    ),
-                    capability_required: Some(cap_name.to_string()),
-                };
-            }
+    if GATED_ACTIONS.contains(&input.action) {
+        // PRIVILEGED tier gets implicit access; all others need an explicit grant.
+        let has_access = input.tier == "PRIVILEGED" || matches!(&input.cap_grant, Some((true, _)));
+        if !has_access {
+            let needed = input.capability.unwrap_or("PRIVILEGED tier");
+            return EvalOutput {
+                decision: "DENY".into(),
+                confidence: 1.0,
+                reason: format!(
+                    "action '{}' requires {} which has not been granted",
+                    input.action, needed
+                ),
+                capability_required: input.capability.map(str::to_string),
+            };
         }
     }
 

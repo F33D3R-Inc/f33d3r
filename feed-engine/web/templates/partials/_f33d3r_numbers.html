@@ -3,7 +3,7 @@ FACET f33d3r_numbers
   version: 1.0 | status: stable | layer: 2
 
   inputs:
-    PIALID              string  — the identity these Numbers resolve to
+    AccountID           string  — the account whose identity these Numbers resolve to
     Numbers             []struct{ Number, Display, Policy, Label string
                                   Live, Legacy bool; Lease numberLease }
     Policies            []string
@@ -54,7 +54,7 @@ FACET f33d3r_numbers
 */}}
 {{define "f33d3r_numbers"}}
 <div class="f33d3r-numbers"
-     data-facet-id="facet:f33d3r:identity:{{.PIALID}}:numbers">
+     data-facet-id="facet:f33d3r:account:{{.AccountID}}:numbers">
 
   <div class="settings-block">
     <div class="settings-block-title">Your F33D3R Numbers</div>

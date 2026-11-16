@@ -34,7 +34,7 @@ func followTestHandler(t *testing.T) *Handler {
 func TestFollowButtonSingleEntryPoint(t *testing.T) {
 	h := followTestHandler(t)
 
-	const pial = "00000000-0000-0000-0000-0000000000bb"
+	const account = "00000000-0000-0000-0000-0000000000bb"
 	cases := []struct {
 		surface   string
 		following bool
@@ -53,7 +53,7 @@ func TestFollowButtonSingleEntryPoint(t *testing.T) {
 		{"nonsense", false, `class="btn-follow"`, "Follow"},
 	}
 	for _, c := range cases {
-		frag, err := h.renderFollowButton(pial, "mia", c.following, c.surface)
+		frag, err := h.renderFollowButton(account, "mia", c.following, c.surface)
 		if err != nil {
 			t.Fatalf("surface %q following=%v: %v", c.surface, c.following, err)
 		}
@@ -64,12 +64,16 @@ func TestFollowButtonSingleEntryPoint(t *testing.T) {
 		if !strings.Contains(got, ">"+c.wantText+"<") {
 			t.Errorf("surface %q following=%v: missing label %q in:\n%s", c.surface, c.following, c.wantText, got)
 		}
-		// Addressable by the stream, and keyed on the person, not the page.
-		if !strings.Contains(got, `data-facet-id="facet:f33d3r:identity:`+pial+`:btn_follow"`) {
+		// Addressable by the stream, and keyed on the account, not the page.
+		if !strings.Contains(got, `data-facet-id="facet:f33d3r:account:`+account+`:btn_follow"`) {
 			t.Errorf("surface %q: missing/incorrect facet id in:\n%s", c.surface, got)
 		}
-		if !strings.Contains(got, `data-pial="`+pial+`"`) {
-			t.Errorf("surface %q: missing data-pial in:\n%s", c.surface, got)
+		if !strings.Contains(got, "target_account&#34;:&#34;"+account) && !strings.Contains(got, `"target_account":"`+account) {
+			t.Errorf("surface %q: hx-vals does not address the account:\n%s", c.surface, got)
+		}
+		// A PIAL is never part of a follow control.
+		if strings.Contains(got, "pial") {
+			t.Errorf("surface %q: follow control mentions a PIAL:\n%s", c.surface, got)
 		}
 		// The surface must be stamped on the element: the fan-out sends one
 		// fragment per surface and the runtime must not cross them over.
@@ -91,21 +95,12 @@ func TestFollowButtonSingleEntryPoint(t *testing.T) {
 	}
 }
 
-// TestFollowButtonHandleAddressing covers the panels that know a handle and no
-// PIAL. They used to POST target_handle at a handler that read only target_pial,
-// so every follow from them failed.
-func TestFollowButtonHandleAddressing(t *testing.T) {
+// TestFollowButtonRequiresAccount — the Facet's entity id is the account id, so a
+// control with only a handle is an error, never a Facet addressed by a handle.
+func TestFollowButtonRequiresAccount(t *testing.T) {
 	h := followTestHandler(t)
-	frag, err := h.renderFollowButton("", "mia", false, "compact")
-	if err != nil {
-		t.Fatalf("handle-addressed render: %v", err)
-	}
-	got := string(frag)
-	if !strings.Contains(got, `data-facet-id="facet:f33d3r:identity:mia:btn_follow"`) {
-		t.Errorf("handle fallback missing from facet id:\n%s", got)
-	}
-	if !strings.Contains(got, "target_handle&#34;:&#34;mia") && !strings.Contains(got, `"target_handle":"mia`) {
-		t.Errorf("handle-addressed button does not carry target_handle:\n%s", got)
+	if _, err := h.renderFollowButton("", "mia", false, "compact"); err == nil {
+		t.Fatal("expected an error for a follow button with no account id")
 	}
 }
 

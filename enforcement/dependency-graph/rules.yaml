@@ -23,7 +23,6 @@ brains:
       - ain-soph            # GET /balance/:user_id
       - vovin               # proxy — all /vovin/* requests
       - elohim-veni         # POST /v1/pial/bootstrap (signup only)
-      - zodacare            # POST /v1/reports (async, fire-and-forget)
       - schema-registry     # schema lookups
       - caeor               # POST /v1/media/upload (image resize, WebP conversion)
       - thessalon           # subscriptions, PPV, tips, earnings
@@ -68,7 +67,6 @@ brains:
       - vovin
       - ain-soph
       - elohim-veni
-      - zodacare
 
   zior:
     description: "Music cortex — audio signals only"
@@ -86,7 +84,6 @@ brains:
       - vovin
       - ain-soph
       - elohim-veni
-      - zodacare
 
   vovin:
     description: "Messaging relay — never sees plaintext"
@@ -103,7 +100,6 @@ brains:
       - zior
       - ain-soph
       - elohim-veni
-      - zodacare
 
   ain-soph:
     description: "Wallet — double-entry ledger"
@@ -121,7 +117,6 @@ brains:
       - zior
       - vovin
       - elohim-veni
-      - zodacare
 
   elohim-veni:
     description: "PIAL enforcement — deterministic, no psychology"
@@ -133,26 +128,6 @@ brains:
       - safety.events
     kafka_consume:
       - safety.events
-      - identity.events
-    forbidden_call:
-      - nantar
-      - aethyrrank
-      - zior
-      - vovin
-      - ain-soph
-      - zodacare
-
-  zodacare:
-    description: "Safety — risk scoring and moderation actions"
-    service_dir: zodacare
-    port: 8090
-    can_call:
-      - elohim-veni         # POST /v1/pial/:id/action (moderation actions only)
-      - schema-registry
-    kafka_produce:
-      - safety.events
-    kafka_consume:
-      - content.events
       - identity.events
     forbidden_call:
       - nantar
@@ -177,7 +152,6 @@ brains:
       - zior
       - vovin
       - elohim-veni
-      - zodacare
 
   caeor:
     description: "Media brain — image resize, format conversion, derivative generation"
@@ -193,7 +167,6 @@ brains:
       - vovin
       - ain-soph
       - elohim-veni
-      - zodacare
 
   schema-registry:
     description: "Schema versioning — supporting service"
@@ -209,7 +182,6 @@ brains:
       - vovin
       - ain-soph
       - elohim-veni
-      - zodacare
 
 # ── Global rules ──────────────────────────────────────────────────────────────
 
@@ -221,7 +193,7 @@ global_rules:
 
   # Psychology data must never flow to enforcement brains
   - rule: no_psychology_in_enforcement
-    description: "AESQ scores, Jung axes, and archetype labels must not appear in Elohim Veni or Zodacare."
+    description: "AESQ scores, Jung axes, and archetype labels must not appear in Elohim Veni or Abraxas."
     enforcement: code_review
 
   # PIAL UUIDs created only by Nantar

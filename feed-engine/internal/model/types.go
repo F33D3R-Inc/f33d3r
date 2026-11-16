@@ -72,6 +72,37 @@ type User struct {
 	IsFoundingCreator      bool            // first-wave creator — permanent gold badge
 	FoundingCreatorAt      *time.Time      // when the founding creator badge was granted
 	ReferralCode           string          // user's personal referral code
+
+	// The resolved session — set only on the signed-in viewer, from
+	// elohim-veni's answer, never from a database row.
+	//
+	// Caps are the capabilities the identity holds right now; ask Can.
+	Caps []string
+	// AccessToken is the PIAL access token (a compact EdDSA JWS, five-minute
+	// life) for forwarding to other brains as `Authorization: PIAL <jws>`. It
+	// is a credential: never rendered, never logged, never serialised.
+	AccessToken string
+	// SessionID names the session the request arrived on.
+	SessionID string
+	// SessionStartedAt is when that session was opened.
+	SessionStartedAt time.Time
+	// SessionExpiresAt is when that session ends unless renewed.
+	SessionExpiresAt time.Time
+}
+
+// Can reports whether the signed-in viewer's identity currently holds a
+// capability. Every authorization of the viewer goes through here; an account
+// that is not the viewer is checked against the identity projection instead.
+func (u *User) Can(capability string) bool {
+	if u == nil {
+		return false
+	}
+	for _, c := range u.Caps {
+		if c == capability {
+			return true
+		}
+	}
+	return false
 }
 
 // Platform roles. These are the only values users.role is allowed to hold, and
@@ -87,7 +118,7 @@ func (u *User) IsFounder() bool { return u != nil && u.Role == RoleFounder }
 
 // ── The identity ladder ───────────────────────────────────────────────────────
 //
-// pial_roots.kyc_tier holds exactly these four values, and they are not four
+// An identity's kyc_tier (elohim-veni's fact, projected as identity_facts.kyc_tier) holds exactly these four values, and they are not four
 // degrees of the same thing. The first two answer "how old does this person say
 // they are"; the last two answer "who is this person". A gate that needs the
 // second question answered cannot be built out of the first two.
@@ -127,7 +158,7 @@ func kycTierRank(tier string) int {
 	}
 }
 
-// KYCTierIsIdentity reports whether a raw pial_roots.kyc_tier value answers the
+// KYCTierIsIdentity reports whether a raw kyc_tier value answers the
 // identity question — is this account operated by the human named on a
 // government document.
 //
@@ -157,7 +188,7 @@ func (u *User) IsIdentityVerified() bool {
 // It asks the identity predicate directly rather than going through IsVerified.
 // IsVerified is now folded from the same kyc_tier=='full' bar this function
 // checks, so the two agree — but IsVerified used to be PIAL age_verified, which
-// SetPIALBirthday sets to TRUE the moment a self-reported birthday is typed into
+// signup sets to TRUE the moment a self-reported birthday is typed into
 // the signup form, so gating creator status on it let every new signup through
 // and could not tell a verified public figure from an anonymous account. This
 // function calls IsIdentityVerified() directly rather than IsVerified so it
@@ -223,6 +254,10 @@ type PIALCapability struct {
 func (c *PIALCapability) IsGranted() bool {
 	if c == nil {
 		return false
+	}
+	if c.State == CapStateCooldown {
+		// A cooldown is a denial with an end: expired, it no longer denies.
+		return c.ExpiresAt != nil && time.Now().After(*c.ExpiresAt)
 	}
 	if c.State != CapStateGranted {
 		return false
@@ -665,18 +700,20 @@ type Track struct {
 	IsVerified   bool
 	Title        string
 	Description  string
-	AudioURL     string
+	// AudioURL is the audio object Caeor serves for the track's asset.
+	AudioURL string
+	// CoverURL is the watermarked cover image, "" when the track has none.
 	CoverURL     string
 	DurationSecs int
 	Genre        string
 	Tags         []string
-	PriceCents   int
-	IsFree       bool
-	PlayCount    int
+	PlayCount    int64
 	LikeCount    int
 	CreatedAt    time.Time
 	TimeAgo      string
 	LikedByUser  bool
+	// Mine is true when the viewer is the track's author.
+	Mine bool
 }
 
 // ── Feed surfaces ─────────────────────────────────────────────────────────────
@@ -1058,17 +1095,16 @@ type Work struct {
 
 	// ── Extended fields (migrated from posts) ─────────────────────────────────
 
-	// Content classification
-	IsRepost       bool
-	RepostSourceID string // UUID of the original work; empty when not a repost
-	IsSensitive    bool
+	// Content classification. A repost is a reaction (RepostedByHandle above),
+	// never a work of its own.
+	IsSensitive bool
 	// FeedAt is when this work surfaced on the feed that read it, which a page's cursor
 	// follows: a save, a like or a repost, rather than when it was written.
 	FeedAt time.Time
 	// ViewerSubscribed is true when the viewer has an active subscription to the author.
 	ViewerSubscribed bool
 	SubscriberOnly   bool
-	CommentGating    string // open | followers | verified | none
+	CommentGating    string // db.CommentGatings: everyone | followers | circle | verified | none
 	ScheduledAt      *time.Time
 
 	// Taxonomy
@@ -1089,15 +1125,19 @@ type Work struct {
 	VoiceURL          string
 	VoiceDurationSecs float32
 
-	// Video (HLS) — two-file architecture:
-	// VideoMasterURL is the clean stream (no burn), served to the in-app player.
-	// VideoWatermarkedURL is the moving-watermark stream, what escapes the platform.
-	VideoMasterURL      string
-	VideoWatermarkedURL string
-	VideoPosterURL      string
-	VideoDurationSecs   float32
-	VideoWidth          int
-	VideoHeight         int
+	// Video (HLS). VideoMasterURL is the watermarked HLS master Caeor serves —
+	// every viewer-facing copy is watermarked, and the clean ladder is never
+	// named by a work. The downloadable copy is not a URL at all: it is handed
+	// out by the download route, by asset, behind the work's wall.
+	VideoMasterURL    string
+	VideoPosterURL    string
+	VideoDurationSecs float32
+	VideoWidth        int
+	VideoHeight       int
+
+	// DownloadsAllowed is the author's per-work switch for the download action
+	// (works.downloads_allowed, default true).
+	DownloadsAllowed bool
 
 	// Lineage — original uploader when content-scan detects a duplicate
 	LineagePIAL        string
@@ -1190,12 +1230,15 @@ type ReplyStreamItem struct {
 // Vision is a 24-hour object. It is not a Work and carries no Work lifecycle:
 // no catalog entry, no edition, no content receipt, no naming-plane edge. It
 // has no id of its own: it is a position in its author's PIAL-owned lane,
-// addressed as (AuthorPIAL, Seq) — see db.VisionRef.
+// addressed inside the server as (AuthorPIAL, Seq) — see db.VisionRef. On the
+// wire it is addressed as (AuthorAccountID, Seq) — see db.VisionAddress —
+// because a PIAL is never handed to a client.
 type Vision struct {
-	AuthorPIAL  string
-	Seq         int64
-	ContentType string // text | image | video | share
-	Body        string
+	AuthorPIAL      string // server-only; never rendered or encoded
+	AuthorAccountID string // the account the row was joined through; the wire address
+	Seq             int64
+	ContentType     string // text | image | video | share
+	Body            string
 
 	// Server-side artboard selection for text Visions. Preset keys, resolved
 	// by the renderer — never CSS supplied by the browser.
@@ -1242,15 +1285,16 @@ const (
 
 // VisionRing is one author's live Vision set as the viewer sees it.
 type VisionRing struct {
-	AuthorPIAL    string
-	AuthorHandle  string
-	AuthorName    string
-	AvatarURL     string
-	State         string // VisionRingNone | VisionRingUnseen | VisionRingSeen
-	Count         int
-	UnseenCount   int
-	NextVisionRef string // canonical `<author_pial>.<seq>` address where the sequential viewer opens
-	LatestAt      time.Time
+	AuthorPIAL      string // server-only; never rendered or encoded
+	AuthorAccountID string // the ring's Facet entity and the wire address's author
+	AuthorHandle    string
+	AuthorName      string
+	AvatarURL       string
+	State           string // VisionRingNone | VisionRingUnseen | VisionRingSeen
+	Count           int
+	UnseenCount     int
+	NextVisionRef   string // wire `<author_account>.<seq>` address where the sequential viewer opens
+	LatestAt        time.Time
 }
 
 // VisionViewer is one entry in a Vision's viewer list.

@@ -40,8 +40,8 @@ FACET work_detail_focus
       </div>
       <a href="/{{$w.AuthorHandle}}" class="pdf-handle" onclick="event.stopPropagation()">@{{$w.AuthorHandle}}</a>
     </div>
-    {{if and $u (ne $w.AuthorHandle $u.Handle) $w.AuthorPIAL}}
-    {{template "btn_follow" (dict "TargetPIAL" $w.AuthorPIAL "TargetHandle" $w.AuthorHandle "IsFollowing" $w.ViewerFollowsAuthor "Surface" "profile")}}
+    {{if and $u (ne $w.AuthorHandle $u.Handle) $w.AuthorID}}
+    {{template "btn_follow" (dict "TargetAccount" $w.AuthorID "TargetHandle" $w.AuthorHandle "IsFollowing" $w.ViewerFollowsAuthor "Surface" "profile")}}
     {{end}}
 
     {{/* Facet(work_menu) — the same menu as every other card */}}

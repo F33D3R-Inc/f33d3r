@@ -374,7 +374,7 @@ func makeAccount(t *testing.T, database *sql.DB, handle string, o accountOpts) s
 
 	var pial string
 	if err := database.QueryRow(`
-		INSERT INTO pial_roots (pial_id) VALUES (gen_random_uuid()) RETURNING pial_id
+		INSERT INTO identity_facts (pial_id) VALUES (gen_random_uuid()) RETURNING pial_id
 	`).Scan(&pial); err != nil {
 		t.Fatalf("creating a PIAL for %s: %v", handle, err)
 	}
@@ -386,7 +386,8 @@ func makeAccount(t *testing.T, database *sql.DB, handle string, o accountOpts) s
 	}
 	t.Cleanup(func() {
 		database.Exec(`DELETE FROM users WHERE handle = $1`, handle)
-		database.Exec(`DELETE FROM pial_roots WHERE pial_id = $1::uuid`, pial)
+		database.Exec(`DELETE FROM trust_scores WHERE pial_id = $1::uuid`, pial)
+		database.Exec(`DELETE FROM identity_facts WHERE pial_id = $1::uuid`, pial)
 	})
 
 	avatar := ""

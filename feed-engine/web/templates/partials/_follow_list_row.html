@@ -6,7 +6,7 @@ FACET follow_list_row
     Handle        string — user handle
     DisplayName   string — display name
     AvatarURL     string — avatar image src
-    PIALID        string — used in follow POST payload (never rendered in HTML)
+    AccountID     string — account id; the follow control's address
     ViewerFollows bool   — viewer already follows this user → show Unfollow
     ViewerHandle  string — viewer's own handle; hides follow button on own row
 
@@ -32,8 +32,8 @@ FACET follow_list_row
     <p class="follow-list-name">{{.DisplayName}}</p>
     <p class="follow-list-handle">@{{.Handle}}</p>
   </a>
-  {{if and .PIALID (ne .Handle .ViewerHandle)}}
-    {{template "btn_follow" (dict "TargetPIAL" .PIALID "TargetHandle" .Handle "IsFollowing" .ViewerFollows "Surface" "compact")}}
+  {{if and .AccountID (ne .Handle .ViewerHandle)}}
+    {{template "btn_follow" (dict "TargetAccount" .AccountID "TargetHandle" .Handle "IsFollowing" .ViewerFollows "Surface" "compact")}}
   {{end}}
 </div>
 {{end}}

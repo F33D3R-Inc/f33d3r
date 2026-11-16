@@ -9,7 +9,7 @@ FACET admin_panel_overview
     SiteAnalytics       *AstraonSiteSummary
     PendingReportCount  int
     PendingDMCACount    int
-    ActiveSessions      int
+    ActiveDevices       int — accounts' sign-in devices seen in the last 24 h
 
   states:
     default
@@ -59,7 +59,7 @@ FACET admin_panel_overview
     <div class="admin-stats-grid-6">
       {{template "admin_stat_card" (dict "Value" .UserCount "Label" "Total users" "Delta" (printf "%d this week" .SiteAnalytics.NewUsersWeek) "DeltaUp" true)}}
       {{template "admin_stat_card" (dict "Value" .PostCount "Label" "Total posts" "Delta" (printf "%d this week" .SiteAnalytics.NewPostsWeek) "DeltaUp" true)}}
-      {{template "admin_stat_card" (dict "Value" .PIALCount "Label" "Active PIALs" "Sublabel" "non-tombstoned")}}
+      {{template "admin_stat_card" (dict "Value" .PIALCount "Label" "Active PIALs" "Sublabel" "not purged")}}
       {{template "admin_stat_card" (dict "Value" .SiteAnalytics.NewUsersWeek "Label" "New users (7d)")}}
       {{template "admin_stat_card" (dict "Value" .SiteAnalytics.NewPostsWeek "Label" "New posts (7d)")}}
       {{template "admin_stat_card" (dict "Value" .SiteAnalytics.TotalImpressions "Label" "Total impressions")}}
@@ -74,7 +74,7 @@ FACET admin_panel_overview
     </div>
     <div class="admin-stats-grid-6">
       {{template "admin_stat_card" (dict "Value" .SiteAnalytics.TotalLikes "Label" "Total likes")}}
-      {{template "admin_stat_card" (dict "Value" .ActiveSessions "Label" "Active sessions")}}
+      {{template "admin_stat_card" (dict "Value" .ActiveDevices "Label" "Active devices" "Sublabel" "last 24 h")}}
       {{template "admin_stat_card" (dict "Value" .PendingReportCount "Label" "Pending reports")}}
     </div>
   </div>

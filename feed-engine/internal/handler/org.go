@@ -305,6 +305,8 @@ func (h *Handler) adminGrantOrgBadge(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "could not grant badge: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
+		// The identity confirmation the badge carries was queued with it.
+		h.identityRelay.Kick()
 	}
 	// Re-render the full panel so the verified list updates.
 	h.adminOrgVerificationsPanel(w, r)
@@ -345,6 +347,7 @@ func (h *Handler) adminApproveOrgVerification(w http.ResponseWriter, r *http.Req
 			http.Error(w, "could not approve: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
+		h.identityRelay.Kick()
 	}
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(`<div class="org-verify-card org-verify-card--done">✓ Approved</div>`))

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/f33d3r/feed-engine/internal/caeor"
 	"github.com/f33d3r/feed-engine/internal/config"
 	"github.com/f33d3r/feed-engine/internal/model"
 )
@@ -157,7 +158,7 @@ func TestVideoUploadRefusesWhatIsNotVideo(t *testing.T) {
 	}
 }
 
-// The name a video reaches the transcoder under: the sender's when it agrees
+// The name a video reaches Caeor under: the sender's when it agrees
 // with the bytes, the container's own otherwise.
 func TestVideoFilenameFollowsTheBytes(t *testing.T) {
 	cases := []struct {
@@ -384,6 +385,7 @@ func webJob(t *testing.T, h *Handler, id string) (int, string) {
 	t.Helper()
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/upload/tus/status/"+id, nil)
+	r.AddCookie(&http.Cookie{Name: SessionCookieName, Value: injectionSessionToken})
 	r.SetPathValue("id", id)
 	h.tusJobStatus(rec, r)
 	return rec.Code, strings.TrimSpace(rec.Body.String())
@@ -400,9 +402,8 @@ func TestVideoJobUnknownIs404(t *testing.T) {
 	}
 }
 
-// One upload, read by both lanes: the same state, each in its own keys. The
-// web's answer for a job the transcoder has not taken is the exact bytes its
-// compose box has always polled for.
+// One upload, read by both lanes: the same state, each in its own keys. An
+// upload Caeor has not taken yet is queued in both.
 func TestVideoJobOneStateTwoProjections(t *testing.T) {
 	h := mediaHandler(t, &config.Config{}, nil)
 
@@ -418,90 +419,95 @@ func TestVideoJobOneStateTwoProjections(t *testing.T) {
 		t.Errorf("web queued: %d %s", code, body)
 	}
 
-	// A duplicate caught before transcoding. The app is pointed at the work;
-	// the web keeps its shape; the creator's PIAL reaches neither.
-	seedUpload(t, &tusUpload{ID: "upload-dup", UploaderPIAL: mediaTestPIAL, DupInfo: &duplicateVideoInfo{
-		OriginalPIAL:      "0000dead-beef-4000-8000-000000000001",
-		OriginalHandle:    "miiyazuko",
-		CreatorName:       "Mii",
-		WorkID:            "w-1",
-		ExistingMasterURL: "/static/media/posts/a1/master.m3u8",
-		ExistingPosterURL: "/static/media/posts/a1/poster.jpg",
-		DurationSecs:      12.5,
-		Width:             1920,
-		Height:            1080,
-	}})
-	code, dto, body := videoJob(t, h, "upload-dup")
-	if code != http.StatusOK || dto.Status != "duplicate" || dto.DuplicateOfWorkID != "w-1" || dto.DuplicateOfHandle != "miiyazuko" {
-		t.Errorf("duplicate: %d %+v", code, dto)
+	// A hand-off that failed is final, in both lanes.
+	seedUpload(t, &tusUpload{ID: "upload-failed", UploaderPIAL: mediaTestPIAL, Failure: "This content cannot be uploaded."})
+	if _, dto, _ := videoJob(t, h, "upload-failed"); dto.Status != "failed" || dto.Error != "This content cannot be uploaded." {
+		t.Errorf("failed hand-off: %+v", dto)
 	}
-	if dto.MasterURL != "/static/media/posts/a1/master.m3u8" || dto.Width == nil || *dto.Width != 1920 || dto.DurationSecs == nil || *dto.DurationSecs != 12.5 {
-		t.Errorf("duplicate renditions: %+v", dto)
-	}
-	if bytes.Contains(body, []byte("dead-beef")) {
-		t.Errorf("a PIAL crossed the JSON lane: %s", body)
-	}
-	webCode, webBody := webJob(t, h, "upload-dup")
-	if webCode != http.StatusOK || !strings.Contains(webBody, `"status":"duplicate"`) || !strings.Contains(webBody, `"work_id":"w-1"`) || !strings.Contains(webBody, `"creator_handle":"miiyazuko"`) {
-		t.Errorf("web duplicate: %d %s", webCode, webBody)
-	}
-	if strings.Contains(webBody, "dead-beef") || strings.Contains(webBody, "creator_pial") {
-		t.Errorf("a PIAL reached the browser: %s", webBody)
+	if _, body := webJob(t, h, "upload-failed"); !strings.Contains(body, `"status":"failed"`) {
+		t.Errorf("web failed hand-off: %s", body)
 	}
 
-	// Somebody else's upload is nobody's business.
+	// Somebody else's upload is nobody's business, in either lane.
 	seedUpload(t, &tusUpload{ID: "upload-foreign", UploaderPIAL: "0000dead-beef-4000-8000-000000000002"})
 	if code, _, body := videoJob(t, h, "upload-foreign"); code != http.StatusNotFound || errorCode(t, body) != "video_job_not_found" {
 		t.Errorf("foreign upload: %d %s", code, body)
 	}
+	if code, _ := webJob(t, h, "upload-foreign"); code != http.StatusNotFound {
+		t.Errorf("web foreign upload: %d", code)
+	}
 }
 
-// Once the transcoder has the job, its words are mapped onto the DTO's
-// states, its output onto the renditions, and its loss of the job onto a
-// failure the client can act on. The web relays its answer as it arrived.
-func TestVideoJobFollowsTheTranscoder(t *testing.T) {
-	stub := &klipyStub{status: 200}
-	h := mediaHandler(t, &config.Config{}, stub)
-	h.transcodingURL = "http://transcoder.test"
-	seedUpload(t, &tusUpload{ID: "upload-job", UploaderPIAL: mediaTestPIAL, JobID: "job-1"})
+// caeorStub answers GET /v1/assets/{id} with whatever the test sets.
+type caeorStub struct {
+	status int
+	body   string
+	keys   []string
+	paths  []string
+}
 
-	stub.body = `{"job_id":"job-1","status":"transcoding","error":null,"output":null}`
+func (s *caeorStub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s.keys = append(s.keys, r.Header.Get("X-Service-Key"))
+	s.paths = append(s.paths, r.URL.Path)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(s.status)
+	_, _ = io.WriteString(w, s.body)
+}
+
+// Once Caeor has the asset, its status is mapped onto the DTO's states, its
+// watermarked renditions onto the media fields, and its loss of the asset onto
+// a failure the client can act on. No downloadable-file URL is ever reported.
+func TestVideoJobFollowsCaeor(t *testing.T) {
+	stub := &caeorStub{status: 200}
+	srv := httptest.NewServer(stub)
+	t.Cleanup(srv.Close)
+	h := mediaHandler(t, &config.Config{}, nil)
+	h.caeor = caeor.New(srv.URL, "test-internal-key")
+	seedUpload(t, &tusUpload{ID: "upload-job", UploaderPIAL: mediaTestPIAL, AssetID: "asset-1", complete: true})
+
+	stub.body = `{"asset_id":"asset-1","kind":"video","status":"processing","urls":{}}`
 	if _, dto, _ := videoJob(t, h, "upload-job"); dto.Status != "processing" {
-		t.Errorf("transcoding → %q, want processing", dto.Status)
+		t.Errorf("processing → %q", dto.Status)
 	}
-	if len(stub.asked) != 1 || stub.asked[0] != "http://transcoder.test/v1/video/job/job-1" {
-		t.Errorf("transcoder asked %v", stub.asked)
+	if len(stub.paths) != 1 || stub.paths[0] != "/v1/assets/asset-1" || stub.keys[0] != "test-internal-key" {
+		t.Errorf("caeor asked %v with keys %v", stub.paths, stub.keys)
 	}
 
-	stub.body = `{"job_id":"job-1","status":"ready","error":null,"output":{
-		"asset_id":"a1","master_url":"/static/media/posts/a1/master.m3u8",
-		"watermarked_mp4_url":"/static/media/posts/a1/watermarked.mp4",
-		"poster_url":"/static/media/posts/a1/poster.jpg","variants":[],
-		"source_width":1280,"source_height":720,"duration_seconds":42.25}}`
-	_, dto, _ := videoJob(t, h, "upload-job")
-	if dto.Status != "ready" || dto.MasterURL != "/static/media/posts/a1/master.m3u8" || dto.WatermarkedURL != "/static/media/posts/a1/watermarked.mp4" || dto.PosterURL != "/static/media/posts/a1/poster.jpg" {
+	stub.body = `{"asset_id":"asset-1","kind":"video","status":"ready","width":1280,"height":720,"duration_seconds":42.25,
+		"primary_url":"/static/media/a/asset-1/hls/master.m3u8",
+		"urls":{"hls_master":"/static/media/a/asset-1/hls/master.m3u8","poster":"/static/media/a/asset-1/poster.jpg"}}`
+	_, dto, body := videoJob(t, h, "upload-job")
+	if dto.Status != "ready" || dto.MasterURL != "/static/media/a/asset-1/hls/master.m3u8" || dto.PosterURL != "/static/media/a/asset-1/poster.jpg" {
 		t.Errorf("ready: %+v", dto)
 	}
 	if dto.DurationSecs == nil || *dto.DurationSecs != 42.25 || dto.Width == nil || *dto.Width != 1280 || dto.Height == nil || *dto.Height != 720 {
 		t.Errorf("ready renditions: %+v", dto)
 	}
-	if code, body := webJob(t, h, "upload-job"); code != http.StatusOK || body != strings.TrimSpace(stub.body) {
-		t.Errorf("web did not relay the transcoder's answer: %d %s", code, body)
+	if bytes.Contains(body, []byte("watermarked")) || bytes.Contains(body, []byte(".mp4")) {
+		t.Errorf("a downloadable file crossed the JSON lane: %s", body)
+	}
+	if code, web := webJob(t, h, "upload-job"); code != http.StatusOK || !strings.Contains(web, `"master_url":"/static/media/a/asset-1/hls/master.m3u8"`) || !strings.Contains(web, `"duration_seconds":42.25`) {
+		t.Errorf("web ready: %d %s", code, web)
 	}
 
-	stub.body = `{"job_id":"job-1","status":"failed","error":"ffmpeg exited with 1","output":null}`
+	stub.body = `{"asset_id":"asset-1","kind":"video","status":"failed","failure":"ffmpeg exited with 1","urls":{}}`
 	if _, dto, _ := videoJob(t, h, "upload-job"); dto.Status != "failed" || dto.Error != "ffmpeg exited with 1" {
 		t.Errorf("failed: %+v", dto)
 	}
 
-	stub.status, stub.body = 404, `{"error":"job not found"}`
+	stub.body = `{"asset_id":"asset-1","kind":"video","status":"withdrawn","withdrawn":true,"urls":{}}`
+	if _, dto, _ := videoJob(t, h, "upload-job"); dto.Status != "failed" {
+		t.Errorf("withdrawn: %+v", dto)
+	}
+
+	stub.status, stub.body = 404, `{"error":"no such asset"}`
 	if _, dto, _ := videoJob(t, h, "upload-job"); dto.Status != "failed" || dto.Error == "" {
-		t.Errorf("a job the transcoder lost: %+v", dto)
+		t.Errorf("an asset Caeor lost: %+v", dto)
 	}
 
 	stub.status, stub.body = 502, `bad gateway`
 	if _, dto, _ := videoJob(t, h, "upload-job"); dto.Status != "processing" {
-		t.Errorf("a transcoder having a bad moment: %+v", dto)
+		t.Errorf("Caeor having a bad moment: %+v", dto)
 	}
 }
 
@@ -511,7 +517,7 @@ func TestVideoJobURLsStayRelative(t *testing.T) {
 	if got := relativeMediaURL("http://minio:9000/media/posts/a1/master.m3u8?x=1"); got != "/media/posts/a1/master.m3u8?x=1" {
 		t.Errorf("absolute → %q", got)
 	}
-	if got := relativeMediaURL("/static/media/posts/a1/master.m3u8"); got != "/static/media/posts/a1/master.m3u8" {
+	if got := relativeMediaURL("/static/media/a/a1/hls/master.m3u8"); got != "/static/media/a/a1/hls/master.m3u8" {
 		t.Errorf("relative changed: %q", got)
 	}
 }

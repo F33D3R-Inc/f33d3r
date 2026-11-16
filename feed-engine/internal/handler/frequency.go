@@ -558,6 +558,10 @@ func (h *Handler) frequencyGoLive(w http.ResponseWriter, r *http.Request, user *
 		h.frequencyGoRefused(w, r, user, http.StatusBadRequest, draft.withError(problem))
 		return
 	}
+	if !h.mayPublish(user) {
+		h.frequencyGoRefused(w, r, user, http.StatusForbidden, draft.withError(publishRestricted))
+		return
+	}
 	created, err := h.auralis.Create(r.Context(), user.PIALID, idemKey(r, raw), in)
 	if err != nil {
 		msg, code := frequencyErrorMessage(err)
@@ -626,6 +630,10 @@ func (h *Handler) frequencyCreate(w http.ResponseWriter, r *http.Request, user *
 	in, problem := frequencyCreateInput(r, user, raw)
 	if problem != "" {
 		h.frequencyProblem(w, r, http.StatusBadRequest, "invalid_frequency", problem)
+		return
+	}
+	if !h.mayPublish(user) {
+		h.frequencyProblem(w, r, http.StatusForbidden, "posting_restricted", publishRestricted)
 		return
 	}
 	ans, err := h.auralis.Create(r.Context(), user.PIALID, idemKey(r, raw), in)
@@ -820,12 +828,9 @@ func (h *Handler) frequencyParticipantAction(w http.ResponseWriter, r *http.Requ
 	})
 }
 
-// frequencyTargetPIAL resolves target_handle (or target_pial, from the
-// native clients) to a bare PIAL uuid. "me" names the actor.
+// frequencyTargetPIAL resolves target_handle to a bare PIAL uuid, server-side.
+// "me" names the actor. A client never names a PIAL: it is never handed one.
 func (h *Handler) frequencyTargetPIAL(w http.ResponseWriter, r *http.Request, raw map[string]json.RawMessage) (string, bool) {
-	if p := strings.TrimSpace(eventField(r, raw, "target_pial")); p != "" {
-		return p, true
-	}
 	handle := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(eventField(r, raw, "target_handle", "handle"))), "@")
 	if handle == "" {
 		h.frequencyProblem(w, r, http.StatusBadRequest, "target_handle_required", "target_handle required")

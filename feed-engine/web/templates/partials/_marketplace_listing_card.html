@@ -9,7 +9,6 @@ FACET marketplace_listing_card
     PriceXrpDrops   int64   — price in XRP drops (0 = not set)
     PaymentCurrency string  — "btc" | "xrp" | "both"
     Visibility      string  — "public" | "subscribers_only"
-    ShopPial        string  — seller PIAL (internal only, never rendered in DOM)
     CreatedAt       time    — listing date
     IsSeller        bool    — true when rendered in seller dashboard context; shows seller actions instead of Buy button
     IsActive        bool    — true when listing is active/visible to buyers; false adds marketplace-listing-card--inactive modifier

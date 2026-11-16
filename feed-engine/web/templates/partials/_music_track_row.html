@@ -1,28 +1,36 @@
 {{/*
 FACET music_track_row
-  version: 1.0 | status: stable | layer: 2
+  version: 2.0 | status: stable | layer: 2
+
+  A music track is a work of kind 'track'. Every count on it is a Fragment the
+  server pushes over FA Live to everyone watching the track.
+
+  facet ids:
+    facet:f33d3r:track:<work_id>:card    this row
+    facet:f33d3r:track:<work_id>:like    music_track_like  (the like control + count)
+    facet:f33d3r:track:<work_id>:plays   music_track_plays (the play count)
 
   inputs:
     Track               *model.Track — .ID .Title .Genre .CoverURL .PlayCount .LikeCount
-                                       .DurationSecs .AuthorHandle .AuthorName .AudioURL
-    CurrentUserHandle   string       — used to show edit/delete for own tracks
+                                       .LikedByUser .DurationSecs .AuthorHandle .AudioURL
+    CurrentUserHandle   string
 
   states:
-    default | playing | liked | own-track
-
-  children: none
+    default | liked | own-track
 
   signals:
-    emits:    like_track, unlike_track (POST /events)
-              playTrack() (JS only)
-    receives: none
+    emits:    POST /api/track/like (htmx; answered with music_track_like)
+              playTrack() — playback of the server-rendered URL only (music.js)
+    receives: music_track_like, music_track_plays over FA Live (watch: data-watch-id)
 
   context:
     music_tracks → public music feed list
 */}}
 {{define "music_track_row"}}
 {{$t := .Track}}
-<div class="track-card" id="music-track-{{$t.ID}}" data-track-id="{{$t.ID}}">
+<div class="track-card" id="music-track-{{$t.ID}}"
+     data-facet-id="facet:f33d3r:track:{{$t.ID}}:card"
+     data-track-id="{{$t.ID}}" data-watch-id="{{$t.ID}}">
 
   {{/* Cover art with play overlay */}}
   <div class="track-cover-wrap">
@@ -48,21 +56,40 @@ FACET music_track_row
     {{if $t.Genre}}<div class="track-genre">{{$t.Genre}}</div>{{end}}
     <div class="track-meta-row">
       {{if gt $t.DurationSecs 0}}<span class="track-duration">{{fmtDuration $t.DurationSecs}}</span>{{end}}
-      <span class="track-plays">{{$t.PlayCount}} plays</span>
-      <button class="track-like-btn {{if $t.LikedByUser}}liked{{end}}"
-              hx-post="/api/track/like"
-              hx-target="this"
-              hx-swap="outerHTML"
-              hx-vals='{"track_id":"{{$t.ID}}"}'
-              aria-label="Like"
-              aria-pressed="{{if $t.LikedByUser}}true{{else}}false{{end}}">
-        <svg viewBox="0 0 24 24" fill="{{if $t.LikedByUser}}currentColor{{else}}none{{end}}" stroke="currentColor" stroke-width="2">
-          <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
-        </svg>
-        {{$t.LikeCount}}
-      </button>
+      {{template "music_track_plays" (dict "ID" $t.ID "PlayCount" $t.PlayCount)}}
+      {{template "music_track_like" (dict "ID" $t.ID "LikeCount" $t.LikeCount "Liked" $t.LikedByUser)}}
     </div>
   </div>
 
 </div>
+{{end}}
+
+{{/*
+FACET music_track_plays — atomic
+  facet id: facet:f33d3r:track:<work_id>:plays
+  inputs: ID string, PlayCount int64
+*/}}
+{{define "music_track_plays"}}
+<span class="track-plays" data-facet-id="facet:f33d3r:track:{{.ID}}:plays">{{.PlayCount}} plays</span>
+{{end}}
+
+{{/*
+FACET music_track_like — atomic
+  facet id: facet:f33d3r:track:<work_id>:like
+  inputs: ID string, LikeCount int, Liked bool (the viewer's own like)
+*/}}
+{{define "music_track_like"}}
+<button class="track-like-btn{{if .Liked}} liked{{end}}"
+        data-facet-id="facet:f33d3r:track:{{.ID}}:like"
+        hx-post="/api/track/like"
+        hx-target="this"
+        hx-swap="outerHTML"
+        hx-vals='{"track_id":"{{.ID}}"}'
+        aria-label="Like"
+        aria-pressed="{{if .Liked}}true{{else}}false{{end}}">
+  <svg viewBox="0 0 24 24" fill="{{if .Liked}}currentColor{{else}}none{{end}}" stroke="currentColor" stroke-width="2">
+    <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
+  </svg>
+  {{.LikeCount}}
+</button>
 {{end}}

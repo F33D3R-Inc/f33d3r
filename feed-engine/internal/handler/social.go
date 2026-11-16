@@ -13,24 +13,26 @@ import (
 
 // followEvent handles POST /events with event_type=follow|unfollow (D-070 lane).
 //
-// Triggering event : POST /events {event_type: follow|unfollow, target_pial|target_handle, source}
+// Triggering event : POST /events {event_type: follow|unfollow, target_account|target_handle, source}
 // Server handler   : this function — resolves the target, writes the follows row
 // Facet renderer   : renderFollowButton (the single btn_follow entry point)
 // Produced fragment: btn_follow for the acting viewer, in the surface they clicked
 // Stream mutation  : follow_state, one per surface, onto the acting viewer's own stream
 //
-// The target is addressed by PIAL when the caller has one and by handle otherwise
-// (the user list sheet only ever knew a handle, and used to POST target_handle to
-// a handler that read only target_pial — every follow from that panel 400'd).
+// The target is addressed by account id when the caller has one and by handle
+// otherwise. It is never addressed by PIAL: a PIAL is one person's root identity
+// and is never handed to anyone else's client, because a page that carried it
+// would let any reader link that person's accounts. The PIAL the stream needs is
+// resolved here, server-side, from the account row.
 func (h *Handler) followEvent(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		htmxError(w, r, "malformed request", http.StatusBadRequest)
 		return
 	}
-	targetPIAL := strings.TrimSpace(r.FormValue("target_pial"))
+	targetAccount := strings.TrimSpace(r.FormValue("target_account"))
 	targetHandle := strings.TrimSpace(strings.TrimPrefix(r.FormValue("target_handle"), "@"))
-	if targetPIAL == "" && targetHandle == "" {
-		htmxError(w, r, "target_pial or target_handle required", http.StatusBadRequest)
+	if targetAccount == "" && targetHandle == "" {
+		htmxError(w, r, "target_account or target_handle required", http.StatusBadRequest)
 		return
 	}
 	user := h.userFromRequest(w, r)
@@ -43,26 +45,22 @@ func (h *Handler) followEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Resolve to the full identity triple. Both the button that comes back and
-	// the fragments that go on the stream need PIAL *and* handle, so whichever
-	// address the caller supplied, the other is looked up here.
+	// Resolve to the account. The button that comes back and the fragments that
+	// go on the stream need the account id *and* the handle, so whichever address
+	// the caller supplied, the other is read from the same row.
 	var target *model.User
 	var err error
-	if targetPIAL != "" {
-		var targetID string
-		targetID, err = dbpkg.GetUserIDFromPIAL(h.db, targetPIAL)
-		if err == nil && targetID != "" {
-			target, err = dbpkg.GetUserByID(h.db, targetID)
-		}
+	if targetAccount != "" {
+		target, err = dbpkg.GetUserByID(h.db, targetAccount)
 	} else {
 		target, err = dbpkg.GetUserByHandle(h.db, targetHandle)
 	}
 	if err != nil || target == nil || target.ID == "" {
-		log.Printf("[follow] target lookup failed (pial=%q handle=%q): %v", targetPIAL, targetHandle, err)
+		log.Printf("[follow] target lookup failed (account=%q handle=%q): %v", targetAccount, targetHandle, err)
 		htmxError(w, r, "user not found", http.StatusNotFound)
 		return
 	}
-	targetPIAL = target.PIALID
+	targetAccount = target.ID
 	targetHandle = target.Handle
 	if user.ID == target.ID {
 		htmxError(w, r, "cannot follow yourself", http.StatusBadRequest)
@@ -102,10 +100,10 @@ func (h *Handler) followEvent(w http.ResponseWriter, r *http.Request) {
 	// FA Live: the acting viewer's other open panels showing this person are
 	// re-rendered server-side and pushed as finished fragments — on unfollow as
 	// well as follow, which the old follow-only, PIAL-string event could not do.
-	go h.publishFollowState(user.PIALID, targetPIAL, targetHandle, isFollow)
+	go h.publishFollowState(user.ID, targetAccount, targetHandle, isFollow)
 	go h.publishFollowCounts(user.ID, target.ID)
 
-	fragment, err := h.renderFollowButton(targetPIAL, targetHandle, isFollow, surface)
+	fragment, err := h.renderFollowButton(targetAccount, targetHandle, isFollow, surface)
 	if err != nil {
 		log.Printf("[follow] %v", err)
 		htmxError(w, r, "render error", http.StatusInternalServerError)
@@ -116,8 +114,7 @@ func (h *Handler) followEvent(w http.ResponseWriter, r *http.Request) {
 }
 
 // followAPI is the REST twin of the follow lane: POST /api/follow with target_id
-// and action. It exists for callers holding an account id rather than a PIAL. It
-// is converged onto the same two owners as the /events lane — dbpkg.FollowUser /
+// and action. It is converged onto the same two owners as the /events lane — dbpkg.FollowUserNotifying /
 // UnfollowUser for the write, renderFollowButton for the control — so it cannot
 // hand back a differently-classed button or a button that lies about a failed
 // write, which is exactly what its two hand-written HTML strings used to do.
@@ -171,10 +168,10 @@ func (h *Handler) followAPI(w http.ResponseWriter, r *http.Request) {
 			go realm.AwardXP(h.db, user.ID, "follow", target.ID, realm.XPFollow)
 		}
 	}
-	go h.publishFollowState(user.PIALID, target.PIALID, target.Handle, isFollow)
+	go h.publishFollowState(user.ID, target.ID, target.Handle, isFollow)
 	go h.publishFollowCounts(user.ID, target.ID)
 
-	fragment, err := h.renderFollowButton(target.PIALID, target.Handle, isFollow, r.FormValue("source"))
+	fragment, err := h.renderFollowButton(target.ID, target.Handle, isFollow, r.FormValue("source"))
 	if err != nil {
 		log.Printf("[follow-api] %v", err)
 		http.Error(w, "render error", http.StatusInternalServerError)
@@ -269,6 +266,13 @@ func (h *Handler) feedbackAPI(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
+	}
+	// Who the signal is about is the session's account, never a value the
+	// client names. The page used to send its PIAL here; it no longer has one,
+	// and the readers of feedback_events (GetNotWanted) key on the account id.
+	req.UserID = "anon"
+	if viewer := h.userFromRequest(w, r); viewer != nil && viewer.ID != "" && viewer.ID != "demo_user" {
+		req.UserID = viewer.ID
 	}
 	// Persist the audit trail asynchronously — it feeds velocity scoring and
 	// offline analysis.

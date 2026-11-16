@@ -229,9 +229,9 @@ func TestAPIV1_SwiftModelKeys(t *testing.T) {
 	// Keys the Go side emits that the Swift model does not declare: allowed
 	// only when named here, with the reason.
 	extra := map[string]map[string]bool{
-		// The PIAL the device signs works as. Read by the signing layer
-		// (Malkuth), not by the CurrentUser model.
-		"CurrentUser": {"pial_id": true},
+		// The account the device signs works as (author_account). Read by the
+		// signing layer (Malkuth), not by the CurrentUser model.
+		"CurrentUser": {"account_id": true},
 	}
 
 	pairs := []struct {
@@ -501,8 +501,8 @@ func sameJSON(a, b []byte) bool {
 }
 
 // TestAPIV1_BearerSession: the same token the cookie carries is accepted from
-// the Authorization header, the header outranks a leftover cookie, and the
-// legacy handle sentinel is never accepted as a bearer.
+// the Authorization header, the header outranks a leftover cookie, and a
+// malformed or oversized header yields no token.
 func TestAPIV1_BearerSession(t *testing.T) {
 	r := httptest.NewRequest("GET", "/api/v1/me", nil)
 	r.Header.Set("Authorization", "Bearer tok-header")
@@ -515,7 +515,7 @@ func TestAPIV1_BearerSession(t *testing.T) {
 	if got := GetSessionToken(r); got != "tok-cookie" {
 		t.Errorf("cookie alone, got %q", got)
 	}
-	for _, bad := range []string{"Basic abc", "Bearer", "Bearer ", "Bearer __handle__dev", "bearer " + strings.Repeat("x", 201)} {
+	for _, bad := range []string{"Basic abc", "Bearer", "Bearer ", "bearer " + strings.Repeat("x", 201)} {
 		r = httptest.NewRequest("GET", "/api/v1/me", nil)
 		r.Header.Set("Authorization", bad)
 		if got := GetSessionToken(r); got != "" {

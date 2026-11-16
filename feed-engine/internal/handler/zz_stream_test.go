@@ -209,20 +209,6 @@ func TestFullConnectionDropsAreCounted(t *testing.T) {
 	}
 }
 
-// TestNewPostFanoutSkipsReplies is the rule the following feed has always had
-// and the stream never did: a reply is not a post. Fanning one out put a card
-// on every follower's screen that the feed itself would never show them.
-func TestNewPostFanoutSkipsReplies(t *testing.T) {
-	if newPostFanoutKind("reply") {
-		t.Fatal("a reply must never be announced as a new post")
-	}
-	for _, kind := range []string{"post", "quote", "poll", "video", "voice", "thread_post", "react_video"} {
-		if !newPostFanoutKind(kind) {
-			t.Fatalf("%s is a feed item and must be announced", kind)
-		}
-	}
-}
-
 // TestUserStreamWhitelist pins what the app's stream forwards. A kind the app
 // cannot decode is noise; a kind with no structured twin is a rendered fragment
 // meant for the web, and handing it to the app is handing it markup.

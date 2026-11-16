@@ -14,7 +14,7 @@ log()  { echo "[$(date -u '+%H:%M:%S')] ROLLBACK | $*"; }
 ok()   { echo "[$(date -u '+%H:%M:%S')] ✓ $*"; }
 fail() { echo "[$(date -u '+%H:%M:%S')] ✗ FAILED: $*" >&2; exit 1; }
 
-BRAINS=(nantar aethyrrank zior ain-soph elohim-veni zodacare schema-registry)
+BRAINS=(nantar aethyrrank zior ain-soph elohim-veni schema-registry)
 
 log "Rolling back F33D3R in ${ENVIRONMENT}"
 [[ "${TARGET_BRAIN}" != "all" ]] && log "Target brain: ${TARGET_BRAIN}"

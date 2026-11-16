@@ -14,7 +14,7 @@ FACET live_author_row
     IsVerified   bool
     VerifiedType string — "blue" | "gold"
     Description  string — stream description text (plain, server-escaped)
-    AuthorPIAL   string — follow target address
+    AuthorID     string — broadcaster's account id; follow target address
     IsFollowing  bool   — viewer already follows the broadcaster
     IsOwner      bool   — viewer is the broadcaster (no follow control)
     IsAnon       bool   — logged-out viewer
@@ -44,7 +44,7 @@ FACET live_author_row
     </div>
     {{if and (not .IsOwner) (not .IsAnon)}}
     <div class="live-author__follow">
-      {{template "btn_follow" (dict "TargetPIAL" .AuthorPIAL "TargetHandle" .AuthorHandle "IsFollowing" .IsFollowing "Surface" "compact")}}
+      {{template "btn_follow" (dict "TargetAccount" .AuthorID "TargetHandle" .AuthorHandle "IsFollowing" .IsFollowing "Surface" "compact")}}
     </div>
     {{end}}
   </div>

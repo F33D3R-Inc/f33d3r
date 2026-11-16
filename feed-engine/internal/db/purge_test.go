@@ -242,8 +242,16 @@ func seedPurgeUser(t *testing.T, database *sql.DB) (userID, pialID, handle strin
 	t.Helper()
 	handle = fmt.Sprintf("purgetest_%d_%d", time.Now().UnixNano(), purgeTestSeq.Add(1))
 
+	// The identity as this brain projects it, and — as on a database whose
+	// retired authority tables are not yet dropped — its old root, so a purge
+	// is pinned to erase both.
 	if err := database.QueryRow(
-		`INSERT INTO pial_roots DEFAULT VALUES RETURNING pial_id::text`).Scan(&pialID); err != nil {
+		`INSERT INTO identity_facts (pial_id, kyc_tier, age_verified, date_of_birth)
+		 VALUES (gen_random_uuid(), 'basic', TRUE, '1990-04-11') RETURNING pial_id::text`).Scan(&pialID); err != nil {
+		t.Fatalf("seeding identity_facts: %v", err)
+	}
+	if _, err := database.Exec(
+		`INSERT INTO pial_roots (pial_id) VALUES ($1::uuid)`, pialID); err != nil {
 		t.Fatalf("seeding pial_roots: %v", err)
 	}
 	if err := database.QueryRow(
@@ -426,7 +434,25 @@ func TestPurgeErasesTheAccountAndKeepsTheLedger(t *testing.T) {
 		t.Errorf("the purge appended %d 'account_purged' events, want 1", n)
 	}
 
-	// The identity root is tombstoned, not deleted, and holds nothing personal.
+	// The projected identity is tombstoned, not deleted, and holds nothing
+	// personal; the erasure is queued for elohim-veni.
+	var projStatus, projTier string
+	var projDOB sql.NullString
+	if err := database.QueryRow(`
+		SELECT status, kyc_tier, date_of_birth::text FROM identity_facts WHERE pial_id = $1::uuid`, pialID,
+	).Scan(&projStatus, &projTier, &projDOB); err != nil {
+		t.Fatalf("reading the tombstoned projected identity: %v", err)
+	}
+	if projStatus != "purged" || projTier != "none" || projDOB.Valid {
+		t.Errorf("projected identity: status=%q kyc_tier=%q dob=%v, want purged/none/NULL", projStatus, projTier, projDOB)
+	}
+	if n := countRows(t, database,
+		`SELECT COUNT(*) FROM identity_commands WHERE pial_id = $1::uuid AND kind = 'purge' AND payload->>'account_id' = $2`,
+		pialID, userID); n != 1 {
+		t.Errorf("the purge queued %d identity purge commands, want 1", n)
+	}
+
+	// The retiring identity root is tombstoned, not deleted, and holds nothing personal.
 	var tombstoned bool
 	var publicKey, kycTier, status string
 	var dob sql.NullString

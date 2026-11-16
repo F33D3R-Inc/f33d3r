@@ -162,7 +162,7 @@ func readSource(t *testing.T, name string) string {
 // "session.revoke" and only "session_revoke" was handled, so "sign out this
 // device" answered 404 on every click. Both names reach the same rule now.
 func TestSessionRevokeAliasDispatches(t *testing.T) {
-	h := accountHandler(t, &model.User{ID: "u1", Handle: "dev", PIALID: "c0ffee00-0000-4000-8000-000000000001"})
+	h := accountHandler(t, &model.User{ID: "c0ffee00-0000-4000-8000-0000000000a1", Handle: "dev", PIALID: "c0ffee00-0000-4000-8000-000000000001"})
 
 	for _, name := range []string{"session_revoke", "session.revoke"} {
 		rec, handled := accountEvent(t, h, `{"event_type":"`+name+`"}`)
@@ -184,7 +184,7 @@ func TestSessionRevokeAliasDispatches(t *testing.T) {
 // TestAccountEventNamesDispatch: every settings event the contract names is
 // owned by the account dispatcher rather than falling through to the 404.
 func TestAccountEventNamesDispatch(t *testing.T) {
-	h := accountHandler(t, &model.User{ID: "u1", Handle: "dev", PIALID: "c0ffee00-0000-4000-8000-000000000001"})
+	h := accountHandler(t, &model.User{ID: "c0ffee00-0000-4000-8000-0000000000a1", Handle: "dev", PIALID: "c0ffee00-0000-4000-8000-000000000001"})
 	for _, name := range []string{
 		"notification_prefs", "two_fa_enable", "two_fa_disable",
 		"two_fa_backup_codes", "account_delete", "profile_update",
@@ -200,52 +200,45 @@ func TestAccountEventNamesDispatch(t *testing.T) {
 
 // ── S4: the second factor at login ───────────────────────────────────────────
 
-// TestLoginTwoFactorGate pins the branch in apiV1Login. An account with TOTP on
-// must not be entered with a password alone, the demand for a code must come
-// only after the password is verified — otherwise the endpoint tells a stranger
-// which handles have 2FA on — and the two refusals must be distinguishable, so
-// the app can show a code field for one and an error for the other.
-//
-// The branch itself needs a live Postgres to exercise end to end; what is
-// checked here is that it exists, in that order, with those codes.
+// TestLoginTwoFactorGate pins how sign-in answers a second factor. The
+// password and the code are checked by elohim-veni, which asks for a code only
+// after the password is right. What this brain owns is telling the two
+// refusals apart — a code is needed, or the code given was wrong — so the app
+// can show a code field for one and an error for the other, and opening the
+// session only on success.
 func TestLoginTwoFactorGate(t *testing.T) {
 	src := readSource(t, "api_v1_auth.go")
 	login := src[strings.Index(src, "func (h *Handler) apiV1Login("):]
 	login = login[:strings.Index(login, "\nfunc ")]
-
-	for _, want := range []string{"two_fa_required", "two_fa_invalid", "GetTOTPSecret", "totpVerify", "VerifyAndConsumeBackupCode"} {
+	for _, want := range []string{"two_fa_required", "two_fa_invalid", "h.signIn("} {
 		if !strings.Contains(login, want) {
-			t.Errorf("apiV1Login does not mention %q — the second factor is not checked at login", want)
+			t.Errorf("apiV1Login does not mention %q — the second factor is not answered at login", want)
 		}
 	}
-	password := strings.Index(login, "CheckPassword")
-	gate := strings.Index(login, "two_fa_required")
-	if password < 0 || gate < 0 || gate < password {
-		t.Error("apiV1Login asks for a 2FA code before verifying the password — that tells a stranger which handles have 2FA on")
+	session := strings.Index(login, "apiWriteSession")
+	if session < 0 || session > strings.Index(login, "two_fa_required") {
+		t.Error("apiV1Login must open the session only in the success branch, ahead of every refusal")
 	}
-	if strings.Index(login, "apiIssueSession") < gate {
-		t.Error("apiV1Login issues the session before the 2FA gate")
+
+	signIn := src[strings.Index(src, "func (h *Handler) signIn("):]
+	signIn = signIn[:strings.Index(signIn, "\nfunc ")]
+	for _, want := range []string{"ErrTOTPRequired", "ErrTOTPInvalid", "ErrBackupCodeInvalid"} {
+		if !strings.Contains(signIn, want) {
+			t.Errorf("signIn does not branch on identity.%s", want)
+		}
 	}
 }
 
-// TestTOTPVerify is the code check the gate rests on.
-func TestTOTPVerify(t *testing.T) {
-	secret, err := totpGenSecret()
-	if err != nil {
-		t.Fatal(err)
-	}
-	code, err := totpCode(secret, time.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !totpVerify(secret, code) {
-		t.Error("the current code was refused")
-	}
-	if totpVerify(secret, "000000") && code != "000000" {
-		t.Error("a wrong code was accepted")
-	}
-	if totpVerify(secret, "") {
-		t.Error("an empty code was accepted")
+// TestTOTPCodeShape is how a second factor is routed: six digits are an
+// authenticator code, anything else a backup code.
+func TestTOTPCodeShape(t *testing.T) {
+	for code, want := range map[string]bool{
+		"123456": true, "000000": true, "12345": false, "1234567": false,
+		"ABCD-EFGH-IJKL": false, "12a456": false, "": false,
+	} {
+		if got := isTOTPCode(code); got != want {
+			t.Errorf("isTOTPCode(%q) = %v, want %v", code, got, want)
+		}
 	}
 }
 

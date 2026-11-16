@@ -1,0 +1,27 @@
+{{/*
+FACET identity_unavailable
+  version: 1.0 | status: stable | layer: 1
+
+  inputs: none
+
+  states:
+    default — the identity authority could not confirm who is signed in
+
+  children: none
+
+  signals:
+    emits:    none
+    receives: none
+
+  context:
+    requireHandle → answered with HTTP 503 in place of any page that needs a
+    signed-in account while elohim-veni cannot be reached. Sign-in fails closed:
+    nobody is treated as signed in on a guess.
+*/}}
+{{define "identity_unavailable"}}
+<section class="auth-card" role="alert" data-facet-id="facet:f33d3r:shell:identity:unavailable">
+  <h1 class="auth-title">Sign-in is briefly unavailable</h1>
+  <p class="auth-sub">We could not confirm your session just now. Nothing about your account has changed.</p>
+  <p class="auth-sub">Try again in a few seconds.</p>
+</section>
+{{end}}

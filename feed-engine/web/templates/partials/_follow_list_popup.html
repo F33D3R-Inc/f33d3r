@@ -25,7 +25,7 @@ FACET follow_list_popup
 {{if .Users}}
   {{$vh := .ViewerHandle}}
   {{range .Users}}
-    {{template "follow_list_row" (dict "Handle" .Handle "DisplayName" .DisplayName "AvatarURL" .AvatarURL "PIALID" .PIALID "ViewerFollows" .ViewerFollows "ViewerHandle" $vh)}}
+    {{template "follow_list_row" (dict "Handle" .Handle "DisplayName" .DisplayName "AvatarURL" .AvatarURL "AccountID" .ID "ViewerFollows" .ViewerFollows "ViewerHandle" $vh)}}
   {{end}}
 {{else}}
   <p style="font-size:13px;color:var(--ink-3);padding:8px 0">None yet.</p>

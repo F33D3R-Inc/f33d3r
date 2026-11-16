@@ -2,7 +2,7 @@
 FACET wallet_send_card
   version: 1.0 | status: stable | layer: 2
 
-  inputs: none (form data collected by wallet.js sendTip)
+  inputs: none
 
   states:
     default | sending | success | error
@@ -10,7 +10,8 @@ FACET wallet_send_card
   children: none
 
   signals:
-    emits:    tip (POST /events via sendTip() in wallet.js)
+    emits:    tip (POST /events — answered with the tip_result Facet; the server
+              resolves the handle to its identity)
     receives: none
 
   context:
@@ -21,23 +22,24 @@ FACET wallet_send_card
   <h2 class="wallet-section-title">Send AET</h2>
 </div>
 <div class="wallet-send-card-wrap">
-  <div class="wallet-send-card">
+  <form class="wallet-send-card" hx-post="/events" hx-vals='{"event_type":"tip"}'
+        hx-target="#tip-result" hx-swap="innerHTML">
     <div>
       <label class="wallet-field-label" for="tip-recipient">Recipient</label>
-      <input id="tip-recipient" class="wallet-send-input" type="text"
-             placeholder="@handle" autocomplete="off" autocorrect="off" autocapitalize="off">
+      <input id="tip-recipient" name="target_handle" class="wallet-send-input" type="text"
+             placeholder="@handle" autocomplete="off" autocorrect="off" autocapitalize="off" required>
     </div>
     <div>
       <label class="wallet-field-label" for="tip-amount">Amount (AET)</label>
       <div class="wallet-send-row">
-        <input id="tip-amount" class="wallet-send-input" type="number"
-               step="0.01" min="0.01" placeholder="0.00" style="flex:1">
-        <button class="btn-primary" style="white-space:nowrap;padding:0 18px" onclick="sendTip()">Send</button>
+        <input id="tip-amount" name="amount" class="wallet-send-input" type="number"
+               step="0.01" min="0.01" placeholder="0.00" style="flex:1" required>
+        <button class="btn-primary" type="submit" style="white-space:nowrap;padding:0 18px">Send</button>
       </div>
     </div>
     <p class="wallet-send-note">Network fee: 0.001 AET per transfer · Transfers are final</p>
-    <p class="wallet-send-result" id="tip-result"></p>
-  </div>
+    <div class="wallet-send-result" id="tip-result"></div>
+  </form>
   <p class="wallet-footer-note">To receive AET, share your handle — anyone can tip you from their wallet or from a post.</p>
 </div>
 {{end}}

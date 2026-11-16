@@ -681,7 +681,7 @@ func (h *Handler) workReactionEvent(w http.ResponseWriter, r *http.Request, even
 	// the rate that reaction type warrants; taking a reaction back reverses
 	// the move at half the rate. Detached: the 204 does not wait on it, and
 	// the viewer's cached session is evicted once the vector has moved.
-	go h.learnFromReaction(user, workID, op.reactionType, op.add, sessionCacheKeys(r, user))
+	go h.learnFromReaction(user, workID, op.reactionType, op.add)
 
 	// A repost is a feed item — GetWorksFeedFollowing unions reposts by
 	// followed accounts into the feed at the time of the repost — so a feed

@@ -18,14 +18,6 @@ import (
 // notification grouping in particular follows CLAUDE.md: like, repost and
 // follow group; reply, quote, mention, tip, subscribe and thread_reply do not.
 
-// GetSessionExpiry returns when a session ends. Zero when the token names no
-// live session.
-func GetSessionExpiry(db *sql.DB, rawToken string) time.Time {
-	var t time.Time
-	_ = db.QueryRow(`SELECT expires_at FROM user_sessions WHERE token_hash = $1`, HashToken(rawToken)).Scan(&t)
-	return t
-}
-
 // IsBlocked reports whether blockerID has blocked blockedID.
 func IsBlocked(db *sql.DB, blockerID, blockedID string) bool {
 	if blockerID == "" || blockedID == "" {
@@ -261,7 +253,7 @@ func GetWorkRepliesForProfile(db *sql.DB, authorPIAL string, limit int, before s
 	rows, err := db.Query(worksSelectSQL+`
 		WHERE w.author_pial = $1::uuid
 		  AND w.deleted_at IS NULL
-		  AND w.kind = 'reply'
+		  AND w.is_reply
 		  AND `+workNotBlockedSQL+`
 		  AND `+workLiveSQL+`
 		  AND (w.created_at, w.id) < ($2, $4::uuid)

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/lib/pq"
 
 	"github.com/f33d3r/feed-engine/internal/model"
@@ -47,24 +48,62 @@ type VisionRef struct {
 	Seq        int64
 }
 
-// String is the canonical text form, `<author_pial>.<seq>`.
+// String is the canonical text form, `<author_pial>.<seq>`. It is the
+// server's own form — logs, the content-safety events between brains — and is
+// never written into a page or a JSON answer: it carries a PIAL. The wire form
+// is VisionAddress.
 func (r VisionRef) String() string {
 	return r.AuthorPIAL + "." + strconv.FormatInt(r.Seq, 10)
 }
 
-// ParseVisionRef reads the canonical text form. A malformed address is an
-// error, never a zero-valued ref.
-func ParseVisionRef(s string) (VisionRef, error) {
+// VisionAddress is a Vision's address as a client holds it:
+// `<author_account>.<seq>`. A PIAL is a person's root identity and never leaves
+// the server, so the wire names the author's account and the server resolves
+// the lane's PIAL from it (ResolveVisionAddress).
+type VisionAddress struct {
+	AuthorAccount string
+	Seq           int64
+}
+
+// String is the wire form, `<author_account>.<seq>`.
+func (a VisionAddress) String() string {
+	return a.AuthorAccount + "." + strconv.FormatInt(a.Seq, 10)
+}
+
+// ParseVisionAddress reads the wire form. A malformed address is an error,
+// never a zero-valued address.
+func ParseVisionAddress(s string) (VisionAddress, error) {
 	dot := strings.LastIndexByte(s, '.')
 	if dot <= 0 || dot == len(s)-1 {
-		return VisionRef{}, fmt.Errorf("vision address %q: want <author_pial>.<seq>", s)
+		return VisionAddress{}, fmt.Errorf("vision address %q: want <author_account>.<seq>", s)
 	}
-	pial, seqText := s[:dot], s[dot+1:]
+	account, seqText := s[:dot], s[dot+1:]
+	if _, err := uuid.Parse(account); err != nil {
+		return VisionAddress{}, fmt.Errorf("vision address %q: author is not an account id", s)
+	}
 	seq, err := strconv.ParseInt(seqText, 10, 64)
 	if err != nil || seq <= 0 {
-		return VisionRef{}, fmt.Errorf("vision address %q: seq must be a positive integer", s)
+		return VisionAddress{}, fmt.Errorf("vision address %q: seq must be a positive integer", s)
 	}
-	return VisionRef{AuthorPIAL: pial, Seq: seq}, nil
+	return VisionAddress{AuthorAccount: account, Seq: seq}, nil
+}
+
+// ErrVisionAuthorUnknown is a wire address whose account does not exist or has
+// no identity: there is no lane it can name.
+var ErrVisionAuthorUnknown = errors.New("vision: author account has no identity")
+
+// ResolveVisionAddress turns a wire address into the server's ref by resolving
+// the account's PIAL through the identity projection (users.pial_id).
+func ResolveVisionAddress(database *sql.DB, a VisionAddress) (VisionRef, error) {
+	var pial sql.NullString
+	err := database.QueryRow(`SELECT pial_id::text FROM users WHERE id = $1::uuid`, a.AuthorAccount).Scan(&pial)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && pial.String == "") {
+		return VisionRef{}, ErrVisionAuthorUnknown
+	}
+	if err != nil {
+		return VisionRef{}, fmt.Errorf("vision address %s: resolving author: %w", a, err)
+	}
+	return VisionRef{AuthorPIAL: pial.String, Seq: a.Seq}, nil
 }
 
 // VisionMediaInput is one stored object backing a Vision.
@@ -129,7 +168,7 @@ SELECT
     v.artboard_background, v.artboard_typeface, v.artboard_type_scale, v.artboard_align,
     v.media_urls, COALESCE(v.shared_work_id::text, ''), v.scan_state,
     v.is_nsfw, v.is_blocked, v.created_at, v.expires_at, v.metadata,
-    u.handle, COALESCE(up.display_name, ''), COALESCE(up.avatar_url, ''),
+    u.handle, u.id::text, COALESCE(up.display_name, ''), COALESCE(up.avatar_url, ''),
     (vv.viewer_pial IS NOT NULL),
     (SELECT COUNT(*) FROM vision_views c WHERE c.author_pial = v.author_pial AND c.seq = v.seq)::int,
     v.poll_options, v.audience, v.allow_replies,
@@ -152,7 +191,7 @@ func scanVision(rows *sql.Rows) (*model.Vision, error) {
 		&v.ArtboardBackground, &v.ArtboardTypeface, &v.ArtboardTypeScale, &v.ArtboardAlign,
 		&mediaURLs, &v.SharedWorkID, &v.ScanState,
 		&v.IsNSFW, &v.IsBlocked, &v.CreatedAt, &v.ExpiresAt, &metadata,
-		&v.AuthorHandle, &v.AuthorName, &v.AvatarURL,
+		&v.AuthorHandle, &v.AuthorAccountID, &v.AuthorName, &v.AvatarURL,
 		&v.ViewedByViewer, &v.ViewCount,
 		&pollOptions, &v.Audience, &v.AllowReplies, &v.ViewerVote,
 	); err != nil {
@@ -392,6 +431,7 @@ func GetVisionRingsForViewer(database *sql.DB, viewerID, viewerPIAL string, limi
 	rows, err := database.Query(`
 SELECT
     v.author_pial::text,
+    u.id::text,
     u.handle,
     COALESCE(up.display_name, ''),
     COALESCE(up.avatar_url, ''),
@@ -415,7 +455,7 @@ WHERE `+visionLiveSQL+`
      OR v.author_pial IN (SELECT u2.pial_id FROM follows f JOIN users u2 ON u2.id = f.following_id WHERE f.follower_id = $2::uuid)
   )
   AND v.author_pial NOT IN (SELECT muted_pial FROM vision_mutes WHERE muter_pial = $1::uuid)
-GROUP BY v.author_pial, u.handle, up.display_name, up.avatar_url
+GROUP BY v.author_pial, u.id, u.handle, up.display_name, up.avatar_url
 ORDER BY (COUNT(*) FILTER (WHERE vv.viewer_pial IS NULL) > 0) DESC, MAX(v.created_at) DESC
 LIMIT $3
 	`, nullUUID(viewerPIAL), viewerID, limit)
@@ -429,12 +469,12 @@ LIMIT $3
 		var r model.VisionRing
 		var nextSeq int64
 		if err := rows.Scan(
-			&r.AuthorPIAL, &r.AuthorHandle, &r.AuthorName, &r.AvatarURL,
+			&r.AuthorPIAL, &r.AuthorAccountID, &r.AuthorHandle, &r.AuthorName, &r.AvatarURL,
 			&r.Count, &r.UnseenCount, &r.State, &nextSeq, &r.LatestAt,
 		); err != nil {
 			return nil, err
 		}
-		r.NextVisionRef = VisionRef{AuthorPIAL: r.AuthorPIAL, Seq: nextSeq}.String()
+		r.NextVisionRef = VisionAddress{AuthorAccount: r.AuthorAccountID, Seq: nextSeq}.String()
 		out = append(out, &r)
 	}
 	if err := rows.Err(); err != nil {

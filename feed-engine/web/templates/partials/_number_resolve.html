@@ -3,7 +3,7 @@ FACET number_resolve
   version: 1.0 | status: stable | layer: 2
 
   inputs:
-    PIALID       string — the viewer performing the lookup
+    AccountID    string — the viewer's account performing the lookup
     Decision     string — "allow" | "request" | "deny"
     Number       string — the Number the caller typed, echoed back
     Unavailable  bool   — the contact policy authority could not be reached
@@ -28,7 +28,7 @@ FACET number_resolve
 */}}
 {{define "number_resolve"}}
 <div class="number-resolve"
-     data-facet-id="facet:f33d3r:identity:{{.PIALID}}:number_resolve">
+     data-facet-id="facet:f33d3r:account:{{.AccountID}}:number_resolve">
   {{if .Unavailable}}
     <p class="settings-block-hint">Contact lookup is unavailable right now.</p>
   {{else if eq .Decision "allow"}}

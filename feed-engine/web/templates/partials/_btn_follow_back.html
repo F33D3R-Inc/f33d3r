@@ -3,7 +3,7 @@ FACET btn_follow_back
   version: 2.0 | status: stable | layer: 4
 
   inputs:
-    TargetPIAL      string — PIAL ID of the user
+    TargetAccount   string — account id of the user
     TargetHandle    string — handle (for aria-label and display)
     IsFollowing     bool   — whether the viewer already follows back
     FollowsYouBack  bool   — whether the target follows the viewer (drives "Follows you" badge)
@@ -34,6 +34,6 @@ FACET btn_follow_back
   {{if .FollowsYouBack}}
   <span class="btn-follows-you-badge">Follows you</span>
   {{end}}
-  {{template "btn_follow" (dict "TargetPIAL" .TargetPIAL "TargetHandle" .TargetHandle "IsFollowing" .IsFollowing "Surface" "profile")}}
+  {{template "btn_follow" (dict "TargetAccount" .TargetAccount "TargetHandle" .TargetHandle "IsFollowing" .IsFollowing "Surface" "profile")}}
 </span>
 {{end}}

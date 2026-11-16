@@ -3,7 +3,7 @@ FACET contact_addresses
   version: 1.0 | status: stable | layer: 2
 
   inputs:
-    PIALID      string  — the identity these addresses resolve to
+    AccountID   string  — the account whose identity these addresses resolve to
     Addresses   []struct{ Address string; Live bool }
     Notice      string  — server message, empty when there is nothing to say
     Unavailable bool    — the naming plane could not be reached
@@ -28,7 +28,7 @@ FACET contact_addresses
 */}}
 {{define "contact_addresses"}}
 <div class="contact-addresses"
-     data-facet-id="facet:f33d3r:identity:{{.PIALID}}:contact_addresses">
+     data-facet-id="facet:f33d3r:account:{{.AccountID}}:contact_addresses">
 
   <div class="contact-addresses__head">
     <h3 class="contact-addresses__title">Contact addresses</h3>

@@ -44,7 +44,7 @@ func (h *Handler) composeQuotePickerYours(w http.ResponseWriter, r *http.Request
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	works, _ := dbpkg.GetWorksForProfile(h.db, user.PIALID, 20, "")
+	works, _ := dbpkg.GetWorksForProfile(h.db, user.PIALID, "", 20, "")
 	for _, wk := range works {
 		wk.TimeAgo = TimeAgo(wk.CreatedAt)
 	}

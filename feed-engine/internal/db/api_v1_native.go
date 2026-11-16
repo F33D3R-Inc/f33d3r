@@ -271,7 +271,7 @@ func followEdges(rows *sql.Rows) ([]FollowEdge, error) {
 	var out []FollowEdge
 	for rows.Next() {
 		var e FollowEdge
-		if err := rows.Scan(&e.ID, &e.Handle, &e.DisplayName, &e.AvatarURL, &e.PIALID, &e.FollowedAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.Handle, &e.DisplayName, &e.AvatarURL, &e.FollowedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, e)
@@ -281,7 +281,7 @@ func followEdges(rows *sql.Rows) ([]FollowEdge, error) {
 
 const followEdgeSelectSQL = `
 		SELECT u.id::text, u.handle, COALESCE(p.display_name, ''), COALESCE(p.avatar_url, ''),
-		       COALESCE(u.pial_id::text, ''), f.created_at
+		       f.created_at
 		  FROM follows f
 		  JOIN users u ON u.id = %s
 		  LEFT JOIN user_profiles p ON p.user_id = u.id
@@ -329,25 +329,6 @@ func FollowedSet(database *sql.DB, viewerID string, ids []string) (map[string]bo
 		out[id] = true
 	}
 	return out, rows.Err()
-}
-
-// SessionIDForToken names the user_sessions row a raw token opens, or "".
-func SessionIDForToken(database *sql.DB, rawToken string) string {
-	if rawToken == "" {
-		return ""
-	}
-	var id string
-	_ = database.QueryRow(`SELECT id::text FROM user_sessions WHERE token_hash = $1 AND expires_at > NOW()`,
-		HashToken(rawToken)).Scan(&id)
-	return id
-}
-
-// RevokeOtherSessions ends every session of userID except the one the raw
-// token names: "sign out everywhere else".
-func RevokeOtherSessions(database *sql.DB, userID, keepRawToken string) error {
-	_, err := database.Exec(`DELETE FROM user_sessions WHERE user_id = $1 AND token_hash <> $2`,
-		userID, HashToken(keepRawToken))
-	return err
 }
 
 // RecordWorkEdit is the one write of an edit: the edition row for the audit

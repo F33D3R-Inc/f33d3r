@@ -47,7 +47,7 @@ func liveTestView() *liveStreamView {
 	s := liveTestStream()
 	return &liveStreamView{
 		S: s, AuthorHandle: s.AuthorHandle, AuthorName: s.AuthorName,
-		AuthorPIAL: s.AuthorPIAL, VerifiedType: "blue", IsVerified: true,
+		AuthorID: s.AuthorID, VerifiedType: "blue", IsVerified: true,
 		Viewers: "12", ViewerCount: 12, TimeLabel: "live 12m",
 		Ladder: []int{1080, 720, 480}, Heartbeat: true, ViewerToken: "tok",
 		CanChat: true, ViewerHandle: "watcher",

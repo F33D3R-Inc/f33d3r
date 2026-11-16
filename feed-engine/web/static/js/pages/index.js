@@ -4,7 +4,6 @@
 F33D3R.page('index', function (root) {
   // Server values from <meta> tags — no template injection in JS
   const SESSION_ID      = document.querySelector('meta[name="f33d3r:session"]')?.content || '';
-  const MY_PIAL         = document.querySelector('meta[name="f33d3r:pial"]')?.content || '';
   const MY_HANDLE       = document.querySelector('meta[name="f33d3r:handle"]')?.content || '';
   const CURRENT_SURFACE = document.querySelector('meta[name="f33d3r:surface"]')?.content || 'feed';
 
@@ -38,7 +37,7 @@ F33D3R.page('index', function (root) {
         const ms = Date.now() - e.target._dwellStart;
         if (ms > 2000) {
           navigator.sendBeacon('/api/feedback', JSON.stringify({
-            user_id: MY_PIAL || 'anon', session_id: SESSION_ID, surface: CURRENT_SURFACE,
+            session_id: SESSION_ID, surface: CURRENT_SURFACE,
             events: [{
               content_id: e.target.dataset.contentId, event_type: 'view_complete',
               position_at_display: parseInt(e.target.dataset.rank) || 0,

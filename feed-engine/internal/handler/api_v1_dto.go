@@ -19,11 +19,14 @@ import (
 // and the golden fixtures under F33D3RKit/Tests check them from both sides
 // (api_v1_contract_test.go here, ContractTests there).
 //
-// Not present, on purpose: account UUIDs, anyone else's PIAL, the ranking
-// vocabulary (Jung axes, archetypes, interest vectors, shadow caps). The one
-// identity field that crosses is `pial_id` on MeDTO, to the authenticated
-// owner only, because `author_pial` is inside the signed work payload and the
-// device has to know what to sign as.
+// Not present, on purpose: anyone else's account UUID, any PIAL at all — the
+// owner's included — and the ranking vocabulary (Jung axes, archetypes, interest
+// vectors, shadow caps). A PIAL is a person's root identity; it never leaves the
+// server, because a client that held it could link that person's accounts. The
+// one identity field that crosses is `account_id` on MeDTO, to the authenticated
+// owner only, because `author_account` is inside the signed work payload and the
+// device has to know which of its accounts it is signing as. The server binds the
+// signature to the session's PIAL itself (work_event.go).
 
 // UserDTO is a user as any client may see them.
 type UserDTO struct {
@@ -87,8 +90,9 @@ type MeDTO struct {
 	ExternalTipLinks map[string]string `json:"external_tip_links"`
 	// ISO 3166-1 alpha-2, or null when the account has not said.
 	CountryCode *string `json:"country_code"`
-	// The identity the device signs as. Owner-only; see the file comment.
-	PIALID string `json:"pial_id,omitempty"`
+	// The account the device signs works as (author_account). Owner-only; see
+	// the file comment.
+	AccountID string `json:"account_id"`
 }
 
 // SessionDTO is the login answer.
@@ -425,7 +429,7 @@ func meDTO(u *model.User, s meStanding) MeDTO {
 		SocialLinks:            decodeLinkMap(u.SocialLinksRaw),
 		ExternalTipLinks:       decodeLinkMap(u.ExternalTipLinksRaw),
 		CountryCode:            strPtr(u.CountryCode),
-		PIALID:                 u.PIALID,
+		AccountID:              u.ID,
 	}
 }
 
@@ -541,17 +545,6 @@ func pollDTO(p *model.Poll) *PollDTO {
 	return out
 }
 
-// commentGatingDTO is the vocabulary the clients speak. The works table stores
-// "open" for the unrestricted case (work_event.go); the card and the compose
-// sheet call that "everyone".
-func commentGatingDTO(g string) string {
-	switch g {
-	case "", "open":
-		return "everyone"
-	}
-	return g
-}
-
 // workDTO projects an enriched work for a viewer. `provenance` is the
 // surface's account of why the row is there; nil when the surface has none to
 // give. The work must already have been through enrichWorks: reactions,
@@ -582,7 +575,7 @@ func workDTO(w *model.Work, provenance *ProvenanceDTO) WorkDTO {
 		IsSensitive:          w.IsSensitive,
 		SubscriberOnly:       w.SubscriberOnly,
 		IsPinned:             w.IsPinned,
-		CommentGating:        commentGatingDTO(w.CommentGating),
+		CommentGating:        w.CommentGating,
 		ScanState:            w.ScanState,
 		ScoreBand:            strPtr(w.ScoreBand),
 		LikeCount:            w.LikeCount,

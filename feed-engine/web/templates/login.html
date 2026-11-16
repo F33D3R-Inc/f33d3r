@@ -13,12 +13,18 @@
       <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
       <div class="form-field">
         <label class="form-label">Handle or email</label>
-        <input type="text" name="handle" class="form-input" autocomplete="username" autofocus required>
+        <input type="text" name="handle" class="form-input" autocomplete="username" value="{{.Handle}}" {{if not .Handle}}autofocus{{end}} required>
       </div>
       <div class="form-field">
         <label class="form-label">Password</label>
-        <input type="password" name="password" class="form-input" autocomplete="current-password" required>
+        <input type="password" name="password" class="form-input" autocomplete="current-password" {{if .Handle}}autofocus{{end}} required>
       </div>
+      {{if .NeedsCode}}
+      <div class="form-field">
+        <label class="form-label">Authenticator code or backup code</label>
+        <input type="text" name="code" class="form-input" autocomplete="one-time-code" inputmode="text" required>
+      </div>
+      {{end}}
       <button type="submit" class="btn-primary auth-submit">Sign in</button>
     </form>
     <div class="auth-links">

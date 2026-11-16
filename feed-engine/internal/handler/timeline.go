@@ -480,7 +480,7 @@ var (
 		Name: "profile_posts", KeepMuted: true, Paged: true, Prepare: prepareProfile,
 		Empty: timelineEmpty{"No posts yet", "This creator hasn't posted yet"},
 		Candidates: func(h *Handler, q *timelineQuery, n int) ([]*model.Work, error) {
-			return dbpkg.GetWorksForProfile(h.db, q.Profile.PIALID, n, q.Before)
+			return dbpkg.GetWorksForProfile(h.db, q.Profile.PIALID, gateViewerID(q.Viewer), n, q.Before)
 		},
 	}
 	specProfileReplies = &timelineSpec{

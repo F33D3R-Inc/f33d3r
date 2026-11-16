@@ -1,0 +1,24 @@
+{{/*
+FACET compose_status
+  version: 1.0 | status: stable | layer: 1
+
+  inputs:
+    Account  string — the posting account's id; the Facet is facet:f33d3r:compose:<Account>:status
+    State    string — a WorkCreateState (work_create.go), or "idle" before any post
+    Message  string — what the poster reads; empty when idle
+    WorkID   string — the work an "ok" or "duplicate" outcome names; may be empty
+
+  states:
+    idle | ok | duplicate | text_too_long | text_blank | invalid_field |
+    cited_not_found | replies_restricted | posting_restricted | rate_limited | server_error
+
+  children: none
+
+  signals:
+    emits:    none
+    receives: facet.mutate from POST /events (workEvent → answerWorkCreate)
+
+  context:
+    compose_modal → above the toolbar
+*/}}
+{{define "compose_status"}}<div class="compose-status compose-status--{{.State}}" role="status" aria-live="polite" data-state="{{.State}}" data-facet-id="facet:f33d3r:compose:{{.Account}}:status">{{if .Message}}{{.Message}}{{if and .WorkID (eq .State "ok" "duplicate")}} <a class="compose-status-link" href="/work/{{.WorkID}}">View</a>{{end}}{{end}}</div>{{end}}

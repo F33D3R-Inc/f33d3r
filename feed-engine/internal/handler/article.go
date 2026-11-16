@@ -234,6 +234,10 @@ func (h *Handler) saveArticle(w http.ResponseWriter, r *http.Request) {
 	if status != "published" {
 		status = "draft"
 	}
+	if status == "published" && !h.mayPublish(user) {
+		http.Error(w, publishRestricted, http.StatusForbidden)
+		return
+	}
 
 	// Render Markdown once server-side.
 	bodyHTML := string(renderMarkdown(body))

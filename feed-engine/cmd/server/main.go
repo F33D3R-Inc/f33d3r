@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"github.com/f33d3r/feed-engine/internal/herald"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/f33d3r/feed-engine/internal/abraxas"
 	"github.com/f33d3r/feed-engine/internal/aethyr"
 	"github.com/f33d3r/feed-engine/internal/config"
 	"github.com/f33d3r/feed-engine/internal/cron"
@@ -45,20 +47,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Database — optional in dev mode
-	var database *sql.DB
-	if cfg.DatabaseURL != "" {
-		d, err := db.Open(cfg.DatabaseURL)
-		if err != nil {
-			startupLog.Warn("DB unavailable; running without persistence", zap.Error(err))
-		} else {
-			database = d
-			db.MigrateUp(d)
-			startupLog.Info("database connected")
-		}
-	} else {
-		startupLog.Info("DATABASE_URL not set; running without persistence")
+	// Database — required. Every answer this server gives depends on it:
+	// sessions, capabilities, the media gate and every publish check read it.
+	// A process without it could only answer those questions without the
+	// facts, so it does not serve at all. No listener is opened until the
+	// database is connected and migrated.
+	database, err := connectDatabase(cfg.DatabaseURL, startupLog)
+	if err != nil {
+		startupLog.Fatal("database unavailable; refusing to serve", zap.Error(err))
 	}
+	db.MigrateUp(database)
+	startupLog.Info("database connected")
 
 	// AethyrRank engine client
 	engineClient := aethyr.NewClient(cfg.AethyrRankURL, cfg.AethyrRankTimeout)
@@ -107,6 +106,9 @@ func main() {
 	// reconcile pass, a moderation block — ends in Fragments pushed to the
 	// surfaces showing that stream, including the broadcaster's own stage.
 	liveManager.RenderStreamState = h.PublishStreamState
+	// Every sampled frame is put to Abraxas, the integrity authority.
+	liveManager.Abraxas = abraxas.New(cfg.AbraxasURL, cfg.InternalAPIKey)
+	h.BlockLiveStream = liveManager.BlockStream
 	if err := liveManager.Start(liveCtx); err != nil {
 		startupLog.Fatal("live lane failed to start", zap.Error(err))
 	}
@@ -134,7 +136,6 @@ func main() {
 		}
 		defer stopNotifUpdates()
 		h.StartFanoutWorker(relayCtx)
-		h.StartWorkNoticeWorker(relayCtx)
 		h.StartVideoJobWorker(relayCtx)
 	} else {
 		startupLog.Warn("KAFKA_BROKERS is empty: live updates reach this replica's connections only")
@@ -157,6 +158,56 @@ func main() {
 	} else {
 		startupLog.Warn("KAFKA_BROKERS is empty: frequency mutations will not reach other participants over FA Live")
 	}
+
+	// Identity. elohim-veni is the identity authority; this brain keeps a
+	// projection of it and an outbox of identity writes committed with local
+	// changes. The relay runs with or without a broker. The projection needs
+	// one: without identity.events, nothing tells this brain about a role,
+	// standing or handle change it did not make itself, so its absence is
+	// fatal rather than a quietly stale projection.
+	identityCtx, identityCancel := context.WithCancel(context.Background())
+	defer identityCancel()
+	h.StartIdentityRelay(identityCtx)
+	if cfg.KafkaBrokers == "" {
+		startupLog.Fatal("KAFKA_BROKERS is empty: the identity projection cannot follow identity.events")
+	}
+	stopIdentity, ierr := sitra.StartIdentityConsumer(identityCtx, cfg.KafkaBrokers, sitra.IdentityHandlers{
+		Apply:      h.ApplyIdentityEvent,
+		DeadLetter: h.IdentityDeadLetter,
+	})
+	if ierr != nil {
+		startupLog.Fatal("identity consumer failed to start", zap.Error(ierr))
+	}
+	defer stopIdentity()
+	startupLog.Info("identity projection consumer started", zap.String("brokers", cfg.KafkaBrokers))
+
+	// Safety. Abraxas is the integrity authority; its verdicts, ownership
+	// findings, banned matches and review decisions arrive on safety.events and
+	// are the only way a verdict reaches this brain's content. Without the
+	// broker a pending work would never get its verdict, so this is fatal too
+	// (KAFKA_BROKERS was required just above).
+	safetyCtx, safetyCancel := context.WithCancel(context.Background())
+	defer safetyCancel()
+	stopSafety, serr := sitra.StartSafetyConsumer(safetyCtx, cfg.KafkaBrokers, sitra.SafetyHandlers{
+		Apply:      h.ApplySafetyEvent,
+		DeadLetter: h.SafetyDeadLetter,
+	})
+	if serr != nil {
+		startupLog.Fatal("safety consumer failed to start", zap.Error(serr))
+	}
+	defer stopSafety()
+	startupLog.Info("safety consumer started", zap.String("brokers", cfg.KafkaBrokers))
+
+	// Work obligations: what every work is owed, committed with it. Local
+	// actions run with or without a broker; the moderation scan waits for one.
+	workCtx, workCancel := context.WithCancel(context.Background())
+	defer workCancel()
+	stopWorkOutbox, werr := h.StartWorkOutbox(workCtx, cfg.KafkaBrokers)
+	if werr != nil {
+		startupLog.Fatal("work outbox failed to start", zap.Error(werr))
+	}
+	defer stopWorkOutbox()
+	h.StartWorkNoticeWorker(workCtx)
 
 	// Recover any AET trapped in shadow accounts (account UUID vs PIAL UUID mismatch).
 	// Runs once in the background — no-op if all balances are already correct.
@@ -193,4 +244,41 @@ func main() {
 		startupLog.Warn("graceful shutdown error", zap.Error(err))
 	}
 	startupLog.Info("server stopped")
+}
+
+// How long startup waits for the database before giving up. The window covers
+// the gaps compose's depends_on does not: Postgres reports ready over its unix
+// socket during first-boot initialisation, before it accepts TCP or has created
+// f33d3r_feed, and a database restarting under a running stack is briefly gone.
+// It is shorter than the feed-engine healthcheck's start_period plus its
+// retries (15s + 3 × 10s), so a database that never arrives ends in a clean
+// non-zero exit for the restart policy to act on, not a hung unhealthy process.
+const (
+	dbConnectBudget    = 30 * time.Second
+	dbConnectFirstWait = 500 * time.Millisecond
+	dbConnectMaxWait   = 5 * time.Second
+)
+
+// connectDatabase opens the database, retrying with capped exponential backoff
+// for dbConnectBudget. It returns an error only when the database stayed
+// unreachable for the whole budget, or when there is no DATABASE_URL to try.
+func connectDatabase(url string, log *zap.Logger) (*sql.DB, error) {
+	if url == "" {
+		return nil, errors.New("DATABASE_URL is not set")
+	}
+	deadline := time.Now().Add(dbConnectBudget)
+	wait := dbConnectFirstWait
+	for attempt := 1; ; attempt++ {
+		d, err := db.Open(url)
+		if err == nil {
+			return d, nil
+		}
+		if time.Now().Add(wait).After(deadline) {
+			return nil, fmt.Errorf("no connection after %d attempts in %s: %w", attempt, dbConnectBudget, err)
+		}
+		log.Warn("database not reachable yet; retrying",
+			zap.Int("attempt", attempt), zap.Duration("retry_in", wait), zap.Error(err))
+		time.Sleep(wait)
+		wait = min(wait*2, dbConnectMaxWait)
+	}
 }

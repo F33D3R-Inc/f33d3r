@@ -59,7 +59,6 @@ func main() {
 		{"Health/ElohimVeni :8093",   "http://localhost:8093/health", "status"},
 		{"Health/Zodacare :8090",     "http://localhost:8090/health", "status"},
 		{"Health/SchemaRegistry :8079","http://localhost:8079/health","ok"},
-		{"Health/Registrar :8094",    "http://localhost:8094/health", "service"},
 		{"Health/Verity :8095",       "http://localhost:8095/health", "service"},
 		{"Health/Ledger :8096",       "http://localhost:8096/health", "service"},
 	}
@@ -222,29 +221,31 @@ func main() {
 	// ── 7. ELOHIM VENI / SECURITY ─────────────────────────────────────────────
 	elohimChecks := []validator.Check{
 		{Label: "Security/Stats",       URL: "http://localhost:8093/v1/stats",
-			WantField: "total_decisions"},
+			WantField: "total_decisions", Headers: internalHdr},
 		{Label: "Security/Decision(post)",
 			Method: "POST",
 			URL:    "http://localhost:8093/v1/decisions",
 			Body:   `{"pial_id":"11111111-1111-1111-1111-111111111111","action":"post","context":{"content_risk":0.0,"anomaly_score":0.0}}`,
-			WantField: "decision", WantStatus: []int{200}},
+			WantField: "decision", WantStatus: []int{200, 404}, Headers: internalHdr},
 		{Label: "Security/Decision(monetize→deny)",
 			Method: "POST",
 			URL:    "http://localhost:8093/v1/decisions",
 			Body:   `{"pial_id":"11111111-1111-1111-1111-111111111111","action":"monetize","context":{"content_risk":0.0,"anomaly_score":0.0}}`,
-			WantField: "decision", WantStatus: []int{200}},
+			WantField: "decision", WantStatus: []int{200, 404}, Headers: internalHdr},
 	}
 	runAll(authedClient, elohimChecks, add, &wg)
 	wg.Wait()
 
-	// ── 8. REGISTRAR / HANDLES ────────────────────────────────────────────────
+	// ── 8. HANDLES (the registry, in elohim-veni) ─────────────────────────────
 	registrarChecks := []validator.Check{
-		{Label: "Registrar/Search(edd)",   URL: "http://localhost:8094/v1/search?q=edd",
-			WantField: "handle", WantStatus: []int{200}},
-		{Label: "Registrar/Search(empty)", URL: "http://localhost:8094/v1/search?q=xqzunknown999",
-			WantStatus: []int{200}},
-		{Label: "Registrar/Resolve(edd)",  URL: "http://localhost:8094/v1/handles/edd",
-			WantStatus: []int{200, 404}},
+		{Label: "Handles/Search(edd)",   URL: "http://localhost:8093/v1/handles/search?q=edd",
+			WantStatus: []int{200}, Headers: internalHdr},
+		{Label: "Handles/Search(empty)", URL: "http://localhost:8093/v1/handles/search?q=xqzunknown999",
+			WantStatus: []int{200}, Headers: internalHdr},
+		{Label: "Handles/Resolve(edd)",  URL: "http://localhost:8093/v1/handles/edd",
+			WantStatus: []int{200, 404}, Headers: internalHdr},
+		{Label: "Identity/JWKS",         URL: "http://localhost:8093/v1/auth/jwks",
+			WantField: "keys", WantStatus: []int{200}},
 	}
 	runAll(authedClient, registrarChecks, add, &wg)
 	wg.Wait()

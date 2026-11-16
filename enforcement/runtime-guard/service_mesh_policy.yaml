@@ -40,7 +40,7 @@ spec:
             matchLabels:
               kubernetes.io/metadata.name: ingress-nginx
   egress:
-    # Approved calls: AethyrRank, Zior, Ain Soph, Vovin, Elohim Veni, Zodacare, Schema Registry
+    # Approved calls: AethyrRank, Zior, Ain Soph, Vovin, Elohim Veni, Schema Registry
     - to:
         - podSelector:
             matchLabels:
@@ -76,13 +76,6 @@ spec:
       ports:
         - protocol: TCP
           port: 8093
-    - to:
-        - podSelector:
-            matchLabels:
-              brain: zodacare
-      ports:
-        - protocol: TCP
-          port: 8090
     - to:
         - podSelector:
             matchLabels:
@@ -150,44 +143,6 @@ spec:
           port: 5432
 
 ---
-# Zodacare: may call Elohim Veni only
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: zodacare-policy
-  namespace: f33d3r
-spec:
-  podSelector:
-    matchLabels:
-      brain: zodacare
-  policyTypes:
-    - Ingress
-    - Egress
-  ingress:
-    - from:
-        - podSelector:
-            matchLabels:
-              brain: nantar
-  egress:
-    - to:
-        - podSelector:
-            matchLabels:
-              brain: elohim-veni
-      ports:
-        - protocol: TCP
-          port: 8093
-    - to:
-        - podSelector:
-            matchLabels:
-              app: postgres
-      ports:
-        - protocol: TCP
-          port: 5432
-    - to:
-        - podSelector:
-            matchLabels:
-              brain: schema-registry
-
 ---
 # Vovin: receives only via Nantar proxy, no egress to other brains
 apiVersion: networking.k8s.io/v1

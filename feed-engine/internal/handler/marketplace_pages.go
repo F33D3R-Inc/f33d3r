@@ -74,7 +74,6 @@ func (h *Handler) sellerDashboardMarketPage(w http.ResponseWriter, r *http.Reque
 		"Surface":    "seller_dashboard",
 		"Title":      "Your Shop",
 		"Themes":     ThemesWithActive(user.ThemeID),
-		"PIALID":     user.PIALID,
 		"ShopExists": shopExists,
 		"BtcAddress": btcAddress,
 		"XrpAddress": xrpAddress,
@@ -106,7 +105,6 @@ func (h *Handler) facetMarketplaceListingForm(w http.ResponseWriter, r *http.Req
 // content_url and cek_encrypted are deliberately omitted — only delivered post-purchase.
 type PublicListing struct {
 	ID              string `json:"id"`
-	ShopPial        string `json:"shop_pial"`
 	Title           string `json:"title"`
 	Description     string `json:"description"`
 	PriceSats       int64  `json:"price_sats"`
@@ -135,7 +133,6 @@ func listingCardData(l PublicListing, isSeller bool) map[string]interface{} {
 		"Visibility":      l.Visibility,
 		"IsActive":        l.IsActive,
 		"IsSeller":        isSeller,
-		"ShopPial":        l.ShopPial,
 	}
 }
 

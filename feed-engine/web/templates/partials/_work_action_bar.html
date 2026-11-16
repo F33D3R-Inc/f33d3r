@@ -64,6 +64,8 @@ FACET work_action_bar
   </button>
   {{end}}
 
+  {{template "work_download_action" (dict "W" $w "Mine" (and $ctx (eq $w.AuthorHandle $ctx.CurrentUserHandle)))}}
+
   <span class="action spacer"></span>
 
   {{/* Views counter — non-interactive */}}
@@ -75,4 +77,42 @@ FACET work_action_bar
   </button>
 
 </div>
+{{end}}
+
+{{/*
+FACET work_download_action — atomic
+  facet id: facet:f33d3r:work:<work_id>:download
+
+  The download action of a work that carries its author's own media. The
+  download route decides everything again (wall, switch, ownership) and streams
+  Caeor's watermarked copy — with the forensic layer on subscriber-only works.
+  The author sees the switch; flipping it re-renders this Facet.
+
+  inputs: W Work (.ID .DownloadsAllowed .VideoMasterURL .MediaURLs .VoiceURL .LineageHandle)
+          Mine bool — the viewer is the author
+  signals: emits work_set_downloads (POST /events), answered with this Facet
+*/}}
+{{define "work_download_action"}}
+{{$w := .W}}
+<span class="wab-download" data-facet-id="facet:f33d3r:work:{{$w.ID}}:download">
+  {{if and (or $w.VideoMasterURL $w.MediaURLs $w.VoiceURL) (not $w.LineageHandle)}}
+    {{if $w.DownloadsAllowed}}
+    <a class="wab-btn wab-download-btn" href="/api/post/{{$w.ID}}/download" hx-boost="false" download
+       onclick="event.stopPropagation()" title="Download" aria-label="Download">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+    </a>
+    {{end}}
+    {{if .Mine}}
+    <button class="wab-btn wab-download-toggle" type="button"
+            hx-post="/events"
+            hx-vals='{"event_type":"work_set_downloads","work_id":"{{$w.ID}}","allowed":"{{if $w.DownloadsAllowed}}false{{else}}true{{end}}"}'
+            hx-target="closest .wab-download" hx-swap="outerHTML"
+            onclick="event.stopPropagation()"
+            aria-pressed="{{if $w.DownloadsAllowed}}true{{else}}false{{end}}"
+            title="{{if $w.DownloadsAllowed}}Downloads are on — turn off{{else}}Downloads are off — turn on{{end}}">
+      {{if $w.DownloadsAllowed}}On{{else}}Off{{end}}
+    </button>
+    {{end}}
+  {{end}}
+</span>
 {{end}}

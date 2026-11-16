@@ -112,43 +112,6 @@ FACET admin_panel_devtools
     <div class="admin-devtool-result" id="devtool-scan-sweep-result"></div>
   </div>
 
-  {{/* Clear orphan video hashes */}}
-  <div class="admin-devtool-card">
-    <div class="admin-devtool-title">Clear orphan video hashes</div>
-    <p class="admin-devtool-desc">
-      Deletes hash entries from <code>video_raw_hashes</code> that were stored when a video upload
-      started but never linked to a post — because the upload got stuck, timed out, or the browser
-      closed before the user hit Post. Clears entries older than 2 hours with no <code>post_id</code>.
-      Allows the same video to be re-uploaded without hitting the duplicate flag.
-    </p>
-    <div class="admin-devtool-row">
-      <button class="btn-primary" style="font-size:12px;padding:8px 16px"
-              hx-post="/api/admin/clear-orphan-hashes"
-              hx-target="#devtool-orphan-result"
-              hx-swap="innerHTML">Clear orphan hashes</button>
-    </div>
-    <div class="admin-devtool-result" id="devtool-orphan-result"></div>
-  </div>
-
-  {{/* Media fingerprint sweep */}}
-  <div class="admin-devtool-card">
-    <div class="admin-devtool-title">Media fingerprint sweep</div>
-    <p class="admin-devtool-desc">
-      Indexes all video posts that were never fingerprinted (e.g. uploaded before the scan pipeline was healthy),
-      and fixes attribution for posts sharing the same video file.
-      Processes oldest-first so the original creator is always correctly identified.
-      Safe to re-run — already-indexed posts are skipped.
-    </p>
-    <div class="admin-devtool-row">
-      <button class="btn-primary" style="font-size:12px;padding:8px 16px"
-              hx-post="/api/admin/media-fingerprint-sweep"
-              hx-target="#devtool-media-sweep-result"
-              hx-swap="innerHTML"
-              hx-indicator="#devtool-media-sweep-result">Run fingerprint sweep</button>
-    </div>
-    <div class="admin-devtool-result" id="devtool-media-sweep-result"></div>
-  </div>
-
   {{/* Set capability */}}
   <div class="admin-devtool-card">
     <div class="admin-devtool-title">Set PIAL capability</div>

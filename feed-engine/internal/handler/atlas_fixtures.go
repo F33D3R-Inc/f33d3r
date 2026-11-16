@@ -166,16 +166,15 @@ var atlasFixtures = map[string][]AtlasVariant{
 		{Label: "active", Data: map[string]any{"WorkID": "demo", "DislikedByUser": true, "DislikeCount": 4}},
 	},
 	"btn_follow": {
-		{Label: "not following", Data: map[string]any{"TargetPIAL": "demo", "TargetHandle": "mia", "IsFollowing": false, "Surface": "profile"}},
-		{Label: "following", Data: map[string]any{"TargetPIAL": "demo", "TargetHandle": "mia", "IsFollowing": true, "Surface": "profile"}},
-		{Label: "compact (list / rail row)", Data: map[string]any{"TargetPIAL": "demo", "TargetHandle": "mia", "IsFollowing": false, "Surface": "compact"}},
-		{Label: "card (work card author row)", Data: map[string]any{"TargetPIAL": "demo", "TargetHandle": "mia", "IsFollowing": false, "Surface": "card"}},
-		{Label: "dot (work focus avatar)", Data: map[string]any{"TargetPIAL": "demo", "TargetHandle": "mia", "IsFollowing": false, "Surface": "dot"}},
-		{Label: "handle-addressed (no PIAL)", Data: map[string]any{"TargetPIAL": "", "TargetHandle": "mia", "IsFollowing": false, "Surface": "compact"}},
+		{Label: "not following", Data: map[string]any{"TargetAccount": "demo", "TargetHandle": "mia", "IsFollowing": false, "Surface": "profile"}},
+		{Label: "following", Data: map[string]any{"TargetAccount": "demo", "TargetHandle": "mia", "IsFollowing": true, "Surface": "profile"}},
+		{Label: "compact (list / rail row)", Data: map[string]any{"TargetAccount": "demo", "TargetHandle": "mia", "IsFollowing": false, "Surface": "compact"}},
+		{Label: "card (work card author row)", Data: map[string]any{"TargetAccount": "demo", "TargetHandle": "mia", "IsFollowing": false, "Surface": "card"}},
+		{Label: "dot (work focus avatar)", Data: map[string]any{"TargetAccount": "demo", "TargetHandle": "mia", "IsFollowing": false, "Surface": "dot"}},
 	},
 	"btn_follow_back": {
-		{Label: "follows you", Data: map[string]any{"TargetPIAL": "demo", "TargetHandle": "mia", "IsFollowing": false, "FollowsYouBack": true}},
-		{Label: "following back", Data: map[string]any{"TargetPIAL": "demo", "TargetHandle": "mia", "IsFollowing": true, "FollowsYouBack": true}},
+		{Label: "follows you", Data: map[string]any{"TargetAccount": "demo", "TargetHandle": "mia", "IsFollowing": false, "FollowsYouBack": true}},
+		{Label: "following back", Data: map[string]any{"TargetAccount": "demo", "TargetHandle": "mia", "IsFollowing": true, "FollowsYouBack": true}},
 	},
 	"btn_follow_topic": {
 		{Label: "not following", Data: map[string]any{"Tag": "aethyr", "IsFollowing": false}},

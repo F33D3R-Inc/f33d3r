@@ -3215,7 +3215,7 @@ mod tests {
         for (status, body) in [
             err(StatusCode::BAD_REQUEST, "invalid_kind", "nope"),
             forbid("elohim-veni"),
-            forbid_namespace("handle", "registry-brain"),
+            forbid_namespace("handle", "elohim-veni"),
             internal("boom"),
         ] {
             assert!(status.is_client_error() || status.is_server_error());
@@ -3233,7 +3233,7 @@ mod tests {
             Some("node_forbidden")
         );
         assert_eq!(
-            forbid_namespace("handle", "registry-brain").1 .0["code"].as_str(),
+            forbid_namespace("handle", "elohim-veni").1 .0["code"].as_str(),
             Some("namespace_forbidden")
         );
     }

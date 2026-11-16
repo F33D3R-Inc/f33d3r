@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -69,7 +70,13 @@ func (h *Handler) creatorDashboardPage(w http.ResponseWriter, r *http.Request) {
 	var artistStats dbpkg.ArtistStats
 	var subCount int
 	if h.db != nil {
-		artistStats = dbpkg.GetArtistStats(h.db, user.ID)
+		stats, err := dbpkg.GetArtistStats(h.db, user.ID)
+		if err != nil {
+			log.Printf("[creator] %v", err)
+			http.Error(w, "the dashboard is unavailable right now", http.StatusInternalServerError)
+			return
+		}
+		artistStats = stats
 		subCount = dbpkg.GetSubscriberCount(h.db, user.ID)
 	}
 
@@ -96,13 +103,15 @@ func (h *Handler) creatorPanelOverview(w http.ResponseWriter, r *http.Request) {
 	var rawPlans []dbpkg.CreatorPlan
 	var recentTracks []*model.Track
 	if h.db != nil {
-		artistStats = dbpkg.GetArtistStats(h.db, user.ID)
+		tracks, stats, err := h.artistTracks(r.Context(), user, 5)
+		if err != nil {
+			log.Printf("[creator] tracks of %s: %v", user.ID, err)
+			http.Error(w, "the dashboard is unavailable right now", http.StatusInternalServerError)
+			return
+		}
+		recentTracks, artistStats = tracks, stats
 		subCount = dbpkg.GetSubscriberCount(h.db, user.ID)
 		rawPlans, _ = dbpkg.GetCreatorPlans(h.db, user.ID)
-		recentTracks, _ = dbpkg.GetTracksByAuthor(h.db, user.ID, 5)
-		for _, t := range recentTracks {
-			t.TimeAgo = TimeAgo(t.CreatedAt)
-		}
 	}
 
 	totalAET := 0
@@ -133,11 +142,13 @@ func (h *Handler) creatorPanelMusic(w http.ResponseWriter, r *http.Request) {
 	var myTracks []*model.Track
 	var artistStats dbpkg.ArtistStats
 	if h.db != nil {
-		myTracks, _ = dbpkg.GetTracksByAuthor(h.db, user.ID, 100)
-		for _, t := range myTracks {
-			t.TimeAgo = TimeAgo(t.CreatedAt)
+		tracks, stats, err := h.artistTracks(r.Context(), user, 100)
+		if err != nil {
+			log.Printf("[creator] tracks of %s: %v", user.ID, err)
+			http.Error(w, "your tracks are unavailable right now", http.StatusInternalServerError)
+			return
 		}
-		artistStats = dbpkg.GetArtistStats(h.db, user.ID)
+		myTracks, artistStats = tracks, stats
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -344,7 +355,7 @@ func (h *Handler) creatorPanelContent(w http.ResponseWriter, r *http.Request) {
 
 	var works []*model.Work
 	if h.db != nil {
-		works, _ = dbpkg.GetWorksForProfile(h.db, user.PIALID, 20, "")
+		works, _ = dbpkg.GetWorksForProfile(h.db, user.PIALID, user.ID, 20, "")
 		for _, wk := range works {
 			wk.TimeAgo = TimeAgo(wk.CreatedAt)
 		}

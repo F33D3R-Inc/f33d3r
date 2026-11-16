@@ -616,37 +616,36 @@ func (h *Handler) ainSophGet(ctx context.Context, path string, v interface{}) er
 // Images only: video has its own route, POST /api/v1/media/video, because it
 // is answered with a job rather than a URL. The bytes pass through the same
 // admission the web's compose box uses — magic-byte check, the banned content
-// gate, Caeor, canonical ownership, the forensic hash — because an image is
-// an image whichever screen sent it.
-func (h *Handler) apiV1UploadMedia(w http.ResponseWriter, r *http.Request, _ *model.User) {
+// gate, Caeor under the signed-in uploader — because an image is an image
+// whichever screen sent it. The URL is the watermarked object Caeor serves.
+func (h *Handler) apiV1UploadMedia(w http.ResponseWriter, r *http.Request, user *model.User) {
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
 		apiError(w, http.StatusBadRequest, "bad_request", "The upload could not be read.")
 		return
 	}
-	file, fh, err := formFileAny(r, "file", "media")
+	file, _, err := formFileAny(r, "file", "media")
 	if err != nil {
 		apiError(w, http.StatusBadRequest, "bad_request", "No file was attached.")
 		return
 	}
 	defer file.Close()
-	fileBytes, err := io.ReadAll(io.LimitReader(file, 20<<20))
+	fileBytes, err := io.ReadAll(io.LimitReader(file, imageUploadMax+1))
 	if err != nil {
 		apiServerError(w, err)
 		return
 	}
-	ext := imageExtensionFor(fileBytes)
-	if ext == "" {
+	if len(fileBytes) > imageUploadMax {
+		apiUploadError(w, errUploadTooLarge)
+		return
+	}
+	if imageExtensionFor(fileBytes) == "" {
 		apiError(w, http.StatusUnsupportedMediaType, "unsupported_media", "Only JPEG, PNG, GIF and WebP images are accepted.")
 		return
 	}
-	mediaURL, gateErr, err := h.admitImageUpload(r, fh.Filename, ext, fileBytes)
-	if gateErr != nil {
-		apiGateError(w, gateErr)
-		return
-	}
+	adm, err := h.admitImageUpload(r.Context(), user, "(native upload)", fileBytes)
 	if err != nil {
-		apiServerError(w, err)
+		apiUploadError(w, err)
 		return
 	}
-	apiJSON(w, http.StatusCreated, MediaUploadDTO{URL: mediaURL, Bytes: len(fileBytes)})
+	apiJSON(w, http.StatusCreated, MediaUploadDTO{URL: adm.URL, Bytes: len(fileBytes)})
 }

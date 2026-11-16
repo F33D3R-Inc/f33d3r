@@ -105,28 +105,90 @@ F33D3R.page('creator_dashboard', function (root) {
         stat.textContent = pct + '%';
       }
     });
+    // The upload stores the audio and cover; the track becomes a work when the
+    // artist's key signs it and the server creates it. The outcome arrives as
+    // the compose status Facet over FA Live.
     xhr.onload = function() {
-      if (xhr.status === 200) {
-        if (stat) stat.textContent = '✓ Done';
-        if (bar)  bar.style.width  = '100%';
-        crtCancelUpload();
-        setTimeout(function() {
-          if (prog) prog.style.display = 'none';
-          if (bar)  bar.style.width    = '0';
-          htmx.ajax('GET', '/create/partials/music', { target: '#creator-panel', swap: 'innerHTML' });
-          if (typeof toast === 'function') toast('Track uploaded');
-        }, 800);
-      } else {
+      if (xhr.status !== 200) {
         if (stat) stat.textContent = 'Upload failed';
         if (typeof toast === 'function') toast(xhr.responseText || 'Upload failed', 'error');
+        if (btn) { btn.disabled = false; btn.textContent = 'Upload track'; }
+        return;
       }
-      if (btn) { btn.disabled = false; btn.textContent = 'Upload track'; }
+      var stored;
+      try { stored = JSON.parse(xhr.responseText); } catch (e) { stored = null; }
+      if (!stored || !stored.audio_url) {
+        if (stat) stat.textContent = 'Upload failed';
+        if (btn) { btn.disabled = false; btn.textContent = 'Upload track'; }
+        return;
+      }
+      if (stat) stat.textContent = 'Signing…';
+      crtPublishTrack(form, stored).then(function(ok) {
+        if (ok) {
+          if (stat) stat.textContent = '✓ Done';
+          if (bar)  bar.style.width  = '100%';
+          crtCancelUpload();
+          setTimeout(function() {
+            if (prog) prog.style.display = 'none';
+            if (bar)  bar.style.width    = '0';
+            htmx.ajax('GET', '/create/partials/music', { target: '#creator-panel', swap: 'innerHTML' });
+          }, 800);
+        } else if (stat) {
+          stat.textContent = 'Publishing failed';
+        }
+        if (btn) { btn.disabled = false; btn.textContent = 'Upload track'; }
+      });
     };
     xhr.onerror = function() {
       if (stat) stat.textContent = 'Network error';
       if (btn)  { btn.disabled = false; btn.textContent = 'Upload track'; }
     };
     xhr.send(fd);
+  }
+
+  // crtTrackDuration reads the track's length from the file the artist chose,
+  // the way the voice recorder reports its own: the signer states it.
+  function crtTrackDuration(file) {
+    return new Promise(function(resolve) {
+      if (!file) { resolve(null); return; }
+      var url = URL.createObjectURL(file);
+      var a = new Audio();
+      a.preload = 'metadata';
+      a.onloadedmetadata = function() { URL.revokeObjectURL(url); resolve(isFinite(a.duration) && a.duration > 0 ? a.duration : null); };
+      a.onerror = function() { URL.revokeObjectURL(url); resolve(null); };
+      a.src = url;
+    });
+  }
+
+  // crtPublishTrack signs the track as a work of kind 'track' and posts it.
+  async function crtPublishTrack(form, stored) {
+    if (!window.Malkuth || !window._malkuthReady) {
+      if (typeof toast === 'function') toast('Signing key unavailable — please reload the page.', 'error');
+      return false;
+    }
+    var mk = await window._malkuthReady;
+    if (!mk || !mk.hasKey) {
+      if (typeof toast === 'function') toast('Signing key unavailable — please reload the page.', 'error');
+      return false;
+    }
+    var title = (form.querySelector('[name="title"]') || {}).value || '';
+    var desc  = (form.querySelector('[name="description"]') || {}).value || '';
+    var genre = ((form.querySelector('[name="genre"]') || {}).value || '').replace(/\s+/g, '');
+    var body  = title.trim() || 'Untitled';
+    if (desc.trim()) body += '\n\n' + desc.trim();
+    var duration = await crtTrackDuration(_crtSelectedFile);
+    var env = await window.Malkuth.buildSignedWork('post', body, 'track',
+      stored.cover_url ? [stored.cover_url] : [], null, {
+        voice_url: stored.audio_url,
+        voice_duration_secs: duration,
+        tags: genre ? [genre] : []
+      });
+    var r = await fetch('/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'HX-Request': 'true' },
+      body: JSON.stringify(env)
+    });
+    return r.ok;
   }
 
   // Track delete is a hypermedia control on the row itself (hx-post

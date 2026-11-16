@@ -12,15 +12,14 @@ package handler
 // workWall, the profile page and the API profile wall all delegate here.
 
 import (
-	"database/sql"
 	"errors"
 	"net/http"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	dbpkg "github.com/f33d3r/feed-engine/internal/db"
+	"github.com/f33d3r/feed-engine/internal/identity"
 	"github.com/f33d3r/feed-engine/internal/model"
 )
 
@@ -83,8 +82,6 @@ func (c *ttlCache) sweep() {
 }
 
 var (
-	// viewer identity resolved from a session token hash (30 s, matches sessionCache).
-	viewerCache = &ttlCache{max: 20000}
 	// viewer→author relationship facts (30 s).
 	authorAccessCache = &ttlCache{max: 50000}
 	// viewer→block set, both directions (30 s).
@@ -92,7 +89,6 @@ var (
 )
 
 const (
-	viewerTTL       = 30 * time.Second
 	authorAccessTTL = 30 * time.Second
 )
 
@@ -178,80 +174,26 @@ func privateWalled(authorIsPrivate bool, a authorAccess) bool {
 // ── Viewer resolution for non-page requests ──────────────────────────────────
 
 // requestViewer resolves the requesting identity for asset requests, which have
-// no response body to redirect and must never mutate the session. It reuses the
-// entries userFromRequest stores in sessionCache, then its own 30 s memo, so an
-// image burst costs at most one identity lookup per session per 30 s.
-// Returns (nil, nil) for an anonymous request.
+// no response body to redirect and must never mutate the session: no cookie is
+// cleared and no session is ended here. It shares userFromRequest's cache, so an
+// image burst costs at most one resolution per session per 30 s.
+// Returns (nil, nil) for an anonymous request, and an error when the session
+// could not be confirmed — the caller fails closed on it.
 func (h *Handler) requestViewer(r *http.Request) (*model.User, error) {
 	if h.db == nil {
 		return nil, nil
 	}
 	tok := GetSessionToken(r)
-	if tok != "" && !strings.HasPrefix(tok, "__handle__") {
-		if v, ok := h.sessionCache.Load(tok); ok {
-			if e := v.(sessionEntry); time.Now().Before(e.exp) {
-				return e.user, nil
-			}
-			h.sessionCache.Delete(tok)
-		}
-		key := "s:" + dbpkg.HashToken(tok)
-		if v, ok := viewerCache.get(key); ok {
-			return v.(*model.User), nil
-		}
-		ident, err := dbpkg.GetSessionIdentity(h.db, tok)
-		if err != nil {
-			return nil, err
-		}
-		if ident.UserID != "" {
-			u, err := dbpkg.GetUserByID(h.db, ident.UserID)
-			if err != nil && !errors.Is(err, sql.ErrNoRows) {
-				return nil, err
-			}
-			if u != nil {
-				if ident.PIALID != "" {
-					u.PIALID = ident.PIALID
-				}
-				h.applyPIALIdentity(u)
-				viewerCache.put(key, u, time.Now().Add(viewerTTL))
-				return u, nil
-			}
-		}
-	}
-
-	// Legacy handle cookie — read only, never creates or bootstraps anything.
-	handle := HandleFromCookie(r)
-	if handle == "" || len(handle) > 30 || !handleRe.MatchString(handle) {
+	if tok == "" {
 		return nil, nil
 	}
-	key := "h:" + handle
-	if v, ok := viewerCache.get(key); ok {
-		return v.(*model.User), nil
-	}
-	u, err := dbpkg.GetUserByHandle(h.db, handle)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	u, err := h.sessionUser(r.Context(), tok)
+	switch {
+	case err == nil:
+		return u, nil
+	case errors.Is(err, identity.ErrSessionInvalid), errors.Is(err, errSessionStopped):
+		return nil, nil
+	default:
 		return nil, err
 	}
-	if u == nil {
-		return nil, nil
-	}
-	h.applyPIALIdentity(u)
-	viewerCache.put(key, u, time.Now().Add(viewerTTL))
-	return u, nil
-}
-
-// applyPIALIdentity folds PIAL state onto a user the same way userFromRequest
-// does — PIAL is the single system of record for age and role.
-func (h *Handler) applyPIALIdentity(u *model.User) {
-	if u == nil {
-		return
-	}
-	if ps := dbpkg.LoadPIALState(h.db, u.PIALID); ps != nil {
-		u.IsAgeVerified = ps.AgeVerified
-		u.IsVerified = model.KYCTierIsIdentity(ps.KYCTier)
-		u.KYCTier = ps.KYCTier
-		u.IsMinor = ps.IsMinor
-		u.IsAdult = ps.IsAdult
-		u.Role = ps.Role
-	}
-	ApplyBirthdayAgeGate(u)
 }

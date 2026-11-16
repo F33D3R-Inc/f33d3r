@@ -291,9 +291,9 @@ func TestNumberGateCannotDistinguishAnUnknownNumberFromARetiredOne(t *testing.T)
 	// Both an unresolved Number and a retired one produce decision "deny" from
 	// the authority, which this surface renders as the single "refused" state.
 	unknown := render(t, tmpl, "gnosis_number_gate", map[string]interface{}{
-		"PIALID": "abc", "State": "refused"})
+		"AccountID": "abc", "State": "refused"})
 	retired := render(t, tmpl, "gnosis_number_gate", map[string]interface{}{
-		"PIALID": "abc", "State": "refused"})
+		"AccountID": "abc", "State": "refused"})
 	if unknown != retired {
 		t.Fatal("an unknown Number and a retired one rendered differently")
 	}
@@ -312,7 +312,7 @@ func TestNumberGateRendersEveryOutcomeHonestly(t *testing.T) {
 	tmpl := partialSet(t, "_gnosis_number_gate.html")
 
 	malformed := render(t, tmpl, "gnosis_number_gate", map[string]interface{}{
-		"PIALID": "abc", "State": "malformed"})
+		"AccountID": "abc", "State": "malformed"})
 	if !strings.Contains(malformed, "not a F33D3R Number") {
 		t.Fatal("a mistyped Number must be named as one, not silently refused")
 	}
@@ -327,13 +327,13 @@ func TestNumberGateRendersEveryOutcomeHonestly(t *testing.T) {
 	}
 
 	request := render(t, tmpl, "gnosis_number_gate", map[string]interface{}{
-		"PIALID": "abc", "State": "request"})
+		"AccountID": "abc", "State": "request"})
 	if !strings.Contains(request, "Your request is waiting") {
 		t.Fatal("a pending contact request must say so")
 	}
 
 	unavailable := render(t, tmpl, "gnosis_number_gate", map[string]interface{}{
-		"PIALID": "abc", "State": "unavailable"})
+		"AccountID": "abc", "State": "unavailable"})
 	if strings.Contains(strings.ToLower(unavailable), "not reachable") {
 		t.Fatal("an unreachable policy authority must not be reported to the user as a refusal")
 	}
@@ -357,7 +357,7 @@ func TestNumberGateStatesAreDistinct(t *testing.T) {
 	seen := map[string]string{}
 	for _, state := range []string{"malformed", "request", "refused", "unavailable"} {
 		out := render(t, tmpl, "gnosis_number_gate", map[string]interface{}{
-			"PIALID": "abc", "State": state})
+			"AccountID": "abc", "State": state})
 		if prior, dup := seen[out]; dup {
 			t.Fatalf("states %q and %q render identically", prior, state)
 		}
@@ -372,12 +372,12 @@ func TestNumberLaneNeverInventsAContactsList(t *testing.T) {
 	tmpl := partialSet(t, "_gnosis_number_gate.html", "_gnosis_contact_requests.html")
 
 	surfaces := []string{
-		render(t, tmpl, "gnosis_number_gate", map[string]interface{}{"PIALID": "abc", "State": "malformed"}),
-		render(t, tmpl, "gnosis_number_gate", map[string]interface{}{"PIALID": "abc", "State": "request"}),
-		render(t, tmpl, "gnosis_number_gate", map[string]interface{}{"PIALID": "abc", "State": "refused"}),
-		render(t, tmpl, "gnosis_number_gate", map[string]interface{}{"PIALID": "abc", "State": "unavailable"}),
+		render(t, tmpl, "gnosis_number_gate", map[string]interface{}{"AccountID": "abc", "State": "malformed"}),
+		render(t, tmpl, "gnosis_number_gate", map[string]interface{}{"AccountID": "abc", "State": "request"}),
+		render(t, tmpl, "gnosis_number_gate", map[string]interface{}{"AccountID": "abc", "State": "refused"}),
+		render(t, tmpl, "gnosis_number_gate", map[string]interface{}{"AccountID": "abc", "State": "unavailable"}),
 		render(t, tmpl, "gnosis_contact_requests", map[string]interface{}{
-			"PIALID": "abc", "Requests": []contactRequestRow{{ID: "r1", Handle: "dana"}}}),
+			"AccountID": "abc", "Requests": []contactRequestRow{{ID: "r1", Handle: "dana"}}}),
 	}
 	// "contact request" and "contact link" are the authority's own names for a
 	// knock and for a bearer capability; neither is a set anyone is added to.
@@ -420,13 +420,13 @@ func TestNumberLaneNeverInventsAContactsList(t *testing.T) {
 func TestContactRequestsFacetShowsWhoIsAskingAndOffersBothAnswers(t *testing.T) {
 	tmpl := partialSet(t, "_gnosis_contact_requests.html")
 	out := render(t, tmpl, "gnosis_contact_requests", map[string]interface{}{
-		"PIALID": "abc",
+		"AccountID": "abc",
 		"Requests": []contactRequestRow{
 			{ID: "r1", Handle: "dana", Name: "Dana", Note: "met you at the fair"},
 			{ID: "r2"},
 		},
 	})
-	if !strings.Contains(out, `data-facet-id="facet:f33d3r:identity:abc:contact_requests"`) {
+	if !strings.Contains(out, `data-facet-id="facet:f33d3r:account:abc:contact_requests"`) {
 		t.Fatal("facet id missing or malformed")
 	}
 	if !strings.Contains(out, "Dana") || !strings.Contains(out, "@dana") {
@@ -462,16 +462,16 @@ func TestContactRequestsFacetShowsWhoIsAskingAndOffersBothAnswers(t *testing.T) 
 
 func TestContactRequestsFacetStaysQuietWhenNobodyIsWaiting(t *testing.T) {
 	tmpl := partialSet(t, "_gnosis_contact_requests.html")
-	empty := render(t, tmpl, "gnosis_contact_requests", map[string]interface{}{"PIALID": "abc"})
+	empty := render(t, tmpl, "gnosis_contact_requests", map[string]interface{}{"AccountID": "abc"})
 	if strings.Contains(empty, "Asking to reach you") {
 		t.Fatal("an empty request list must not render a heading over nothing")
 	}
-	if !strings.Contains(empty, `data-facet-id="facet:f33d3r:identity:abc:contact_requests"`) {
+	if !strings.Contains(empty, `data-facet-id="facet:f33d3r:account:abc:contact_requests"`) {
 		t.Fatal("the facet root must exist even when empty, or it cannot be mutated later")
 	}
 
 	down := render(t, tmpl, "gnosis_contact_requests", map[string]interface{}{
-		"PIALID": "abc", "Unavailable": true})
+		"AccountID": "abc", "Unavailable": true})
 	if !strings.Contains(down, "unavailable") {
 		t.Fatal("an unreachable authority must be said out loud, not rendered as 'no requests'")
 	}

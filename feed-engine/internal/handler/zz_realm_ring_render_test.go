@@ -410,7 +410,7 @@ func liveRingTestView(handle string) *liveStreamView {
 			AuthorHandle: handle, AuthorName: "Ring Test",
 		},
 		AuthorHandle: handle, AuthorName: "Ring Test",
-		AuthorPIAL: "22222222-2222-2222-2222-222222222222",
+		AuthorID: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
 		// Deliberately wrong: the live view still carries a realm, and the ring
 		// must come from the index regardless of what this says.
 		AuthorRealm:  1,

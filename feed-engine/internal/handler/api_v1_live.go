@@ -415,6 +415,10 @@ func (h *Handler) liveStartEvent(w http.ResponseWriter, r *http.Request, user *m
 		http.Error(w, "your identity is not fully set up yet — finish onboarding to broadcast", http.StatusForbidden)
 		return
 	}
+	if !h.mayPublish(user) {
+		http.Error(w, publishRestricted, http.StatusForbidden)
+		return
+	}
 	title := strings.TrimSpace(eventField(r, raw, "title"))
 	if title == "" {
 		http.Error(w, "title required", http.StatusBadRequest)

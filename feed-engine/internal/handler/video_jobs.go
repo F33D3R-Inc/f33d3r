@@ -2,22 +2,24 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"log"
-	"net/http"
 	"time"
 
+	"github.com/f33d3r/feed-engine/internal/caeor"
 	dbpkg "github.com/f33d3r/feed-engine/internal/db"
 )
 
 const (
 	videoJobTick = 5 * time.Second
-	// A job that never reached the transcoder after this long lost its hand-off.
-	videoJobHandoffLimit = 10 * time.Minute
+	// A job that Caeor has not accepted after the whole hand-off budget (and a
+	// margin for the spool to be hashed and gated) lost its hand-off.
+	videoJobHandoffLimit = videoHandOffTimeout + 10*time.Minute
 )
 
-// StartVideoJobWorker tells people how their video processing ended. Transcoder jobs
-// live in its memory, so a job it no longer knows about ended with the transcoder.
+// StartVideoJobWorker tells people how their video processing ended. A job's
+// JobID is the Caeor asset its upload became; Caeor is asked how that asset is
+// doing, and the row outlives a restart of either side.
 func (h *Handler) StartVideoJobWorker(ctx context.Context) {
 	go func() {
 		tick := time.NewTicker(videoJobTick)
@@ -42,41 +44,30 @@ func (h *Handler) StartVideoJobWorker(ctx context.Context) {
 
 func (h *Handler) checkVideoJob(ctx context.Context, job dbpkg.VideoJob) {
 	if job.JobID == "" {
+		// Never accepted by Caeor. The hand-off records its own failure; a row
+		// this old lost its hand-off to a restart.
 		if job.Age > videoJobHandoffLimit {
 			h.finishVideoJob(job, false)
 		}
 		return
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, h.transcodingURL+"/v1/video/job/"+job.JobID, nil)
-	if err != nil {
-		log.Printf("[video-jobs] %s: %v", job.UploadID, err)
-		return
-	}
-	resp, err := h.httpClient.Do(req)
-	if err != nil {
-		return // the transcoder being unreachable says nothing about this job
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNotFound {
+	cctx, cancel := context.WithTimeout(ctx, videoStateTimeout)
+	defer cancel()
+	asset, err := h.caeor.Get(cctx, job.JobID)
+	if errors.Is(err, caeor.ErrNotFound) {
 		h.finishVideoJob(job, false)
 		return
 	}
-	if resp.StatusCode != http.StatusOK {
-		log.Printf("[video-jobs] %s: transcoder answered %s", job.UploadID, resp.Status)
-		return
-	}
-	var answer struct {
-		Status string `json:"status"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&answer); err != nil {
+	if err != nil {
+		// Caeor being unreachable says nothing about this job.
 		log.Printf("[video-jobs] %s: %v", job.UploadID, err)
 		return
 	}
-	switch answer.Status {
-	case "ready":
+	switch {
+	case asset.Withdrawn, asset.Status == caeor.StatusFailed:
+		h.finishVideoJob(job, false)
+	case asset.Status == caeor.StatusReady:
 		h.finishVideoJob(job, true)
-	case "failed", "error":
-		h.finishVideoJob(job, false)
 	}
 }
 

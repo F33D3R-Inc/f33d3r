@@ -2,7 +2,9 @@ package db
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -11,6 +13,7 @@ import (
 	"time"
 
 	"github.com/f33d3r/feed-engine/internal/herald"
+	"github.com/f33d3r/feed-engine/internal/identity"
 	"github.com/google/uuid"
 
 	"github.com/lib/pq"
@@ -50,172 +53,436 @@ func extractFirstBodyURL(body string) string {
 	return ""
 }
 
-// InsertWork inserts a new content-addressed work and any citations.
-// parentCID / quotedCID are empty strings when not applicable.
-// The extended fields (tags, pollOptions, pollEndsAt, scheduledAt,
-// commentGating, subscriberOnly, isRepost, repostSourceID, voiceURL,
-// voiceDurationSecs, videoMasterURL, videoPosterURL, videoDurationSecs)
-// map directly onto the columns added by the works schema extension.
-// Returns the new work UUID.
-func InsertWork(
-	db *sql.DB,
-	authorID, authorPIAL, cid, body, kind string,
-	mediaURLs []string,
-	parentCID, quotedCID string,
-	tags []string,
-	pollOptions []string,
-	pollEndsAt *time.Time,
-	scheduledAt *time.Time,
-	commentGating string,
-	subscriberOnly bool,
-	isNSFW bool,
-	isRepost bool,
-	repostSourceID string,
-	voiceURL string,
-	voiceDurationSecs *int,
-	videoMasterURL, videoWatermarkedURL, videoPosterURL string,
-	videoDurationSecs *int,
-	videoWidth, videoHeight int,
-	reactLayout string,
-) (string, error) {
-	// Normalise optional UUID: empty string → NULL.
-	var repostSourceIDParam interface{}
-	if repostSourceID != "" {
-		repostSourceIDParam = repostSourceID
-	}
-	// Normalise optional string → NULL.
-	var voiceURLParam interface{}
-	if voiceURL != "" {
-		voiceURLParam = voiceURL
-	}
-	var videoMasterURLParam interface{}
-	if videoMasterURL != "" {
-		videoMasterURLParam = videoMasterURL
-	}
-	var videoWatermarkedURLParam interface{}
-	if videoWatermarkedURL != "" {
-		videoWatermarkedURLParam = videoWatermarkedURL
-	}
-	var videoPosterURLParam interface{}
-	if videoPosterURL != "" {
-		videoPosterURLParam = videoPosterURL
-	}
-	var reactLayoutParam interface{}
-	if reactLayout != "" {
-		reactLayoutParam = reactLayout
-	}
-	if commentGating == "" {
-		commentGating = "open"
-	}
+// ── Creating a work ──────────────────────────────────────────────────────────
 
-	// The work's position on the Jung axes is a pure function of the work,
-	// so it is computed here, once, from exactly the values being written —
-	// the same inputs the lazy read-side computation would see later. Insert
-	// and vector are one statement: no work exists without its vector.
-	psych := jung.MapWork(&model.Work{
-		Body:           body,
-		Kind:           kind,
-		MediaURLs:      mediaURLs,
-		Tags:           tags,
-		PollOptions:    pollOptions,
-		IsNSFW:         isNSFW,
-		VoiceURL:       voiceURL,
-		VideoMasterURL: videoMasterURL,
-	})
+// CommentGatings is the closed vocabulary of works.comment_gating, mirrored by the
+// works_comment_gating_vocabulary CHECK in migration 0035. The spelling is the one
+// clients sign inside the work's content address.
+//
+//	everyone   anyone who may read the work
+//	followers  accounts that follow the author
+//	circle     accounts the author and they follow both ways
+//	verified   accounts with a fully verified identity (kyc_tier 'full')
+//	none       nobody but the author
+var CommentGatings = []string{"everyone", "followers", "circle", "verified", "none"}
 
-	tx, err := db.Begin()
-	if err != nil {
-		return "", err
-	}
-	defer tx.Rollback()
-
-	var workID string
-	err = tx.QueryRow(`
-		INSERT INTO works (
-			cid, author_id, author_pial, body, kind, media_urls,
-			tags, poll_options, poll_ends_at, scheduled_at,
-			comment_gating, subscriber_only, is_nsfw, is_repost, repost_source_id,
-			voice_url, voice_duration_secs,
-			video_master_url, video_watermarked_url, video_poster_url, video_duration_secs,
-			video_width, video_height, react_layout,
-			psych_vector,
-			-- scan_state opens as 'pending': the verdict belongs to the content
-			-- scan, never to the insert. cron.pendingScanSweep resolves anything
-			-- the scan never answered for.
-			scan_state
-		) VALUES (
-			$1, $2::uuid, $3::uuid, $4, $5, $6,
-			$7, $8, $9, $10,
-			$11, $12, $13, $14, $15::uuid,
-			$16, $17,
-			$18, $19, $20, $21,
-			$22, $23, $24,
-			$25,
-			'pending'
-		)
-		RETURNING id
-	`,
-		cid, authorID, authorPIAL, body, kind, pq.Array(mediaURLs),
-		pq.Array(tags), pq.Array(pollOptions), pollEndsAt, scheduledAt,
-		commentGating, subscriberOnly, isNSFW, isRepost, repostSourceIDParam,
-		voiceURLParam, voiceDurationSecs,
-		videoMasterURLParam, videoWatermarkedURLParam, videoPosterURLParam, videoDurationSecs,
-		videoWidth, videoHeight, reactLayoutParam,
-		pq.Float32Array(psych.Slice()),
-	).Scan(&workID)
-	if err != nil {
-		return "", err
-	}
-
-	for _, citation := range []struct{ cid, kind string }{{parentCID, "reply"}, {quotedCID, "quote"}} {
-		if citation.cid == "" {
-			continue
-		}
-		var targetID string
-		err := tx.QueryRow(`SELECT id FROM works WHERE cid = $1`, citation.cid).Scan(&targetID)
-		if err == sql.ErrNoRows {
-			continue // the cited work does not exist, so there is no citation to record
-		}
-		if err != nil {
-			return "", fmt.Errorf("resolving %s citation %q: %w", citation.kind, citation.cid, err)
-		}
-		// root_id and depth are materialized by the database (trigger
-		// work_citations_materialize), so the chain this reply joins is
-		// recorded on the edge itself and never has to be walked to be known.
-		// ON CONFLICT makes a re-delivered create idempotent instead of an error.
-		// No counter is bumped here: reply totals are counted from these rows.
-		if _, err := tx.Exec(`
-			INSERT INTO work_citations (work_id, target_id, citation_type)
-			VALUES ($1::uuid, $2::uuid, $3)
-			ON CONFLICT (work_id, target_id, citation_type) DO NOTHING
-		`, workID, targetID, citation.kind); err != nil {
-			return "", fmt.Errorf("recording %s citation for work %s: %w", citation.kind, workID, err)
+// ValidCommentGating reports whether g is in the vocabulary.
+func ValidCommentGating(g string) bool {
+	for _, v := range CommentGatings {
+		if v == g {
+			return true
 		}
 	}
-
-	// The people this work replies to, quotes or names are owed a notification, and
-	// working out who needs the naming plane. The debt commits with the work.
-	if parentCID != "" || quotedCID != "" || strings.Contains(body, "@") {
-		if _, err := tx.Exec(`
-			INSERT INTO notification_work_jobs (work_id, next_attempt_at)
-			VALUES ($1::uuid, COALESCE($2::timestamptz, NOW()))`, workID, scheduledAt); err != nil {
-			return "", fmt.Errorf("queueing notifications for work %s: %w", workID, err)
-		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		return "", err
-	}
-	return workID, nil
+	return false
 }
 
-// InsertEdition inserts an edition record. Call immediately after InsertWork with editionNumber=1.
-func InsertEdition(db *sql.DB, workID, cid, body string, editionNumber int) error {
-	_, err := db.Exec(`
-		INSERT INTO editions (work_id, cid, body, edition_number)
-		VALUES ($1::uuid, $2, $3, $4)
-	`, workID, cid, body, editionNumber)
-	return err
+// replyAllowed is the one rule for who may reply under a gating. The author may
+// always answer their own work.
+func replyAllowed(gating string, isAuthor, posterFollows, authorFollows, posterVerified bool) bool {
+	if isAuthor {
+		return true
+	}
+	switch gating {
+	case "everyone":
+		return true
+	case "followers":
+		return posterFollows
+	case "circle":
+		return posterFollows && authorFollows
+	case "verified":
+		return posterVerified
+	}
+	return false // "none", and anything the CHECK would never have let in
+}
+
+// Posting rate: a rolling hour and a rolling day of works per account, counted
+// in the create transaction under the author's lock, so the limit is exact
+// across replicas. Deleted works count: deleting does not refund a post.
+const (
+	WorkRateLimitHour = 100
+	WorkRateLimitDay  = 2400
+)
+
+// WorkDedupWindow is how long the same content by the same author is a
+// Duplicate rather than a new work.
+const WorkDedupWindow = 12 * time.Hour
+
+// workCreateLockClass namespaces the per-author create lock among this brain's
+// advisory locks (7331_0001 migrations, 7331_0005 notification relay).
+const workCreateLockClass = 73310035
+
+// WorkDraft is a validated work, ready to be written. Every field has passed the
+// handler's checks; the transaction checks what only the database can know.
+type WorkDraft struct {
+	AuthorID   string
+	AuthorPIAL string
+	CID        string
+	Body       string
+	Kind       string
+	MediaURLs  []string
+	// ParentCID is the signed parent; QuotedWorkID the quoted work. Either may be "".
+	ParentCID    string
+	QuotedWorkID string
+	Tags         []string
+	PollOptions  []string
+	PollEndsAt   *time.Time
+	ScheduledAt  *time.Time
+
+	CommentGating  string
+	SubscriberOnly bool
+	IsNSFW         bool
+
+	VoiceURL          string
+	VoiceDurationSecs *int
+
+	// VideoMasterURL is the watermarked HLS master of a Caeor asset.
+	VideoMasterURL    string
+	VideoPosterURL    string
+	VideoDurationSecs *int
+	VideoWidth        int
+	VideoHeight       int
+	ReactLayout       string
+
+	// Assets are the Caeor assets the work's media resolved to, one per slot,
+	// written as work_assets rows in the create transaction.
+	Assets []WorkAssetRef
+	// LineagePIAL and LineageHandle credit the original uploader when the work
+	// carries media somebody else uploaded ("Media by"). Both "" otherwise.
+	LineagePIAL   string
+	LineageHandle string
+	// DownloadsAllowed is the author's download switch for this work.
+	DownloadsAllowed bool
+
+	// HideAdult is true when the poster may never see adult content; a cited
+	// adult work is then, to them, a work that does not exist.
+	HideAdult bool
+	// Fingerprint is worktext.Fingerprint of the content, computed with the
+	// cited works' ids, so it is filled in by the transaction from FingerprintOf.
+	FingerprintOf func(parentWorkID, quotedWorkID string) (string, error)
+}
+
+// WorkCreateResult is what the create transaction decided.
+type WorkCreateResult int
+
+const (
+	// WorkCreated: the work was written with everything it is owed.
+	WorkCreated WorkCreateResult = iota
+	// WorkReplayed: this author already created this CID; the existing work
+	// stands and is the answer.
+	WorkReplayed
+	// WorkDuplicate: the same content by the same author within the window.
+	WorkDuplicate
+	// WorkCIDTaken: the CID names a work of another account, or one deleted.
+	WorkCIDTaken
+	// WorkCitedNotFound: the parent or quoted work does not exist for this
+	// poster. A block reads exactly like this, so it is never revealed.
+	WorkCitedNotFound
+	// WorkRepliesRestricted: the parent's comment gating excludes the poster.
+	WorkRepliesRestricted
+	// WorkRateLimited: the poster is over a posting limit.
+	WorkRateLimited
+)
+
+// WorkCreateOutcome is the decision and what it concerns.
+type WorkCreateOutcome struct {
+	Result WorkCreateResult
+	// WorkID is the created or replayed work, or the earlier work a Duplicate
+	// repeats.
+	WorkID string
+	// Field names the citation a WorkCitedNotFound is about: "parent_cid" or
+	// "quoted_work_id".
+	Field string
+}
+
+// citableWorkSQL is the read path's question — may this poster read this work —
+// asked in SQL, with the row share-locked so it cannot be deleted or re-gated
+// between the answer and the citation. It is the twin of workReadable and
+// gateWorks (handler): live and not blocked by moderation (workNotBlockedSQL), no
+// block in either direction, the author's private wall, the subscriber wall. The
+// poster's own works always pass. $2 is the poster. The caller appends the key.
+const citableWorkSQL = `
+	SELECT w.id::text, w.author_id::text, w.comment_gating,
+	       (w.is_nsfw OR w.is_gore OR COALESCE(up.is_adult_creator, FALSE)),
+	       EXISTS (SELECT 1 FROM follows f WHERE f.follower_id = $2::uuid AND f.following_id = w.author_id),
+	       EXISTS (SELECT 1 FROM follows f WHERE f.follower_id = w.author_id AND f.following_id = $2::uuid)
+	  FROM works w
+	  LEFT JOIN user_profiles up ON up.user_id = w.author_id
+	 WHERE w.deleted_at IS NULL
+	   AND ` + workNotBlockedSQL + `
+	   AND (w.author_id = $2::uuid OR (
+	        NOT EXISTS (SELECT 1 FROM blocks b
+	                     WHERE (b.blocker_id = $2::uuid AND b.blocked_id = w.author_id)
+	                        OR (b.blocker_id = w.author_id AND b.blocked_id = $2::uuid))
+	    AND (NOT COALESCE(up.is_private, FALSE)
+	         OR EXISTS (SELECT 1 FROM follows f WHERE f.follower_id = $2::uuid AND f.following_id = w.author_id))
+	    AND (NOT w.subscriber_only
+	         OR EXISTS (SELECT 1 FROM subscriptions s
+	                     WHERE s.subscriber_id = $2::uuid AND s.creator_id = w.author_id AND s.status = 'active'))))
+	   AND `
+
+type citedWork struct {
+	ID, AuthorID, Gating          string
+	Adult, PosterFollows, Follows bool
+}
+
+// resolveCited share-locks the cited work if this poster may cite it.
+func resolveCited(tx *sql.Tx, keySQL, key, posterID string, hideAdult bool) (*citedWork, error) {
+	var c citedWork
+	err := tx.QueryRow(citableWorkSQL+keySQL+` FOR SHARE OF w`, key, posterID).
+		Scan(&c.ID, &c.AuthorID, &c.Gating, &c.Adult, &c.PosterFollows, &c.Follows)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if c.Adult && hideAdult && c.AuthorID != posterID {
+		return nil, nil
+	}
+	return &c, nil
+}
+
+// LookupWorkCID decides a CID that is already taken, before any other check: a
+// re-delivered envelope is answered with the work it already created, however
+// long ago it was signed. found is false when the CID is free.
+func LookupWorkCID(database *sql.DB, cid, authorID string) (WorkCreateOutcome, bool, error) {
+	return existingByCID(database, cid, authorID)
+}
+
+// existingByCID decides a CID that is already taken.
+func existingByCID(q DBTX, cid, authorID string) (WorkCreateOutcome, bool, error) {
+	var id, owner string
+	var deleted bool
+	err := q.QueryRow(`SELECT id::text, author_id::text, deleted_at IS NOT NULL FROM works WHERE cid = $1`, cid).
+		Scan(&id, &owner, &deleted)
+	if errors.Is(err, sql.ErrNoRows) {
+		return WorkCreateOutcome{}, false, nil
+	}
+	if err != nil {
+		return WorkCreateOutcome{}, false, fmt.Errorf("reading work %s: %w", cid, err)
+	}
+	if owner == authorID && !deleted {
+		return WorkCreateOutcome{Result: WorkReplayed, WorkID: id}, true, nil
+	}
+	return WorkCreateOutcome{Result: WorkCIDTaken}, true, nil
+}
+
+// InsertWork is the one writer of works. One transaction holds the decision and
+// everything the work is owed: the works row, its citations, edition 1, the
+// content receipt, its media references, and every downstream obligation as a
+// work_outbox row (plus the notification job). If it commits, all of it exists;
+// if it does not, none of it does.
+//
+// Concurrent creates by one author are serialized by a transaction-scoped
+// advisory lock, which is what makes the replay check, the dedup window and the
+// rate limit exact. A CID raced by another account is caught by the unique index
+// (ON CONFLICT) and decided the same way as one found up front.
+func InsertWork(database *sql.DB, d WorkDraft) (WorkCreateOutcome, error) {
+	var out WorkCreateOutcome
+	err := WithTx(database, func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`SELECT pg_advisory_xact_lock($1, hashtext($2))`, workCreateLockClass, d.AuthorID); err != nil {
+			return fmt.Errorf("locking creates of %s: %w", d.AuthorID, err)
+		}
+		if o, found, err := existingByCID(tx, d.CID, d.AuthorID); err != nil || found {
+			out = o
+			return err
+		}
+
+		var hour, day int
+		if err := tx.QueryRow(`
+			SELECT COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '1 hour'),
+			       COUNT(*)
+			  FROM works
+			 WHERE author_id = $1::uuid AND created_at > NOW() - INTERVAL '1 day'`, d.AuthorID).Scan(&hour, &day); err != nil {
+			return fmt.Errorf("counting recent works of %s: %w", d.AuthorID, err)
+		}
+		if hour >= WorkRateLimitHour || day >= WorkRateLimitDay {
+			out = WorkCreateOutcome{Result: WorkRateLimited}
+			return nil
+		}
+
+		var parent, quoted *citedWork
+		if d.ParentCID != "" {
+			p, err := resolveCited(tx, `w.cid = $1`, d.ParentCID, d.AuthorID, d.HideAdult)
+			if err != nil {
+				return fmt.Errorf("resolving parent %s: %w", d.ParentCID, err)
+			}
+			if p == nil {
+				out = WorkCreateOutcome{Result: WorkCitedNotFound, Field: "parent_cid"}
+				return nil
+			}
+			posterVerified := false
+			if p.Gating == "verified" {
+				if err := tx.QueryRow(`
+					SELECT EXISTS (SELECT 1 FROM identity_facts WHERE pial_id = $1::uuid AND kyc_tier = 'full')`,
+					d.AuthorPIAL).Scan(&posterVerified); err != nil {
+					return fmt.Errorf("reading verification of %s: %w", d.AuthorPIAL, err)
+				}
+			}
+			if !replyAllowed(p.Gating, p.AuthorID == d.AuthorID, p.PosterFollows, p.Follows, posterVerified) {
+				out = WorkCreateOutcome{Result: WorkRepliesRestricted}
+				return nil
+			}
+			parent = p
+		}
+		if d.QuotedWorkID != "" {
+			q, err := resolveCited(tx, `w.id = $1::uuid`, d.QuotedWorkID, d.AuthorID, d.HideAdult)
+			if err != nil {
+				return fmt.Errorf("resolving quoted work %s: %w", d.QuotedWorkID, err)
+			}
+			if q == nil {
+				out = WorkCreateOutcome{Result: WorkCitedNotFound, Field: "quoted_work_id"}
+				return nil
+			}
+			quoted = q
+		}
+
+		parentID, quotedID := "", ""
+		if parent != nil {
+			parentID = parent.ID
+		}
+		if quoted != nil {
+			quotedID = quoted.ID
+		}
+		fingerprint, err := d.FingerprintOf(parentID, quotedID)
+		if err != nil {
+			return fmt.Errorf("fingerprinting work %s: %w", d.CID, err)
+		}
+		var earlier string
+		err = tx.QueryRow(`
+			SELECT id::text FROM works
+			 WHERE author_id = $1::uuid AND content_fingerprint = $2
+			   AND created_at > NOW() - make_interval(secs => $3)
+			   AND deleted_at IS NULL
+			 ORDER BY created_at DESC LIMIT 1`, d.AuthorID, fingerprint, WorkDedupWindow.Seconds()).Scan(&earlier)
+		if err == nil {
+			out = WorkCreateOutcome{Result: WorkDuplicate, WorkID: earlier}
+			return nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("checking duplicates of %s: %w", d.CID, err)
+		}
+
+		// The work's position on the Jung axes is a pure function of the work,
+		// computed once from exactly the values being written.
+		psych := jung.MapWork(&model.Work{
+			Body:           d.Body,
+			Kind:           d.Kind,
+			MediaURLs:      d.MediaURLs,
+			Tags:           d.Tags,
+			PollOptions:    d.PollOptions,
+			IsNSFW:         d.IsNSFW,
+			VoiceURL:       d.VoiceURL,
+			VideoMasterURL: d.VideoMasterURL,
+		})
+
+		var workID string
+		err = tx.QueryRow(`
+			INSERT INTO works (
+				cid, author_id, author_pial, body, kind, media_urls,
+				tags, poll_options, poll_ends_at, scheduled_at,
+				comment_gating, subscriber_only, is_nsfw, is_reply,
+				voice_url, voice_duration_secs,
+				video_master_url, downloads_allowed, video_poster_url, video_duration_secs,
+				video_width, video_height, react_layout,
+				psych_vector, content_fingerprint,
+				lineage_pial, lineage_handle,
+				-- scan_state opens as 'pending': the verdict belongs to the content
+				-- scan, never to the insert.
+				scan_state
+			) VALUES (
+				$1, $2::uuid, $3::uuid, $4, $5, $6,
+				$7, $8, $9, $10,
+				$11, $12, $13, $14,
+				NULLIF($15, ''), $16,
+				NULLIF($17, ''), $18, NULLIF($19, ''), $20,
+				$21, $22, NULLIF($23, ''),
+				$24, $25,
+				NULLIF($26, ''), NULLIF($27, ''),
+				'pending'
+			)
+			ON CONFLICT (cid) DO NOTHING
+			RETURNING id::text`,
+			d.CID, d.AuthorID, d.AuthorPIAL, d.Body, d.Kind, pq.Array(d.MediaURLs),
+			pq.Array(d.Tags), pq.Array(d.PollOptions), d.PollEndsAt, d.ScheduledAt,
+			d.CommentGating, d.SubscriberOnly, d.IsNSFW, parent != nil,
+			d.VoiceURL, d.VoiceDurationSecs,
+			d.VideoMasterURL, d.DownloadsAllowed, d.VideoPosterURL, d.VideoDurationSecs,
+			d.VideoWidth, d.VideoHeight, d.ReactLayout,
+			pq.Float32Array(psych.Slice()), fingerprint,
+			d.LineagePIAL, d.LineageHandle,
+		).Scan(&workID)
+		if errors.Is(err, sql.ErrNoRows) {
+			// Another account committed this CID after the check above.
+			o, _, err := existingByCID(tx, d.CID, d.AuthorID)
+			out = o
+			return err
+		}
+		if err != nil {
+			return fmt.Errorf("inserting work %s: %w", d.CID, err)
+		}
+
+		// root_id and depth are materialized by the database (trigger
+		// work_citations_materialize). Reply totals are counted from these rows.
+		for _, c := range []struct {
+			target *citedWork
+			kind   string
+		}{{parent, "reply"}, {quoted, "quote"}} {
+			if c.target == nil {
+				continue
+			}
+			if _, err := tx.Exec(`
+				INSERT INTO work_citations (work_id, target_id, citation_type)
+				VALUES ($1::uuid, $2::uuid, $3)`, workID, c.target.ID, c.kind); err != nil {
+				return fmt.Errorf("recording %s citation of work %s: %w", c.kind, workID, err)
+			}
+		}
+
+		if _, err := tx.Exec(`
+			INSERT INTO editions (work_id, cid, body, edition_number)
+			VALUES ($1::uuid, $2, $3, 1)`, workID, d.CID, d.Body); err != nil {
+			return fmt.Errorf("recording edition 1 of work %s: %w", workID, err)
+		}
+
+		// The PIAL-anchored provenance record of the work, minted with it. The
+		// receipt references the identity root, so a poster with no root cannot
+		// have a receipt — and an author without a provenance record is not one
+		// this platform writes works for.
+		bodyHash := sha256.Sum256([]byte(d.Body))
+		res, err := tx.Exec(`
+			INSERT INTO content_receipts (pial_id, work_id, body_hash, kyc_tier_at_mint)
+			SELECT pr.pial_id, $2::uuid, $3, COALESCE(pr.kyc_tier, 'none')
+			  FROM identity_facts pr WHERE pr.pial_id = $1::uuid`,
+			d.AuthorPIAL, workID, hex.EncodeToString(bodyHash[:]))
+		if err != nil {
+			return fmt.Errorf("minting the content receipt of work %s: %w", workID, err)
+		}
+		if n, err := res.RowsAffected(); err != nil || n != 1 {
+			return fmt.Errorf("minting the content receipt of work %s: author PIAL %s has no identity root (%d rows, %v)", workID, d.AuthorPIAL, n, err)
+		}
+
+		// The assets the work references, as Caeor vouched for them. The media
+		// gate governs each asset by the works of its uploader that reference it,
+		// so this is what opens the work's media to its audience.
+		if err := insertWorkAssets(tx, workID, d.Assets); err != nil {
+			return err
+		}
+
+		if err := enqueueCreated(tx, workID, d.VoiceURL != ""); err != nil {
+			return err
+		}
+		if d.ScheduledAt == nil {
+			if err := enqueuePublished(tx, workID); err != nil {
+				return err
+			}
+		}
+		out = WorkCreateOutcome{Result: WorkCreated, WorkID: workID}
+		return nil
+	})
+	if err != nil {
+		return WorkCreateOutcome{}, err
+	}
+	return out, nil
 }
 
 // GetWorkEditions returns all editions of a work ordered oldest-first.
@@ -244,14 +511,28 @@ func GetWorkEditions(db *sql.DB, workID string) ([]model.Edition, error) {
 // kinds get an expires_at, so the NULL check covers every permanent work.
 const workLiveSQL = `((w.expires_at IS NULL OR w.expires_at > NOW()) AND (w.scheduled_at IS NULL OR w.scheduled_at <= NOW()))`
 
-// workNotBlockedSQL is the moderation verdict expressed as a read predicate.
-// 'blocked' is the only verdict that hides a work; an undecided scan is not a
-// verdict, so a scanner outage cannot take the feeds down. is_blocked is the
-// admin/manual lane and scan_state is the automated one — both are checked
-// because a work can be stopped by either.
+// workNotBlockedSQL is the moderation verdict expressed as a read predicate,
+// for a read that is not any one person's: feeds, ranking, search, fan-out.
+// A blocked work is hidden from everyone. A work whose verdict has not arrived
+// ('pending') is hidden too: until Abraxas, the integrity authority, has
+// answered, a work is visible to its author only (workVisibleToSQL) and is
+// neither fanned out nor ranked. That is safe because the scan obligation is
+// durable (work_outbox content_event) and Abraxas answers every work; a
+// verdict that is late is an operator alert (cron pendingScanSweep), never a
+// silent hide. is_blocked and scan_state are both checked because a work can
+// be stopped by either.
 // It also carries liveness, so every read, including repost arms and reply chains,
 // leaves out expired works and works scheduled for later without having to remember to.
-const workNotBlockedSQL = `(NOT w.is_blocked AND w.scan_state <> 'blocked' AND ` + workLiveSQL + `)`
+const workNotBlockedSQL = `(NOT w.is_blocked AND w.scan_state NOT IN ('blocked', 'pending') AND ` + workLiveSQL + `)`
+
+// workVisibleToSQL is workNotBlockedSQL for a read made by one viewer: their
+// own works waiting on a verdict are visible to them. viewerParam is the
+// placeholder carrying the viewer's account id ("" for nobody).
+func workVisibleToSQL(viewerParam string) string {
+	return `(NOT w.is_blocked AND w.scan_state <> 'blocked'
+	         AND (w.scan_state <> 'pending' OR w.author_id::text = ` + viewerParam + `::text)
+	         AND ` + workLiveSQL + `)`
+}
 
 // worksSelectSQL is the shared SELECT for all work feed queries.
 // Caller appends WHERE, ORDER BY, LIMIT.
@@ -269,11 +550,9 @@ SELECT
     (SELECT COUNT(*) FROM work_reactions wr WHERE wr.work_id = w.id AND wr.reaction_type='repost')::int,
     (SELECT COUNT(*) FROM work_reactions wr WHERE wr.work_id = w.id AND wr.reaction_type='bookmark')::int,
     (SELECT COUNT(*) FROM work_reactions wr WHERE wr.work_id = w.id AND wr.reaction_type='dislike')::int,
-    COALESCE(w.is_repost, FALSE),
-    COALESCE(w.repost_source_id::text, ''),
     COALESCE(w.content_type, 'text'),
     COALESCE(w.tags, '{}'),
-    COALESCE(w.comment_gating, 'open'),
+    w.comment_gating,
     COALESCE(w.subscriber_only, FALSE),
     COALESCE(w.scan_state, 'pending'),
     COALESCE(w.score_band, 'steady'),
@@ -281,7 +560,7 @@ SELECT
     w.voice_url,
     w.voice_duration_secs,
     w.video_master_url,
-    w.video_watermarked_url,
+    w.downloads_allowed,
     w.video_poster_url,
     w.video_duration_secs,
     w.video_width,
@@ -301,7 +580,7 @@ SELECT
 FROM works w
 JOIN users u ON u.id = w.author_id
 LEFT JOIN user_profiles up ON up.user_id = w.author_id
-LEFT JOIN pial_roots plr ON plr.pial_id = u.pial_id
+LEFT JOIN identity_facts plr ON plr.pial_id = u.pial_id
 `
 
 // scanWork scans one row from worksSelectSQL into a model.Work.
@@ -317,7 +596,6 @@ func scanWork(rows *sql.Rows) (*model.Work, error) {
 	var voiceURL sql.NullString
 	var voiceDuration sql.NullFloat64
 	var videoMasterURL sql.NullString
-	var videoWatermarkedURL sql.NullString
 	var videoPosterURL sql.NullString
 	var videoDuration sql.NullFloat64
 	var videoWidth sql.NullInt64
@@ -336,12 +614,12 @@ func scanWork(rows *sql.Rows) (*model.Work, error) {
 		// reaction counts
 		&w.LikeCount, &w.RepostCount, &w.BookmarkCount, &w.DislikeCount,
 		// extended fields
-		&w.IsRepost, &w.RepostSourceID, &w.ContentType, &tags,
+		&w.ContentType, &tags,
 		&w.CommentGating, &w.SubscriberOnly, &w.ScanState, &w.ScoreBand, &w.LegacyPostID,
 		// voice
 		&voiceURL, &voiceDuration,
 		// video
-		&videoMasterURL, &videoWatermarkedURL, &videoPosterURL, &videoDuration, &videoWidth, &videoHeight,
+		&videoMasterURL, &w.DownloadsAllowed, &videoPosterURL, &videoDuration, &videoWidth, &videoHeight,
 		// react-with-video layout
 		&w.ReactLayout,
 		// lineage
@@ -390,9 +668,6 @@ func scanWork(rows *sql.Rows) (*model.Work, error) {
 	}
 	if videoMasterURL.Valid {
 		w.VideoMasterURL = videoMasterURL.String
-	}
-	if videoWatermarkedURL.Valid {
-		w.VideoWatermarkedURL = videoWatermarkedURL.String
 	}
 	if videoPosterURL.Valid {
 		w.VideoPosterURL = videoPosterURL.String
@@ -471,13 +746,13 @@ func GetWorksFeedFollowing(db *sql.DB, viewerID string, limit int, before string
 	// you + people you follow. Each work appears once at its newest surfacing,
 	// ordered by the time it hit the feed (repost time for reposts) so a fresh
 	// repost rises to the top — reposts are first-class feed items.
-	const idQuery = `
+	idQuery := `
 		SELECT id, reposter_handle, reposter_name, feed_ts FROM (
 		  SELECT DISTINCT ON (id) id, reposter_handle, reposter_name, feed_ts FROM (
 		    SELECT w.id AS id, NULL::text AS reposter_handle, NULL::text AS reposter_name, w.created_at AS feed_ts
 		    FROM works w
 		    WHERE (w.author_id = $1::uuid OR w.author_id IN (SELECT following_id FROM follows WHERE follower_id = $1::uuid))
-		      AND w.deleted_at IS NULL AND ` + workNotBlockedSQL + ` AND w.kind <> 'reply'
+		      AND w.deleted_at IS NULL AND ` + workVisibleToSQL("$1") + ` AND NOT w.is_reply
 		      AND ` + workLiveSQL + `
 		      AND (NOT w.subscriber_only OR w.author_id = $1::uuid
 		           OR EXISTS (SELECT 1 FROM subscriptions WHERE subscriber_id = $1::uuid AND creator_id = w.author_id AND status = 'active'))
@@ -490,7 +765,7 @@ func GetWorksFeedFollowing(db *sql.DB, viewerID string, limit int, before string
 		    LEFT JOIN user_profiles rp ON rp.user_id = wr.reactor_id
 		    WHERE wr.reaction_type = 'repost'
 		      AND (wr.reactor_id = $1::uuid OR wr.reactor_id IN (SELECT following_id FROM follows WHERE follower_id = $1::uuid))
-		      AND w.deleted_at IS NULL AND ` + workNotBlockedSQL + ` AND w.kind <> 'reply'
+		      AND w.deleted_at IS NULL AND ` + workNotBlockedSQL + ` AND NOT w.is_reply
 		      AND (NOT w.subscriber_only OR w.author_id = $1::uuid
 		           OR EXISTS (SELECT 1 FROM subscriptions WHERE subscriber_id = $1::uuid AND creator_id = w.author_id AND status = 'active'))
 		  ) feed
@@ -503,7 +778,9 @@ func GetWorksFeedFollowing(db *sql.DB, viewerID string, limit int, before string
 }
 
 // GetWorksForProfile returns works authored by the given PIAL, newest first.
-func GetWorksForProfile(db *sql.DB, authorPIAL string, limit int, before string) ([]*model.Work, error) {
+// viewerID is the reading account: an author reading their own profile sees
+// their works that are still waiting on a verdict.
+func GetWorksForProfile(db *sql.DB, authorPIAL, viewerID string, limit int, before string) ([]*model.Work, error) {
 	c, err := parseCursor(before)
 	if err != nil {
 		return nil, err
@@ -512,13 +789,13 @@ func GetWorksForProfile(db *sql.DB, authorPIAL string, limit int, before string)
 	rows, err := db.Query(worksSelectSQL+`
 		WHERE w.author_pial = $1::uuid
 		AND w.deleted_at IS NULL
-		AND `+workNotBlockedSQL+`
-		AND w.kind != 'reply'
+		AND `+workVisibleToSQL("$5")+`
+		AND NOT w.is_reply
 		AND `+workLiveSQL+`
 		AND (w.created_at, w.id) < ($2, $4::uuid)
 		ORDER BY w.created_at DESC, w.id DESC
 		LIMIT $3
-	`, authorPIAL, c.TS, limit, c.ID)
+	`, authorPIAL, c.TS, limit, c.ID, viewerID)
 	if err != nil {
 		return nil, err
 	}
@@ -532,11 +809,11 @@ func GetWorksForProfile(db *sql.DB, authorPIAL string, limit int, before string)
 // Returns sql.ErrNoRows when the work does not exist or has already been deleted;
 // returns a sentinel error when the user is not the owner.
 //
-// The retirement and the hash purge are one transaction. The hashes are what
-// stop the same media being uploaded again, so a hash purge that fails after the
-// work is retired leaves the author unable to re-post their own media with no
-// error anywhere to explain why — which is what happened while those two
-// statements discarded their errors.
+// The retirement and the withdrawal of the author's own media are one
+// transaction: deleting a work takes its media off the platform for good. It
+// never frees the media for re-upload credit — Caeor keeps the asset, its
+// uploader and its withdrawal, so the same bytes uploaded again resolve to the
+// original, withdrawn asset and nobody can claim them anew.
 func SoftDeleteWork(db *sql.DB, workID, authorID string) error {
 	tx, err := db.Begin()
 	if err != nil {
@@ -566,16 +843,8 @@ func SoftDeleteWork(db *sql.DB, workID, authorID string) error {
 		return sql.ErrNoRows
 	}
 
-	// Purge hashes so the media can be freely re-uploaded by anyone. Read against
-	// the same snapshot that just retired the work, so media_urls is still there.
-	if _, err := tx.Exec(
-		`DELETE FROM video_raw_hashes WHERE post_id = $1`, workID); err != nil {
-		return fmt.Errorf("retiring work %s: purging video hashes: %w", workID, err)
-	}
-	if _, err := tx.Exec(`DELETE FROM image_raw_hashes WHERE media_url IN (
-		SELECT unnest(media_urls) FROM works WHERE id = $1::uuid
-	)`, workID); err != nil {
-		return fmt.Errorf("retiring work %s: purging image hashes: %w", workID, err)
+	if err := enqueueWorkMediaWithdrawal(tx, workID, "work deleted by its author", false); err != nil {
+		return fmt.Errorf("retiring work %s: %w", workID, err)
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -584,14 +853,15 @@ func SoftDeleteWork(db *sql.DB, workID, authorID string) error {
 	return nil
 }
 
-// AdminDeleteWork hard-deletes a work and its associated hashes without author ownership check.
+// AdminDeleteWork hard-deletes a work without author ownership check.
 // Used by admins to remove content regardless of who posted it.
 //
 // One transaction, every error returned. The work's own children — reactions,
-// citations, editions, scores, poll votes — are reached by ON DELETE CASCADE from
-// works, and the pinned-work reference by ON DELETE SET NULL, so the only
-// statements here are the two hash tables, which have no foreign key to works and
-// which nothing else would ever clear.
+// citations, editions, scores, poll votes, media references — are reached by ON
+// DELETE CASCADE from works, and the pinned-work reference by ON DELETE SET
+// NULL. The withdrawal of the author's own media is recorded first, while the
+// work's media references still exist to say which assets are the author's;
+// media_withdrawals has no foreign key to works, so the debt outlives the row.
 func AdminDeleteWork(db *sql.DB, workID string) error {
 	tx, err := db.Begin()
 	if err != nil {
@@ -603,16 +873,11 @@ func AdminDeleteWork(db *sql.DB, workID string) error {
 		}
 	}()
 
-	// Image hashes are keyed by media URL, so they must be resolved through the
-	// works row while it still exists.
-	if _, err := tx.Exec(`DELETE FROM image_raw_hashes WHERE media_url IN (
-		SELECT unnest(media_urls) FROM works WHERE id = $1::uuid
-	)`, workID); err != nil {
-		return fmt.Errorf("deleting work %s: purging image hashes: %w", workID, err)
-	}
-	if _, err := tx.Exec(
-		`DELETE FROM video_raw_hashes WHERE post_id = $1`, workID); err != nil {
-		return fmt.Errorf("deleting work %s: purging video hashes: %w", workID, err)
+	// An admin removal takes the work's own media off the platform with it,
+	// including copies other works still name: a reference to a withdrawn asset
+	// unlocks nothing.
+	if err := enqueueWorkMediaWithdrawal(tx, workID, "work removed by an administrator", true); err != nil {
+		return fmt.Errorf("deleting work %s: %w", workID, err)
 	}
 
 	result, err := tx.Exec(`DELETE FROM works WHERE id = $1::uuid`, workID)
@@ -683,6 +948,18 @@ var purgeOrphanStatements = []struct {
 	scope purgeScope
 	stmt  string
 }{
+	// ── media the person uploaded leaves the platform with them ───────────────
+	{
+		"the person's own uploaded media, withdrawn from Caeor before their works cascade away; the debt has no foreign key, so it outlives the works rows it was read from",
+		scopeAccount,
+		`INSERT INTO media_withdrawals (asset_id, work_id, reason)
+		 SELECT DISTINCT ON (wa.asset_id) wa.asset_id, wa.work_id, 'account erased'
+		   FROM work_assets wa
+		   JOIN works w ON w.id = wa.work_id
+		  WHERE w.author_id = $1::uuid AND wa.uploader_pial = w.author_pial
+		  ORDER BY wa.asset_id, wa.work_id
+		 ON CONFLICT (asset_id) DO NOTHING`,
+	},
 	// ── text that names the person on rows other people keep ──────────────────
 	{
 		"a duplicate-upload lineage marker names the original creator on somebody else's surviving work",
@@ -690,23 +967,7 @@ var purgeOrphanStatements = []struct {
 		`UPDATE works SET lineage_pial = NULL, lineage_handle = NULL
 		  WHERE lineage_pial = $2::text AND author_id <> $1::uuid`,
 	},
-	{
-		"canonical_media releases both ids by foreign key but creator_handle is text and would outlive them",
-		scopeBoth,
-		`UPDATE canonical_media SET creator_handle = ''
-		  WHERE creator_user_id = $1::uuid OR creator_pial_id = $2::uuid`,
-	},
 	// ── no foreign key: nothing cascades, nothing ever did ────────────────────
-	{
-		"E2E signing public key — the identity's own key material",
-		scopeIdentity,
-		`DELETE FROM pial_signing_keys WHERE pial_id = $1::uuid`,
-	},
-	{
-		"E2E key-agreement public key — the identity's own key material",
-		scopeIdentity,
-		`DELETE FROM pial_ecdh_keys WHERE pial_id = $1::uuid`,
-	},
 	{
 		"sealed message keys addressed to this account on conversations it does not own; unopenable once the account is gone",
 		scopeAccount,
@@ -716,16 +977,6 @@ var purgeOrphanStatements = []struct {
 		"perceptual and audio fingerprints of everything the account uploaded",
 		scopeIdentity,
 		`DELETE FROM media_fingerprints WHERE uploader_pial = $1::text`,
-	},
-	{
-		"raw video hashes, so the same media can be freely re-uploaded by anyone",
-		scopeIdentity,
-		`DELETE FROM video_raw_hashes WHERE uploader_pial = $1::text`,
-	},
-	{
-		"raw image hashes, so the same media can be freely re-uploaded by anyone",
-		scopeIdentity,
-		`DELETE FROM image_raw_hashes WHERE uploader_pial = $1::text`,
 	},
 	{
 		"who viewed whose Vision — the account's own viewing history",
@@ -761,11 +1012,6 @@ var purgeOrphanStatements = []struct {
 		`DELETE FROM vision_mutes WHERE muter_pial = $1::uuid OR muted_pial = $1::uuid`,
 	},
 	{
-		"per-capability posting, messaging, tipping and streaming grants",
-		scopeIdentity,
-		`DELETE FROM pial_capabilities WHERE pial_id = $1::uuid`,
-	},
-	{
 		"trust level, NSFW tier and violation counters — meaningless once the root is tombstoned, and enforcement_actions keeps the record of what was actually done",
 		scopeIdentity,
 		`DELETE FROM trust_scores WHERE pial_id = $1::uuid`,
@@ -775,6 +1021,34 @@ var purgeOrphanStatements = []struct {
 		scopeIdentity,
 		`DELETE FROM identity_signals WHERE pial_id = $1::uuid`,
 	},
+}
+
+// purgeRetiringStatements erase the person from the identity authority tables
+// this brain kept until elohim-veni imported them (see migration 0038 and the
+// staged retirement migration). They are run only while those tables still
+// exist: until the retirement migration drops them they hold a copy of the
+// person — key material, capability grants, the identity root's date of birth
+// and KYC tier — and a purge that left that copy would not be one. Once the
+// tables are gone there is nothing left to erase, and the statements are
+// skipped by the existence check, not by ignoring an error.
+var purgeRetiringStatements = []struct {
+	table string
+	why   string
+	stmt  string
+}{
+	{"pial_signing_keys", "E2E signing public key — the identity's own key material",
+		`DELETE FROM pial_signing_keys WHERE pial_id = $1::uuid`},
+	{"pial_ecdh_keys", "E2E key-agreement public key — the identity's own key material",
+		`DELETE FROM pial_ecdh_keys WHERE pial_id = $1::uuid`},
+	{"pial_capabilities", "per-capability grants",
+		`DELETE FROM pial_capabilities WHERE pial_id = $1::uuid`},
+	{"pial_roots", "the identity root's personal content — key, date of birth, KYC tier, age and role flags",
+		`UPDATE pial_roots
+		    SET public_key = '', state_hash = '', date_of_birth = NULL, dob_locked = FALSE,
+		        kyc_tier = 'none', kyc_verified_at = NULL, age_verified = FALSE,
+		        is_adult = FALSE, is_minor = FALSE, role = 'user', status = 'purged',
+		        is_tombstoned = TRUE, deleted_at = NOW()
+		  WHERE pial_id = $1::uuid`},
 }
 
 // PurgeUser irreversibly erases an account. All of it or none of it.
@@ -789,13 +1063,13 @@ var purgeOrphanStatements = []struct {
 // SIX THINGS SURVIVE A PURGE. They are decisions, not bugs, and no future
 // reader should have to guess which:
 //
-//  1. pial_roots — TOMBSTONED, never deleted. pial_event_ledger.pial_id is NOT
-//     NULL and the ledger is append-only, so an identity's root is pinned for as
-//     long as a single event references it, and every identity has events from
-//     the moment it exists. The root is stripped of everything personal — public
-//     key, state hash, date of birth, KYC tier, age and role flags — and left as
-//     an opaque UUID with is_tombstoned, deleted_at and status='purged' set.
-//     What remains names nobody and holds nothing about anyone.
+//  1. identity_facts — TOMBSTONED, never deleted. pial_event_ledger.pial_id is
+//     NOT NULL and the ledger is append-only, so the projected identity is
+//     pinned for as long as a single event references it. It is stripped of
+//     everything personal — capabilities, date of birth, KYC tier, age and role
+//     flags — and left as an opaque UUID with status='purged'. The identity at
+//     the authority is erased by elohim-veni on the queued purge command, and
+//     the retiring pial_roots copy, while it exists, is tombstoned the same way.
 //
 //  2. pial_event_ledger — RETAINED with account_id released to NULL by its
 //     foreign key. The append-only identity ledger is the one record on this
@@ -929,35 +1203,42 @@ func PurgeUser(db *sql.DB, userID, pialID string) error {
 	}
 
 	if pial.Valid {
-		// Tombstone the identity root. It cannot be deleted while the append-only
-		// ledger references it, so what is erased is its CONTENT: the key material,
-		// the date of birth, the KYC tier and every age and role flag derived from
-		// them. What is left is an opaque UUID marked purged.
+		// The retiring authority tables, while they still exist.
+		for _, rs := range purgeRetiringStatements {
+			var present sql.NullString
+			if err := tx.QueryRow(`SELECT to_regclass($1)::text`, rs.table).Scan(&present); err != nil {
+				return fmt.Errorf("purge %s: checking for %s: %w", userID, rs.table, err)
+			}
+			if !present.Valid {
+				continue
+			}
+			if _, err := tx.Exec(rs.stmt, pial.String); err != nil {
+				return fmt.Errorf("purge %s: %s: %w", userID, rs.why, err)
+			}
+		}
+
+		// This brain's projection of the identity is tombstoned the same way: it
+		// keeps the opaque id the ledger, receipts and enforcement records hold,
+		// and nothing that names the person.
 		res, err := tx.Exec(`
-			UPDATE pial_roots
-			   SET public_key      = '',
-			       state_hash      = '',
-			       date_of_birth   = NULL,
-			       dob_locked      = FALSE,
-			       kyc_tier        = 'none',
-			       kyc_verified_at = NULL,
-			       age_verified    = FALSE,
-			       is_adult        = FALSE,
-			       is_minor        = FALSE,
-			       role            = 'user',
-			       status          = 'purged',
-			       is_tombstoned   = TRUE,
-			       deleted_at      = NOW()
+			UPDATE identity_facts
+			   SET caps = '{}', age_verified = FALSE, is_adult = FALSE, is_minor = FALSE,
+			       kyc_tier = 'none', kyc_verified_at = NULL, date_of_birth = NULL,
+			       role = 'user', status = 'purged', projected_at = NOW()
 			 WHERE pial_id = $1::uuid`, pial.String)
 		if err != nil {
-			return fmt.Errorf("purge %s: tombstoning identity root: %w", userID, err)
+			return fmt.Errorf("purge %s: tombstoning the identity projection: %w", userID, err)
 		}
-		n, err := res.RowsAffected()
-		if err != nil {
-			return fmt.Errorf("purge %s: counting tombstoned roots: %w", userID, err)
+		if n, err := res.RowsAffected(); err != nil || n != 1 {
+			return fmt.Errorf("purge %s: tombstoned %d projected identities, wanted exactly 1 (%v)", userID, n, err)
 		}
-		if n != 1 {
-			return fmt.Errorf("purge %s: tombstoned %d identity roots, wanted exactly 1", userID, n)
+
+		// The authority erases the account and, when it was the last on the
+		// identity, tombstones the identity. Queued on this commit; the identity
+		// command relay delivers it.
+		if err := EnqueueIdentityCommand(tx, identity.CommandPurge, pial.String,
+			identity.PurgeCommand{AccountID: userID, By: "admin"}); err != nil {
+			return fmt.Errorf("purge %s: queueing the identity purge: %w", userID, err)
 		}
 
 		// The purge is itself an identity-affecting event, so it is appended to the
@@ -986,9 +1267,9 @@ func PurgeUser(db *sql.DB, userID, pialID string) error {
 func GetWorkByID(db *sql.DB, workID, viewerID string) (*model.Work, error) {
 	rows, err := db.Query(worksSelectSQL+`
 		WHERE w.id = $1::uuid AND w.deleted_at IS NULL
-		  AND `+workNotBlockedSQL+`
+		  AND `+workVisibleToSQL("$2")+`
 		  AND `+workLiveSQL+`
-	`, workID)
+	`, workID, viewerID)
 	if err != nil {
 		return nil, err
 	}
@@ -1468,7 +1749,7 @@ func GetWorksForYou(db *sql.DB, limit int, before string) ([]*model.Work, error)
 		  SELECT DISTINCT ON (id) id, reposter_handle, reposter_name, feed_ts FROM (
 		    SELECT w.id AS id, NULL::text AS reposter_handle, NULL::text AS reposter_name, w.created_at AS feed_ts
 		    FROM works w
-		    WHERE w.deleted_at IS NULL AND ` + workNotBlockedSQL + ` AND NOT w.subscriber_only AND w.kind <> 'reply'
+		    WHERE w.deleted_at IS NULL AND ` + workNotBlockedSQL + ` AND NOT w.subscriber_only AND NOT w.is_reply
 		      AND ` + workLiveSQL + `
 		    UNION ALL
 		    SELECT wr.work_id AS id, ru.handle AS reposter_handle,
@@ -1478,7 +1759,7 @@ func GetWorksForYou(db *sql.DB, limit int, before string) ([]*model.Work, error)
 		    JOIN users ru ON ru.id = wr.reactor_id
 		    LEFT JOIN user_profiles rp ON rp.user_id = wr.reactor_id
 		    WHERE wr.reaction_type = 'repost'
-		      AND w.deleted_at IS NULL AND ` + workNotBlockedSQL + ` AND NOT w.subscriber_only AND w.kind <> 'reply'
+		      AND w.deleted_at IS NULL AND ` + workNotBlockedSQL + ` AND NOT w.subscriber_only AND NOT w.is_reply
 		  ) feed
 		  ORDER BY id, feed_ts DESC
 		) d
@@ -1501,7 +1782,7 @@ func GetWorksNSFW(db *sql.DB, limit int, before string) ([]*model.Work, error) {
 		WHERE w.deleted_at IS NULL
 		  AND `+workNotBlockedSQL+`
 		  AND NOT w.subscriber_only
-		  AND w.kind != 'reply'
+		  AND NOT w.is_reply
 		  AND `+workLiveSQL+`
 		  AND (w.is_nsfw = TRUE OR w.is_gore = TRUE OR COALESCE(up.is_adult_creator, FALSE) = TRUE)
 		  AND (w.created_at, w.id) < ($1, $3::uuid)
@@ -1551,7 +1832,7 @@ func GetWorksBySurface(db *sql.DB, tags []string, contentType string, limit int,
 		WHERE w.deleted_at IS NULL
 		  AND `+workNotBlockedSQL+`
 		  AND NOT w.subscriber_only
-		  AND w.kind != 'reply'
+		  AND NOT w.is_reply
 		  AND `+workLiveSQL+`
 		  AND (w.scheduled_at IS NULL OR w.scheduled_at <= NOW())
 		  AND (
@@ -1606,7 +1887,7 @@ func GetWorksRepostedByUser(db *sql.DB, reposterID string, limit int, before str
 		LEFT JOIN user_profiles rp ON rp.user_id = wr.reactor_id
 		WHERE wr.reaction_type = 'repost'
 		  AND wr.reactor_id = $1::uuid
-		  AND w.deleted_at IS NULL AND ` + workNotBlockedSQL + ` AND NOT w.subscriber_only AND w.kind <> 'reply'
+		  AND w.deleted_at IS NULL AND ` + workNotBlockedSQL + ` AND NOT w.subscriber_only AND NOT w.is_reply
 		  AND ` + workLiveSQL + `
 		  AND (wr.created_at, wr.work_id) < ($2, $4::uuid)
 		ORDER BY wr.created_at DESC, wr.work_id DESC
@@ -1650,7 +1931,7 @@ func SearchWorksPage(db *sql.DB, terms []string, limit int, before, viewerID str
 	rows, err := db.Query(worksSelectSQL+`
 		WHERE w.deleted_at IS NULL
 		  AND `+workNotBlockedSQL+`
-		  AND w.kind != 'reply'
+		  AND NOT w.is_reply
 		  AND EXISTS (SELECT 1 FROM unnest($1::text[]) term
 		              WHERE to_tsvector('english', w.body) @@ plainto_tsquery('english', term))
 		  AND (w.created_at, w.id) < ($3, $4::uuid)
@@ -2125,23 +2406,6 @@ func GetWorkForPsych(db *sql.DB, workID string) (*model.Work, error) {
 	return works[0], nil
 }
 
-// GetWorkForPsychByCID is GetWorkForPsych addressed by content id, which is
-// how a reply or quote names the work it cites.
-func GetWorkForPsychByCID(db *sql.DB, cid string) (*model.Work, error) {
-	rows, err := db.Query(workPsychSelectSQL+`WHERE w.cid = $1`, cid)
-	if err != nil {
-		return nil, err
-	}
-	works, err := collectWorksPsych(rows)
-	if err != nil {
-		return nil, err
-	}
-	if len(works) == 0 {
-		return nil, sql.ErrNoRows
-	}
-	return works[0], nil
-}
-
 // GetEngagedWorksForPsych returns the works a person most recently reacted to
 // positively (like, repost, bookmark), newest reaction first, in the psych
 // projection. It is the evidence set the interest vector is recomputed from.
@@ -2247,30 +2511,4 @@ func GetWorksMissingPsychVector(db *sql.DB, limit int) ([]*model.Work, error) {
 		return nil, err
 	}
 	return collectWorksPsych(rows)
-}
-
-// SetTrackZiorSignal stores Zior's reading of a music track (migration 0021):
-// its Jung vector, mood, descriptor and listening contexts. The track's own
-// row carries them because a track is not a work — it lives in tracks, with
-// its own audio metadata — and the vector must be addressable by the track
-// id Zior stored the signal under.
-func SetTrackZiorSignal(db *sql.DB, trackID string, vec []float32, mood, descriptor string, contextTags []string) error {
-	if len(vec) != jung.Dim {
-		return fmt.Errorf("tracks: psych vector for %s has %d dims, want %d", trackID, len(vec), jung.Dim)
-	}
-	if contextTags == nil {
-		contextTags = []string{}
-	}
-	res, err := db.Exec(`
-		UPDATE tracks
-		SET psych_vector = $1, mood = $2, descriptor = $3, context_tags = $4, zior_analyzed_at = NOW()
-		WHERE id = $5::uuid
-	`, pq.Float32Array(vec), mood, descriptor, pq.Array(contextTags), trackID)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return sql.ErrNoRows
-	}
-	return nil
 }

@@ -66,6 +66,11 @@ services:
         B=sitra-achra:9092
         rpk topic describe fa.live -X brokers=$$B >/dev/null 2>&1 || \
           rpk topic create fa.live -p 6 -r 1 -c retention.ms=300000 -X brokers=$$B
+        # identity.events: elohim-veni's full-state identity snapshots, keyed by
+        # PIAL. Kept 30 days; a projection older than that rebuilds from the
+        # identity reads.
+        rpk topic describe identity.events -X brokers=$$B >/dev/null 2>&1 || \
+          rpk topic create identity.events -p 12 -r 1 -c retention.ms=2592000000 -X brokers=$$B
         for t in notification.events notification.events.dead; do
           rpk topic describe $$t -X brokers=$$B >/dev/null 2>&1 || \
             rpk topic create $$t -p 12 -r 1 -c retention.ms=2592000000 -X brokers=$$B
@@ -74,6 +79,17 @@ services:
           rpk topic create notification.updates -p 6 -r 1 -c retention.ms=300000 -X brokers=$$B
         rpk topic describe frequency.events -X brokers=$$B >/dev/null 2>&1 || \
           rpk topic create frequency.events -p 6 -r 1 -c retention.ms=604800000 -X brokers=$$B
+        # safety.events: Abraxas's integrity decisions (verdicts, ownership,
+        # banned matches, review decisions), keyed by subject, relayed from its
+        # transactional outbox. Kept 30 days.
+        rpk topic describe safety.events -X brokers=$$B >/dev/null 2>&1 || \
+          rpk topic create safety.events -p 12 -r 1 -c retention.ms=2592000000 -X brokers=$$B
+        # content.events: works and Visions for Abraxas to scan, relayed from
+        # feed-engine's work outbox. Declared here, not left to auto-creation:
+        # a consumer that subscribes before the first post would otherwise
+        # find no topic. Kept 7 days, longer than any outage Abraxas rides out.
+        rpk topic describe content.events -X brokers=$$B >/dev/null 2>&1 || \
+          rpk topic create content.events -p 12 -r 1 -c retention.ms=604800000 -X brokers=$$B
         echo "[sitra-init] topics ready"
     depends_on:
       sitra-achra:
@@ -174,6 +190,10 @@ services:
       # .dockerignore keeps the context tight.
       context: .
       dockerfile: feed-engine/Dockerfile
+    # feed-engine refuses to serve without its database: it retries for a
+    # bounded time at startup, then exits non-zero. This policy is what brings
+    # it back once Postgres is reachable again. Matches docker-compose.prod.yml.
+    restart: unless-stopped
     env_file:
       - .env.local
     # No host port on purpose. The app is reached through Caddy on 8443 only,
@@ -190,7 +210,9 @@ services:
       AETHYRRANK_URL: "http://aethyrrank-engine:8080"
       ZIOR_URL: "http://zior-engine:8082"
       AIN_SOPH_URL: "http://ain-soph:8089"
-      ZODACARE_URL: "http://zodacare:8090"
+      # Abraxas — the integrity authority: live frame checks, reports, the
+      # review queue. Called with INTERNAL_API_KEY as X-Internal-Key.
+      ABRAXAS_URL: "${ABRAXAS_URL:-http://abraxas-shield:8109}"
       ELOHIM_VENI_URL: "http://elohim-veni:8093"
       AURALIS_URL: "http://auralis:8108"
       # NOTE — SPORTS_PROVIDER, BBS_API, SPORTS_BASE_URL and
@@ -217,10 +239,8 @@ services:
       EKYC_URL: "http://ekyc:8099"
       LEDGER_URL: "http://aethyr-ledger:8096"
       CAEOR_URL: "http://caeor:8086"
-      TRANSCODING_URL: "http://transcoding:8085"
       HERALD_URL: "http://herald:8105"
       MANHATTAN_URL: "http://manhattan:8107"
-      REGISTRY_BRAIN_URL: "http://registry-brain:8094"
       THEMIS_URL: "http://themis:8100"
       REDIS_URL: "redis://redis:6379"
       KAFKA_BROKERS: "sitra-achra:9092"
@@ -264,7 +284,6 @@ services:
       LIVE_SCAN_DIR: "/app/live-scan"
       LIVE_RTMP_BASE: "rtmp://${LIVE_PUBLIC_HOST:-localhost}:1935"
       LIVE_SRT_HOST: "${LIVE_PUBLIC_HOST:-localhost}:8890"
-      CONTENT_SCAN_URL: "${CONTENT_SCAN_URL:-http://content-scan:8097}"
     volumes:
       - ./feed-engine/web/static:/app/web/static    # live CSS/JS/brand — git pull = instant update
       - ./feed-engine/web/templates:/app/web/templates:ro  # live templates — restart to pick up
@@ -280,15 +299,15 @@ services:
         condition: service_healthy
       caeor:
         condition: service_healthy
-      transcoding:
-        condition: service_healthy
       themis:
         condition: service_healthy
       astraon:
         condition: service_healthy
       sitra-achra:
         condition: service_healthy
-      registry-brain:
+      # The identity authority: every session resolves there, and sessions
+      # fail closed while it is down.
+      elohim-veni:
         condition: service_healthy
     healthcheck:
       test: [ "CMD", "wget", "-qO-", "http://localhost:8081/api/health" ]
@@ -370,39 +389,23 @@ services:
       # Ed25519 seed (base64, 32 bytes) signing contact key bundles. Unset means
       # bundles ship unsigned and report themselves as unsigned.
       CONTACT_BUNDLE_SIGNING_SEED: "${CONTACT_BUNDLE_SIGNING_SEED:-}"
+      # PIAL assertion signing keys (Ed25519, one <kid>.key file each). They
+      # live on their own volume, never in the database. Generated on first
+      # boot; rotate with `elohim-veni rotate-signing-key`.
+      PIAL_SIGNING_KEY_DIR: "/var/lib/elohim-veni/keys"
+      # identity.events are published through the Sitra Achra HTTP proxy.
+      SITRA_PROXY_URL: "http://sitra-achra:8082"
+    volumes:
+      - elohim_veni_keys:/var/lib/elohim-veni/keys
     depends_on:
       postgres:
         condition: service_healthy
       verity:
         condition: service_healthy
+      sitra-init:
+        condition: service_completed_successfully
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:8093/health" ]
-      interval: 10s
-      timeout: 3s
-      retries: 5
-      start_period: 30s
-
-  zodacare:
-    build:
-      context: .
-      dockerfile: zodacare/docker/Dockerfile
-    ports:
-      - "127.0.0.1:8090:8090"
-    environment:
-      MANHATTAN_URL: "http://manhattan:8107"
-      # Authenticates every call to Manhattan; the brain refuses to boot without it.
-      INTERNAL_API_KEY: "${INTERNAL_API_KEY:?set this in .env.local}"
-      RUST_LOG: "${RUST_LOG:-info}"
-      PORT: "8090"
-      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:?set this in .env.local}@postgres:5432/f33d3r_safety?sslmode=disable"
-      ELOHIM_VENI_URL: "http://elohim-veni:8093"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      elohim-veni:
-        condition: service_healthy
-    healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:8090/health" ]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -567,28 +570,6 @@ services:
       retries: 5
       start_period: 30s
 
-  registry-brain:
-    build:
-      context: .
-      dockerfile: registry-brain/docker/Dockerfile
-    ports:
-      - "127.0.0.1:8094:8094"
-    environment:
-      MANHATTAN_URL: "http://manhattan:8107"
-      # Authenticates every call to Manhattan; the brain refuses to boot without it.
-      INTERNAL_API_KEY: "${INTERNAL_API_KEY:?set this in .env.local}"
-      RUST_LOG: "${RUST_LOG:-info}"
-      PORT: "8094"
-      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:?set this in .env.local}@postgres:5432/f33d3r_handles?sslmode=disable"
-    depends_on:
-      postgres:
-        condition: service_healthy
-    healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:8094/health" ]
-      interval: 10s
-      timeout: 3s
-      retries: 5
-      start_period: 30s
 
   manhattan:
     build:
@@ -715,19 +696,37 @@ services:
       live-edge:
         condition: service_started
 
+  # ── Caeor — the media-asset authority (Rust, port 8086) ───────────────────
+  # Owns f33d3r_media: every asset, its derivatives, its credit (raw hashes)
+  # and its upload jobs. Transcoding is its worker. The private store holds
+  # clean sources and download files and is mounted here and in transcoding
+  # ONLY: no service that serves files may ever mount it.
   caeor:
     build:
-      context: ./caeor
-      dockerfile: docker/Dockerfile
+      context: .
+      dockerfile: caeor/docker/Dockerfile
     ports:
       - "127.0.0.1:8086:8086"
     environment:
       RUST_LOG: "${RUST_LOG:-info}"
       PORT: "8086"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:?set this in .env.local}@postgres:5432/f33d3r_media?sslmode=disable"
+      # Read only by the one-shot `caeor import`.
+      FEED_DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:?set this in .env.local}@postgres:5432/f33d3r_feed?sslmode=disable"
       MEDIA_DIR: "/data/media"
+      PRIVATE_DIR: "/data/media-private"
+      TRANSCODING_URL: "http://transcoding:8085"
+      MANHATTAN_URL: "http://manhattan:8107"
+      # Abraxas — every upload is put to it before it may become ready.
+      ABRAXAS_URL: "${ABRAXAS_URL:-http://abraxas-shield:8109}"
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY:?set this in .env.local}"
       DEV_MODE: "${DEV_MODE:-false}"
     volumes:
       - f33d3r_media:/data/media
+      - f33d3r_media_private:/data/media-private
+    depends_on:
+      postgres:
+        condition: service_healthy
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:8086/health" ]
       interval: 10s
@@ -976,6 +975,10 @@ services:
       PORT: "8085"
       INTERNAL_API_KEY: "${INTERNAL_API_KEY:?set this in .env.local}"
       MEDIA_DIR: "/data/media"
+      PRIVATE_DIR: "/data/media-private"
+      REPLAY_DIR: "/replays"
+      # Encodes at once; the queue itself is durable in caeor.
+      JOBS_AT_ONCE: "${TRANSCODE_JOBS_AT_ONCE:-2}"
       DEV_MODE: "${DEV_MODE:-false}"
       # Same contract as mediamtx and content-scan below: encode picks h264_nvenc
       # only when this is true, and it defaults to false so a box with no NVIDIA
@@ -988,6 +991,8 @@ services:
     volumes:
       - frequency_replays:/replays:ro
       - f33d3r_media:/data/media
+      # Clean sources and download files. Mounted only here and in caeor.
+      - f33d3r_media_private:/data/media-private
     # runc is Docker's default runtime and needs no GPU present. A compose file
     # naming a device reservation the host cannot satisfy refuses to schedule the
     # container at all — the same failure mode mediamtx's runtime var avoids.
@@ -1142,39 +1147,77 @@ services:
       retries: 3
       start_period: 30s
 
-  # ── Abraxas Shield — Kafka-native content safety (Rust, no HTTP server) ──────
+  # ── Abraxas Shield — the integrity authority (Rust, port 8109) ──────────────
+  # The banned-content gate caeor asks before an asset becomes ready
+  # (POST /v1/check), the live frame check, PIAL-keyed fingerprints and
+  # ownership, verdicts, the ML → admin review queue and reports (absorbed
+  # from zodacare). Owns f33d3r_integrity and writes no other database;
+  # verdicts leave on safety.events through its outbox. content-scan is its
+  # private worker. Account actions are elohim-veni's: a ban decided here is
+  # handed to it.
+  #
+  # One-shot import of zodacare's reports and feed-engine's integrity tables
+  # (verified counts, idempotent):
+  #   docker compose ... run --rm abraxas-shield abraxas-shield import
+  # Put caeor's pre-gate media through the gate:
+  #   docker compose ... run --rm abraxas-shield abraxas-shield backfill
   abraxas-shield:
     build:
-      context: ./abraxas-shield
-      dockerfile: Dockerfile
-      args:
-        FEATURES: ""   # text-only on local (avoids AVX2 SIGILL on older CPUs)
+      context: .
+      dockerfile: abraxas-shield/docker/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8109:8109"
     environment:
       RUST_LOG: "${RUST_LOG:-info}"
+      PORT: "8109"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:?set this in .env.local}@postgres:5432/f33d3r_integrity?sslmode=disable"
+      # Read only by `import` and `backfill`; the server never touches them.
+      FEED_DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:?set this in .env.local}@postgres:5432/f33d3r_feed?sslmode=disable"
+      SAFETY_DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:?set this in .env.local}@postgres:5432/f33d3r_safety?sslmode=disable"
+      CAEOR_DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:?set this in .env.local}@postgres:5432/f33d3r_media?sslmode=disable"
       KAFKA_BROKERS: "sitra-achra:9092"
-      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:?set this in .env.local}@postgres:5432/f33d3r_feed?sslmode=disable"
-      SCAN_VERSION: "3.0"
+      CONTENT_SCAN_URL: "http://content-scan:8097"
+      ELOHIM_VENI_URL: "http://elohim-veni:8093"
+      MANHATTAN_URL: "http://manhattan:8107"
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY:?set this in .env.local}"
+      PRIVATE_DIR: "/data/media-private"
+      LIVE_SCAN_DIR: "/data/live-scan"
+      SCAN_VERSION: "4.0"
+    volumes:
+      # Read-only, at the paths content-scan mounts them: a path Abraxas hands
+      # the worker names the same file in both containers.
+      - f33d3r_media_private:/data/media-private:ro
+      - f33d3r_live_scan:/data/live-scan:ro
     depends_on:
       postgres:
         condition: service_healthy
-      sitra-achra:
+      sitra-init:
+        condition: service_completed_successfully
+      elohim-veni:
         condition: service_healthy
-    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8109/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
 
-  # ── content-scan — visual / audio / text classifier (Python, port 8097) ─────
-  # The live lane posts every sampled keyframe to /v1/scan/image and drives
-  # live_streams.scan_state from the answer.
+  # ── content-scan — private ML worker of abraxas-shield (Python, port 8097) ──
+  # Called only by abraxas-shield, with X-Internal-Key: POST /v1/fingerprint and
+  # POST /v1/analyze over files on the read-only media private and live-scan
+  # volumes. It has no database, calls nothing back and decides nothing —
+  # abraxas does.
   #
   # First boot: the NudeNet, EasyOCR and faster-whisper weights are baked into
   # the image at build time, so start-up is a load from local disk (roughly a
   # minute) and not a download. start_period covers that; /ready answers 503
-  # until the NSFW detector is actually loaded, so a broken model shows up as an
-  # unhealthy container rather than as silence.
+  # until every model is loaded, so a broken model shows up as an unhealthy
+  # container rather than as silence.
   #
   # Nothing depends_on this service on purpose. A classifier that is still
-  # warming, or that failed to build, must not hold the rest of the stack down —
-  # feed-engine already fails closed while it is away: sampled frames are held
-  # unjudged at scan_state='pending_scan' and are never recorded clean.
+  # warming, or that failed to build, must not hold the rest of the stack down;
+  # abraxas holds what it cannot have analysed as unscanned, never as clean.
   content-scan:
     build:
       context: ./content-scan
@@ -1187,13 +1230,13 @@ services:
       - "127.0.0.1:8097:8097"
     environment:
       PORT: "8097"
-      DB_HOST: "postgres"
-      DB_PORT: "5432"
-      DB_NAME: "f33d3r_feed"
-      DB_USER: "${POSTGRES_USER:-f33d3r}"
-      DB_PASSWORD: "${POSTGRES_PASSWORD:?set this in .env.local}"
-      FEED_ENGINE_URL: "http://feed-engine:8081"
+      # Only abraxas-shield calls this worker; every route but /health and
+      # /ready refuses a request without this key, and the process will not
+      # start without it.
       INTERNAL_API_KEY: "${INTERNAL_API_KEY:?set this in .env.local}"
+      # Paths in a request must resolve inside one of these two directories.
+      MEDIA_PRIVATE_DIR: "/data/media-private"
+      LIVE_SCAN_DIR: "/data/live-scan"
       # cpu | cuda. cuda also needs CONTENT_SCAN_RUNTIME=nvidia below; a cuda
       # request the host cannot honour logs a warning naming the reason and runs
       # on CPU rather than refusing to start.
@@ -1208,11 +1251,11 @@ services:
     # CONTENT_SCAN_DEVICE=cuda. Left at runc, the service runs on CPU.
     runtime: "${CONTENT_SCAN_RUNTIME:-runc}"
     volumes:
-      # Read-only: /v1/scan/risk is handed a file_path under the media tree.
-      - f33d3r_media:/app/web/static/media:ro
-    depends_on:
-      postgres:
-        condition: service_healthy
+      # Clean sources, read-only, at the same path caeor and transcoding mount
+      # them, so a path abraxas holds means the same file here.
+      - f33d3r_media_private:/data/media-private:ro
+      # Sampled live keyframes, read-only, at the path abraxas mounts them.
+      - f33d3r_live_scan:/data/live-scan:ro
     healthcheck:
       test: [ "CMD", "curl", "-fsS", "http://localhost:8097/ready" ]
       interval: 30s
@@ -1252,12 +1295,15 @@ services:
       start_period: 120s
 
 volumes:
+  elohim_veni_keys:
   frequency_replays:
   redis_state:
   postgres_data:
   caddy_data:
   caddy_config:
   f33d3r_media:
+  # Caeor's private store: clean sources and download files. Never served.
+  f33d3r_media_private:
   f33d3r_live_scan:
   minio_data:
   prometheus_data:

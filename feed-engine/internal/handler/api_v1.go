@@ -21,7 +21,7 @@ import (
 // DTOs. This surface is reads only: every mutation still goes through the one
 // D-070 lane, POST /events, exactly as the web does, and the signing-key
 // registration stays at /api/pial/signing-key/register. Authentication is the
-// same user_sessions row the web uses, presented as a bearer token
+// same elohim-veni session the web uses, presented as a bearer token
 // (GetSessionToken accepts both), so a session issued here is a session
 // everywhere and a logout anywhere revokes it everywhere.
 //

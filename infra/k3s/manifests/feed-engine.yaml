@@ -56,8 +56,6 @@ spec:
               value: "http://elohim-veni:8093"
             - name: THEMIS_URL
               value: "http://themis:8100"
-            - name: ZODACARE_URL
-              value: "http://zodacare:8090"
             - name: INTERNAL_API_KEY
               valueFrom:
                 secretKeyRef:

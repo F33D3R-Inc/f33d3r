@@ -9,18 +9,11 @@ package handler
 // posts back through the normal video + quote path as kind='react_video'.
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
-	"io"
+	"log"
 	"net/http"
-	"os"
-	"path/filepath"
-	"strings"
 
 	dbpkg "github.com/f33d3r/feed-engine/internal/db"
-	"github.com/f33d3r/feed-engine/internal/scanclient"
-	"github.com/google/uuid"
 )
 
 func (h *Handler) reactVideoStudio(w http.ResponseWriter, r *http.Request) {
@@ -48,18 +41,14 @@ func (h *Handler) reactVideoStudio(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// uploadReactVideo stores a React-With-Video reaction clip directly (no HLS
-// transcode) and returns its URL. Reaction clips are short WebM recordings, and
-// green-screen reactions carry an alpha channel the HLS ladder would flatten —
-// so they are served as raw WebM and played with a plain <video>. Mirrors
-// uploadVoicePost: magic-byte validation + CSAM hash gate + local store.
-// POST /upload/react-video → {url}
+// uploadReactVideo admits a React-With-Video reaction recording through the
+// one video lane (admitVideoUpload): magic bytes, the banned-content gate, then
+// Caeor, which transcodes it to the watermarked HLS ladder like every video —
+// every viewer-facing copy is watermarked, a reaction included. The studio
+// polls /upload/tus/status/{upload_id} and signs the work once it is ready.
+// POST /upload/react-video → {kind:"video_queued", upload_id}
 func (h *Handler) uploadReactVideo(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "405", http.StatusMethodNotAllowed)
-		return
-	}
-	if err := r.ParseMultipartForm(256 << 20); err != nil {
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
 		http.Error(w, "could not parse upload", http.StatusBadRequest)
 		return
 	}
@@ -70,66 +59,24 @@ func (h *Handler) uploadReactVideo(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	u := h.userFromRequest(nil, r)
-
-	ext := strings.ToLower(filepath.Ext(fh.Filename))
-	if ext != ".webm" && ext != ".mp4" {
-		ext = ".webm" // MediaRecorder blobs often arrive without an extension
-	}
-
-	data, err := io.ReadAll(io.LimitReader(file, 256<<20))
+	head, err := readMagic(file)
 	if err != nil {
 		http.Error(w, "read error", http.StatusInternalServerError)
 		return
 	}
-
-	// Validate magic bytes — accept only WebM/MKV or MP4 (ftyp box at offset 4).
-	valid := false
-	if len(data) >= 4 && data[0] == 0x1A && data[1] == 0x45 && data[2] == 0xDF && data[3] == 0xA3 {
-		valid = true
-	}
-	if len(data) >= 8 && string(data[4:8]) == "ftyp" {
-		valid = true
-	}
-	if !valid {
+	// MediaRecorder blobs often arrive without an extension; the bytes name it.
+	filename, ok := videoFilenameFor(fh.Filename, head)
+	if !ok {
 		http.Error(w, "unsupported or invalid video file", http.StatusBadRequest)
 		return
 	}
-
-	// Banned-content gate — synchronous, pre-storage. Mirrors the media pipeline.
-	hsh := sha256.Sum256(data)
-	reactPIAL := ""
-	if u != nil {
-		reactPIAL = u.PIALID
-	}
-	if gerr := h.bannedContentGate(r.Context(), gateInput{
-		Kind:     scanclient.KindVideo,
-		Filename: fh.Filename,
-		Data:     data,
-		SHA256:   hex.EncodeToString(hsh[:]),
-		PIALID:   reactPIAL,
-		Label:    "react-video",
-	}); gerr != nil {
-		banGateHTTPError(w, gerr)
+	upload, err := h.admitVideoUpload(r.Context(), h.userFromRequest(nil, r), filename, file)
+	if err != nil {
+		uploadHTTPError(w, "react-video", err)
 		return
 	}
-
-	dir := filepath.Join("web", "static", "uploads", "react")
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		http.Error(w, "storage error", http.StatusInternalServerError)
-		return
-	}
-	name := uuid.New().String() + ext
-	if err := os.WriteFile(filepath.Join(dir, name), data, 0644); err != nil {
-		http.Error(w, "storage error", http.StatusInternalServerError)
-		return
-	}
-
-	url := "/static/uploads/react/" + name
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"url": url})
-
-	if u != nil && u.PIALID != "" {
-		go h.publishMediaUploadedEvent("", url, u.PIALID)
+	if err := json.NewEncoder(w).Encode(map[string]string{"kind": "video_queued", "upload_id": upload.ID}); err != nil {
+		log.Printf("[react-video] encode answer: %v", err)
 	}
 }

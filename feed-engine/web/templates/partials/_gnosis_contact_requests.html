@@ -3,7 +3,7 @@ FACET gnosis_contact_requests
   version: 1.0 | status: stable | layer: 2
 
   inputs:
-    PIALID      string — the identity these requests landed on
+    AccountID   string — the account whose identity these requests landed on
     Requests    []struct{ ID, Handle, Name, Note, When string }
     Unavailable bool   — the contact authority could not be reached
 
@@ -42,7 +42,7 @@ FACET gnosis_contact_requests
     somebody is actually waiting.
 */}}
 {{define "gnosis_contact_requests"}}
-<div class="gn-requests" data-facet-id="facet:f33d3r:identity:{{.PIALID}}:contact_requests">
+<div class="gn-requests" data-facet-id="facet:f33d3r:account:{{.AccountID}}:contact_requests">
   {{if .Unavailable}}
     <p class="gn-requests-hint">Contact requests are unavailable right now.</p>
   {{else if .Requests}}

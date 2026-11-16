@@ -29,19 +29,6 @@ func IncrementProfileViews(database *sql.DB, userID string) int64 {
 	return n
 }
 
-// DeactivateUser sets deactivated_at on the user record and expires all their sessions.
-func DeactivateUser(database *sql.DB, userID, reason string) error {
-	_, err := database.Exec(
-		`UPDATE users SET deactivated_at = NOW(), deactivated_reason = $2 WHERE id = $1`,
-		userID, reason,
-	)
-	if err != nil {
-		return err
-	}
-	database.Exec(`DELETE FROM user_sessions WHERE user_id = $1`, userID)
-	return nil
-}
-
 // IsDeactivated returns true if the user account has been deactivated.
 func IsDeactivated(database *sql.DB, userID string) bool {
 	var n int
@@ -62,158 +49,6 @@ func countQuery(database *sql.DB, q string, args ...interface{}) int {
 		return 0
 	}
 	return n
-}
-
-// TryAwardTrollOnPost checks all post-creation troll achievements for userID.
-// postID is the newly created work ID, body is its text content.
-func TryAwardTrollOnPost(database *sql.DB, userID, pialID, postID, body string) {
-	// Wall Of Text Warrior — single post >= 5000 chars
-	if len([]rune(body)) >= 5000 {
-		AwardAchievement(database, userID, "troll_wall_of_text")
-	}
-
-	// Off The Meds — 100 posts between 02:00–04:59 UTC
-	lateNight := countQuery(database,
-		`SELECT COUNT(*) FROM works WHERE author_pial = $1
-		 AND EXTRACT(HOUR FROM created_at AT TIME ZONE 'UTC') BETWEEN 2 AND 4
-		 AND deleted_at IS NULL`, pialID)
-	if lateNight >= 100 {
-		AwardAchievement(database, userID, "troll_off_the_meds")
-	}
-
-	// Conspiracy Department — 50 posts containing a hashtag
-	hashtagPosts := countQuery(database,
-		`SELECT COUNT(*) FROM works WHERE author_pial = $1 AND body LIKE '%#%' AND deleted_at IS NULL`, pialID)
-	if hashtagPosts >= 50 {
-		AwardAchievement(database, userID, "troll_conspiracy_dept")
-	}
-
-	// Paranoid Legend — used word "bot" in 100 posts
-	botPosts := countQuery(database,
-		`SELECT COUNT(*) FROM works WHERE author_pial = $1 AND body ILIKE '%bot%' AND deleted_at IS NULL`, pialID)
-	if botPosts >= 100 {
-		AwardAchievement(database, userID, "troll_paranoid_legend")
-	}
-
-	// Gaslight Specialist — 50+ replies in threads you didn't start
-	replyOtherThreads := countQuery(database,
-		`SELECT COUNT(*) FROM works w
-		 LEFT JOIN works root ON root.cid = w.root_cid
-		 WHERE w.author_pial = $1 AND w.kind = 'reply'
-		   AND (root.id IS NULL OR root.author_pial != $1)
-		   AND w.deleted_at IS NULL`, pialID)
-	if replyOtherThreads >= 50 {
-		AwardAchievement(database, userID, "troll_gaslight_specialist")
-	}
-
-	// Bad Faith Actor — 10+ replies by you in a single thread
-	maxRepliesInThread := countQuery(database,
-		`SELECT COALESCE(MAX(rc),0) FROM (
-			SELECT COUNT(*) AS rc FROM works
-			WHERE author_pial = $1 AND kind = 'reply' AND deleted_at IS NULL
-			GROUP BY root_cid
-		) t`, pialID)
-	if maxRepliesInThread >= 10 {
-		AwardAchievement(database, userID, "troll_bad_faith_actor")
-	}
-	if maxRepliesInThread >= 15 {
-		AwardAchievement(database, userID, "troll_goalpost_olympics")
-	}
-	if maxRepliesInThread >= 20 {
-		AwardAchievement(database, userID, "troll_feigning_ignorance")
-	}
-
-	// Weaponized Autism — reply to a post that is 2+ years old
-	if postID != "" {
-		var parentAge int
-		database.QueryRow(
-			`SELECT COALESCE(EXTRACT(EPOCH FROM (NOW() - p.created_at))::int, 0)
-			 FROM works w JOIN works p ON p.cid = w.parent_cid
-			 WHERE w.id = $1::uuid`, postID,
-		).Scan(&parentAge)
-		if parentAge >= 63072000 { // 2 years in seconds
-			AwardAchievement(database, userID, "troll_weaponized_autism")
-		}
-
-		// Archive Diver — reply to a post 1+ year old
-		if parentAge >= 31536000 {
-			AwardAchievement(database, userID, "troll_archive_diver")
-		}
-	}
-
-	// Digital Cigarette Smoker — 50+ replies between 23:00–03:59 UTC
-	lateReplies := countQuery(database,
-		`SELECT COUNT(*) FROM works
-		 WHERE author_pial = $1 AND kind = 'reply' AND deleted_at IS NULL
-		   AND (EXTRACT(HOUR FROM created_at AT TIME ZONE 'UTC') >= 23
-		     OR EXTRACT(HOUR FROM created_at AT TIME ZONE 'UTC') <= 3)`, pialID)
-	if lateReplies >= 50 {
-		AwardAchievement(database, userID, "troll_digital_cigarette")
-	}
-}
-
-// TryAwardTrollOnReplyReceived checks achievements triggered when a reply arrives on a post you authored.
-// authorID = post author's userID, replyBody = the reply text, postID = the parent work ID.
-func TryAwardTrollOnReplyReceived(database *sql.DB, authorID, authorPIAL, postID, replyBody string) {
-	// I Own You — someone writes a 500+ char reply to your post
-	if len([]rune(replyBody)) >= 500 {
-		AwardAchievement(database, authorID, "troll_i_own_you")
-	}
-
-	// Master Baiter — 100 unique repliers across all your posts
-	uniqueRepliers := countQuery(database,
-		`SELECT COUNT(DISTINCT w.author_pial)
-		 FROM works w
-		 JOIN works parent ON parent.cid = w.parent_cid
-		 WHERE parent.author_pial = $1
-		   AND w.author_pial != $1
-		   AND w.kind = 'reply' AND w.deleted_at IS NULL`, authorPIAL)
-	if uniqueRepliers >= 100 {
-		AwardAchievement(database, authorID, "troll_master_baiter")
-	}
-
-	// Demon Time — 1000 replies to one post within 60 minutes
-	recentReplies := countQuery(database,
-		`SELECT COUNT(*) FROM works
-		 WHERE kind = 'reply' AND parent_id = $1::uuid
-		   AND created_at >= NOW() - INTERVAL '60 minutes'`, postID)
-	if recentReplies >= 1000 {
-		AwardAchievement(database, authorID, "troll_demon_time")
-	}
-
-	// Crashout Inducer — thread you started has 50+ total replies
-	totalThreadReplies := countQuery(database,
-		`SELECT COUNT(*) FROM works w
-		 WHERE w.root_cid = (SELECT cid FROM works WHERE id = $1::uuid)
-		   AND w.kind = 'reply' AND w.deleted_at IS NULL`, postID)
-	if totalThreadReplies >= 50 {
-		AwardAchievement(database, authorID, "troll_crashout_inducer")
-	}
-
-	// Hallucination Engine — 50 replies to one post from users who never engaged you before
-	newEngagers := countQuery(database,
-		`SELECT COUNT(DISTINCT w.author_pial)
-		 FROM works w
-		 WHERE w.kind = 'reply' AND w.parent_id = $1::uuid
-		   AND w.author_pial != $2
-		   AND w.deleted_at IS NULL
-		   AND w.author_pial NOT IN (
-			   SELECT DISTINCT w2.author_pial FROM works w2
-			   WHERE w2.kind = 'reply'
-			     AND w2.parent_id IN (
-				     SELECT id FROM works WHERE author_pial = $2 AND id != $1::uuid
-			     )
-			   AND w2.deleted_at IS NULL
-		   )`, postID, authorPIAL)
-	if newEngagers >= 50 {
-		AwardAchievement(database, authorID, "troll_hallucination_engine")
-	}
-
-	// Forum Demon — replied in 10+ trending threads today (check from replier's perspective — called for author of reply)
-	// This is checked in TryAwardTrollOnPost for the reply author instead.
-
-	// Rent Free — mentioned by someone you've never interacted with
-	// (approximated via notifications — checked in TryAwardTrollOnMention)
 }
 
 // TryAwardTrollOnPostStats checks engagement-count achievements on a post.
@@ -267,7 +102,7 @@ func TryAwardTrollOnPostStats(database *sql.DB, authorID, authorPIAL, postID str
 		 WHERE wr.work_id = $1::uuid AND wr.reaction_type = 'dislike'`, postID,
 	).Scan(&replyDislikes)
 	var isReply bool
-	database.QueryRow(`SELECT kind = 'reply' FROM works WHERE id = $1::uuid`, postID).Scan(&isReply)
+	database.QueryRow(`SELECT is_reply FROM works WHERE id = $1::uuid`, postID).Scan(&isReply)
 	if isReply && replyDislikes >= 100 {
 		AwardAchievement(database, authorID, "troll_infinite_aura_loss")
 	}
@@ -496,15 +331,14 @@ func TryAwardTrollOnDeactivation(database *sql.DB, deactivatedUserID string) {
 	}
 }
 
-// TryAwardTrollOnSessionUpdate checks session-duration achievements.
-func TryAwardTrollOnSessionUpdate(database *sql.DB, userID, sessionID string) {
-	var durationSecs float64
-	database.QueryRow(
-		`SELECT EXTRACT(EPOCH FROM (last_seen_at - created_at)) FROM user_sessions WHERE id = $1::uuid`,
-		sessionID,
-	).Scan(&durationSecs)
-	// Unemployed Final Boss — 16 consecutive hours (57600 seconds)
-	if durationSecs >= 57600 {
+// TryAwardTrollOnSessionUpdate checks session-duration achievements against
+// when the viewer's session was opened, as elohim-veni reports it.
+func TryAwardTrollOnSessionUpdate(database *sql.DB, userID string, sessionStarted time.Time) {
+	if sessionStarted.IsZero() {
+		return
+	}
+	// Unemployed Final Boss — 16 consecutive hours in one session
+	if time.Since(sessionStarted) >= 16*time.Hour {
 		AwardAchievement(database, userID, "troll_unemployed_final_boss")
 	}
 }
@@ -528,30 +362,6 @@ func TryAwardTrollOnMention(database *sql.DB, mentionedUserID, mentionerUserID s
 		   AND w.deleted_at IS NULL`, mentionedUserID, mentionerUserID)
 	if priorInteraction == 0 {
 		AwardAchievement(database, mentionedUserID, "troll_rent_free")
-	}
-}
-
-// TryAwardTrollForumDemon checks if a user replied in 10+ distinct trending threads today.
-func TryAwardTrollForumDemon(database *sql.DB, userID, pialID string) {
-	distinctThreadsToday := countQuery(database,
-		`SELECT COUNT(DISTINCT root_cid) FROM works
-		 WHERE author_pial = $1 AND kind = 'reply'
-		   AND created_at >= NOW() - INTERVAL '24 hours'
-		   AND deleted_at IS NULL`, pialID)
-	if distinctThreadsToday >= 10 {
-		AwardAchievement(database, userID, "troll_forum_demon")
-	}
-}
-
-// TryAwardTrollCartmanMethod checks if your post drew 50+ unique participants.
-func TryAwardTrollCartmanMethod(database *sql.DB, userID, authorPIAL, postID string) {
-	uniqueParticipants := countQuery(database,
-		`SELECT COUNT(DISTINCT author_pial) FROM works
-		 WHERE root_cid = (SELECT cid FROM works WHERE id = $1::uuid)
-		   AND author_pial != $2
-		   AND kind = 'reply' AND deleted_at IS NULL`, postID, authorPIAL)
-	if uniqueParticipants >= 50 {
-		AwardAchievement(database, userID, "troll_cartman_method")
 	}
 }
 
@@ -634,7 +444,7 @@ func GetUserAchievements(database *sql.DB, userID string) ([]model.Achievement, 
 // CountUserPosts returns number of posts a user has made.
 func CountUserPosts(database *sql.DB, userID string) int {
 	var n int
-	database.QueryRow(`SELECT COUNT(*) FROM works WHERE author_id = $1 AND kind <> 'reply' AND deleted_at IS NULL`, userID).Scan(&n)
+	database.QueryRow(`SELECT COUNT(*) FROM works WHERE author_id = $1 AND NOT is_reply AND deleted_at IS NULL`, userID).Scan(&n)
 	return n
 }
 
@@ -643,20 +453,6 @@ func CountUserFollowers(database *sql.DB, userID string) int {
 	var n int
 	database.QueryRow(`SELECT COUNT(*) FROM follows WHERE following_id = $1`, userID).Scan(&n)
 	return n
-}
-
-// TryAwardPostAchievements checks post milestones and awards achievements.
-func TryAwardPostAchievements(database *sql.DB, userID string) {
-	n := CountUserPosts(database, userID)
-	if n == 1 {
-		AwardAchievement(database, userID, "first_post")
-	}
-	if n >= 10 {
-		AwardAchievement(database, userID, "post_10")
-	}
-	if n >= 100 {
-		AwardAchievement(database, userID, "post_100")
-	}
 }
 
 // TryAwardFollowerAchievements checks follower milestones.

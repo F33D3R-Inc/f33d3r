@@ -202,8 +202,8 @@ const SessionCookieName = "f33d3r_session"
 //
 // A browser carries it in the session cookie. A native client — the iOS app,
 // the Android app's JSON lane — carries the same token as `Authorization:
-// Bearer <token>`: it is issued by the same CreateAuthSession, stored in the
-// same user_sessions row and revoked by the same DeleteSession, so every
+// Bearer <token>`: it is the same opaque elohim-veni session token, resolved
+// and revoked by the same authority calls, so every
 // route that resolves a session (requireHandle, userFromRequest, the /events
 // lane, the signing-key registration) accepts either presentation without
 // knowing which one arrived. The header is read first because a device that
@@ -216,25 +216,18 @@ func GetSessionToken(r *http.Request) string {
 	if c, err := r.Cookie(SessionCookieName); err == nil {
 		return c.Value
 	}
-	// Legacy fallback — old handle cookie for existing logged-in users
-	if c, err := r.Cookie("f33d3r_handle"); err == nil {
-		if handleRe.MatchString(c.Value) {
-			return "__handle__" + c.Value
-		}
-	}
 	return ""
 }
 
 // bearerSessionToken returns the token in an `Authorization: Bearer` header,
-// or "" when the request carries none. A legacy handle token is never accepted
-// this way: the header form exists for real sessions only.
+// or "" when the request carries none.
 func bearerSessionToken(r *http.Request) string {
 	h := r.Header.Get("Authorization")
 	if len(h) < 8 || !strings.EqualFold(h[:7], "Bearer ") {
 		return ""
 	}
 	tok := strings.TrimSpace(h[7:])
-	if tok == "" || len(tok) > 200 || strings.HasPrefix(tok, "__handle__") {
+	if tok == "" || len(tok) > 200 {
 		return ""
 	}
 	return tok
@@ -268,55 +261,17 @@ func ClearSessionCookie(w http.ResponseWriter) {
 		SameSite: http.SameSiteLaxMode,
 		Secure:   cookieSecure(),
 	})
-	// Also clear legacy handle cookie
-	http.SetCookie(w, &http.Cookie{
-		Name:     "f33d3r_handle",
-		Value:    "",
-		Path:     "/",
-		MaxAge:   -1,
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-		Secure:   cookieSecure(),
-	})
 }
 
 // cookieSecure is the one place the Secure attribute is decided. Every cookie
 // this process sets or clears is Secure except on a plain-HTTP dev listener,
 // where a Secure cookie would never be stored at all.
 //
-// The cookie names keep their unprefixed form: f33d3r_session is read by the
-// Android client (mobile/android …/net/Http.kt) and f33d3r_handle by the
-// aethyr-walker crawler, so a __Host- rename is a cross-repository change and
-// not one this file can make alone.
+// The session cookie keeps its unprefixed name: f33d3r_session is read by the
+// Android client (mobile/android …/net/Http.kt), so a __Host- rename is a
+// cross-repository change and not one this file can make alone.
 func cookieSecure() bool {
 	return os.Getenv("DEV_MODE") != "true"
-}
-
-// HandleFromCookie reads the legacy f33d3r_handle cookie (kept for backward compat).
-func HandleFromCookie(r *http.Request) string {
-	tok := GetSessionToken(r)
-	if tok == "" {
-		return ""
-	}
-	// Legacy handle token
-	if len(tok) > 10 && tok[:10] == "__handle__" {
-		return tok[10:]
-	}
-	// For new session tokens, caller must resolve via DB
-	return tok
-}
-
-// SetHandleCookie is kept for backward compatibility — now writes a handle token.
-func SetHandleCookie(w http.ResponseWriter, handle string) {
-	http.SetCookie(w, &http.Cookie{
-		Name:     "f33d3r_handle",
-		Value:    handle,
-		Path:     "/",
-		MaxAge:   86400 * 30,
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-		Secure:   cookieSecure(),
-	})
 }
 
 // DemoUser returns a baseline user for when DB is unavailable.

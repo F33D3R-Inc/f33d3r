@@ -15,10 +15,11 @@ const (
 )
 
 // visionTestVision builds one live Vision row the way a read query hands it
-// back, addressed by (authorPIAL, seq) rather than a standalone id.
-func visionTestVision(authorPIAL string, seq int64, handle, contentType string, viewed bool) *model.Vision {
+// back: the lane's PIAL (server-only) and the account it was joined through
+// (the wire address). The two differ so a test sees which one reaches a page.
+func visionTestVision(author string, seq int64, handle, contentType string, viewed bool) *model.Vision {
 	return &model.Vision{
-		AuthorPIAL: authorPIAL, Seq: seq,
+		AuthorPIAL: "pial-" + author, AuthorAccountID: author, Seq: seq,
 		ContentType: contentType, Body: "Visions are back",
 		ArtboardBackground: "ember", ArtboardTypeface: "display",
 		ArtboardTypeScale: "auto", ArtboardAlign: "center",
@@ -44,10 +45,11 @@ func visionTestSequence() []*model.Vision {
 	}
 }
 
-func visionTestRing(authorPIAL, handle, state string, count, unseen int, next string) *model.VisionRing {
+func visionTestRing(author, handle, state string, count, unseen int, next string) *model.VisionRing {
 	return &model.VisionRing{
-		AuthorPIAL:   authorPIAL,
-		AuthorHandle: handle, AuthorName: strings.ToUpper(handle),
+		AuthorPIAL:      "pial-" + author,
+		AuthorAccountID: author,
+		AuthorHandle:    handle, AuthorName: strings.ToUpper(handle),
 		State: state, Count: count, UnseenCount: unseen,
 		NextVisionRef: next, LatestAt: time.Now(),
 	}
@@ -58,7 +60,7 @@ func visionTestRing(authorPIAL, handle, state string, count, unseen int, next st
 func TestVisionViewFacetsRender(t *testing.T) {
 	h := liveTestHandler(t)
 	seq := visionTestSequence()
-	ref0, ref1 := visionRef(seq[0]).String(), visionRef(seq[1]).String()
+	ref0, ref1 := visionAddress(seq[0]).String(), visionAddress(seq[1]).String()
 
 	still := buildVisionStill(seq[0], nil)
 	frame := visionFrameView{
@@ -136,7 +138,7 @@ func TestVisionViewFacetsRender(t *testing.T) {
 func TestVisionViewerCarriesServerNavigation(t *testing.T) {
 	h := liveTestHandler(t)
 	seq := visionTestSequence()
-	ref0, ref2 := visionRef(seq[0]).String(), visionRef(seq[2]).String()
+	ref0, ref2 := visionAddress(seq[0]).String(), visionAddress(seq[2]).String()
 	frame := visionFrameView{
 		Still: buildVisionStill(seq[1], nil), Scope: visionScopeFollowing,
 		Position: 2, Total: 3, Segments: visionSegments(2, 3),
@@ -155,7 +157,7 @@ func TestVisionViewerCarriesServerNavigation(t *testing.T) {
 		"data-vision-prev", "data-vision-next", "data-vision-close",
 		esc(visionViewerURL(ref0, visionScopeFollowing)),
 		esc(visionViewerURL(ref2, visionScopeFollowing)),
-		`data-vision-return="` + visionRingElemID(seq[1].AuthorPIAL) + `"`,
+		`data-vision-return="` + visionRingElemID(seq[1].AuthorAccountID) + `"`,
 	} {
 		if !strings.Contains(frag, want) {
 			t.Errorf("vision_viewer: missing %q", want)
@@ -244,7 +246,7 @@ func TestLocateVisionRuns(t *testing.T) {
 	if last.Index+1 >= len(seq) {
 		t.Fatal("the tail of author A's run must have a next")
 	}
-	if seq[last.Index+1].AuthorPIAL != visionTestAuthorB {
+	if seq[last.Index+1].AuthorAccountID != visionTestAuthorB {
 		t.Error("stepping off the end of a run must cross into the next author")
 	}
 
@@ -302,8 +304,8 @@ func TestVisionRingsGatedToRestatesFromSequence(t *testing.T) {
 		t.Fatalf("gated rings = %d, want 1 (author A; the walled author drops)", len(got))
 	}
 	a := got[0]
-	if a.AuthorPIAL != visionTestAuthorA {
-		t.Fatalf("first ring = %s", a.AuthorPIAL)
+	if a.AuthorAccountID != visionTestAuthorA {
+		t.Fatalf("first ring = %s", a.AuthorAccountID)
 	}
 	if a.Count != 3 {
 		t.Errorf("gated count = %d, want 3", a.Count)
@@ -311,7 +313,7 @@ func TestVisionRingsGatedToRestatesFromSequence(t *testing.T) {
 	if a.UnseenCount != 2 {
 		t.Errorf("gated unseen = %d, want 2", a.UnseenCount)
 	}
-	if want := visionRef(seq[1]).String(); a.NextVisionRef != want {
+	if want := visionAddress(seq[1]).String(); a.NextVisionRef != want {
 		t.Errorf("resume point = %s, want the first unseen %s", a.NextVisionRef, want)
 	}
 	if a.State != model.VisionRingUnseen {
@@ -329,7 +331,7 @@ func TestVisionRingsGatedToRestatesFromSequence(t *testing.T) {
 	if len(seen) != 1 || seen[0].State != model.VisionRingSeen || seen[0].UnseenCount != 0 {
 		t.Fatalf("all-seen ring = %+v", seen)
 	}
-	if want := visionRef(allSeen[0]).String(); seen[0].NextVisionRef != want {
+	if want := visionAddress(allSeen[0]).String(); seen[0].NextVisionRef != want {
 		t.Errorf("a fully seen run resumes at its head, got %s, want %s", seen[0].NextVisionRef, want)
 	}
 	// The source rings are never mutated — the rail is a restatement, not an edit.

@@ -2,9 +2,10 @@ package handler
 
 import (
 	"context"
+	"database/sql"
+	"errors"
+	"fmt"
 	"log"
-	"net/http"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -338,23 +339,9 @@ func reactionRate(reactionType string) (rate float32, away bool) {
 	return 0, false
 }
 
-// sessionCacheKeys are the session-cache entries that hold this viewer, so a
-// changed interest vector is picked up on the very next request rather than
-// after the cache TTL.
-func sessionCacheKeys(r *http.Request, user *model.User) []string {
-	keys := make([]string, 0, 2)
-	if tok := GetSessionToken(r); tok != "" && !strings.HasPrefix(tok, "__handle__") {
-		keys = append(keys, tok)
-	}
-	if user != nil && user.Handle != "" {
-		keys = append(keys, "__handle__"+user.Handle)
-	}
-	return keys
-}
-
 // learnFromReaction moves the reactor's interest vector for one reaction.
 // Runs detached from the request; the reaction itself was already written.
-func (h *Handler) learnFromReaction(user *model.User, workID, reactionType string, add bool, cacheKeys []string) {
+func (h *Handler) learnFromReaction(user *model.User, workID, reactionType string, add bool) {
 	if h.db == nil || viewerAccountID(user) == "" {
 		return
 	}
@@ -372,30 +359,54 @@ func (h *Handler) learnFromReaction(user *model.User, workID, reactionType strin
 		return
 	}
 	target := h.ensureWorkVectors([]*model.Work{w})[0]
-	h.nudgeInterestVector(user, target, rate, away, cacheKeys)
+	if err := h.nudgeInterestVector(user, target, rate, away); err != nil {
+		log.Printf("[jung] reaction learning on %s: %v", workID, err)
+	}
 }
 
-// learnFromCitation moves the author's interest vector toward the work their
-// new reply or quote cites.
-func (h *Handler) learnFromCitation(user *model.User, parentCID string, cacheKeys []string) {
-	if h.db == nil || viewerAccountID(user) == "" || parentCID == "" {
-		return
-	}
-	parent, err := dbpkg.GetWorkForPsychByCID(h.db, parentCID)
+// learnFromCitations is the interest_learning obligation: a reply or a quote is
+// engagement with the work it cites, so it moves the author's interest vector
+// toward each cited work, as a reaction would.
+func (h *Handler) learnFromCitations(authorID, workID string) error {
+	targets, err := dbpkg.WorkCitationTargets(h.db, workID)
 	if err != nil {
-		log.Printf("[jung] parent %s for citation learning: %v", parentCID, err)
-		return
+		return err
 	}
-	target := h.ensureWorkVectors([]*model.Work{parent})[0]
-	h.nudgeInterestVector(user, target, rateCitation, false, cacheKeys)
+	if len(targets) == 0 {
+		return nil
+	}
+	author, err := dbpkg.GetUserByID(h.db, authorID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil // the account is gone; there is nobody to teach
+	}
+	if err != nil {
+		return fmt.Errorf("loading author %s for citation learning: %w", authorID, err)
+	}
+	if author == nil || viewerAccountID(author) == "" {
+		return nil // the account is gone; there is nobody to teach
+	}
+	for _, t := range targets {
+		cited, err := dbpkg.GetWorkForPsych(h.db, t.WorkID)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue // removed since it was cited
+		}
+		if err != nil {
+			return fmt.Errorf("cited work %s for citation learning: %w", t.WorkID, err)
+		}
+		target := h.ensureWorkVectors([]*model.Work{cited})[0]
+		if err := h.nudgeInterestVector(author, target, rateCitation, false); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // nudgeInterestVector applies one EMA step to the stored interest vector,
-// persists it, and evicts the viewer's cached session so the next request
-// carries the moved vector. The stored vector is re-read rather than taken
-// from the request's user, so two reactions in quick succession compound
-// instead of the second overwriting the first.
-func (h *Handler) nudgeInterestVector(user *model.User, target jung.Vector, rate float32, away bool, cacheKeys []string) {
+// persists it, and evicts the viewer's cached sessions so the next request on
+// any device carries the moved vector. The stored vector is re-read rather
+// than taken from the request's user, so two reactions in quick succession
+// compound instead of the second overwriting the first.
+func (h *Handler) nudgeInterestVector(user *model.User, target jung.Vector, rate float32, away bool) error {
 	current, ok := jung.FromSlice(dbpkg.LoadInterestVector(h.db, user.ID))
 	if !ok {
 		if current, ok = jung.FromSlice(user.InterestVector); !ok {
@@ -409,10 +420,8 @@ func (h *Handler) nudgeInterestVector(user *model.User, target jung.Vector, rate
 		next = jung.Blend(current, target, rate)
 	}
 	if err := dbpkg.SaveInterestVector(h.db, user.ID, next.Slice()); err != nil {
-		log.Printf("[jung] saving interest vector for %s: %v", user.ID, err)
-		return
+		return fmt.Errorf("saving interest vector for %s: %w", user.ID, err)
 	}
-	for _, k := range cacheKeys {
-		h.sessionCache.Delete(k)
-	}
+	h.evictCachedAccount(user.ID, "")
+	return nil
 }

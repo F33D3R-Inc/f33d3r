@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/f33d3r/feed-engine/internal/caeor"
 	"github.com/f33d3r/feed-engine/internal/model"
 )
 
@@ -18,7 +19,7 @@ import (
 // /upload/voice, /upload/tus/status/{id}, /api/gif/search) that answer in the
 // keys its JavaScript reads. The native clients present a bearer and read
 // DTOs, so each of those routes has a twin here. The twins own no logic: the
-// admission, the dedup, the transcoder hand-off, the job state and the GIF
+// admission, the Caeor hand-off, the job state and the GIF
 // fetch are one core each (media.go, tus.go, tag.go), and both lanes call it,
 // so a file the web would refuse is refused here for the same reason.
 //
@@ -31,28 +32,26 @@ import (
 //
 // Status is one of:
 //
-//	queued      admitted; the transcoder has not yet taken the job. upload_id is set.
-//	processing  the transcoder has it (or could not be asked this instant). Keep polling.
-//	ready       master_url, poster_url, watermarked_url, duration_secs, width and height are set.
+//	queued      admitted; Caeor has not yet taken the upload. upload_id is set.
+//	processing  Caeor has it (or could not be asked this instant). Keep polling.
+//	ready       master_url, poster_url, duration_secs, width and height are set.
 //	failed      error says why; upload again.
-//	duplicate   the same bytes are already on F33D3R. duplicate_of_work_id and
-//	            duplicate_of_handle name the original, and the media fields carry
-//	            its canonical renditions when the work is known — reference those
-//	            rather than uploading again. Nothing was transcoded.
+//	duplicate   the bytes are an exact copy of somebody else's upload. The media
+//	            fields carry the ORIGINAL's renditions and duplicate_of_handle
+//	            names its uploader, who keeps the credit: a work that uses it
+//	            is a credited reference.
 //
-// Media URLs are the relative paths the rest of /api/v1 uses for a work's
-// video; the client resolves them against the server it is talking to.
+// master_url is the watermarked HLS master. There is no downloadable-file URL:
+// a download is handed out by the work's download route, behind its wall.
 type VideoJobDTO struct {
 	UploadID          string   `json:"upload_id,omitempty"`
 	Status            string   `json:"status"`
 	MasterURL         string   `json:"master_url,omitempty"`
 	PosterURL         string   `json:"poster_url,omitempty"`
-	WatermarkedURL    string   `json:"watermarked_url,omitempty"`
 	DurationSecs      *float64 `json:"duration_secs,omitempty"`
 	Width             *int     `json:"width,omitempty"`
 	Height            *int     `json:"height,omitempty"`
 	Error             string   `json:"error,omitempty"`
-	DuplicateOfWorkID string   `json:"duplicate_of_work_id,omitempty"`
 	DuplicateOfHandle string   `json:"duplicate_of_handle,omitempty"`
 }
 
@@ -82,8 +81,8 @@ type GifResultDTO struct {
 }
 
 // apiV1UploadVideo — POST /api/v1/media/video (multipart, field `file` or
-// `media`) → 202 VideoJobDTO{status: queued}, or 200 VideoJobDTO{status:
-// duplicate} when the bytes are already on F33D3R and nothing was queued.
+// `media`) → 202 VideoJobDTO{status: queued}. Duplicates are resolved by Caeor
+// when the bytes arrive, and reported by the job.
 //
 // The bytes decide what the file is; the declared name only supplies an
 // extension when it agrees with them (videoFilenameFor).
@@ -110,20 +109,12 @@ func (h *Handler) apiV1UploadVideo(w http.ResponseWriter, r *http.Request, user 
 		return
 	}
 
-	adm, err := h.admitVideoUpload(r.Context(), user, filename, file)
+	upload, err := h.admitVideoUpload(r.Context(), user, filename, file)
 	if err != nil {
-		if isGateRefusal(err) {
-			apiGateError(w, err)
-			return
-		}
-		apiServerError(w, err)
+		apiUploadError(w, err)
 		return
 	}
-	if adm.Duplicate != nil {
-		apiJSON(w, http.StatusOK, videoJobDTOForDuplicate(adm.Duplicate))
-		return
-	}
-	apiJSON(w, http.StatusAccepted, VideoJobDTO{UploadID: adm.Upload.ID, Status: videoJobQueued})
+	apiJSON(w, http.StatusAccepted, VideoJobDTO{UploadID: upload.ID, Status: videoJobQueued})
 }
 
 // apiV1VideoJob — GET /api/v1/media/video/{id} → 200 VideoJobDTO.
@@ -132,8 +123,8 @@ func (h *Handler) apiV1UploadVideo(w http.ResponseWriter, r *http.Request, user 
 // job, the same answer as for an id that never existed, so the route confirms
 // nothing about other people's uploads.
 func (h *Handler) apiV1VideoJob(w http.ResponseWriter, r *http.Request, user *model.User) {
-	st, ok := h.videoJobState(r.PathValue("id"))
-	if !ok || (st.UploaderPIAL != "" && st.UploaderPIAL != user.PIALID) {
+	st, ok := h.videoJobState(r.Context(), r.PathValue("id"))
+	if !ok || st.UploaderPIAL != user.PIALID {
 		apiError(w, http.StatusNotFound, "video_job_not_found", "No such upload.")
 		return
 	}
@@ -153,22 +144,19 @@ func (h *Handler) apiV1UploadVoice(w http.ResponseWriter, r *http.Request, user 
 		return
 	}
 	defer file.Close()
-	data, err := io.ReadAll(io.LimitReader(file, 50<<20))
+	data, err := io.ReadAll(io.LimitReader(file, voiceUploadMax+1))
 	if err != nil {
 		apiServerError(w, err)
+		return
+	}
+	if len(data) > voiceUploadMax {
+		apiUploadError(w, errUploadTooLarge)
 		return
 	}
 
 	mediaURL, err := h.admitVoiceUpload(r.Context(), user, fh.Filename, data)
 	if err != nil {
-		switch {
-		case errors.Is(err, errMediaUnsupported):
-			apiError(w, http.StatusUnsupportedMediaType, "unsupported_media", "Only WebM/Opus, Ogg, MP3, AAC and M4A audio is accepted.")
-		case isGateRefusal(err):
-			apiGateError(w, err)
-		default:
-			apiServerError(w, err)
-		}
+		apiUploadError(w, err)
 		return
 	}
 	apiJSON(w, http.StatusCreated, VoiceUploadDTO{URL: mediaURL})
@@ -211,45 +199,21 @@ func (h *Handler) apiV1GifSearch(w http.ResponseWriter, r *http.Request, _ *mode
 func videoJobDTO(st *videoJobState) VideoJobDTO {
 	dto := VideoJobDTO{UploadID: st.UploadID, Status: st.Status, Error: st.Error}
 	if o := st.Output; o != nil {
-		dto.setRenditions(o.MasterURL, o.PosterURL, o.WatermarkedURL, o.DurationSecs, o.Width, o.Height)
+		dto.MasterURL = relativeMediaURL(o.MasterURL)
+		dto.PosterURL = relativeMediaURL(o.PosterURL)
+		dur, width, height := o.DurationSecs, o.Width, o.Height
+		dto.DurationSecs = &dur
+		dto.Width = &width
+		dto.Height = &height
 	}
 	if d := st.Duplicate; d != nil {
-		dto.DuplicateOfWorkID = d.WorkID
-		dto.DuplicateOfHandle = d.OriginalHandle
-		dto.setRenditions(d.ExistingMasterURL, d.ExistingPosterURL, "", d.DurationSecs, d.Width, d.Height)
+		dto.DuplicateOfHandle = d.CreatorHandle
 	}
 	return dto
-}
-
-// videoJobDTOForDuplicate is the admission-time duplicate: the raw hash was
-// already known before any job existed, so there is no upload_id to poll.
-func videoJobDTOForDuplicate(d *videoRawDuplicate) VideoJobDTO {
-	dto := VideoJobDTO{
-		Status:            videoJobDuplicate,
-		DuplicateOfWorkID: d.WorkID,
-		DuplicateOfHandle: d.OriginalHandle,
-	}
-	dto.setRenditions(d.MasterURL, d.PosterURL, d.WatermarkedURL, float64(d.DurationSecs), d.Width, d.Height)
-	return dto
-}
-
-// setRenditions fills the media fields when there is a master to point at.
-// Without one there are no renditions, and a width of zero would be noise
-// rather than a measurement.
-func (dto *VideoJobDTO) setRenditions(master, poster, watermarked string, durationSecs float64, width, height int) {
-	if master == "" {
-		return
-	}
-	dto.MasterURL = relativeMediaURL(master)
-	dto.PosterURL = relativeMediaURL(poster)
-	dto.WatermarkedURL = relativeMediaURL(watermarked)
-	dto.DurationSecs = &durationSecs
-	dto.Width = &width
-	dto.Height = &height
 }
 
 // relativeMediaURL keeps a media URL in the relative form the rest of /api/v1
-// uses. The transcoder and the works table hold relative paths; should either
+// uses. Caeor and the works table hold relative paths; should either
 // ever hand back an absolute one, the host it names is internal and not this
 // contract's to leak.
 func relativeMediaURL(raw string) string {
@@ -276,13 +240,24 @@ func formFileAny(r *http.Request, names ...string) (multipart.File, *multipart.F
 	return nil, nil, err
 }
 
-// apiGateError answers a banned-content gate refusal in the JSON envelope: a
-// registry match is the sender's content being refused, an unanswerable gate
-// is this server's, and the client is told which.
-func apiGateError(w http.ResponseWriter, err error) {
-	if errors.Is(err, errMediaBanned) {
-		apiError(w, http.StatusBadRequest, "content_refused", "This content cannot be uploaded.")
-		return
+// apiUploadError answers an admission failure in the JSON envelope.
+func apiUploadError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, errMediaBanned):
+		apiError(w, http.StatusUnprocessableEntity, "content_refused", "This content cannot be uploaded.")
+	case errors.Is(err, errUploadHeld):
+		apiError(w, http.StatusConflict, "held_for_review", errUploadHeld.Error())
+	case errors.Is(err, errUploadNoUploader):
+		apiError(w, http.StatusUnauthorized, "unauthorized", "Sign in to upload.")
+	case errors.Is(err, errMediaUnsupported):
+		apiError(w, http.StatusUnsupportedMediaType, "unsupported_media", "This file type is not accepted.")
+	case errors.Is(err, errUploadTooLarge):
+		apiError(w, http.StatusRequestEntityTooLarge, "too_large", "The file is larger than this upload accepts.")
+	case errors.Is(err, errMediaWithdrawn):
+		apiError(w, http.StatusConflict, "media_withdrawn", errMediaWithdrawn.Error())
+	case errors.Is(err, caeor.ErrRefused):
+		apiError(w, http.StatusUnprocessableEntity, "unprocessable_media", "The file could not be processed.")
+	default:
+		apiServerError(w, err)
 	}
-	apiError(w, http.StatusServiceUnavailable, "scan_unavailable", "Upload refused — the content safety check could not run. Please try again.")
 }

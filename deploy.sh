@@ -38,9 +38,7 @@ BUILD_ORDER=(
   aethyr-ledger
   aethyr-schema-registry
   caeor
-  zodacare
   zior-engine
-  registry-brain
   astraon
   alexandria
   herald
@@ -126,12 +124,10 @@ SERVICES=(
   "Ain Soph (wallet)     |ain-soph               |1"
   "Verity                |verity                 |0"
   "Aethyr Ledger         |aethyr-ledger          |0"
-  "Abraxas Shield (scan) |abraxas-shield         |0"
+  "Abraxas (integrity)   |abraxas-shield         |1"
   "Content Scan          |content-scan           |0"
   "Schema Registry       |aethyr-schema-registry |0"
-  "Zodacare (safety)     |zodacare               |0"
   "Zior Engine           |zior-engine            |0"
-  "Registry Brain        |registry-brain         |1"
   "Astraon (discovery)   |astraon                |0"
   "Alexandria (library)  |alexandria             |0"
   "Herald (push)         |herald                 |0"

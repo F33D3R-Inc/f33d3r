@@ -1,49 +1,54 @@
-// Command banned-hashes loads a hash list into banned_content_hashes.
+// Command banned-hashes loads a hash list into Abraxas's banned registry
+// (POST /v1/banned). Abraxas, the integrity authority, owns the registry and
+// matches every upload and live frame against it.
 //
 // Input is one record per line: HASH, or HASH,CATEGORY, or TYPE,HASH,CATEGORY.
 // Blank lines and lines beginning with # are ignored. Loading is idempotent.
 //
-//	banned-hashes -file ncmec.txt -type sha256 -category csam -source "NCMEC 2026-09"
+//	banned-hashes -file ncmec.txt -type sha256 -category csam -source "NCMEC 2026-09" -added-by <operator>
 package main
 
 import (
 	"bufio"
-	"database/sql"
+	"context"
 	"flag"
 	"fmt"
 	"log"
 	"os"
 	"strings"
+	"time"
 
-	_ "github.com/lib/pq"
-
-	dbpkg "github.com/f33d3r/feed-engine/internal/db"
+	"github.com/f33d3r/feed-engine/internal/abraxas"
 )
 
 // hashLen is the expected hex length per type. A list loaded under the wrong
-// type silently matches nothing, so length is checked before insert.
-var hashLen = map[string]int{"sha256": 64, "phash": 16, "audio_fp": 0}
+// type silently matches nothing, so length is checked before it is sent.
+// Chromaprint fingerprints vary in length; Abraxas decodes each one.
+var hashLen = map[string]int{"sha256": 64, "phash": 16, "chromaprint": 0, "audio_fp": 0}
 
 func main() {
 	var (
 		file     = flag.String("file", "", "path to the hash list (required)")
-		hashType = flag.String("type", "sha256", "sha256 | phash | audio_fp")
+		hashType = flag.String("type", "sha256", "sha256 | phash | chromaprint | audio_fp")
 		category = flag.String("category", "", "category when a line omits one (required)")
 		source   = flag.String("source", "", "provenance recorded on every row (required)")
-		dsn      = flag.String("dsn", os.Getenv("DATABASE_URL"), "postgres DSN")
+		addedBy  = flag.String("added-by", "", "who is loading the list, recorded by Abraxas (required)")
+		baseURL  = flag.String("abraxas", os.Getenv("ABRAXAS_URL"), "Abraxas base URL")
+		key      = flag.String("key", os.Getenv("INTERNAL_API_KEY"), "internal service key")
 		dryRun   = flag.Bool("dry-run", false, "parse and validate without writing")
 	)
 	flag.Parse()
 
-	if *file == "" || *category == "" || *source == "" {
+	if *file == "" || *category == "" || *source == "" || *addedBy == "" {
 		flag.Usage()
 		os.Exit(2)
 	}
 	if _, ok := hashLen[*hashType]; !ok {
-		log.Fatalf("unknown hash type %q: want sha256, phash or audio_fp", *hashType)
+		log.Fatalf("unknown hash type %q: want sha256, phash, chromaprint or audio_fp", *hashType)
 	}
-	if *dsn == "" {
-		log.Fatal("no DSN: pass -dsn or set DATABASE_URL")
+	client := abraxas.New(*baseURL, *key)
+	if !*dryRun && !client.Configured() {
+		log.Fatal("Abraxas is not configured: pass -abraxas and -key or set ABRAXAS_URL and INTERNAL_API_KEY")
 	}
 
 	f, err := os.Open(*file)
@@ -51,17 +56,6 @@ func main() {
 		log.Fatalf("opening %s: %v", *file, err)
 	}
 	defer f.Close()
-
-	var database *sql.DB
-	if !*dryRun {
-		if database, err = sql.Open("postgres", *dsn); err != nil {
-			log.Fatalf("connecting: %v", err)
-		}
-		defer database.Close()
-		if err := database.Ping(); err != nil {
-			log.Fatalf("connecting: %v", err)
-		}
-	}
 
 	var loaded, skipped, bad int
 	sc := bufio.NewScanner(f)
@@ -87,7 +81,12 @@ func main() {
 			loaded++
 			continue
 		}
-		if err := dbpkg.AddBannedHash(database, typ, val, cat, "banned-hashes", *source); err != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		err = client.AddBanned(ctx, abraxas.BannedHash{
+			HashType: typ, HashValue: val, Category: cat, Note: *source, AddedBy: *addedBy,
+		})
+		cancel()
+		if err != nil {
 			log.Printf("%s:%d: %v", *file, line, err)
 			bad++
 			continue
@@ -133,5 +132,9 @@ func parseLine(raw, defType, defCat string) (typ, val, cat string, err error) {
 	if cat == "" {
 		return "", "", "", fmt.Errorf("no category (line omits one and -category is unset)")
 	}
-	return typ, strings.ToLower(val), cat, nil
+	// Hex digests compare lowercase; a chromaprint is base64 and keeps its case.
+	if hashLen[typ] > 0 {
+		val = strings.ToLower(val)
+	}
+	return typ, val, cat, nil
 }

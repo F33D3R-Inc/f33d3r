@@ -24,7 +24,7 @@ FACET creator_track_row
 {{define "creator_track_row"}}
 {{$t := .Track}}
 {{$u := .User}}
-<div class="crt-track-row" id="crt-track-{{$t.ID}}">
+<div class="crt-track-row" id="crt-track-{{$t.ID}}" data-facet-id="facet:f33d3r:track:{{$t.ID}}:creator_row" data-watch-id="{{$t.ID}}">
 
   {{/* Cover art */}}
   <div class="crt-track-thumb">
@@ -50,7 +50,7 @@ FACET creator_track_row
   <div class="crt-track-stats">
     <span class="crt-track-stat" title="Plays">
       <svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" style="width:12px;height:12px"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-      {{$t.PlayCount}}
+      {{template "music_track_plays" (dict "ID" $t.ID "PlayCount" $t.PlayCount)}}
     </span>
     <span class="crt-track-stat" title="Likes">
       <svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" style="width:12px;height:12px"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
@@ -60,7 +60,7 @@ FACET creator_track_row
   </div>
 
   {{/* Actions — only for track owner */}}
-  {{if and $u (eq $t.AuthorID $u.ID)}}
+  {{if $t.Mine}}
   <div class="crt-track-actions">
     <button class="crt-track-delete icon-btn" type="button"
             aria-label="Delete track"

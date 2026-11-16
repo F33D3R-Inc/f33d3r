@@ -1,38 +1,73 @@
+mod api;
 mod contact;
 mod db;
 mod decision;
 mod follow_graph;
+mod handles;
 mod handlers;
+mod identity;
+mod import;
 mod manhattan_outbox;
+mod migrate;
 mod models;
 mod notifications;
 mod number_lease;
 mod observ;
 
 use axum::{
-    routing::{get, post},
+    routing::{delete, get, post, put},
     Router,
 };
 use tracing::info;
 
 use handlers::AppState;
-#[allow(unused_imports)]
-use reqwest;
+
+/// Where the PIAL assertion signing keys live (identity/tokens.rs).
+fn signing_key_dir() -> std::path::PathBuf {
+    std::env::var("PIAL_SIGNING_KEY_DIR")
+        .unwrap_or_else(|_| "/var/lib/elohim-veni/keys".into())
+        .into()
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     observ::init("elohim_veni")?;
 
-    let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-    let port = std::env::var("PORT").unwrap_or_else(|_| "8093".into());
+    let database_url = std::env::var("DATABASE_URL").map_err(|_| anyhow::anyhow!("DATABASE_URL must be set"))?;
 
+    // Subcommands: one-shot operations that share this binary's schema and
+    // rules rather than reimplementing them in a script.
+    match std::env::args().nth(1).as_deref() {
+        None | Some("serve") => {}
+        Some("import") => return import::run(&database_url).await,
+        Some("rotate-signing-key") => {
+            let pool = sqlx::PgPool::connect(&database_url).await?;
+            db::migrate(&pool).await?;
+            let kid = identity::tokens::rotate(&pool, &signing_key_dir()).await?;
+            info!(kid = %kid, "new PIAL signing key written; it signs once it has been published for {}s",
+                identity::tokens::PUBLISH_LEAD_SECS);
+            return Ok(());
+        }
+        Some(other) => anyhow::bail!("unknown command {other:?}: expected serve | import | rotate-signing-key"),
+    }
+
+    let port = std::env::var("PORT").unwrap_or_else(|_| "8093".into());
     let verity_url = std::env::var("VERITY_URL").unwrap_or_else(|_| "http://localhost:8095".into());
 
+    // Every route but /health, /metrics and the JWKS requires this key. Without
+    // it there is nothing to compare against, and an identity authority that
+    // accepts anyone is not one: refuse to boot.
     let internal_api_key = std::env::var("INTERNAL_API_KEY").unwrap_or_default();
+    if internal_api_key.is_empty() {
+        anyhow::bail!("INTERNAL_API_KEY must be set");
+    }
 
     let pool = sqlx::PgPool::connect(&database_url).await?;
     db::migrate(&pool).await?;
     info!("Elohim Veni schema up to date");
+
+    let tokens = identity::tokens::TokenIssuer::open(&pool, signing_key_dir()).await?;
+    tokens.spawn_reload();
 
     // The naming plane. Elohim Veni is the identity authority — Manhattan's
     // authority map gives this brain the identity, key and address node kinds —
@@ -44,6 +79,13 @@ async fn main() -> anyhow::Result<()> {
     let manhattan = manhattan_client::Manhattan::from_env("elohim-veni")?;
     manhattan_outbox::spawn(database_url.clone(), manhattan.clone());
     notification_outbox::spawn(database_url.clone());
+    identity::relay::spawn(
+        pool.clone(),
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()?,
+    );
+    identity::maintenance::spawn(pool.clone());
 
     // Expired Numbers stop admitting new contact at the decision, in SQL,
     // against this database's own clock — that enforcement does not depend on
@@ -73,6 +115,7 @@ async fn main() -> anyhow::Result<()> {
         verity_url,
         http,
         internal_api_key,
+        tokens,
         nexus_tier_cache,
         manhattan,
         bundle_signer,
@@ -84,12 +127,59 @@ async fn main() -> anyhow::Result<()> {
         .route("/health", get(handlers::health))
         // Stats
         .route("/v1/stats", get(handlers::stats))
-        // PIAL lifecycle
+        // PIAL assertion by another brain (feed-engine's assertPIAL).
         .route("/v1/pial/bootstrap", post(handlers::pial_bootstrap))
+        // ── The identity authority ────────────────────────────────────────
+        .route("/v1/auth/jwks", get(identity::http::jwks))
+        .route("/v1/auth/login", post(identity::http::login))
+        .route("/v1/accounts", post(identity::http::create_account))
+        .route("/v1/accounts/founder", get(identity::http::get_founder))
+        .route("/v1/accounts/by-handle/:handle", get(identity::http::get_account_by_handle))
+        .route("/v1/accounts/:id", get(identity::http::get_account))
+        .route("/v1/accounts/:id/password", post(identity::http::change_password))
+        .route("/v1/accounts/:id/password/reset", post(identity::http::reset_password))
+        .route("/v1/accounts/:id/deactivate", post(identity::http::deactivate_account))
+        .route("/v1/accounts/:id/purge", post(identity::http::purge_account))
+        .route("/v1/accounts/:id/totp", get(identity::http::totp_status))
+        .route("/v1/accounts/:id/totp/enroll", post(identity::http::totp_enroll))
+        .route("/v1/accounts/:id/totp/confirm", post(identity::http::totp_confirm))
+        .route("/v1/accounts/:id/totp/disable", post(identity::http::totp_disable))
         .route(
-            "/v1/pial/capabilities/bulk",
-            post(handlers::bulk_update_capabilities),
+            "/v1/accounts/:id/backup-codes",
+            get(identity::http::backup_code_status).post(identity::http::generate_backup_codes),
         )
+        .route("/v1/accounts/:id/backup-codes/consume", post(identity::http::consume_backup_code))
+        .route("/v1/recovery/verify", post(identity::http::recovery_verify))
+        .route("/v1/recovery/complete", post(identity::http::recovery_complete))
+        .route("/v1/sessions", get(identity::http::list_sessions))
+        .route("/v1/sessions/resolve", post(identity::http::resolve_session))
+        .route("/v1/sessions/revoke", post(identity::http::revoke_sessions))
+        .route("/v1/sessions/switch", post(identity::http::switch_session))
+        .route("/v1/sessions/:id", delete(identity::http::delete_session))
+        .route("/v1/pials/:pial_id", get(identity::http::get_pial))
+        .route("/v1/pials/:pial_id/facts", put(identity::http::put_facts))
+        .route("/v1/pials/:pial_id/role", put(identity::http::put_role))
+        .route("/v1/pials/:pial_id/status", put(identity::http::put_status))
+        .route("/v1/pials/:pial_id/trust", put(identity::http::put_trust))
+        .route("/v1/pials/:pial_id/capabilities/:cap", put(identity::http::put_capability))
+        .route("/v1/pials/:pial_id/ban", post(identity::http::ban))
+        .route("/v1/pials/:pial_id/unban", post(identity::http::unban))
+        .route("/v1/pials/:pial_id/tombstone", post(identity::http::tombstone))
+        .route("/v1/pials/:pial_id/accounts", post(identity::http::add_persona))
+        .route("/v1/pials/:pial_id/accounts/link", post(identity::http::link_account))
+        // ── Handles (the registry, merged in from registry-brain) ──────────
+        .route("/v1/handles", post(handles::claim))
+        .route("/v1/handles/search", get(handles::search))
+        .route("/v1/handles/reserved", get(handles::list_reserved).post(handles::reserve))
+        .route("/v1/handles/auctions/:id", get(handles::get_auction))
+        .route("/v1/handles/auctions/:id/bid", post(handles::bid))
+        .route("/v1/handles/auctions/:id/settle", post(handles::settle))
+        .route("/v1/handles/:handle", get(handles::resolve))
+        .route("/v1/handles/:handle/bind", post(handles::bind))
+        .route("/v1/handles/:handle/unbind", post(handles::unbind))
+        .route("/v1/handles/:handle/transfer", post(handles::transfer))
+        .route("/v1/handles/:handle/admin", post(handles::admin))
+        .route("/v1/handles/:handle/auction", post(handles::create_auction))
         // PIAL key management — literal-segment routes BEFORE parameterised :pial_id routes
         .route(
             "/v1/pial/signing-key/register",
@@ -107,16 +197,7 @@ async fn main() -> anyhow::Result<()> {
             "/v1/pial/:pial_id/ecdh-pubkey",
             get(handlers::get_ecdh_pubkey),
         )
-        .route(
-            "/v1/pial/:pial_id/capabilities",
-            get(handlers::get_capabilities).post(handlers::update_capability),
-        )
         .route("/v1/pial/:pial_id/trust", get(handlers::get_trust))
-        .route(
-            "/v1/pial/:pial_id/status",
-            post(handlers::update_pial_status),
-        )
-        .route("/v1/pial/:pial_id/ban", post(handlers::ban_pial))
         // Contact addresses — this brain owns `address`/`addr` in Manhattan.
         .route("/v1/addresses/mint", post(handlers::mint_address))
         .route("/v1/addresses/revoke", post(handlers::revoke_address))
@@ -163,6 +244,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/decisions/log", get(handlers::decision_log))
         // NEXUS tier proxy — routes to Verity; Nantar calls this instead of Verity directly
         .route("/v1/nexus/tier/:shard", get(handlers::nexus_tier))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            api::require_internal_key,
+        ))
         .with_state(state)
         .layer(axum::middleware::from_fn(observ::http_middleware));
 

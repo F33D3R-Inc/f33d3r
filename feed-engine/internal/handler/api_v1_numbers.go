@@ -304,14 +304,6 @@ func (h *Handler) apiV1NumberEvent(w http.ResponseWriter, r *http.Request, event
 // not allocate a Number right now" retries for ever; an owner told they are
 // holding five retires one and carries on.
 func (h *Handler) apiNumberMintEvent(w http.ResponseWriter, r *http.Request, user *model.User, raw map[string]json.RawMessage) {
-	// The authority stores this Number's policy against the identity, so the
-	// identity has to exist there first — the same assertion the Facet path
-	// makes, for the same reason.
-	if err := h.assertPIAL(r.Context(), user.PIALID); err != nil {
-		log.Printf("[api/v1] asserting pial %s before a mint: %v", user.PIALID, err)
-		apiError(w, http.StatusServiceUnavailable, "mint_unavailable", mintRefusalNotice(""))
-		return
-	}
 	policy := strings.TrimSpace(eventField(r, raw, "policy"))
 	if policy == "" {
 		// What a Number is for: reachable by whoever was told the Number, and
@@ -503,12 +495,6 @@ func (h *Handler) apiContactPolicyEvent(w http.ResponseWriter, r *http.Request, 
 	policy := strings.TrimSpace(eventField(r, raw, "policy", "handle_policy"))
 	if !isContactPolicy(policy) {
 		apiError(w, http.StatusBadRequest, "unknown_policy", "That is not a contact policy.")
-		return
-	}
-	if err := h.assertPIAL(r.Context(), user.PIALID); err != nil {
-		log.Printf("[api/v1] asserting pial %s before a contact policy change: %v", user.PIALID, err)
-		apiError(w, http.StatusServiceUnavailable, "policy_unchanged",
-			"Could not save your contact policy right now.")
 		return
 	}
 	body := map[string]interface{}{"pial_id": user.PIALID, "handle_policy": policy}

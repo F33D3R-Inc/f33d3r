@@ -78,23 +78,17 @@ scrape_configs:
       - targets: [ 'elohim-veni:8093' ]
         labels: { brain: elohim_veni, lang: rust }
 
-  - job_name: zodacare
+  - job_name: abraxas-shield
     metrics_path: /metrics
     static_configs:
-      - targets: [ 'zodacare:8090' ]
-        labels: { brain: zodacare, lang: rust }
+      - targets: [ 'abraxas-shield:8109' ]
+        labels: { brain: abraxas, lang: rust }
 
   - job_name: schema-registry
     metrics_path: /metrics
     static_configs:
       - targets: [ 'aethyr-schema-registry:8079' ]
         labels: { brain: schema_registry, lang: rust }
-
-  - job_name: registrar
-    metrics_path: /metrics
-    static_configs:
-      - targets: [ 'registry-brain:8094' ]
-        labels: { brain: registrar, lang: rust }
 
   - job_name: ekyc
     metrics_path: /metrics

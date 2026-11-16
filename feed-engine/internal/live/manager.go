@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/f33d3r/feed-engine/internal/abraxas"
 	dbpkg "github.com/f33d3r/feed-engine/internal/db"
 	"github.com/f33d3r/feed-engine/internal/sitra"
 )
@@ -61,6 +62,11 @@ type Manager struct {
 	// this package still keeps the database honest, and says so at startup
 	// rather than pretending the surfaces were told.
 	RenderStreamState func(streamID string)
+
+	// Abraxas is the integrity authority every sampled frame is put to. A
+	// banned match ends the stream here; what follows for the account arrives
+	// on safety.events and is the safety consumer's.
+	Abraxas *abraxas.Client
 
 	mu     sync.Mutex
 	misses map[string]int // stream id -> consecutive reconcile misses

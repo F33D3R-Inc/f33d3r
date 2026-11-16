@@ -202,6 +202,37 @@ func (h *Handler) registerPIALEcdhKey(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`{"ok":true}`))
 }
 
+// ownEcdhKey answers the signed-in person's own registered ECDH public key, so a
+// browser can recognise which of its stored keys is the one the key authority
+// holds. Before keys were named by account they were stored under the PIAL; the
+// browser no longer knows the PIAL, so it adopts a stored key by matching this
+// public key instead. Nothing here names the PIAL, and only the owner is asked.
+// GET /api/pial/ecdh-key → {"public_key_b64": "..."} | 404 when none is registered
+func (h *Handler) ownEcdhKey(w http.ResponseWriter, r *http.Request) {
+	user := h.userFromRequest(w, r)
+	if user == nil || user.PIALID == "" {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	pub, err := h.fetchEcdhPubkey(r.Context(), user.PIALID)
+	if errors.Is(err, errKeyNotRegistered) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(`{"error":"no_key"}`))
+		return
+	}
+	if err != nil {
+		log.Printf("[pial] own ECDH key lookup for account %s: %v", user.ID, err)
+		http.Error(w, `{"error":"key_authority_unavailable"}`, http.StatusBadGateway)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(map[string]string{"public_key_b64": pub}); err != nil {
+		log.Printf("[pial] own ECDH key response for account %s: %v", user.ID, err)
+	}
+}
+
 // balanceJSON is the native form of a balance Ain Soph reports as an AET
 // string ("12.50"): settled µAET, and pending 0 — the webhook carries only
 // the settled figure.

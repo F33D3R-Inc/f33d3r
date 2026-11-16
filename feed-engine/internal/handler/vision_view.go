@@ -11,9 +11,11 @@ package handler
 // Expiry is enforced in SQL on every read (db.visionLiveSQL). Nothing on this
 // path hides an expired Vision with CSS or a timer.
 //
-// A Vision has no id of its own: it is addressed as (author_pial, seq), a
-// position in its author's PIAL-owned lane (db.VisionRef). PIAL is the only
-// standalone identity this lane ever carries.
+// A Vision has no id of its own: inside the server it is addressed as
+// (author_pial, seq), a position in its author's PIAL-owned lane (db.VisionRef).
+// Everything a page or a URL carries is the wire address (author_account, seq)
+// (db.VisionAddress): a PIAL is never written into a page, and the server
+// resolves it from the account (resolveVisionWire).
 
 import (
 	"database/sql"
@@ -53,10 +55,35 @@ func visionScope(raw string) string {
 	return visionScopeFollowing
 }
 
-// visionRef is the address of one Vision, built from the fields every row
-// carries — the small twin of dbpkg.ParseVisionRef for a row already in hand.
+// visionRef is the server's address of one Vision, built from the fields every
+// row carries. It names a PIAL, so it is for queries and logs only.
 func visionRef(v *model.Vision) dbpkg.VisionRef {
 	return dbpkg.VisionRef{AuthorPIAL: v.AuthorPIAL, Seq: v.Seq}
+}
+
+// visionAddress is the wire address of one Vision — what URLs, Facet ids and
+// JSON carry. It names the author's account, never the PIAL.
+func visionAddress(v *model.Vision) dbpkg.VisionAddress {
+	return dbpkg.VisionAddress{AuthorAccount: v.AuthorAccountID, Seq: v.Seq}
+}
+
+// errVisionAddressUnknown is a well-formed wire address that names no lane.
+var errVisionAddressUnknown = errors.New("vision address names no author")
+
+// resolveVisionWire turns the address a client sent into the server's ref,
+// resolving the author account's PIAL server-side. A malformed address and an
+// unknown author are errVisionAddressUnknown-wrapped client errors; anything else
+// is the identity projection failing.
+func (h *Handler) resolveVisionWire(raw string) (dbpkg.VisionRef, error) {
+	addr, err := dbpkg.ParseVisionAddress(strings.TrimSpace(raw))
+	if err != nil {
+		return dbpkg.VisionRef{}, fmt.Errorf("%w: %v", errVisionAddressUnknown, err)
+	}
+	ref, err := dbpkg.ResolveVisionAddress(h.db, addr)
+	if errors.Is(err, dbpkg.ErrVisionAuthorUnknown) {
+		return dbpkg.VisionRef{}, fmt.Errorf("%w: %v", errVisionAddressUnknown, err)
+	}
+	return ref, err
 }
 
 // ── views ────────────────────────────────────────────────────────────────────
@@ -66,7 +93,7 @@ func visionRef(v *model.Vision) dbpkg.VisionRef {
 // so no surface below this decides what a Vision looks like.
 type visionStillView struct {
 	V           *model.Vision
-	Ref         string // the canonical `<author_pial>.<seq>` address — templates cannot call visionRef themselves
+	Ref         string // the wire `<author_account>.<seq>` address — templates cannot call visionAddress themselves
 	Artboard    visionArtboardView
 	HasArtboard bool
 	IsImage     bool
@@ -179,11 +206,11 @@ type visionFrameView struct {
 func buildVisionStill(v *model.Vision, shared *model.Work) visionStillView {
 	sv := visionStillView{
 		V:           v,
-		Ref:         visionRef(v).String(),
+		Ref:         visionAddress(v).String(),
 		AuthorURL:   "/" + v.AuthorHandle,
 		TimeAgo:     TimeAgo(v.CreatedAt),
 		ExpiryLabel: visionExpiryLabel(v.ExpiresAt),
-		RingElemID:  visionRingElemID(v.AuthorPIAL),
+		RingElemID:  visionRingElemID(v.AuthorAccountID),
 	}
 	switch v.ContentType {
 	case "image":
@@ -210,7 +237,7 @@ func buildVisionStill(v *model.Vision, shared *model.Work) visionStillView {
 		sv.HasArtboard = true
 	}
 	if sv.HasArtboard {
-		sv.Artboard = buildVisionArtboard(visionRef(v).String(), v.Body,
+		sv.Artboard = buildVisionArtboard(visionAddress(v).String(), v.Body,
 			v.ArtboardBackground, v.ArtboardTypeface, v.ArtboardTypeScale, v.ArtboardAlign)
 	}
 	return sv
@@ -219,8 +246,8 @@ func buildVisionStill(v *model.Vision, shared *model.Work) visionStillView {
 // visionRingElemID is the id the avatar carries so the sequential viewer can put
 // focus back exactly where it was opened from. Derived from the author's PIAL,
 // so nothing the browser supplies is ever echoed into a Fragment.
-func visionRingElemID(authorPIAL string) string {
-	return "vision-ring-" + authorPIAL
+func visionRingElemID(authorAccount string) string {
+	return "vision-ring-" + authorAccount
 }
 
 // visionViewerURL is the address of one frame of the sequential viewer.
@@ -350,18 +377,18 @@ func (h *Handler) visionRings(viewer *model.User, scope string) ([]*model.Vision
 func visionRingsGatedTo(rings []*model.VisionRing, seq []*model.Vision) []*model.VisionRing {
 	byAuthor := make(map[string][]*model.Vision, len(rings))
 	for _, v := range seq {
-		byAuthor[v.AuthorPIAL] = append(byAuthor[v.AuthorPIAL], v)
+		byAuthor[v.AuthorAccountID] = append(byAuthor[v.AuthorAccountID], v)
 	}
 	out := make([]*model.VisionRing, 0, len(rings))
 	for _, r := range rings {
-		run := byAuthor[r.AuthorPIAL]
+		run := byAuthor[r.AuthorAccountID]
 		if len(run) == 0 {
 			continue
 		}
 		gated := *r
 		gated.Count = len(run)
 		gated.UnseenCount = 0
-		gated.NextVisionRef = visionRef(run[0]).String()
+		gated.NextVisionRef = visionAddress(run[0]).String()
 		resumed := false
 		for _, v := range run {
 			if v.ViewedByViewer {
@@ -369,7 +396,7 @@ func visionRingsGatedTo(rings []*model.VisionRing, seq []*model.Vision) []*model
 			}
 			gated.UnseenCount++
 			if !resumed {
-				gated.NextVisionRef = visionRef(v).String()
+				gated.NextVisionRef = visionAddress(v).String()
 				resumed = true
 			}
 		}
@@ -398,11 +425,11 @@ func (h *Handler) buildVisionRail(viewer *model.User, scope string) (visionRailV
 		v.Handle = viewer.Handle
 		v.AvatarURL = viewer.AvatarURL
 	}
-	viewerPIAL := ""
+	viewerAccount := ""
 	if viewer != nil {
-		viewerPIAL = viewer.PIALID
+		viewerAccount = viewer.ID
 	}
-	v.Own, v.HasOwn, v.Rings = visionRailEntries(rings, viewerPIAL, scope)
+	v.Own, v.HasOwn, v.Rings = visionRailEntries(rings, viewerAccount, scope)
 	v.IsEmpty = len(v.Rings) == 0 && !v.HasOwn
 	return v, nil
 }
@@ -411,7 +438,7 @@ func (h *Handler) buildVisionRail(viewer *model.User, scope string) (visionRailV
 // and the ordered row of everyone else. An author appears once: the viewer is
 // their own first item, never also one of the row. A ring with no resume point
 // is not a ring — it is dropped rather than rendered as a dead target.
-func visionRailEntries(rings []*model.VisionRing, viewerPIAL, scope string) (visionRingView, bool, []visionRingView) {
+func visionRailEntries(rings []*model.VisionRing, viewerAccount, scope string) (visionRingView, bool, []visionRingView) {
 	var own visionRingView
 	hasOwn := false
 	row := make([]visionRingView, 0, len(rings))
@@ -423,10 +450,10 @@ func visionRailEntries(rings []*model.VisionRing, viewerPIAL, scope string) (vis
 			R:       r,
 			Scope:   scope,
 			OpenURL: visionViewerURL(r.NextVisionRef, scope),
-			ElemID:  visionRingElemID(r.AuthorPIAL),
+			ElemID:  visionRingElemID(r.AuthorAccountID),
 			Label:   visionRingLabel(r),
 		}
-		if viewerPIAL != "" && r.AuthorPIAL == viewerPIAL {
+		if viewerAccount != "" && r.AuthorAccountID == viewerAccount {
 			rv.Label = visionOwnRingLabel(r)
 			own, hasOwn = rv, true
 			continue
@@ -437,22 +464,25 @@ func visionRailEntries(rings []*model.VisionRing, viewerPIAL, scope string) (vis
 }
 
 // visionRingForAuthor answers "does this author have a live Vision for this
-// viewer, and where does it resume" for one author, named by PIAL. The
+// viewer, and where does it resume" for one author account. The
 // viewer's own ring set is the answer wherever it already holds one — the same
 // GetVisionRingsForViewer the rail is built from. An author the viewer neither
 // is nor follows is not in that set, so their ring is restated from their own
 // live run through the identical derivation the gated rail uses. No second
 // definition of ring state exists.
-func (h *Handler) visionRingForAuthor(authorPIAL string, viewer *model.User) (*model.VisionRing, error) {
+func (h *Handler) visionRingForAuthor(author *model.User, viewer *model.User) (*model.VisionRing, error) {
 	if h.db == nil {
 		return nil, errors.New("vision: db unavailable")
+	}
+	if author == nil || author.PIALID == "" {
+		return nil, nil
 	}
 	rings, err := h.visionRings(viewer, visionScopeFollowing)
 	if err != nil {
 		return nil, err
 	}
 	for _, r := range rings {
-		if r != nil && r.AuthorPIAL == authorPIAL && r.NextVisionRef != "" {
+		if r != nil && r.AuthorAccountID == author.ID && r.NextVisionRef != "" {
 			return r, nil
 		}
 	}
@@ -460,19 +490,27 @@ func (h *Handler) visionRingForAuthor(authorPIAL string, viewer *model.User) (*m
 	if viewer != nil {
 		viewerPIAL = viewer.PIALID
 	}
-	run, err := dbpkg.GetActiveVisionsForAuthor(h.db, authorPIAL, viewerPIAL, 0)
+	lane, err := dbpkg.GetActiveVisionsForAuthor(h.db, author.PIALID, viewerPIAL, 0)
 	if err != nil {
 		return nil, err
 	}
-	run = gateVisionsFor(viewer, run)
+	// The lane is read through the PIAL and joined to its accounts; this ring is
+	// one account's, so only that account's rows are its run.
+	run := make([]*model.Vision, 0, len(lane))
+	for _, v := range gateVisionsFor(viewer, lane) {
+		if v.AuthorAccountID == author.ID {
+			run = append(run, v)
+		}
+	}
 	if len(run) == 0 {
 		return nil, nil
 	}
 	stub := &model.VisionRing{
-		AuthorPIAL:   authorPIAL,
-		AuthorHandle: run[0].AuthorHandle,
-		AuthorName:   run[0].AuthorName,
-		AvatarURL:    run[0].AvatarURL,
+		AuthorPIAL:      author.PIALID,
+		AuthorAccountID: author.ID,
+		AuthorHandle:    run[0].AuthorHandle,
+		AuthorName:      run[0].AuthorName,
+		AvatarURL:       run[0].AvatarURL,
 	}
 	restated := visionRingsGatedTo([]*model.VisionRing{stub}, run)
 	if len(restated) == 0 {
@@ -497,7 +535,7 @@ func (h *Handler) buildVisionProfileRing(author, viewer *model.User, online, isL
 		// it would only be reachable by a link this Facet no longer renders.
 		return v, nil
 	}
-	ring, err := h.visionRingForAuthor(author.PIALID, viewer)
+	ring, err := h.visionRingForAuthor(author, viewer)
 	if err != nil {
 		return visionProfileRingView{}, err
 	}
@@ -509,7 +547,7 @@ func (h *Handler) buildVisionProfileRing(author, viewer *model.User, online, isL
 		R:       ring,
 		Scope:   visionScopeFollowing,
 		OpenURL: visionViewerURL(ring.NextVisionRef, visionScopeFollowing),
-		ElemID:  visionRingElemID(ring.AuthorPIAL),
+		ElemID:  visionRingElemID(ring.AuthorAccountID),
 		Label:   visionRingLabel(ring),
 	}
 	return v, nil
@@ -584,7 +622,7 @@ func (h *Handler) buildVisionReels(viewer *model.User, scope string) (visionReel
 		v.Reels = append(v.Reels, visionReelView{
 			Still:   buildVisionStill(vi, h.loadSharedWork(vi, viewer)),
 			Scope:   scope,
-			OpenURL: visionViewerURL(visionRef(vi).String(), scope),
+			OpenURL: visionViewerURL(visionAddress(vi).String(), scope),
 			IsNSFW:  vi.IsNSFW,
 			Index:   i + 1,
 			Total:   total,
@@ -729,7 +767,7 @@ func (h *Handler) facetVisionReels(w http.ResponseWriter, r *http.Request) {
 	h.renderPartial(w, "vision_reels", reels)
 }
 
-// facetVisionViewer — GET /facets/vision/viewer?vision=<author_pial>.<seq>&scope=
+// facetVisionViewer — GET /facets/vision/viewer?vision=<author_account>.<seq>&scope=
 // One frame of the sequential viewer. Every step is this round trip: the server
 // decides the frame, the progress, and where prev and next lead — including the
 // crossing into the next author's run. Opening a frame records the view.
@@ -749,9 +787,14 @@ func (h *Handler) facetVisionViewer(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "vision is required", http.StatusBadRequest)
 		return
 	}
-	ref, err := dbpkg.ParseVisionRef(rawRef)
+	ref, err := h.resolveVisionWire(rawRef)
+	if errors.Is(err, errVisionAddressUnknown) {
+		h.renderVisionGone(w, scope)
+		return
+	}
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		log.Printf("[vision-view] resolving %q: %v", rawRef, err)
+		http.Error(w, "the Vision could not be read", http.StatusInternalServerError)
 		return
 	}
 
@@ -839,10 +882,10 @@ func (h *Handler) buildVisionFrame(v *model.Vision, viewer *model.User, scope st
 	}
 	fv.Segments = visionSegments(fv.Position, fv.Total)
 	if loc.Index > 0 {
-		fv.PrevURL = visionViewerURL(visionRef(seq[loc.Index-1]).String(), scope)
+		fv.PrevURL = visionViewerURL(visionAddress(seq[loc.Index-1]).String(), scope)
 	}
 	if loc.Index+1 < len(seq) {
-		fv.NextURL = visionViewerURL(visionRef(seq[loc.Index+1]).String(), scope)
+		fv.NextURL = visionViewerURL(visionAddress(seq[loc.Index+1]).String(), scope)
 	}
 	fv.IsFirst = fv.PrevURL == ""
 	fv.IsLast = fv.NextURL == ""

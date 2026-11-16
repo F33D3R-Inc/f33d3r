@@ -3,7 +3,7 @@ FACET work_focus_sidebar
   version: 1.1 | status: stable | layer: 1
 
   inputs:
-    W    Work    — .ID .AuthorHandle .AuthorName .AvatarURL .AuthorPIAL
+    W    Work    — .ID .AuthorHandle .AuthorName .AvatarURL .AuthorID
                    .LikedByUser .LikeCount .RepostedByUser .RepostCount
                    .BookmarkedByUser .ReplyCount .ViewerFollowsAuthor
     Ctx  PageCtx — optional .CurrentUserHandle
@@ -30,8 +30,8 @@ FACET work_focus_sidebar
     <a href="/{{$w.AuthorHandle}}" onclick="event.stopPropagation()" class="focus-av-ring">
       {{template "user_avatar" (dict "Handle" $w.AuthorHandle "AvatarURL" $w.AvatarURL "DisplayName" $w.AuthorName "Size" "md")}}
     </a>
-    {{if and $ctx (ne $w.AuthorHandle $ctx.CurrentUserHandle) (not $w.ViewerFollowsAuthor) $w.AuthorPIAL}}
-    {{template "btn_follow" (dict "TargetPIAL" $w.AuthorPIAL "TargetHandle" $w.AuthorHandle "IsFollowing" false "Surface" "dot")}}
+    {{if and $ctx (ne $w.AuthorHandle $ctx.CurrentUserHandle) (not $w.ViewerFollowsAuthor) $w.AuthorID}}
+    {{template "btn_follow" (dict "TargetAccount" $w.AuthorID "TargetHandle" $w.AuthorHandle "IsFollowing" false "Surface" "dot")}}
     {{end}}
   </div>
 

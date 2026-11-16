@@ -66,18 +66,22 @@ func (h *Handler) payWorkNotices(ctx context.Context, job dbpkg.WorkNoticeJob) e
 		})
 	}
 
-	if job.Kind == "reply" || job.Kind == "quote" {
-		cited, ok, err := dbpkg.WorkNoticeCitedWork(h.db, job.WorkID, job.Kind)
-		if err != nil {
-			return fmt.Errorf("reading cited work: %w", err)
+	// Who the work answers or quotes is read from its citations, never from the
+	// kind label: a video reply, a voice reply and a thread continuation are all
+	// replies, and each tells the author it answers.
+	cited, err := dbpkg.WorkCitationTargets(h.db, job.WorkID)
+	if err != nil {
+		return fmt.Errorf("reading cited works: %w", err)
+	}
+	for _, c := range cited {
+		if told[c.AuthorID] {
+			continue
 		}
-		if ok && !told[cited.AuthorID] {
-			verb := "replied to you"
-			if job.Kind == "quote" {
-				verb = "quoted your work"
-			}
-			tell(cited.AuthorID, job.Kind, "@"+job.AuthorHandle+" "+verb)
+		verb := "replied to you"
+		if c.Type == "quote" {
+			verb = "quoted your work"
 		}
+		tell(c.AuthorID, c.Type, "@"+job.AuthorHandle+" "+verb)
 	}
 
 	handles := mentionedHandles(job.Body)

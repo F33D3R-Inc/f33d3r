@@ -1,0 +1,37 @@
+{{/*
+FACET governance_proposals
+  version: 1.0 | status: stable | layer: 2
+
+  inputs:
+    Proposals  []governanceProposal — .ID .Title .Status .EndsAt .TotalVotes
+    Notice     string               — set when the list could not be read
+
+  states:
+    default | empty | unavailable
+
+  children: none
+
+  signals:
+    emits:    none (each row requests governance_proposal_detail into #proposal-detail)
+    receives: none (re-requested by wallet_governance on fa:governance-changed / fa:resync)
+
+  context:
+    wallet_governance → #proposals-list
+
+  note:
+    A proposal's author is an identity, and an identity is never written into a
+    page; the row does not name one.
+*/}}
+{{define "governance_proposals"}}
+<div class="gov-list" data-facet-id="facet:f33d3r:governance:all:proposals">
+{{if .Notice}}<p class="gov-empty">{{.Notice}}</p>
+{{else if not .Proposals}}<p class="gov-empty">No active proposals.</p>
+{{else}}{{range .Proposals}}
+  <button type="button" class="gov-row" hx-get="/facets/wallet/proposals/{{.ID}}" hx-target="#proposal-detail" hx-swap="innerHTML">
+    <span class="gov-row-status{{if eq .Status "active"}} gov-row-status--active{{end}}">● {{.Status}} · ends {{timeAgo .EndsAt}}</span>
+    <span class="gov-row-title">{{.Title}}</span>
+    <span class="gov-row-votes">{{.TotalVotes}} vote{{if ne .TotalVotes 1}}s{{end}}</span>
+  </button>
+{{end}}{{end}}
+</div>
+{{end}}

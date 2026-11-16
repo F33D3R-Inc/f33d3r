@@ -50,7 +50,7 @@ func loginAccountKey(r *http.Request) string {
 // per-account limiter on the 2FA routes: a TOTP guess is charged to the session
 // making it, not to whichever address it came from.
 func sessionAccountKey(r *http.Request) string {
-	return HandleFromCookie(r)
+	return GetSessionToken(r)
 }
 
 // ── In-memory IP block cache ─────────────────────────────────────────────────
@@ -377,33 +377,33 @@ func IsAccountLocked(db *sql.DB, handle string) bool {
 	return count > 0
 }
 
-// RegisterDevice records a device fingerprint for the user on successful login.
-// If the device is new, a new_device_login security event is fired.
-// device_hash is sha256(user-agent) — simple but catches bots and browser switches.
-func RegisterDevice(db *sql.DB, userID, ua, ip string) {
+// RegisterDevice records the device a sign-in came from and reports whether
+// this account had never signed in from it before. device_hash is
+// sha256(user-agent) — simple, but it catches bots and browser switches. A new
+// device fires a new_device_login security event. The insert and the answer
+// are one statement, so two sign-ins racing on one device report it new once.
+func RegisterDevice(db *sql.DB, userID, ua, ip string) (isNew bool, err error) {
 	if db == nil || userID == "" {
-		return
+		return false, nil
 	}
-	h := sha256.Sum256([]byte(ua))
-	hash := fmt.Sprintf("%x", h)
-
-	var existing int
-	db.QueryRow(`SELECT COUNT(*) FROM user_devices WHERE user_id = $1 AND device_hash = $2`,
-		userID, hash).Scan(&existing)
-
-	if existing == 0 {
-		db.Exec(`
-			INSERT INTO user_devices (user_id, device_hash, ip_address, user_agent)
-			VALUES ($1, $2, $3, $4)
-			ON CONFLICT (user_id, device_hash) DO NOTHING`,
-			userID, hash, ip, ua)
+	sum := sha256.Sum256([]byte(ua))
+	hash := fmt.Sprintf("%x", sum)
+	// xmax = 0 only on the row version an INSERT created: true for a first
+	// sighting, false when the conflict path updated an existing device.
+	if err := db.QueryRow(`
+		INSERT INTO user_devices (user_id, device_hash, ip_address, user_agent)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (user_id, device_hash) DO UPDATE
+		   SET last_seen = NOW(), ip_address = EXCLUDED.ip_address
+		RETURNING (xmax = 0)`, userID, hash, ip, ua).Scan(&isNew); err != nil {
+		return false, fmt.Errorf("recording sign-in device for %s: %w", userID, err)
+	}
+	if isNew {
 		go LogSecurityEvent(db, "new_device_login", "medium", userID, ip, ua, "/login",
 			map[string]interface{}{"device_hash": hash})
 		log.Printf("[security] new device login — user %s from %s", userID, ip)
-	} else {
-		db.Exec(`UPDATE user_devices SET last_seen = NOW(), ip_address = $3
-			WHERE user_id = $1 AND device_hash = $2`, userID, hash, ip)
 	}
+	return isNew, nil
 }
 
 // ── Admin panel handlers ──────────────────────────────────────────────────────

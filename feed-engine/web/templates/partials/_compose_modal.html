@@ -76,7 +76,7 @@ FACET compose_modal
                per-keystroke round trip to the server to paint a backdrop — that
                round trip was what made typed text blank/blink. */}}
           <div id="compose-highlighter" class="compose-highlighter" aria-hidden="true"></div>
-          <textarea name="content" id="compose-textarea" rows="4" maxlength="2000"
+          <textarea name="content" id="compose-textarea" rows="4" maxlength="10000"
                     placeholder="What's happening?"
                     class="compose-textarea"></textarea>
           {{/* Facet(mention_dropdown) — autocomplete for @handles, anchored to textarea */}}
@@ -148,6 +148,9 @@ FACET compose_modal
       <button type="button" class="cvp-remove" onclick="removeComposeVoice()" title="Remove">×</button>
     </div>
 
+    {{/* ── Facet(compose_status) — the server's answer to the last post, by FA Live ── */}}
+    {{if isRealUser .User}}{{template "compose_status" (dict "Account" .User.ID "State" "idle" "Message" "" "WorkID" "")}}{{end}}
+
     {{/* ── Facet(compose_toolbar) — scrollable action bar + char ring ── */}}
     <div class="compose-toolbar">
       <div class="compose-action-bar" id="compose-action-bar">
@@ -161,6 +164,7 @@ FACET compose_modal
                 title="Subscribers only" onclick="toggleComposePPV()">
           <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="width:15px;height:15px"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
         </button>
+        {{if isRealUser .User}}{{template "compose_downloads_toggle" (dict "Account" .User.ID)}}{{end}}
         <div class="compose-action-divider"></div>
 
         {{/* Group 1: Media */}}
@@ -274,6 +278,7 @@ FACET compose_modal
           <span id="compose-audience-label">Everyone</span>
           <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="width:10px;height:10px"><polyline points="6 9 12 15 18 9"/></svg>
         </button>
+        {{if isRealUser .User}}{{template "compose_gating" (dict "Account" .User.ID "Selected" "")}}{{end}}
       </div>
       {{/* Add to thread — hidden until thread mode activated */}}
       <button type="button" class="compose-thread-add-btn" id="thread-add-btn" style="display:none"
@@ -285,4 +290,21 @@ FACET compose_modal
 
   </div>{{/* /compose-card */}}
 </div>
+{{end}}
+
+{{/*
+FACET compose_downloads_toggle — atomic
+  facet id: facet:f33d3r:compose:<account>:downloads
+  The author's per-work download switch, on by default. Every download is
+  watermarked; a subscriber-only work's download also carries the
+  per-subscriber forensic layer. Sent with the work as downloads_allowed.
+  inputs: Account string — the posting account's id
+*/}}
+{{define "compose_downloads_toggle"}}
+<label class="compose-action-btn compose-downloads-btn" data-facet-id="facet:f33d3r:compose:{{.Account}}:downloads"
+       title="Allow downloads of this post (watermarked)">
+  <input type="checkbox" id="compose-downloads" name="downloads_allowed" value="1" checked style="display:none">
+  <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="width:15px;height:15px" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+  <span class="sr-only">Allow downloads</span>
+</label>
 {{end}}

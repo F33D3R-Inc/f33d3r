@@ -22,7 +22,7 @@ if [[ "${ENVIRONMENT}" == "local" ]]; then
     ["Schema Registry"]="http://localhost:8079/health"
     ["Ain Soph (wallet)"]="http://localhost:8089/health"
     ["Elohim Veni (PIAL)"]="http://localhost:8093/health"
-    ["Zodacare (safety)"]="http://localhost:8090/health"
+    ["Abraxas (integrity)"]="http://localhost:8109/health"
     ["Auralis (frequencies)"]="http://localhost:8108/health"
   )
 else
@@ -33,7 +33,6 @@ else
   kubectl rollout status deployment/nantar -n "${NAMESPACE}" --timeout=60s
   kubectl rollout status deployment/aethyrrank -n "${NAMESPACE}" --timeout=60s
   kubectl rollout status deployment/elohim-veni -n "${NAMESPACE}" --timeout=60s
-  kubectl rollout status deployment/zodacare -n "${NAMESPACE}" --timeout=60s
   echo ""
   echo "All deployments healthy in ${ENVIRONMENT}"
   exit 0

@@ -59,7 +59,7 @@ func ComputeRealm(xp int64) int {
 // Realm used to be a pure function of XP, and AwardXP overwrote users.realm
 // with that function's answer on every single award. A realm placed by hand
 // therefore survived exactly until the account's next like — @miiyazuko sat at
-// R5 on 125 XP and @tehanibentley at R3 on 195 XP, and both were one follow
+// R5 on 125 XP and the founder's account at R3 on 195 XP, and both were one follow
 // away from silently falling back to R1 with their rings.
 //
 // A grant is a FLOOR, never an override. The reasons it is a floor:

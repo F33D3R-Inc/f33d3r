@@ -4,24 +4,22 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"strings"
 	"time"
 
-	dbpkg "github.com/f33d3r/feed-engine/internal/db"
-	"github.com/f33d3r/feed-engine/internal/model"
+	"github.com/f33d3r/feed-engine/internal/identity"
 )
 
 func (h *Handler) loginPage(w http.ResponseWriter, r *http.Request) {
-	// Only redirect if there's a valid session token (not just an old handle cookie)
-	if h.db != nil {
-		if sess := GetSessionToken(r); sess != "" && !strings.HasPrefix(sess, "__handle__") {
-			if uid, _ := dbpkg.GetUserIDFromSession(h.db, sess); uid != "" {
-				http.Redirect(w, r, "/", http.StatusSeeOther)
-				return
-			}
-		}
+	// Only redirect when the presented session is confirmed live. A session
+	// that cannot be confirmed is shown the form: signing in again is the one
+	// thing that works when resolution is down.
+	if u, err := h.viewer(w, r); err == nil && viewerAccountID(u) != "" {
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
 	}
 	h.render(w, r, "login.html", map[string]interface{}{
 		"Title": "Sign in · F33D3R",
@@ -32,157 +30,52 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 	_ = r.ParseForm()
 	handle := strings.TrimSpace(strings.ToLower(r.FormValue("handle")))
 	password := r.FormValue("password")
-	ip := requestIP(r)
 
+	page := func(data map[string]interface{}) {
+		data["Title"] = "Sign in · F33D3R"
+		h.render(w, r, "login.html", data)
+	}
 	if !handleRe.MatchString(handle) {
-		h.render(w, r, "login.html", map[string]interface{}{
-			"Title": "Sign in · F33D3R",
-			"Error": "Invalid handle — letters, numbers, underscore, 1–30 chars.",
-		})
+		page(map[string]interface{}{"Error": "Invalid handle — letters, numbers, underscore, 1–30 chars."})
+		return
+	}
+	if password == "" {
+		page(map[string]interface{}{"Handle": handle})
 		return
 	}
 
-	if h.db == nil {
-		// Dev mode — no DB, just set handle cookie
-		SetHandleCookie(w, handle)
-		http.Redirect(w, r, "/", http.StatusSeeOther)
-		return
-	}
-
-	// Check handle exists. Generic error keeps handle enumeration impossible —
-	// an attacker must not be able to discover which handles exist by probing login.
-	taken, _ := dbpkg.IsHandleTaken(h.db, handle)
-	if !taken {
-		go LogSecurityEvent(h.db, "login_failed", "low", "", ip, r.UserAgent(), "/login",
-			map[string]interface{}{"handle": handle, "reason": "unknown_handle"})
-		go CheckBruteForce(h.db, ip)
-		h.render(w, r, "login.html", map[string]interface{}{
-			"Title": "Sign in · F33D3R",
-			"Error": "Invalid handle or password.",
-		})
-		return
-	}
-
-	user, _ := dbpkg.GetUserByHandle(h.db, handle)
-	if user == nil {
-		go LogSecurityEvent(h.db, "login_failed", "low", "", ip, r.UserAgent(), "/login",
-			map[string]interface{}{"handle": handle, "reason": "user_missing"})
-		h.render(w, r, "login.html", map[string]interface{}{
-			"Title": "Sign in · F33D3R",
-			"Error": "Invalid handle or password.",
-		})
-		return
-	}
-
-	// Password check — required for all accounts
-	if dbpkg.HasPassword(h.db, user.ID) {
-		if password == "" {
-			h.render(w, r, "login.html", map[string]interface{}{
-				"Title":         "Sign in · F33D3R",
-				"Handle":        handle,
-				"NeedsPassword": true,
-			})
-			return
-		}
-		userID, err := dbpkg.CheckPassword(h.db, handle, password)
-		if err != nil || userID == "" {
-			go LogSecurityEvent(h.db, "login_failed", "medium", user.ID, ip, r.UserAgent(), "/login",
-				map[string]interface{}{"handle": handle, "reason": "bad_password"})
-			go CheckBruteForce(h.db, ip)
-			go CheckBruteForceHandle(h.db, handle, ip)
-			h.render(w, r, "login.html", map[string]interface{}{
-				"Title":         "Sign in · F33D3R",
-				"Handle":        handle,
-				"NeedsPassword": true,
-				"Error":         "Incorrect password.",
-			})
-			return
-		}
-	} else {
-		// No password set yet — require the user to create one before granting access.
-		// Without this, any visitor who knows a handle can log in without credentials.
-		confirmPassword := r.FormValue("confirm_password")
-		if password == "" {
-			h.render(w, r, "login.html", map[string]interface{}{
-				"Title":            "Sign in · F33D3R",
-				"Handle":           handle,
-				"NeedsSetPassword": true,
-			})
-			return
-		}
-		if len(password) < 8 {
-			h.render(w, r, "login.html", map[string]interface{}{
-				"Title":            "Sign in · F33D3R",
-				"Handle":           handle,
-				"NeedsSetPassword": true,
-				"Error":            "Password must be at least 8 characters.",
-			})
-			return
-		}
-		if confirmPassword != password {
-			h.render(w, r, "login.html", map[string]interface{}{
-				"Title":            "Sign in · F33D3R",
-				"Handle":           handle,
-				"NeedsSetPassword": true,
-				"Error":            "Passwords don't match.",
-			})
-			return
-		}
-		if err := dbpkg.SetPassword(h.db, user.ID, password); err != nil {
-			log.Printf("[login] SetPassword error: %v", err)
-			h.render(w, r, "login.html", map[string]interface{}{
-				"Title": "Sign in · F33D3R",
-				"Error": "Could not save password — try again.",
-			})
-			return
-		}
-	}
-
-	// Deactivated accounts: allow reactivation by logging back in within 30 days.
-	if dbpkg.IsDeactivated(h.db, user.ID) {
-		// Reactivate the account on login — clear the deactivated_at timestamp.
-		h.db.Exec(`UPDATE users SET deactivated_at = NULL, deactivated_reason = '' WHERE id = $1`, user.ID)
-	}
-
-	// PIAL capability check — suspended accounts blocked
-	if user.PIALID != "" {
-		caps := dbpkg.GetCapabilities(h.db, user.PIALID)
-		if !caps.Can(model.CapPosting) && !caps.Can(model.CapMessaging) {
-			h.render(w, r, "login.html", map[string]interface{}{
-				"Title": "Sign in · F33D3R",
-				"Error": "This account has been suspended. Contact support if you believe this is an error.",
-			})
-			return
-		}
-	}
-
-	// Create session token
 	deviceName := r.UserAgent()
 	if len(deviceName) > 100 {
 		deviceName = deviceName[:100]
 	}
-	token, err := dbpkg.CreateAuthSession(h.db, user.ID, deviceName, r.RemoteAddr)
-	if err != nil {
-		log.Printf("[login] session create: %v", err)
-		// Fall back to legacy handle cookie
-		SetHandleCookie(w, handle)
-	} else {
-		SetSessionCookie(w, token)
-		SetHandleCookie(w, handle) // keep for backward compat
+	out := h.signIn(r, handle, password, r.FormValue("code"), deviceName, "/login")
+	switch {
+	case out.Result != nil:
+	case out.NeedsCode:
+		page(map[string]interface{}{"Handle": handle, "NeedsCode": true})
+		return
+	case out.BadCode:
+		page(map[string]interface{}{"Handle": handle, "NeedsCode": true, "Error": "That code is not right. Try again."})
+		return
+	case out.Suspended:
+		page(map[string]interface{}{"Error": "This account has been suspended. Contact support if you believe this is an error."})
+		return
+	case out.NoPassword:
+		page(map[string]interface{}{"Handle": handle, "Error": "This account has no password yet. Use “Forgot password?” with one of your backup codes to set one."})
+		return
+	case out.Unavailable:
+		page(map[string]interface{}{"Handle": handle, "Error": "Sign-in is briefly unavailable. Try again in a moment."})
+		return
+	default:
+		page(map[string]interface{}{"Handle": handle, "Error": "Invalid handle or password."})
+		return
 	}
-	// Device fingerprinting — logs new_device_login security event on first login from this browser.
-	go RegisterDevice(h.db, user.ID, r.UserAgent(), ip)
-	// Anomaly detection — alert the user if this device/IP has never been seen before.
-	go func() {
-		if !dbpkg.IsKnownDevice(h.db, user.ID, deviceName, ip) {
-			h.sendNewDeviceAlert(user, r)
-		}
-	}()
-	// Phase 5: async risk signal on every login — device/velocity scoring
-	go h.loginRiskSignal(user.PIALID, r)
+
+	h.openedSession(w, out.Result.SessionToken)
+	h.afterSignIn(r, out.Result.AccountID, out.Result.PIALID)
 
 	// Backup codes are mandatory. Gate every login until codes are generated.
-	if !dbpkg.HasUnusedBackupCodes(h.db, user.ID) {
+	if out.Result.NeedsBackupCodes {
 		hxAwareRedirect(w, r, "/backup-codes/setup")
 		return
 	}
@@ -226,23 +119,26 @@ func (h *Handler) loginRiskSignal(pialID string, r *http.Request) {
 	var result struct {
 		RiskScore float64 `json:"risk_score"`
 	}
-	if json.NewDecoder(resp.Body).Decode(&result) == nil && result.RiskScore >= 0.8 {
-		// High risk: flag for re-verification — a moderation pipeline writing PIAL (the record).
-		if h.db != nil {
-			// An identity write. If it fails the account keeps a verification this
-			// pipeline just decided it should not have, so the log must not claim
-			// the flag was applied.
-			if _, err := h.db.Exec(
-				`UPDATE pial_roots SET age_verified = FALSE WHERE pial_id = $1::uuid`,
-				pialID,
-			); err != nil {
-				log.Printf("[kyc] high risk login (%.2f) for %s but the re-verify flag FAILED to apply: %v",
-					result.RiskScore, pialID, err)
-				return
-			}
-			log.Printf("[kyc] high risk login (%.2f) — flagged %s for re-verify", result.RiskScore, pialID)
-		}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		log.Printf("[kyc] risk signal answer for %s unreadable: %v", pialID, err)
+		return
 	}
+	if result.RiskScore < 0.8 {
+		return
+	}
+	// High risk: the age verification is withdrawn until the person verifies
+	// again. That is an identity fact, so elohim-veni records it. If it does
+	// not, the account keeps a verification this pipeline decided it should
+	// not have, so the log must not claim the flag was applied.
+	unverified := false
+	if err := h.identity.Client().PutFacts(context.Background(), pialID, identity.FactsUpdate{
+		AgeVerified: &unverified, Source: "risk_signal",
+	}); err != nil {
+		log.Printf("[kyc] high risk login (%.2f) for %s but the re-verify flag FAILED to apply: %v",
+			result.RiskScore, pialID, err)
+		return
+	}
+	log.Printf("[kyc] high risk login (%.2f) — flagged %s for re-verify", result.RiskScore, pialID)
 }
 
 func (h *Handler) deactivatedPage(w http.ResponseWriter, r *http.Request) {
@@ -252,10 +148,13 @@ func (h *Handler) deactivatedPage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleLogout(w http.ResponseWriter, r *http.Request) {
-	if tok := GetSessionToken(r); tok != "" && len(tok) < 100 {
+	if tok := GetSessionToken(r); tok != "" && len(tok) < 200 {
 		h.sessionCache.Delete(tok)
-		if h.db != nil {
-			go dbpkg.DeleteSession(h.db, tok)
+		// The cookie is cleared whatever the authority answers: this device is
+		// signed out either way. A session the authority could not be told to
+		// end is said in the log, because it stays usable until it expires.
+		if err := h.identity.Client().RevokeSession(r.Context(), tok); err != nil && !errors.Is(err, identity.ErrSessionInvalid) {
+			log.Printf("[auth] logout could not end the session at elohim-veni: %v", err)
 		}
 	}
 	ClearSessionCookie(w)
@@ -285,8 +184,8 @@ func ageFromDOB(dob time.Time) int {
 }
 
 func (h *Handler) onboardPage(w http.ResponseWriter, r *http.Request) {
-	// Already has a handle → go to feed
-	if HandleFromCookie(r) != "" {
+	// Already signed in to a real account → go to feed
+	if viewerAccountID(h.userFromRequest(w, r)) != "" {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
@@ -315,22 +214,9 @@ func (h *Handler) handleOnboard(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	// The dev listener without a database has no identity plane to write;
-	// it only remembers the handle, as it always did.
-	if h.db == nil {
-		handle := strings.TrimSpace(strings.ToLower(r.FormValue("handle")))
-		if !handleRe.MatchString(handle) {
-			renderErr("Handle must be 1–30 characters, letters/numbers/underscore only.")
-			return
-		}
-		SetHandleCookie(w, handle)
-		hxAwareRedirect(w, r, "/")
-		return
-	}
-
 	// One writer of new accounts: the same sequence the JSON signup runs.
 	// Refusals come back as the sentence the person should read.
-	user, token, aerr := h.createAccount(r, accountParams{
+	_, token, aerr := h.createAccount(r, accountParams{
 		Handle:          r.FormValue("handle"),
 		Password:        r.FormValue("password"),
 		ConfirmPassword: r.FormValue("confirm_password"),
@@ -347,22 +233,10 @@ func (h *Handler) handleOnboard(w http.ResponseWriter, r *http.Request) {
 		renderErr(aerr.Message)
 		return
 	}
-	handle := user.Handle
-	SetSessionCookie(w, token)
-
-	SetHandleCookie(w, handle)
-	// Single-page flow: all steps done.
-	// Gate: new users must generate backup codes before reaching the feed.
-	if h.db != nil {
-		if u, _ := dbpkg.GetUserByHandle(h.db, handle); u != nil {
-			if !dbpkg.HasUnusedBackupCodes(h.db, u.ID) {
-				hxAwareRedirect(w, r, "/backup-codes/setup")
-				return
-			}
-		}
-	}
-	// A new account changes the Shell: a document load.
-	hxAwareRedirect(w, r, "/")
+	h.openedSession(w, token)
+	// Gate: a new account has no backup codes, and must generate them before
+	// reaching the feed.
+	hxAwareRedirect(w, r, "/backup-codes/setup")
 }
 
 // The retired multi-step onboarding.

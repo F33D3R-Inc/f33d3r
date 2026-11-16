@@ -1,0 +1,75 @@
+{{/*
+FACET governance_proposal_detail
+  version: 1.0 | status: stable | layer: 2
+
+  inputs:
+    ID           string               — the proposal id; the Facet's entity id
+    Proposal     governanceProposal   — .Title .Description .Status .WeightModel .TotalVotes
+    Results      []governanceResult   — .Option .VoteCount .Pct
+    Leading      string               — the leading option, or empty
+    Notice       string               — a refusal or failure to show above the tally
+    Unavailable  bool                 — the proposal could not be read
+
+  states:
+    default | unavailable | refused
+
+  children: none
+
+  signals:
+    emits:    governance_vote (POST /events) — answered with this Facet re-rendered
+    receives: none
+
+  context:
+    wallet_governance → #proposal-detail
+*/}}
+{{define "governance_proposal_detail"}}
+<div class="gov-detail" data-facet-id="facet:f33d3r:governance:{{.ID}}:detail">
+{{if .Unavailable}}<p class="gov-empty">{{.Notice}}</p>
+{{else}}
+  <h2 class="gov-detail-title">{{.Proposal.Title}}</h2>
+  {{if .Proposal.Description}}<p class="gov-detail-desc">{{.Proposal.Description}}</p>{{end}}
+  {{if .Notice}}<p class="tip-result tip-result--error" role="alert">{{.Notice}}</p>{{end}}
+  {{$id := .ID}}{{$leading := .Leading}}{{$active := eq .Proposal.Status "active"}}
+  {{range .Results}}
+  <div class="gov-option{{if eq .Option $leading}} gov-option--leading{{end}}">
+    <div class="gov-option-head">
+      <span class="gov-option-label">{{.Option}}</span>
+      <span class="gov-option-meta">{{printf "%.0f" .Pct}}% · {{.VoteCount}} vote{{if ne .VoteCount 1}}s{{end}}</span>
+    </div>
+    <meter class="gov-bar" min="0" max="100" value="{{printf "%.0f" .Pct}}"></meter>
+    {{if $active}}
+    <button type="button" class="btn-ghost gov-vote-btn"
+            hx-post="/events" hx-vals='{"event_type":"governance_vote","proposal_id":"{{$id}}","option":"{{.Option}}"}'
+            hx-target="closest .gov-detail" hx-swap="outerHTML">Vote {{.Option}}</button>
+    {{end}}
+  </div>
+  {{end}}
+  <p class="gov-detail-foot">Weight model: {{.Proposal.WeightModel}} · {{.Proposal.TotalVotes}} votes cast</p>
+{{end}}
+</div>
+{{end}}
+
+{{/*
+FACET governance_propose_result
+  version: 1.0 | status: stable | layer: 1
+
+  inputs:
+    OK       bool   — the proposal was created
+    Message  string — what the author reads
+
+  states:
+    ok | error
+
+  children: none
+
+  signals:
+    emits:    none
+    receives: none
+
+  context:
+    wallet_governance → #proposal-form-result
+*/}}
+{{define "governance_propose_result"}}
+<p class="tip-result {{if .OK}}tip-result--ok{{else}}tip-result--error{{end}}" role="{{if .OK}}status{{else}}alert{{end}}"
+   data-facet-id="facet:f33d3r:governance:new:propose_result">{{.Message}}</p>
+{{end}}

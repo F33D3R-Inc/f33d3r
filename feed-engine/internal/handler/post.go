@@ -236,37 +236,6 @@ func (h *Handler) threadChainAPI(w http.ResponseWriter, r *http.Request) {
 
 // ── Sitra Achra helpers ───────────────────────────────────────────────────────
 
-// publishContentEvent fires a content.events message to Redpanda after a post
-// is successfully inserted. Always runs in a goroutine — never blocks the response.
-// workID is the works-table UUID when the content was created via the Malkuth
-// signed-work path; pass empty string for legacy posts-table content.
-func (h *Handler) publishContentEvent(postID, workID, pialID, body string, hasMedia, hasPoll bool) {
-	if h.sitra == nil {
-		return
-	}
-	msg := map[string]interface{}{
-		"event":     "post.created",
-		"post_id":   postID,
-		"pial_id":   pialID,
-		"body":      body,
-		"has_media": hasMedia,
-		"has_poll":  hasPoll,
-		// The state the row actually opens in. Announcing 'clean' here told
-		// every scanner the verdict was already in and to skip the content.
-		"scan_state": "pending",
-		"created_at": time.Now().UTC().Format(time.RFC3339),
-	}
-	if workID != "" {
-		msg["work_id"] = workID
-	}
-	payload, err := json.Marshal(msg)
-	if err != nil {
-		log.Printf("[sitra] marshal content event: %v", err)
-		return
-	}
-	h.sitra.Publish(context.Background(), sitra.TopicContent, []byte(pialID), payload)
-}
-
 // publishRankingEvent fires a ranking.events message to Redpanda after a
 // user interaction (like, unlike, repost, view). Always runs in a goroutine.
 func (h *Handler) publishRankingEvent(eventType, postID, actorPIAL string) {

@@ -11,16 +11,13 @@ package handler
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -28,9 +25,9 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/f33d3r/feed-engine/internal/caeor"
 	dbpkg "github.com/f33d3r/feed-engine/internal/db"
 	"github.com/f33d3r/feed-engine/internal/model"
-	"github.com/f33d3r/feed-engine/internal/scanclient"
 	"github.com/f33d3r/feed-engine/internal/sitra"
 )
 
@@ -45,14 +42,6 @@ var visionComposeContentTypes = map[string]bool{
 
 // visionBodyMax is the artboard's hard rune ceiling.
 const visionBodyMax = 280
-
-// visionMediaClass is the Caeor media class for Vision objects. It is deliberately
-// not "post": a Vision object is expirable and its purge is owned by the
-// vision_media row written alongside it.
-const visionMediaClass = "vision"
-
-// visionUploadDir is the local fallback location when Caeor is unreachable.
-var visionUploadDir = filepath.Join("web", "static", "uploads", "visions")
 
 // visionMediaByteCeiling caps a single Vision image.
 const visionMediaByteCeiling = 20 << 20
@@ -220,7 +209,7 @@ type visionComposerView struct {
 
 // visionCreatedView is the confirmation the author is handed after the write.
 type visionCreatedView struct {
-	VisionID     string
+	VisionID    string
 	Handle      string
 	ContentType string
 	ExpiryLabel string
@@ -338,67 +327,69 @@ func visionSniffImage(b []byte, filename string) (string, error) {
 	return "", errors.New("file content does not match its declared type")
 }
 
-// storeVisionImage runs the banned-hash gate, then stores the object under the
-// expirable Vision media class. The returned URL is also the object key, which is
-// what the vision_media purge sweep later deletes.
-func (h *Handler) storeVisionImage(ctx context.Context, fileBytes []byte, filename, pialID string) (string, error) {
-	ext, err := visionSniffImage(fileBytes, filename)
-	if err != nil {
-		return "", err
-	}
-
-	sum := sha256.Sum256(fileBytes)
-	digest := hex.EncodeToString(sum[:])
-
-	// Ephemeral content is not exempt: the same gate the permanent lanes use,
-	// exact bytes plus the perceptual layer.
-	if gerr := h.bannedContentGate(ctx, gateInput{
-		Kind:     scanclient.KindImage,
-		Filename: filename,
-		Data:     fileBytes,
-		SHA256:   digest,
-		PIALID:   pialID,
-		Label:    "vision-image",
-	}); gerr != nil {
-		if errors.Is(gerr, errMediaBanned) {
-			return "", errVisionMediaBanned
-		}
-		return "", gerr
-	}
-
-	mediaURL, err := h.caeorUpload(fileBytes, filename, visionMediaClass)
-	if err != nil {
-		log.Printf("[vision] caeor unavailable for vision media, storing locally: %v", err)
-		if mkErr := os.MkdirAll(visionUploadDir, 0o755); mkErr != nil {
-			return "", fmt.Errorf("vision: media directory: %w", mkErr)
-		}
-		name := uuid.New().String() + ext
-		if wErr := os.WriteFile(filepath.Join(visionUploadDir, name), fileBytes, 0o644); wErr != nil {
-			return "", fmt.Errorf("vision: store media: %w", wErr)
-		}
-		mediaURL = "/static/uploads/visions/" + name
-	}
-	if mediaURL == "" {
-		return "", errors.New("vision: media store returned no URL")
-	}
-	return mediaURL, nil
+// visionMedia is one Caeor object a Vision shows: the watermarked URL it
+// renders and the asset behind it, whose withdrawal the Vision's purge owns
+// when the asset is its author's and nothing else of theirs carries it.
+type visionMedia struct {
+	URL     string
+	AssetID string
 }
 
-// visionLocalAssetURL keeps a Vision pointed at this platform's own storage. A
-// caller-supplied absolute URL would let a Vision render a remote asset nothing
-// here can scan, watermark or purge.
-func visionLocalAssetURL(raw string) (string, error) {
+// storeVisionImage stores the image in Caeor under the Vision's author, which
+// puts it to the integrity authority. Ephemeral content is not exempt: the
+// same gate the permanent lanes go through.
+func (h *Handler) storeVisionImage(ctx context.Context, user *model.User, fileBytes []byte, filename string) (visionMedia, error) {
+	if _, err := visionSniffImage(fileBytes, filename); err != nil {
+		return visionMedia{}, err
+	}
+	adm, err := h.admitImageUpload(ctx, user, filename, fileBytes)
+	if err != nil {
+		if errors.Is(err, errMediaBanned) {
+			return visionMedia{}, errVisionMediaBanned
+		}
+		return visionMedia{}, err
+	}
+	return visionMedia{URL: adm.URL, AssetID: adm.Asset.AssetID}, nil
+}
+
+// visionHeldMedia resolves a media URL the composer names instead of a file —
+// an object this platform already holds. It must be a ready, servable Caeor
+// object of the author's own asset of the given kind, named by the exact
+// object a Vision renders. A Vision cannot show a remote asset nothing here can
+// scan, watermark or withdraw, nor somebody else's upload.
+func (h *Handler) visionHeldMedia(ctx context.Context, user *model.User, raw string, kind caeor.Kind) (visionMedia, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return "", errors.New("media_url is required")
+		return visionMedia{}, errors.New("media_url is required")
 	}
-	if !strings.HasPrefix(raw, "/") || strings.HasPrefix(raw, "//") {
-		return "", errors.New("media_url must be a path served by this platform")
+	canonical := canonicalMediaPath(raw)
+	if canonical != raw || !strings.HasPrefix(raw, "/") || strings.HasPrefix(raw, "//") {
+		return visionMedia{}, errors.New("media_url must be a path served by this platform")
 	}
-	if strings.Contains(raw, "..") {
-		return "", errors.New("media_url is not a valid asset path")
+	obj, err := h.caeor.Resolve(ctx, canonical)
+	if errors.Is(err, caeor.ErrNotFound) {
+		return visionMedia{}, errors.New("media_url is not an upload this platform holds")
 	}
-	return raw, nil
+	if err != nil {
+		return visionMedia{}, fmt.Errorf("vision: resolving media: %w", err)
+	}
+	asset, err := h.caeor.Get(ctx, obj.AssetID)
+	if err != nil {
+		return visionMedia{}, fmt.Errorf("vision: describing media: %w", err)
+	}
+	if !asset.Ready() || !obj.Servable {
+		return visionMedia{}, errors.New("that media is not available")
+	}
+	if asset.Kind != kind && !(kind == caeor.KindVideo && asset.Kind == caeor.KindClip) {
+		return visionMedia{}, errors.New("that media is not a " + string(kind))
+	}
+	if asset.UploaderPIAL != user.PIALID {
+		return visionMedia{}, errors.New("a Vision shows your own uploads")
+	}
+	if canonical != asset.ViewerURL() {
+		return visionMedia{}, errors.New("media_url must name the watermarked object of the upload")
+	}
+	return visionMedia{URL: canonical, AssetID: asset.AssetID}, nil
 }
 
 // visionSharedWorkID accepts either a bare work id or a pasted f33d3r work link
@@ -611,6 +602,11 @@ func (h *Handler) visionCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !h.mayPublish(user) {
+		h.renderVisionComposerError(w, r, user, composerMode, publishRestricted, http.StatusForbidden)
+		return
+	}
+
 	isNSFW := r.FormValue("nsfw") == "1"
 	if isNSFW && !visionCanPostNSFW(user) {
 		h.renderVisionComposerError(w, r, user, composerMode,
@@ -651,7 +647,7 @@ func (h *Handler) visionCreate(w http.ResponseWriter, r *http.Request) {
 		}
 
 	case "image":
-		mediaURL, mErr := h.visionImageFromRequest(r, user.PIALID)
+		media, mErr := h.visionImageFromRequest(r, user)
 		if mErr != nil {
 			status := http.StatusBadRequest
 			if errors.Is(mErr, errVisionMediaBanned) {
@@ -663,8 +659,8 @@ func (h *Handler) visionCreate(w http.ResponseWriter, r *http.Request) {
 			h.renderVisionComposerError(w, r, user, "media", mErr.Error(), status)
 			return
 		}
-		previewURL = mediaURL
-		in.MediaURLs = []string{mediaURL}
+		previewURL = media.URL
+		in.MediaURLs = []string{media.URL}
 		width, wErr := visionDimension("width", r.FormValue("width"))
 		if wErr != nil {
 			h.renderVisionComposerError(w, r, user, "media", wErr.Error(), http.StatusBadRequest)
@@ -676,17 +672,18 @@ func (h *Handler) visionCreate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		in.Media = []dbpkg.VisionMediaInput{{
-			ObjectKey: mediaURL,
-			AssetURL:  mediaURL,
-			MediaKind: "image",
-			Width:     width,
-			Height:    height,
+			ObjectKey:    media.URL,
+			CaeorAssetID: media.AssetID,
+			AssetURL:     media.URL,
+			MediaKind:    "image",
+			Width:        width,
+			Height:       height,
 		}}
 
 	case "video":
-		// Video reaches the lane already transcoded by the existing media path;
-		// the Vision records the master it plays and owns that object's purge.
-		mediaURL, uErr := visionLocalAssetURL(r.FormValue("media_url"))
+		// Video reaches the lane already processed by the video lane; the Vision
+		// records the watermarked master it plays and its asset.
+		media, uErr := h.visionHeldMedia(r.Context(), user, r.FormValue("media_url"), caeor.KindVideo)
 		if uErr != nil {
 			h.renderVisionComposerError(w, r, user, "media", uErr.Error(), http.StatusBadRequest)
 			return
@@ -706,11 +703,12 @@ func (h *Handler) visionCreate(w http.ResponseWriter, r *http.Request) {
 			h.renderVisionComposerError(w, r, user, "media", dErr.Error(), http.StatusBadRequest)
 			return
 		}
-		previewURL = mediaURL
-		in.MediaURLs = []string{mediaURL}
+		previewURL = media.URL
+		in.MediaURLs = []string{media.URL}
 		in.Media = []dbpkg.VisionMediaInput{{
-			ObjectKey:    mediaURL,
-			AssetURL:     mediaURL,
+			ObjectKey:    media.URL,
+			CaeorAssetID: media.AssetID,
+			AssetURL:     media.URL,
 			MediaKind:    "video",
 			Width:        width,
 			Height:       height,
@@ -748,14 +746,17 @@ func (h *Handler) visionCreate(w http.ResponseWriter, r *http.Request) {
 			"The Vision could not be posted. Try again.", http.StatusInternalServerError)
 		return
 	}
-	visionID := ref.String()
+	// The content-safety fabric is server-to-server and addresses the Vision by
+	// its lane ref; the page is handed the wire address, which names the
+	// account and never the PIAL.
+	visionID := dbpkg.VisionAddress{AuthorAccount: user.ID, Seq: ref.Seq}.String()
 
 	// Milestones belong to the lane that owns the object.
 	go dbpkg.TryAwardVisionAchievements(h.db, user.ID, user.PIALID)
 
 	// Hand the new Vision to the content-safety fabric. The row opens 'pending'
 	// and stays there until a scan answers for it.
-	go h.publishVisionContentEvent(visionID, user.PIALID, in.Body, in.MediaURLs)
+	go h.publishVisionContentEvent(ref.String(), user.PIALID, user.ID, in.Body, in.MediaURLs)
 
 	created := visionCreatedView{
 		VisionID:    visionID,
@@ -770,50 +771,66 @@ func (h *Handler) visionCreate(w http.ResponseWriter, r *http.Request) {
 	h.renderPartial(w, "vision_created", created)
 }
 
-// visionImageFromRequest reads the posted frame and stores it under the Vision
-// media class. The camera posts the file itself; the media composer may instead
-// name an asset this platform already holds.
-func (h *Handler) visionImageFromRequest(r *http.Request, pialID string) (string, error) {
+// visionImageFromRequest reads the posted frame and stores it in Caeor. The
+// camera posts the file itself; the media composer may instead name an image
+// of the author's this platform already holds.
+func (h *Handler) visionImageFromRequest(r *http.Request, user *model.User) (visionMedia, error) {
 	if r.MultipartForm != nil {
 		file, fh, err := r.FormFile("media")
 		if err == nil {
 			defer file.Close()
-			fileBytes, rErr := io.ReadAll(io.LimitReader(file, visionMediaByteCeiling))
+			fileBytes, rErr := io.ReadAll(io.LimitReader(file, visionMediaByteCeiling+1))
 			if rErr != nil {
-				return "", errors.New("the image could not be read")
+				return visionMedia{}, errors.New("the image could not be read")
 			}
 			if len(fileBytes) == 0 {
-				return "", errors.New("the image is empty")
+				return visionMedia{}, errors.New("the image is empty")
 			}
-			return h.storeVisionImage(r.Context(), fileBytes, fh.Filename, pialID)
+			if len(fileBytes) > visionMediaByteCeiling {
+				return visionMedia{}, errors.New("the image is too large")
+			}
+			return h.storeVisionImage(r.Context(), user, fileBytes, fh.Filename)
 		}
 		if !errors.Is(err, http.ErrMissingFile) {
-			return "", fmt.Errorf("the upload could not be read: %w", err)
+			return visionMedia{}, fmt.Errorf("the upload could not be read: %w", err)
 		}
 	}
-	// No file: the caller may instead name a photo this platform already holds.
 	if strings.TrimSpace(r.FormValue("media_url")) == "" {
-		return "", errors.New("choose a photo to post")
+		return visionMedia{}, errors.New("choose a photo to post")
 	}
-	return visionLocalAssetURL(r.FormValue("media_url"))
+	return h.visionHeldMedia(r.Context(), user, r.FormValue("media_url"), caeor.KindImage)
 }
 
 // publishVisionContentEvent hands a new Vision to Sitra Achra for content safety.
 // scan_state is announced as the state the row actually opens in: announcing a
 // verdict here is what told scanners to skip the content on the Work lane.
-func (h *Handler) publishVisionContentEvent(visionID, pialID, body string, mediaURLs []string) {
+func (h *Handler) publishVisionContentEvent(visionID, pialID, accountID, body string, mediaURLs []string) {
 	if h.sitra == nil {
 		return
 	}
+	// What the integrity policy weighs about the author. Without it the event
+	// would be judged on less than Abraxas needs, so it is not sent half-made.
+	facts, err := dbpkg.PolicyFactsOfAccount(h.db, accountID)
+	if err != nil {
+		log.Printf("[sitra] vision %s content event NOT sent: %v", visionID, err)
+		return
+	}
+	// Always a list: the content event's contract types media_urls as an
+	// array, and a nil slice would marshal to null and be refused by Abraxas.
+	if mediaURLs == nil {
+		mediaURLs = []string{}
+	}
 	payload, err := json.Marshal(map[string]interface{}{
-		"event":      "vision.created",
-		"vision_id":   visionID,
-		"pial_id":    pialID,
-		"body":       body,
-		"media_urls": mediaURLs,
-		"has_media":  len(mediaURLs) > 0,
-		"scan_state": "pending",
-		"created_at": time.Now().UTC().Format(time.RFC3339),
+		"event":              "vision.created",
+		"vision_id":          visionID,
+		"pial_id":            pialID,
+		"body":               body,
+		"media_urls":         mediaURLs,
+		"has_media":          len(mediaURLs) > 0,
+		"scan_state":         "pending",
+		"is_adult_creator":   facts.IsAdultCreator,
+		"account_created_at": facts.AccountCreatedAt.UTC().Format(time.RFC3339),
+		"created_at":         time.Now().UTC().Format(time.RFC3339),
 	})
 	if err != nil {
 		log.Printf("[sitra] marshal vision content event: %v", err)

@@ -236,43 +236,47 @@ type ScanOutcome struct {
 // in one transaction.
 func ApplyScanState(database *sql.DB, postID, toState, reason, actor string, outcome ScanOutcome) error {
 	return WithTx(database, func(tx *sql.Tx) error {
-		if err := SetPostScanState(tx, postID, toState, reason, actor); err != nil {
-			return err
-		}
-		if outcome.NotifyModerators {
-			for _, moderator := range GetAdminUserIDs(tx) {
-				if _, err := WriteNotice(tx, Notice{
-					Recipient: moderator, Kind: "moderation", TargetID: postID, TargetType: "post",
-				}); err != nil {
-					return err
-				}
-			}
-		}
-		if outcome.NotifyAuthor {
-			var authorID string
-			err := tx.QueryRow(`SELECT author_id::text FROM works WHERE id = $1`, postID).Scan(&authorID)
-			if err == sql.ErrNoRows {
-				return nil
-			}
-			if err != nil {
-				return err
-			}
+		return applyScanStateTx(tx, postID, toState, reason, actor, outcome)
+	})
+}
+
+// applyScanStateTx is ApplyScanState inside the caller's transaction.
+func applyScanStateTx(tx *sql.Tx, postID, toState, reason, actor string, outcome ScanOutcome) error {
+	if err := SetPostScanState(tx, postID, toState, reason, actor); err != nil {
+		return err
+	}
+	if outcome.NotifyModerators {
+		for _, moderator := range GetAdminUserIDs(tx) {
 			if _, err := WriteNotice(tx, Notice{
-				Recipient: authorID, Kind: "violation", TargetID: postID, TargetType: "post",
+				Recipient: moderator, Kind: "moderation", TargetID: postID, TargetType: "post",
 			}); err != nil {
 				return err
 			}
 		}
-		return nil
-	})
-}
-
-// SetPIALVerifiedNotifying records an age verification and tells the account.
-func SetPIALVerifiedNotifying(database *sql.DB, pialID, tier, grantedBy, accountID string) error {
-	return WithTx(database, func(tx *sql.Tx) error {
-		if err := SetPIALVerified(tx, pialID, tier, grantedBy); err != nil {
+	}
+	if outcome.NotifyAuthor {
+		var authorID string
+		err := tx.QueryRow(`SELECT author_id::text FROM works WHERE id = $1`, postID).Scan(&authorID)
+		if err == sql.ErrNoRows {
+			return nil
+		}
+		if err != nil {
 			return err
 		}
+		if _, err := WriteNotice(tx, Notice{
+			Recipient: authorID, Kind: "violation", TargetID: postID, TargetType: "post",
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// NotifyVerified tells an account its identity verification was recorded. The
+// verification itself is elohim-veni's; the caller sends it there first and
+// calls this only once the authority has accepted it.
+func NotifyVerified(database *sql.DB, pialID, accountID string) error {
+	return WithTx(database, func(tx *sql.Tx) error {
 		_, err := WriteNotice(tx, Notice{
 			Recipient: accountID, Kind: "verification", TargetID: pialID, TargetType: "identity",
 		})
@@ -320,17 +324,11 @@ func MessageAlerts(convoID, senderID string) func(*sql.Tx) error {
 
 // WorkNoticeJob is a work that has not yet told the people it names.
 type WorkNoticeJob struct {
-	WorkID      string
-	AuthorID    string
+	WorkID       string
+	AuthorID     string
 	AuthorHandle string
-	Kind        string
-	Body        string
-}
-
-// WorkNoticeCited is a work this one replies to or quotes.
-type WorkNoticeCited struct {
-	WorkID   string
-	AuthorID string
+	Kind         string
+	Body         string
 }
 
 // DueWorkNoticeJobs returns works whose notifications are due. A deleted work owes
@@ -343,6 +341,9 @@ func DueWorkNoticeJobs(database *sql.DB, limit int) ([]WorkNoticeJob, error) {
 		  LEFT JOIN works w ON w.id = j.work_id AND w.deleted_at IS NULL
 		  LEFT JOIN users u ON u.id = w.author_id
 		 WHERE j.next_attempt_at <= NOW()
+		   -- A work waiting on its verdict tells nobody yet; its job comes due
+		   -- the moment the verdict lands.
+		   AND COALESCE(w.scan_state, '') <> 'pending'
 		 ORDER BY j.next_attempt_at LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
@@ -357,20 +358,6 @@ func DueWorkNoticeJobs(database *sql.DB, limit int) ([]WorkNoticeJob, error) {
 		jobs = append(jobs, j)
 	}
 	return jobs, rows.Err()
-}
-
-// WorkNoticeCitedWork returns the work a reply or quote cites, if any.
-func WorkNoticeCitedWork(database *sql.DB, workID, citationType string) (WorkNoticeCited, bool, error) {
-	var c WorkNoticeCited
-	err := database.QueryRow(`
-		SELECT t.id::text, t.author_id::text
-		  FROM work_citations c JOIN works t ON t.id = c.target_id
-		 WHERE c.work_id = $1::uuid AND c.citation_type = $2 AND t.deleted_at IS NULL
-		 LIMIT 1`, workID, citationType).Scan(&c.WorkID, &c.AuthorID)
-	if err == sql.ErrNoRows {
-		return c, false, nil
-	}
-	return c, err == nil, err
 }
 
 // WorkNoticeEventID is stable, so a job retried after a crash cannot tell anyone twice.

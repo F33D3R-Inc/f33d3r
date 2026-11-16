@@ -110,13 +110,16 @@ func TestUploadPostAndLiveAreNotIdentityGated(t *testing.T) {
 // creatorAndPayoutSurfaces are the files that must ask the identity question.
 // This is the other half of the pin: if a gate is deleted or quietly reverted to
 // IsVerified, this fails.
+//
+// wallet.go is not listed: the /ainsoph/ browser proxy, the only way a browser
+// ever reached Ain Soph's /withdraw and /deposit, is removed, so no feed-engine
+// route moves value out of the ledger.
 var creatorAndPayoutSurfaces = []string{
 	"creator_dashboard.go",  // /create and every /create/partials/* panel
 	"creator_onboarding.go", // /create/setup and creator.setup.complete
 	"shop.go",               // /api/creator/enable, /api/subscribe
 	"marketplace_pages.go",  // /create/marketplace seller dashboard
 	"marketplace.go",        // marketplace.shop.open / listing.create
-	"wallet.go",             // /ainsoph/v1/withdraw
 	"kyc.go",                // adult creator activation
 }
 

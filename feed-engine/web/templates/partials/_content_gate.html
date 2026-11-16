@@ -79,7 +79,7 @@ FACET content_gate
           onclick="event.stopPropagation();revealSensitive('{{$p.ID}}')">View anyway</button>
 </div>
 <div id="sg-body-{{$p.ID}}" style="display:none">
-  {{template "media_container" (dict "P" $p "PIALID" "")}}
+  {{template "media_container" (dict "P" $p "AccountID" "")}}
 </div>
 
 {{else if and $p.IsGore $blockAll}}
@@ -100,11 +100,11 @@ FACET content_gate
           onclick="event.stopPropagation();revealSensitive('{{$p.ID}}')">View anyway</button>
 </div>
 <div id="sg-body-{{$p.ID}}" style="display:none">
-  {{template "media_container" (dict "P" $p "PIALID" "")}}
+  {{template "media_container" (dict "P" $p "AccountID" "")}}
 </div>
 
 {{else}}
 {{/* Clear — verified+adult_enabled porn, gore with ShowSensitive on, or non-flagged work. */}}
-{{template "media_container" (dict "P" $p "PIALID" "")}}
+{{template "media_container" (dict "P" $p "AccountID" "")}}
 {{end}}
 {{end}}

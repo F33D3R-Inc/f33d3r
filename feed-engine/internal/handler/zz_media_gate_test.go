@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/f33d3r/feed-engine/internal/caeor"
 	"github.com/f33d3r/feed-engine/internal/model"
 )
 
@@ -165,46 +166,12 @@ func TestCanonicalMediaPath(t *testing.T) {
 		{"/static/media/posts/abc-feed.webp#frag", "/static/media/posts/abc-feed.webp"},
 		{"/static/media//posts/../posts/abc.webp", "/static/media/posts/abc.webp"},
 		{"static/media/posts/abc.webp", "/static/media/posts/abc.webp"},
-		{"/media/media-derived/posts/id/master.m3u8", "/media/media-derived/posts/id/master.m3u8"},
+		{"/static/media/a/6f1c2d3e-4a5b-6c7d-8e9f-0a1b2c3d4e5f/hls/master.m3u8", "/static/media/a/6f1c2d3e-4a5b-6c7d-8e9f-0a1b2c3d4e5f/hls/master.m3u8"},
 		{"", ""},
 	}
 	for _, tc := range cases {
 		if got := canonicalMediaPath(tc.in); got != tc.want {
 			t.Fatalf("canonicalMediaPath(%q) = %q, want %q", tc.in, got, tc.want)
-		}
-	}
-}
-
-// TestMediaAssetStem pins variant matching: the work stores only the primary
-// derivative, so the full-resolution variant must resolve to the same asset.
-func TestMediaAssetStem(t *testing.T) {
-	const uuid = "6f1c2d3e-4a5b-6c7d-8e9f-0a1b2c3d4e5f"
-	dir := "/static/media/posts/"
-	for _, variant := range []string{"-thumb.webp", "-feed.webp", "-full.webp", ".webp"} {
-		if got := mediaAssetStem(dir + uuid + variant); got != dir+uuid {
-			t.Fatalf("mediaAssetStem(%q) = %q, want %q", dir+uuid+variant, got, dir+uuid)
-		}
-	}
-	// Too short to be an asset id — no stem, so no over-broad match.
-	if got := mediaAssetStem("/static/media/posts/x/clean/720p/index.m3u8"); got != "" {
-		t.Fatalf("short stem = %q, want empty", got)
-	}
-}
-
-// TestMediaNeedsWorkLookup pins which objects cost a database lookup: only work
-// media does. Avatars and headers carry no work-level rules.
-func TestMediaNeedsWorkLookup(t *testing.T) {
-	cases := map[string]bool{
-		"/static/media/posts/abc.webp":              true,
-		"/static/media/posts/id/clean/master.m3u8":  true,
-		"/media/media-derived/posts/id/master.m3u8": true,
-		"/static/media/avatars/abc.webp":            false,
-		"/static/media/headers/abc.webp":            false,
-		"/static/uploads/covers/abc.webp":           false,
-	}
-	for path, want := range cases {
-		if got := mediaNeedsWorkLookup(path); got != want {
-			t.Fatalf("mediaNeedsWorkLookup(%q) = %v, want %v", path, got, want)
 		}
 	}
 }
@@ -223,14 +190,17 @@ func TestStaticMediaHandlerServesAndRefuses(t *testing.T) {
 	mediaRoot = dir
 	t.Cleanup(func() { mediaRoot = old })
 
-	h := &Handler{} // no db: the wall has nothing to authorize against
+	// No database and no Caeor: the wall has nothing to authorize against, so it
+	// fails closed.
+	// Existence is still resolved first, so what does not exist is still a 404.
+	h := &Handler{}
 	srv := h.staticMediaHandler()
 
 	cases := []struct {
 		path string
 		want int
 	}{
-		{"/static/media/avatars/a.webp", http.StatusOK},
+		{"/static/media/avatars/a.webp", http.StatusServiceUnavailable},
 		{"/static/media/avatars/missing.webp", http.StatusNotFound},
 		{"/static/media/avatars", http.StatusNotFound},
 		{"/static/media/../../etc/passwd", http.StatusNotFound},
@@ -248,34 +218,76 @@ func TestStaticMediaHandlerServesAndRefuses(t *testing.T) {
 	}
 }
 
-// TestMediaCandidates pins the derived lookup keys: the image derivatives of one
-// asset, and the HLS master that owns a stream object from any depth beneath it.
-func TestMediaCandidates(t *testing.T) {
-	const asset = "77c274c2-7026-440a-b8bf-88c1e0642000"
-
-	derivatives, _ := mediaCandidates("/static/media/posts/2944d0c7-5ef7-4334-aa9f-89ac6b21fd11-full.webp")
-	want := "/static/media/posts/2944d0c7-5ef7-4334-aa9f-89ac6b21fd11-feed.webp"
-	if !contains(derivatives, want) {
-		t.Fatalf("derivatives %v missing the stored primary %q", derivatives, want)
+// TestMediaServable pins what the gate serves before any wall: only what Caeor
+// calls servable, on a ready asset that is on the platform.
+func TestMediaServable(t *testing.T) {
+	ready := caeor.Resolved{AssetID: "a", Kind: caeor.KindImage, Status: caeor.StatusReady, Servable: true, Watermarked: true}
+	cases := []struct {
+		name string
+		obj  *caeor.Resolved
+		want bool
+	}{
+		{"unknown path", nil, false},
+		{"ready, servable", &ready, true},
+		{"caeor says not servable (download file, private source, awaiting re-mark)", func() *caeor.Resolved { o := ready; o.Servable = false; return &o }(), false},
+		{"withdrawn", func() *caeor.Resolved { o := ready; o.Withdrawn = true; return &o }(), false},
+		{"still processing", func() *caeor.Resolved { o := ready; o.Status = caeor.StatusProcessing; return &o }(), false},
 	}
-
-	_, masters := mediaCandidates("/static/media/posts/" + asset + "/clean/720p/index.m3u8")
-	wantMaster := "/static/media/posts/" + asset + "/clean/master.m3u8"
-	if !contains(masters, wantMaster) {
-		t.Fatalf("masters %v missing %q", masters, wantMaster)
-	}
-
-	_, posterMasters := mediaCandidates("/static/media/posts/" + asset + "/clean/poster.jpg")
-	if !contains(posterMasters, wantMaster) {
-		t.Fatalf("poster masters %v missing %q", posterMasters, wantMaster)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := (&mediaGovernance{Object: tc.obj}).servable(); got != tc.want {
+				t.Fatalf("servable = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 
-func contains(xs []string, want string) bool {
-	for _, x := range xs {
-		if x == want {
-			return true
-		}
+// TestDecideGovernedAccess pins the uploader rule: only the uploader's works
+// govern their media, and media none of them carries is the uploader's alone.
+func TestDecideGovernedAccess(t *testing.T) {
+	const uploader = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	const uploaderPIAL = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+	obj := &caeor.Resolved{AssetID: "a", UploaderPIAL: uploaderPIAL, Kind: caeor.KindImage,
+		Status: caeor.StatusReady, Servable: true, Watermarked: true}
+	withdrawn := *obj
+	withdrawn.Withdrawn = true
+
+	uploaderViewer := adultViewer()
+	uploaderViewer.ID = uploader
+	uploaderViewer.PIALID = uploaderPIAL
+
+	owner := map[string]authorAccess{uploader: {IsOwner: true}}
+	stranger := map[string]authorAccess{uploader: {}}
+	subscriber := map[string]authorAccess{uploader: {IsSubscribed: true}}
+
+	cases := []struct {
+		name   string
+		gov    *mediaGovernance
+		viewer *model.User
+		walls  map[string]authorAccess
+		want   int
+	}{
+		{"unknown to caeor", &mediaGovernance{}, adultViewer(), stranger, http.StatusNotFound},
+		{"withdrawn asset, even to its uploader",
+			&mediaGovernance{Object: &withdrawn, Owners: []mediaOwner{{AuthorID: uploader}}}, uploaderViewer, owner, http.StatusNotFound},
+		{"unpublished, uploader previews", &mediaGovernance{Object: obj}, uploaderViewer, owner, 0},
+		{"unpublished, anybody else", &mediaGovernance{Object: obj}, adultViewer(), subscriber, http.StatusNotFound},
+		{"subscriber-only work, no subscription",
+			&mediaGovernance{Object: obj, Owners: []mediaOwner{{AuthorID: uploader, SubscriberOnly: true}}}, adultViewer(), stranger, http.StatusForbidden},
+		{"one public work of the uploader admits",
+			&mediaGovernance{Object: obj, Owners: []mediaOwner{{AuthorID: uploader, SubscriberOnly: true}, {AuthorID: uploader}}}, adultViewer(), stranger, 0},
+		{"blocked by the scanner",
+			&mediaGovernance{Object: obj, Owners: []mediaOwner{{AuthorID: uploader, Removed: true}}}, adultViewer(), stranger, http.StatusNotFound},
+		{"scheduled work, before release",
+			&mediaGovernance{Object: obj, Owners: []mediaOwner{{AuthorID: uploader, Scheduled: true}}}, adultViewer(), stranger, http.StatusNotFound},
+		{"scheduled work, its author",
+			&mediaGovernance{Object: obj, Owners: []mediaOwner{{AuthorID: uploader, Scheduled: true}}}, uploaderViewer, owner, 0},
 	}
-	return false
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := decideGovernedAccess(tc.gov, tc.viewer, tc.walls); got != tc.want {
+				t.Fatalf("decideGovernedAccess = %d, want %d", got, tc.want)
+			}
+		})
+	}
 }

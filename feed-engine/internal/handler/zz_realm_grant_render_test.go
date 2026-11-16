@@ -56,7 +56,7 @@ func TestTheGrantControlIsDrawnForTheFounderAlone(t *testing.T) {
 		DisplayName: "Granted Probe", Role: model.RoleUser, XP: 125, RealmGrant: 5, Realm: 5,
 	}
 
-	founder := &model.User{Handle: "tehanibentley", Role: model.RoleFounder}
+	founder := &model.User{Handle: "first_account", Role: model.RoleFounder}
 	out := renderAdminLookup(t, h, founder, target)
 	if !strings.Contains(out, `hx-post="/api/admin/set-realm-grant"`) {
 		t.Error("the founder is not shown the realm standing control")
@@ -82,7 +82,7 @@ func TestTheGrantControlIsDrawnForTheFounderAlone(t *testing.T) {
 // or works out for itself whether standing was earned.
 func TestTheGrantedRingIsShownWithItsSource(t *testing.T) {
 	h := realmGrantTestHandler(t)
-	founder := &model.User{Handle: "tehanibentley", Role: model.RoleFounder}
+	founder := &model.User{Handle: "first_account", Role: model.RoleFounder}
 
 	granted := &model.User{
 		ID: "a", Handle: "granted_probe", DisplayName: "Granted Probe",
@@ -101,7 +101,7 @@ func TestTheGrantedRingIsShownWithItsSource(t *testing.T) {
 	}
 
 	self := &model.User{
-		ID: "c", Handle: "tehanibentley", DisplayName: "Tehani",
+		ID: "c", Handle: "first_account", DisplayName: "First Account",
 		Role: model.RoleFounder, XP: 195, RealmGrant: 3, Realm: 5,
 	}
 	if out := renderAdminLookup(t, h, founder, self); !strings.Contains(out, "the permanent R5 floor the founder role carries") {

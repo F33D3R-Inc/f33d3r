@@ -78,8 +78,8 @@ func TestNumberDisplayGroupsSpokenSymbols(t *testing.T) {
 func TestNumbersFacetCarriesItsFacetIDAndNeverLeaksARetiredNumbersControls(t *testing.T) {
 	tmpl := partialSet(t, "_f33d3r_numbers.html")
 	out := render(t, tmpl, "f33d3r_numbers", map[string]interface{}{
-		"PIALID":   "11111111-2222-3333-4444-555555555555",
-		"Policies": []string{"open", "number_only", "closed"},
+		"AccountID": "11111111-2222-3333-4444-555555555555",
+		"Policies":  []string{"open", "number_only", "closed"},
 		"Numbers": []numberRow{
 			{Number: "H8K2-9QRT-4VMXC", Display: "H8K2 9QRT 4VMXC", Live: true, Policy: "number_only", Label: "Badge"},
 			{Number: "0000-0000-00000", Display: "0000 0000 00000", Live: false, Policy: "closed"},
@@ -88,7 +88,7 @@ func TestNumbersFacetCarriesItsFacetIDAndNeverLeaksARetiredNumbersControls(t *te
 		"DefaultNumberPolicy": "number_only",
 	})
 
-	if !strings.Contains(out, `data-facet-id="facet:f33d3r:identity:11111111-2222-3333-4444-555555555555:numbers"`) {
+	if !strings.Contains(out, `data-facet-id="facet:f33d3r:account:11111111-2222-3333-4444-555555555555:numbers"`) {
 		t.Fatal("facet id missing or malformed")
 	}
 	if !strings.Contains(out, "H8K2 9QRT 4VMXC") {
@@ -105,7 +105,7 @@ func TestNumbersFacetCarriesItsFacetIDAndNeverLeaksARetiredNumbersControls(t *te
 func TestNumbersFacetShowsAMintedSecretExactlyOnce(t *testing.T) {
 	tmpl := partialSet(t, "_f33d3r_numbers.html")
 	out := render(t, tmpl, "f33d3r_numbers", map[string]interface{}{
-		"PIALID":        "abc",
+		"AccountID":     "abc",
 		"Policies":      []string{"open"},
 		"NewCapability": "ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ",
 	})
@@ -121,7 +121,7 @@ func TestResolveFacetNeverDisclosesAnIdentity(t *testing.T) {
 	// already typed; the identity behind it surfaces only once a conversation
 	// opens.
 	allow := render(t, tmpl, "number_resolve", map[string]interface{}{
-		"PIALID": "abc", "Decision": "allow", "Number": "H8K2-9QRT-4VMXC",
+		"AccountID": "abc", "Decision": "allow", "Number": "H8K2-9QRT-4VMXC",
 	})
 	if !strings.Contains(allow, "/contact/start") {
 		t.Fatal("an allow must offer to open a conversation by Number")
@@ -135,7 +135,7 @@ func TestResolveFacetNeverDisclosesAnIdentity(t *testing.T) {
 
 	// A refusal must not distinguish unknown from retired from closed.
 	denied := render(t, tmpl, "number_resolve", map[string]interface{}{
-		"PIALID": "abc", "Decision": "deny", "Number": "H8K2-9QRT-4VMXC",
+		"AccountID": "abc", "Decision": "deny", "Number": "H8K2-9QRT-4VMXC",
 	})
 	for _, leak := range []string{"retired", "unknown", "closed", "does not exist"} {
 		if strings.Contains(strings.ToLower(denied), leak) {
@@ -163,15 +163,15 @@ func TestContactGateRefusesWhenThePolicyAuthorityIsUnreachable(t *testing.T) {
 func TestNotifBadgeRendersAFragmentAndHidesAtZero(t *testing.T) {
 	tmpl := partialSet(t, "_notif_badge.html")
 
-	zero := render(t, tmpl, "notif_badge", map[string]interface{}{"PIALID": "abc", "UnreadCount": 0})
+	zero := render(t, tmpl, "notif_badge", map[string]interface{}{"ID": "abc", "UnreadCount": 0})
 	if !strings.Contains(zero, "hidden") {
 		t.Fatal("an empty badge must be hidden rather than rendered blank")
 	}
-	if !strings.Contains(zero, `data-facet-id="facet:f33d3r:identity:abc:notif_badge"`) {
+	if !strings.Contains(zero, `data-facet-id="facet:f33d3r:account:abc:notif_badge"`) {
 		t.Fatal("facet id missing — the fragment could not be located for mutation")
 	}
 
-	many := render(t, tmpl, "notif_badge", map[string]interface{}{"PIALID": "abc", "UnreadCount": 42})
+	many := render(t, tmpl, "notif_badge", map[string]interface{}{"ID": "abc", "UnreadCount": 42})
 	if !strings.Contains(many, "9+") {
 		t.Fatal("counts above nine must render as 9+")
 	}

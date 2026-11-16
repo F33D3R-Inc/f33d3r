@@ -2,16 +2,17 @@
 FACET wallet_governance
   version: 1.0 | status: stable | layer: 2
 
-  inputs: none (JS loadProposals() fetches from Ain Soph governance API)
+  inputs: none (the list is the governance_proposals Facet, fetched on load)
 
   states:
     default | loading | no-proposals | proposal-open
 
-  children: none (proposal cards injected by JS)
+  children: governance_proposals (GET /facets/wallet/proposals),
+            governance_proposal_detail, governance_propose_result
 
   signals:
-    emits:    submit_proposal, cast_vote (POST /events via wallet.js)
-    receives: none
+    emits:    governance_propose (POST /events)
+    receives: fa:governance-changed, fa:resync — each re-requests governance_proposals
 
   context:
     wallet_panel_governance → governance panel body
@@ -19,42 +20,41 @@ FACET wallet_governance
 {{define "wallet_governance"}}
 <div class="wallet-section-head">
   <h2 class="wallet-section-title">Governance</h2>
-  <button class="btn-ghost" style="font-size:12px;padding:4px 10px" onclick="toggleNewProposal()">+ New proposal</button>
 </div>
 
-<div id="proposal-form" style="display:none;padding:0 24px 16px">
-  <div class="wallet-send-card">
+<details class="governance-new" style="padding:0 24px 16px">
+  <summary class="btn-ghost" style="font-size:12px;padding:4px 10px">+ New proposal</summary>
+  <form class="wallet-send-card" hx-post="/events" hx-vals='{"event_type":"governance_propose"}'
+        hx-target="#proposal-form-result" hx-swap="innerHTML">
     <div>
       <label class="wallet-field-label" for="prop-title">Title</label>
-      <input id="prop-title" class="wallet-send-input" type="text" placeholder="Proposal title" maxlength="120">
+      <input id="prop-title" name="title" class="wallet-send-input" type="text" placeholder="Proposal title" maxlength="120" required>
     </div>
     <div>
       <label class="wallet-field-label" for="prop-desc">Description</label>
-      <textarea id="prop-desc" class="wallet-send-input" rows="3"
+      <textarea id="prop-desc" name="description" class="wallet-send-input" rows="3"
                 placeholder="Optional context for voters" style="resize:vertical"></textarea>
     </div>
     <div class="wallet-send-row">
       <div style="flex:1">
         <label class="wallet-field-label" for="prop-weight">Weight model</label>
-        <select id="prop-weight" class="wallet-send-input">
-          <option value="equal">Equal (1 person = 1 vote)</option>
-          <option value="aet">AET-weighted</option>
-          <option value="realm">Realm-weighted</option>
+        <select id="prop-weight" name="weight_model" class="wallet-send-input">
+          {{range governanceWeightModels}}<option value="{{.Value}}">{{.Label}}</option>{{end}}
         </select>
       </div>
       <div style="flex:1">
-        <label class="wallet-field-label" for="prop-ends">Voting ends</label>
-        <input id="prop-ends" class="wallet-send-input" type="datetime-local">
+        <label class="wallet-field-label" for="prop-ends">Voting ends (UTC)</label>
+        <input id="prop-ends" name="ends_at" class="wallet-send-input" type="datetime-local" required>
       </div>
     </div>
-    <div style="display:flex;gap:8px">
-      <button class="btn-primary" style="flex:1;justify-content:center" onclick="submitProposal()">Submit Proposal</button>
-      <button class="btn-ghost" onclick="toggleNewProposal()">Cancel</button>
-    </div>
-  </div>
-</div>
+    <div id="proposal-form-result"></div>
+    <button class="btn-primary" type="submit" style="justify-content:center">Submit Proposal</button>
+  </form>
+</details>
 
-<div id="proposals-list" style="padding:0 24px 24px">
+<div id="proposals-list" style="padding:0 24px 24px" hx-get="/facets/wallet/proposals"
+     hx-trigger="load, fa:resync from:body, fa:governance-changed from:body" hx-swap="innerHTML">
   <p style="font-size:12px;text-align:center;color:var(--text-muted);padding:20px 0">Loading…</p>
 </div>
+<div id="proposal-detail" style="padding:0 24px 24px"></div>
 {{end}}

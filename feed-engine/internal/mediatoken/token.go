@@ -2,7 +2,10 @@
 //
 // Token structure (URL-safe):
 //
-//	base64url(path + "|" + pialID + "|" + unixExpiry) + "." + base64url(hmac_sha256(secret, payload))
+//	base64url(path + "|" + accountID + "|" + unixExpiry) + "." + base64url(hmac_sha256(secret, payload))
+//
+// The optional binding is to the viewer's account, never to a PIAL: the token
+// travels in a URL, and a PIAL is never written into a page or a URL.
 //
 // Tokens have a 5-minute TTL.  Non-NSFW content never receives a token — this
 // package is only invoked when the post's IsNSFW flag is true.
@@ -56,13 +59,14 @@ func sign(payload string) string {
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
-// Generate returns a signed token for the given media path and viewer PIAL ID.
+// Generate returns a signed token for the given media path, optionally bound to
+// one viewer account ("" binds it to nobody).
 // The token is valid for ttl (5 minutes) from the time of generation.
-func Generate(mediaPath, pialID string) string {
+func Generate(mediaPath, accountID string) string {
 	expiry := time.Now().Add(ttl).Unix()
 	payload := fmt.Sprintf("%s|%s|%d",
 		base64.RawURLEncoding.EncodeToString([]byte(mediaPath)),
-		base64.RawURLEncoding.EncodeToString([]byte(pialID)),
+		base64.RawURLEncoding.EncodeToString([]byte(accountID)),
 		expiry,
 	)
 	sig := sign(payload)
@@ -76,8 +80,8 @@ var ErrInvalid = errors.New("mediatoken: invalid token")
 var ErrExpired = errors.New("mediatoken: token expired")
 
 // Validate verifies the token signature and TTL, and returns the embedded
-// media path and PIAL ID on success.
-func Validate(token string) (mediaPath, pialID string, err error) {
+// media path and bound account id on success.
+func Validate(token string) (mediaPath, accountID string, err error) {
 	// Split at the last "." to get payload + signature.
 	idx := strings.LastIndex(token, ".")
 	if idx < 0 {
@@ -91,7 +95,7 @@ func Validate(token string) (mediaPath, pialID string, err error) {
 		return "", "", ErrInvalid
 	}
 
-	// Parse payload: encPath|encPIAL|expiry
+	// Parse payload: encPath|encAccount|expiry
 	parts := strings.Split(payload, "|")
 	if len(parts) != 3 {
 		return "", "", ErrInvalid
@@ -101,7 +105,7 @@ func Validate(token string) (mediaPath, pialID string, err error) {
 	if err != nil {
 		return "", "", ErrInvalid
 	}
-	pialBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
+	accountBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
 		return "", "", ErrInvalid
 	}
@@ -114,5 +118,5 @@ func Validate(token string) (mediaPath, pialID string, err error) {
 		return "", "", ErrExpired
 	}
 
-	return string(pathBytes), string(pialBytes), nil
+	return string(pathBytes), string(accountBytes), nil
 }

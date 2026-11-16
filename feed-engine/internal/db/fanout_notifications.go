@@ -76,7 +76,7 @@ const frequencyFanoutSQL = `
 	  FROM follows f
 	  JOIN users u ON u.id = f.follower_id
 	  LEFT JOIN user_profiles p ON p.user_id = u.id
-	  LEFT JOIN pial_roots pr ON pr.pial_id = u.pial_id
+	  LEFT JOIN identity_facts pr ON pr.pial_id = u.pial_id
 	 WHERE f.following_id = $1::uuid AND u.pial_id IS NOT NULL
 	   AND ($2::uuid IS NULL OR f.follower_id > $2::uuid)
 	   AND NOT EXISTS (SELECT 1 FROM blocks b

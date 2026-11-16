@@ -1,13 +1,13 @@
 package handler
 
 import (
-	"bytes"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"net/http"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/f33d3r/feed-engine/internal/auralis"
+	"github.com/f33d3r/feed-engine/internal/caeor"
 	dbpkg "github.com/f33d3r/feed-engine/internal/db"
 	"github.com/f33d3r/feed-engine/internal/model"
 )
@@ -193,8 +194,8 @@ func (h *Handler) facetFrequencyClip(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(frag))
 }
 
-// frequencyClip makes a clip of a replay. The transcoder draws the audio as a video
-// and runs it through the same pipeline as any upload, so it carries the moving
+// frequencyClip makes a clip of a replay. Caeor draws the audio as a video and
+// runs it through the same pipeline as any upload, so it carries the moving
 // watermark. It becomes a work only when the person posts it, under their own key.
 func (h *Handler) frequencyClip(w http.ResponseWriter, r *http.Request, user *model.User, id string, raw map[string]json.RawMessage) {
 	start, _ := strconv.Atoi(eventField(r, raw, "start_seconds"))
@@ -222,12 +223,21 @@ func (h *Handler) frequencyClip(w http.ResponseWriter, r *http.Request, user *mo
 		h.frequencyProblem(w, r, http.StatusConflict, "clip_refused", "This replay isn't available.")
 		return
 	}
-	if h.db == nil || h.transcodingURL == "" {
+	if h.db == nil || !h.caeor.Configured() {
 		h.frequencyProblem(w, r, http.StatusServiceUnavailable, "clip_unavailable", "Clips aren't available right now.")
 		return
 	}
-	uploadID := uuid.NewString()
-	allowed, err := dbpkg.RecordFrequencyClip(h.db, uploadID, id, user.ID, frequencyClipsPerHour)
+	up, err := uploaderOf(user)
+	if err != nil {
+		h.frequencyProblem(w, r, http.StatusUnauthorized, "unauthorized", "Sign in to make a clip.")
+		return
+	}
+	upload := &tusUpload{
+		ID: uuid.NewString(), Filename: "Frequency clip", Created: time.Now(),
+		UploaderPIAL: up.PIAL, UploaderAccount: up.Account, UploaderHandle: up.Handle,
+		complete: true,
+	}
+	allowed, err := dbpkg.RecordFrequencyClip(h.db, upload.ID, id, user.ID, frequencyClipsPerHour)
 	if err != nil {
 		log.Printf("[frequency] recording clip: %v", err)
 		h.frequencyProblem(w, r, http.StatusInternalServerError, "server_error", "Could not make that clip.")
@@ -238,61 +248,46 @@ func (h *Handler) frequencyClip(w http.ResponseWriter, r *http.Request, user *mo
 		return
 	}
 	host := h.frequencyPeople([]string{s.HostPialID})[s.HostPialID]
-	jobID, err := h.requestFrequencyClip(file, start, length, s.Title, host.Handle, user.Handle)
+	// Caeor draws the span of the replay as a video carrying the moving
+	// watermark, on record under the clipper: the clip is the clipper's asset.
+	asset, err := h.caeor.Clip(r.Context(), caeor.ClipRequest{
+		ReplayFile:     filepath.Base(file),
+		StartSeconds:   start,
+		LengthSeconds:  length,
+		Title:          s.Title,
+		HostHandle:     host.Handle,
+		ClipperPIAL:    up.PIAL,
+		ClipperAccount: up.Account,
+		ClipperHandle:  up.Handle,
+	})
+	if errors.Is(err, caeor.ErrBusy) {
+		h.frequencyProblem(w, r, http.StatusServiceUnavailable, "clip_busy", "Lots of clips are being made right now. Try again in a minute.")
+		return
+	}
 	if err != nil {
 		log.Printf("[frequency] starting clip of %s: %v", id, err)
 		h.frequencyProblem(w, r, http.StatusBadGateway, "clip_unavailable", "Clips aren't available right now.")
 		return
 	}
+	upload.AssetID = asset.AssetID
+	globalTusStore.put(upload)
 
 	// From here it is an upload like any other, and the person is told how it ended.
-	upload := &tusUpload{
-		ID: uploadID, Filename: "Frequency clip.mp4", Created: time.Now(),
-		UploaderPIAL: user.PIALID, UploaderHandle: user.Handle, JobID: jobID,
-	}
-	globalTusStore.mu.Lock()
-	globalTusStore.uploads[uploadID] = upload
-	globalTusStore.mu.Unlock()
-	if job, err := dbpkg.OpenVideoJob(h.db, uploadID, user.Handle, user.PIALID, upload.Filename); err != nil {
-		log.Printf("[frequency] clip job %s: %v", uploadID, err)
+	if job, err := dbpkg.OpenVideoJob(h.db, upload.ID, user.Handle, user.PIALID, upload.Filename); err != nil {
+		log.Printf("[frequency] clip job %s: %v", upload.ID, err)
 	} else if job != nil {
-		if err := dbpkg.SetVideoJobID(h.db, uploadID, jobID); err != nil {
-			log.Printf("[frequency] clip job %s: %v", uploadID, err)
+		if err := dbpkg.SetVideoJobID(h.db, upload.ID, asset.AssetID); err != nil {
+			log.Printf("[frequency] clip job %s: %v", upload.ID, err)
 		}
 	}
-	h.writeFrequencyClipStatus(w, id, uploadID, nil, "")
-}
-
-func (h *Handler) requestFrequencyClip(file string, start, length int, title, host, clipper string) (string, error) {
-	body, err := json.Marshal(map[string]interface{}{
-		"file": file, "start_seconds": start, "length_seconds": length,
-		"title": title, "host_handle": host, "creator_handle": clipper,
-	})
-	if err != nil {
-		return "", err
-	}
-	resp, err := h.httpClient.Post(h.transcodingURL+"/v1/frequency/clip", "application/json", bytes.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		return "", fmt.Errorf("transcoder answered %s", resp.Status)
-	}
-	var queued struct {
-		JobID string `json:"job_id"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&queued); err != nil {
-		return "", err
-	}
-	return queued.JobID, nil
+	h.writeFrequencyClipStatus(w, id, upload.ID, nil, "")
 }
 
 func (h *Handler) writeFrequencyClipStatus(w http.ResponseWriter, id, uploadID string, out *videoJobOutput, failure string) {
 	data := map[string]interface{}{"ID": id, "UploadID": uploadID, "Failure": failure, "Ready": false}
 	if out != nil {
 		video, err := json.Marshal(map[string]interface{}{
-			"master_url": out.MasterURL, "watermarked_mp4_url": out.WatermarkedURL, "poster_url": out.PosterURL,
+			"master_url": out.MasterURL, "poster_url": out.PosterURL,
 			"duration_secs": out.DurationSecs, "width": out.Width, "height": out.Height, "upload_id": uploadID,
 		})
 		if err != nil {
@@ -301,7 +296,6 @@ func (h *Handler) writeFrequencyClipStatus(w http.ResponseWriter, id, uploadID s
 		data["Ready"] = true
 		data["VideoJSON"] = string(video)
 		data["Poster"] = out.PosterURL
-		data["Download"] = out.WatermarkedURL
 	}
 	frag, err := h.renderFrequencyFragment("frequency_clip_status", data)
 	if err != nil {
@@ -318,7 +312,7 @@ func (h *Handler) writeFrequencyClipStatus(w http.ResponseWriter, id, uploadID s
 func (h *Handler) facetFrequencyClipStatus(w http.ResponseWriter, r *http.Request) {
 	id, uploadID := r.PathValue("id"), r.PathValue("upload")
 	user := liveActor(h.userFromRequest(w, r))
-	st, ok := h.videoJobState(uploadID)
+	st, ok := h.videoJobState(r.Context(), uploadID)
 	if !ok || user == nil || st.UploaderPIAL != user.PIALID {
 		h.writeFrequencyClipStatus(w, id, uploadID, nil, "That clip is no longer available.")
 		return

@@ -27,7 +27,7 @@ FACET admin_panel_treasury
       <span class="admin-section-head-title">Treasury</span>
     </div>
     <p style="font-size:12px;color:var(--text-muted);margin:0">
-      Platform fee vault — 1% collected on every tip and transfer. Sweep sends all fees to @tehanibentley.
+      Platform fee vault — 1% collected on every tip and transfer. Sweep sends all fees to the founder{{if .FounderHandle}}, @{{.FounderHandle}}{{end}}.
     </p>
   </div>
 
@@ -37,11 +37,13 @@ FACET admin_panel_treasury
       <div style="font-size:28px;font-weight:700;color:var(--accent)">{{.FeeBalance}}</div>
       <div style="font-size:11px;color:var(--text-muted);margin-top:2px">ain_soph_fees account</div>
     </div>
-    {{if gt .FeeBalanceUnits 0}}
+    {{if not .FounderHandle}}
+    <div style="font-size:12px;color:var(--text-muted)">No founder account to sweep to.</div>
+    {{else if gt .FeeBalanceUnits 0}}
     <form hx-post="/api/admin/sweep-fees" hx-target="#treasury-sweep-result" hx-swap="innerHTML"
-          onsubmit="return confirm('Sweep all fees to @tehanibentley?')">
+          onsubmit="return confirm('Sweep all fees to @{{.FounderHandle}}?')">
       <button type="submit" class="btn-primary" style="padding:10px 24px;font-size:13px">
-        Sweep all to @tehanibentley
+        Sweep all to @{{.FounderHandle}}
       </button>
     </form>
     {{else}}

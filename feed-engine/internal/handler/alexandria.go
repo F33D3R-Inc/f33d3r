@@ -2,56 +2,14 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
-	"log"
 	"net/http"
-	"net/http/httputil"
-	"net/url"
 	"strings"
 	"time"
 )
-
-// alexandriaProxy proxies /library/* → Alexandria brain (:8097).
-// Injects X-Pial-Identity so Alexandria can verify ownership on mutations.
-func (h *Handler) alexandriaProxy(w http.ResponseWriter, r *http.Request) {
-	user := h.userFromRequest(w, r)
-	if user == nil || user.PIALID == "" {
-		http.Error(w, `{"error":"pial_not_ready"}`, http.StatusServiceUnavailable)
-		return
-	}
-
-	upstreamURL, err := url.Parse(h.alexandriaURL)
-	if err != nil {
-		http.Error(w, `{"error":"alexandria_unavailable"}`, http.StatusBadGateway)
-		return
-	}
-
-	pathSuffix := strings.TrimPrefix(r.URL.Path, "/library")
-	if pathSuffix == "" {
-		pathSuffix = "/"
-	}
-
-	proxy := &httputil.ReverseProxy{
-		Director: func(req *http.Request) {
-			req.URL.Scheme = upstreamURL.Scheme
-			req.URL.Host = upstreamURL.Host
-			req.URL.Path = pathSuffix
-			if r.URL.RawQuery != "" {
-				req.URL.RawQuery = r.URL.RawQuery
-			}
-			req.Host = upstreamURL.Host
-			req.Header.Set("X-Pial-Identity", user.PIALID)
-			req.Header.Set("X-Pial-Handle", user.Handle)
-			req.Header.Del("Cookie")
-		},
-		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			log.Printf("[alexandria proxy] %v", err)
-			http.Error(w, `{"error":"alexandria_unavailable"}`, http.StatusBadGateway)
-		},
-	}
-	proxy.ServeHTTP(w, r)
-}
 
 // alexandriaTitlePayload is the JSON body sent to Alexandria POST /v1/titles.
 type alexandriaTitlePayload struct {
@@ -65,37 +23,44 @@ type alexandriaTitlePayload struct {
 	LegacyWorkID string   `json:"legacy_work_id,omitempty"`
 }
 
-// alexandriaCreateTitle dual-writes a new work into the Alexandria catalog.
-// Runs in a goroutine — failures are logged but never block the caller.
-func (h *Handler) alexandriaCreateTitle(p alexandriaTitlePayload) {
+// alexandriaCreateTitle is the alexandria_catalog obligation: the work's entry
+// in the Alexandria catalog. A brain with no Alexandria configured owes it
+// nothing. Any answer but 201 is a failure the outbox retries.
+//
+// Alexandria's create is not yet idempotent on legacy_work_id, so a retry after
+// a request that succeeded but whose answer was lost can catalog a work twice;
+// X-Idempotency-Key names the work so Alexandria can refuse the second one.
+func (h *Handler) alexandriaCreateTitle(ctx context.Context, p alexandriaTitlePayload) error {
 	if h.alexandriaURL == "" {
-		return
+		return nil
 	}
-
 	body, err := json.Marshal(p)
 	if err != nil {
-		log.Printf("[alexandria] marshal: %v", err)
-		return
+		return fmt.Errorf("alexandria: encoding title for work %s: %w", p.LegacyWorkID, err)
 	}
-
-	client := &http.Client{Timeout: 5 * time.Second}
-	req, err := http.NewRequest(http.MethodPost, h.alexandriaURL+"/v1/titles", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, h.alexandriaURL+"/v1/titles", bytes.NewReader(body))
 	if err != nil {
-		log.Printf("[alexandria] build request: %v", err)
-		return
+		return fmt.Errorf("alexandria: building request for work %s: %w", p.LegacyWorkID, err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Pial-Identity", p.AuthorPIALID)
+	req.Header.Set("X-Idempotency-Key", "work:"+p.LegacyWorkID)
 
-	resp, err := client.Do(req)
+	resp, err := alexandriaClient.Do(req)
 	if err != nil {
-		log.Printf("[alexandria] create_title: %v", err)
-		return
+		return fmt.Errorf("alexandria: creating title for work %s: %w", p.LegacyWorkID, err)
 	}
 	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
-
-	if resp.StatusCode != http.StatusCreated {
-		log.Printf("[alexandria] create_title returned %d", resp.StatusCode)
+	answer, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if err != nil {
+		return fmt.Errorf("alexandria: reading answer for work %s: %w", p.LegacyWorkID, err)
 	}
+	if resp.StatusCode != http.StatusCreated {
+		return fmt.Errorf("alexandria: creating title for work %s: HTTP %d: %s", p.LegacyWorkID, resp.StatusCode, strings.TrimSpace(string(answer)))
+	}
+	return nil
 }
+
+// alexandriaClient carries catalog writes; the outbox gives each attempt its own
+// deadline as well.
+var alexandriaClient = &http.Client{Timeout: 10 * time.Second}

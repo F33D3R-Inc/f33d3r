@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"bytes"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/f33d3r/feed-engine/internal/caeor"
 	dbpkg "github.com/f33d3r/feed-engine/internal/db"
 	"github.com/f33d3r/feed-engine/internal/model"
 )
@@ -274,17 +274,23 @@ func (h *Handler) settingsSectionData(user *model.User, section string, r *http.
 	}
 	data["BirthdayStr"] = birthdayStr
 
-	if h.db != nil && user != nil {
-		data["HasPassword"] = dbpkg.HasPassword(h.db, user.ID)
-		_, totpEnabled := dbpkg.GetTOTPSecret(h.db, user.ID)
-		user.TwoFAEnabled = totpEnabled
+	if viewerAccountID(user) != "" {
+		// Credential standing is elohim-veni's. When it cannot be read the
+		// section says so rather than showing a guess as fact.
+		if acct, err := h.identity.Client().GetAccount(r.Context(), user.ID); err != nil {
+			log.Printf("[settings] credential standing for @%s: %v", user.Handle, err)
+			data["CredentialsUnavailable"] = true
+		} else {
+			data["HasPassword"] = acct.HasPassword
+			user.TwoFAEnabled = acct.TOTPEnabled
+		}
 	}
 
 	// Contact — Numbers, policy, links and requests, each fetched from the brain
 	// that owns it. Built for that section only.
 	if section == "contact" && user != nil && user.PIALID != "" {
-		data["NumbersData"] = h.numbersData(r.Context(), user.PIALID)
-		data["AddressesData"] = h.contactAddressesData(r, user.PIALID, "")
+		data["NumbersData"] = h.numbersData(r.Context(), user)
+		data["AddressesData"] = h.contactAddressesData(r, user, "")
 	}
 
 	// Notification preferences — fetched from Herald for that section only.
@@ -492,50 +498,33 @@ func (h *Handler) saveProfile(w http.ResponseWriter, r *http.Request) {
 		IsAdultCreator:       isAdultCreator,
 	}
 
-	// Handle avatar upload — store via Caeor so it lands in the named volume (survives rebuilds).
-	// Falls back to local disk if Caeor is unavailable.
-	if avatarFile, avatarHeader, err := r.FormFile("avatar"); err == nil {
-		defer avatarFile.Close()
-		fileBytes, rerr := io.ReadAll(io.LimitReader(avatarFile, 10<<20))
-		if rerr == nil {
-			avatarURL, uerr := h.caeorUpload(fileBytes, avatarHeader.Filename, "avatar")
-			if uerr != nil {
-				log.Printf("[upload] avatar caeor failed, falling back: %v", uerr)
-				avatarURL, uerr = h.saveUpload(bytes.NewReader(fileBytes), avatarHeader.Filename, "avatars")
-			}
-			if uerr == nil {
-				save.AvatarURL = avatarURL
-			} else {
-				log.Printf("[upload] avatar error: %v", uerr)
-			}
+	// A new avatar or header is stored through the profile-picture lane: magic
+	// number, the banned-content gate, then Caeor. A picture that cannot be
+	// stored fails the save and says why; there is no other place to put it.
+	for _, pic := range []struct {
+		field string
+		kind  caeor.Kind
+		into  *string
+	}{
+		{"avatar", caeor.KindAvatar, &save.AvatarURL},
+		{"header", caeor.KindHeader, &save.HeaderURL},
+	} {
+		data, filename, err := readProfileUpload(r, pic.field)
+		if errors.Is(err, http.ErrMissingFile) {
+			continue
 		}
-	}
-
-	// Handle header upload — same caeor-first strategy.
-	if headerFile, headerHeader, err := r.FormFile("header"); err == nil {
-		defer headerFile.Close()
-		fileBytes, rerr := io.ReadAll(io.LimitReader(headerFile, 10<<20))
-		if rerr == nil {
-			headerURL, uerr := h.caeorUpload(fileBytes, headerHeader.Filename, "header")
-			if uerr != nil {
-				log.Printf("[upload] header caeor failed, falling back: %v", uerr)
-				headerURL, uerr = h.saveUpload(bytes.NewReader(fileBytes), headerHeader.Filename, "headers")
-			}
-			if uerr == nil {
-				save.HeaderURL = headerURL
-			} else {
-				log.Printf("[upload] header error: %v", uerr)
-			}
+		if err == nil {
+			*pic.into, err = h.admitProfileImage(r.Context(), user, pic.kind, filename, data)
+		}
+		if err != nil {
+			log.Printf("[profile] %s for @%s: %v", pic.field, user.Handle, err)
+			htmxError(w, r, profilePictureRefusal(pic.field, err), http.StatusBadRequest)
+			return
 		}
 	}
 
 	// Invalidate session cache so the redirect immediately shows fresh data.
-	if tok := GetSessionToken(r); tok != "" {
-		h.sessionCache.Delete(tok)
-	}
-	if handle := HandleFromCookie(r); handle != "" {
-		h.sessionCache.Delete("__handle__" + handle)
-	}
+	h.evictCachedAccount(user.ID, "")
 
 	if h.db != nil {
 		// Award XP for profile fields being filled for the first time.
@@ -601,7 +590,7 @@ func (h *Handler) changePasswordAPI(w http.ResponseWriter, r *http.Request) {
 
 	// One set of rules with the native clients' password_change event; see
 	// changePassword. The form only differs in how it shows the answer.
-	status, msg := h.changePassword(user, r.FormValue("current_password"), r.FormValue("new_password"), r.FormValue("confirm_password"), GetSessionToken(r))
+	status, msg := h.changePassword(r, user, r.FormValue("current_password"), r.FormValue("new_password"), r.FormValue("confirm_password"))
 	if status != http.StatusOK {
 		fmt.Fprintf(w, `<span style="color:#ef4444;font-size:13px">%s</span>`, template.HTMLEscapeString(msg))
 		return
@@ -1037,4 +1026,19 @@ func (h *Handler) profileLiveStage(r *http.Request, profileUser, viewer *model.U
 	}
 	stage["V"] = v
 	return stage
+}
+
+// profilePictureRefusal words why a profile picture was not saved.
+func profilePictureRefusal(field string, err error) string {
+	switch {
+	case errors.Is(err, errMediaBanned):
+		return "This content cannot be uploaded."
+	case errors.Is(err, errUploadHeld):
+		return "This picture is being reviewed. Try again once the review is done."
+	case errors.Is(err, errMediaUnsupported):
+		return "The " + field + " must be a JPEG, PNG, GIF or WebP image."
+	case errors.Is(err, errUploadTooLarge):
+		return "The " + field + " is too large."
+	}
+	return "The " + field + " could not be saved. Please try again."
 }

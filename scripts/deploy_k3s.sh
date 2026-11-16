@@ -35,7 +35,6 @@ BRAINS=(
   "zior:zior-engine"
   "ain-soph:ain-soph"
   "elohim-veni:elohim-veni"
-  "zodacare:zodacare"
   "schema-registry:aethyr-schema-registry"
 )
 
@@ -63,7 +62,7 @@ kubectl apply -f infra/k3s/manifests/ingress.yaml
 # ── Wait for rollout ───────────────────────────────────────────────────────────
 log "Waiting for rollouts to complete (timeout: 5m)..."
 
-DEPLOYMENTS=(nantar aethyrrank zior ain-soph elohim-veni zodacare schema-registry)
+DEPLOYMENTS=(nantar aethyrrank zior ain-soph elohim-veni schema-registry)
 for dep in "${DEPLOYMENTS[@]}"; do
   kubectl rollout status deployment/"${dep}" -n "${NAMESPACE}" --timeout=300s \
     && ok "${dep} deployed" \

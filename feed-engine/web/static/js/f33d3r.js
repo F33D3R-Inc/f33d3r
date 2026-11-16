@@ -200,10 +200,10 @@ window.F33D3R = window.F33D3R || {};
 // The Go server pushes HTML fragments. HTMX swaps them into the DOM.
 // No polling. No fetch(). No JSON.
 (function() {
-  var pialMeta = document.querySelector('meta[name="f33d3r:pial"]');
+  var accountMeta = document.querySelector('meta[name="f33d3r:account"]');
   // The tag is always in the Shell and is empty when logged out. Connecting then
   // only earns a redirect, and EventSource would retry it forever.
-  if (!pialMeta || !pialMeta.content) return;
+  if (!accountMeta || !accountMeta.content) return;
 
   // Single owner of /api/events for the whole app. A duplicate inline EventSource used to
   // live in base.html; two connections meant every event (notify/balance/…) could be delivered
@@ -241,7 +241,6 @@ window.F33D3R = window.F33D3R || {};
     // hx-trigger="fa:resync from:body", so nobody's scroll position moves.
     es.addEventListener('resync', function() {
       document.body.dispatchEvent(new CustomEvent('fa:resync'));
-      if (window._faReloadTxHistory && document.getElementById('tx-list')) window._faReloadTxHistory();
     });
 
 
@@ -288,8 +287,9 @@ window.F33D3R = window.F33D3R || {};
       if (px) px.textContent = e.data.replace(' AET', '');
       var m = document.getElementById('mobile-aet-bal');
       if (m) m.textContent = e.data;
-      // The balance moved, so the wallet's transaction list is out of date too.
-      if (window._faReloadTxHistory && document.getElementById('tx-list')) window._faReloadTxHistory();
+      // The balance moved, so the wallet's transaction list is out of date too:
+      // its Facet re-requests itself on this event.
+      document.body.dispatchEvent(new CustomEvent('fa:wallet-moved'));
     });
 
     es.addEventListener('achievement.unlocked', function(e) {
@@ -1219,9 +1219,9 @@ document.addEventListener('DOMContentLoaded', function() {
 
   // Malkuth crypto substrate init — async, non-blocking.
   if (window.Malkuth) {
-    var _malkuthPIAL = (document.querySelector('meta[name="f33d3r:pial"]') || {}).content || '';
-    if (_malkuthPIAL) {
-      window._malkuthReady = window.Malkuth.init(_malkuthPIAL).catch(function(e) {
+    var _malkuthAccount = (document.querySelector('meta[name="f33d3r:account"]') || {}).content || '';
+    if (_malkuthAccount) {
+      window._malkuthReady = window.Malkuth.init(_malkuthAccount).catch(function(e) {
         console.warn('[malkuth] init failed:', e);
         return { hasKey: false };
       });
@@ -1278,8 +1278,11 @@ window.updateCharCount = function() {
   var ring = document.getElementById('char-ring');
   var inner = document.getElementById('char-count-inner');
   if (!ta || !ring) return;
-  var used = ta.value.length;
-  var max = 2000;
+  // The server's measure (feed-engine/internal/worktext.WeightedLength), over
+  // the text exactly as it will be signed.
+  var wt = window.F33WorkText;
+  var used = wt ? wt.weightedLength(wt.normalize(ta.value)) : ta.value.length;
+  var max = wt ? wt.maxWeighted : 2000;
   var pct = used / max;
   var circumference = 56.5;
   // CHANGE 2: offset formula — empty ring at 0 chars, full at max
@@ -1324,8 +1327,9 @@ async function submitPollCompose() {
       headers: { 'Content-Type': 'application/json', 'HX-Request': 'true' },
       body: JSON.stringify(env),
     });
+    // The outcome is the server's: its compose status Facet and toast arrive
+    // over FA Live. A refusal leaves the compose open with the reason in it.
     if (r.ok) {
-      toast('Poll posted');
       ta.value = '';
       _pollMode = false;
       var panel = document.getElementById('poll-compose-panel');
@@ -1334,7 +1338,7 @@ async function submitPollCompose() {
       if (pollBtn) pollBtn.classList.remove('active');
       closeCompose();
       _refreshActiveFeed();
-    } else { toast(await r.text() || 'Poll failed', 'error'); }
+    }
   } catch(e) { toast('Poll failed: ' + e.message, 'error'); }
   btn.disabled = false; btn.textContent = 'Post';
 }
@@ -1377,11 +1381,13 @@ window.submitCompose = async function() {
     var _wSchedEl = document.getElementById('compose-scheduled-at');
     var _wSched = (_wSchedEl && _wSchedEl.value) ? new Date(_wSchedEl.value).toISOString() : null;
     var _wNSFW = !!(document.getElementById('compose-nsfw') || {}).checked;
+    var _wDlEl = document.getElementById('compose-downloads');
     var _wOpts = {
-      comment_gating:  _wGating,
-      subscriber_only: _wSubOnly,
-      scheduled_at:    _wSched,
-      is_nsfw:         _wNSFW,
+      comment_gating:    _wGating,
+      subscriber_only:   _wSubOnly,
+      scheduled_at:      _wSched,
+      is_nsfw:           _wNSFW,
+      downloads_allowed: _wDlEl ? _wDlEl.checked : true,
     };
 
     // Voice opts
@@ -1396,8 +1402,6 @@ window.submitCompose = async function() {
     var _wVidMasterEl = document.querySelector('#compose-modal input[name="video_master_url"]');
     if (_wVidMasterEl && _wVidMasterEl.value) {
       _wOpts.video_master_url = _wVidMasterEl.value;
-      var _wVidWmEl = document.querySelector('#compose-modal input[name="video_watermarked_url"]');
-      _wOpts.video_watermarked_url = _wVidWmEl && _wVidWmEl.value ? _wVidWmEl.value : null;
       var _wVidPosterEl = document.querySelector('#compose-modal input[name="video_poster_url"]');
       _wOpts.video_poster_url = _wVidPosterEl ? _wVidPosterEl.value || null : null;
       var _wVidDurEl = document.querySelector('#compose-modal input[name="video_duration_secs"]');
@@ -1407,8 +1411,6 @@ window.submitCompose = async function() {
       _wOpts.video_width = _wVidWEl && _wVidWEl.value ? parseInt(_wVidWEl.value, 10) || 0 : 0;
       var _wVidHEl = document.querySelector('#compose-modal input[name="video_height"]');
       _wOpts.video_height = _wVidHEl && _wVidHEl.value ? parseInt(_wVidHEl.value, 10) || 0 : 0;
-      var _wTusEl = document.querySelector('#compose-modal input[name="tus_upload_id"]');
-      if (_wTusEl && _wTusEl.value) _wOpts.tus_upload_id = _wTusEl.value;
     }
 
     // Read reply parent CID if composing a reply
@@ -1433,8 +1435,9 @@ window.submitCompose = async function() {
       headers: { 'Content-Type': 'application/json', 'HX-Request': 'true' },
       body: JSON.stringify(_wEnv),
     });
+    // The outcome is the server's: its compose status Facet and toast arrive
+    // over FA Live. A refusal leaves the compose open with the reason in it.
     if (_wRes.ok) {
-      toast('Post published');
       ta.value = ''; updateCharCount(); clearMediaPreviews(); removeComposeVoice(); removeComposeLocation();
       var _nsfwEl = document.getElementById('compose-nsfw'); if (_nsfwEl) _nsfwEl.checked = false;
       var _piEl = document.querySelector('#compose-modal input[name="parent_id"]');
@@ -1449,9 +1452,6 @@ window.submitCompose = async function() {
       }
       if (_parentCIDEl) _parentCIDEl.value = '';
       closeCompose(); _refreshActiveFeed();
-    } else {
-      var _wErr = await _wRes.text();
-      toast(_wErr || 'Post failed', 'error');
     }
   } catch (_we) { toast('Post failed: ' + _we.message, 'error'); }
   btn.disabled = false; btn.textContent = 'Post';
@@ -2479,69 +2479,6 @@ document.addEventListener('click', function(e) {
   if (dd && !dd.contains(e.target)) dd.style.display = 'none';
 });
 
-// ── Pre-upload hash checks ────────────────────────────────────────────────────
-// Browser computes SHA-256 of the file and posts only the hex to a lightweight
-// check endpoint. If the server returns a duplicate the file never leaves the device.
-// Falls back silently if crypto.subtle is unavailable (plain-HTTP dev environments).
-
-async function _preCheckVideoHash(file, vWrap, vModal, vPostBtn) {
-  if (!window.crypto || !window.crypto.subtle) return false;
-  try {
-    var buf = await file.arrayBuffer();
-    var hashBuf = await crypto.subtle.digest('SHA-256', buf);
-    var hex = Array.from(new Uint8Array(hashBuf)).map(function(b) { return b.toString(16).padStart(2, '0'); }).join('');
-    var fd = new FormData();
-    fd.append('sha256', hex);
-    var res = await fetch('/upload/check-video-hash', { method: 'POST', body: fd });
-    if (!res.ok) return false;
-    var data = await res.json();
-    if (data.status === 'duplicate' || data.status === 'self_duplicate') {
-      if (data.status === 'self_duplicate') {
-        _showSelfDuplicateWarning(vModal);
-      } else {
-        _showDuplicateVideoWarning(data.original_handle, data.original_post_id, vModal);
-      }
-      if (data.master_url) {
-        _stashVideoFields(vModal, {
-          master_url:            data.master_url,
-          watermarked_mp4_url: data.watermarked_mp4_url || '',
-          poster_url:            data.poster_url || '',
-          duration_secs:         data.duration_secs || 0,
-          width:                 data.width || 0,
-          height:                data.height || 0
-        });
-        _renderVideoTile(vWrap, { master_url: data.master_url, poster_url: data.poster_url || '' }, vModal);
-      } else {
-        vWrap.remove();
-      }
-      if (vPostBtn) { vPostBtn.disabled = false; vPostBtn.textContent = 'Post'; }
-      return true;
-    }
-    return false;
-  } catch (e) { return false; }
-}
-
-async function _preCheckImageHash(file, wrap, modal) {
-  if (!window.crypto || !window.crypto.subtle) return false;
-  try {
-    var buf = await file.arrayBuffer();
-    var hashBuf = await crypto.subtle.digest('SHA-256', buf);
-    var hex = Array.from(new Uint8Array(hashBuf)).map(function(b) { return b.toString(16).padStart(2, '0'); }).join('');
-    var fd = new FormData();
-    fd.append('sha256', hex);
-    var res = await fetch('/upload/check-image-hash', { method: 'POST', body: fd });
-    if (!res.ok) return false;
-    var data = await res.json();
-    if (data.status === 'duplicate' && data.url) {
-      _showDuplicateVideoWarning(data.original_handle || '', '', modal);
-      _stashMediaURL(modal, data.url);
-      _renderImageTile(wrap, data.url, modal);
-      return true;
-    }
-    return false;
-  } catch (e) { return false; }
-}
-
 // ── Media upload ──────────────────────────────────────────────────────────────
 // The /upload/post-media endpoint returns one of:
 //   image: { kind: "image", url }
@@ -2571,14 +2508,10 @@ window.onMediaSelect = async function(input) {
       + '</div>';
     if (prev) { prev.appendChild(wrap); _updateMediaGrid(); }
 
-    // Facet(video_upload) — client-side hash check runs first (crypto.subtle); falls back
-    // to server-side dedup inside uploadPostMedia if unavailable (HTTP dev environments).
+    // Facet(video_upload) — duplicates are resolved by the media authority when
+    // the bytes arrive; the job status says so.
     if (video) {
       (async function(vFile, vWrap, vModal, vPostBtn, vFilename) {
-        // Pre-upload hash check: if the file is a known duplicate, skip the full upload.
-        var handled = await _preCheckVideoHash(vFile, vWrap, vModal, vPostBtn);
-        if (handled) return;
-
         var xhr = new XMLHttpRequest();
         var fd = new FormData();
         fd.append('media', vFile);
@@ -2601,29 +2534,6 @@ window.onMediaSelect = async function(input) {
           try { data = JSON.parse(xhr.responseText); } catch(e) {
             vWrap.remove();
             toast('Upload parse error: ' + vFilename, 'error');
-            if (vPostBtn) { vPostBtn.disabled = false; vPostBtn.textContent = 'Post'; }
-            return;
-          }
-          // Server-side dedup result — same response format as image dedup.
-          if (data.status === 'duplicate' || data.status === 'self_duplicate') {
-            if (data.status === 'self_duplicate') {
-              _showSelfDuplicateWarning(vModal);
-            } else {
-              _showDuplicateVideoWarning(data.original_handle, data.original_post_id, vModal);
-            }
-            if (data.master_url) {
-              _stashVideoFields(vModal, {
-                master_url:            data.master_url,
-                watermarked_mp4_url: data.watermarked_mp4_url || '',
-                poster_url:            data.poster_url || '',
-                duration_secs:         data.duration_secs || 0,
-                width:                 data.width || 0,
-                height:                data.height || 0
-              });
-              _renderVideoTile(vWrap, { master_url: data.master_url, poster_url: data.poster_url || '' }, vModal);
-            } else {
-              vWrap.remove();
-            }
             if (vPostBtn) { vPostBtn.disabled = false; vPostBtn.textContent = 'Post'; }
             return;
           }
@@ -2656,10 +2566,6 @@ window.onMediaSelect = async function(input) {
       input.value = '';
       return;
     }
-
-    // Image path: pre-upload hash check first, then fall through to server upload.
-    var imgHandled = await _preCheckImageHash(file, wrap, modal);
-    if (imgHandled) continue;
 
     var fd = new FormData();
     fd.append('media', file);
@@ -2735,7 +2641,6 @@ async function _pollTusStatus(uploadId, wrap, modal, postBtn, filename) {
       if (orig.master_url) {
         _stashVideoFields(modal, {
           master_url:          orig.master_url,
-          watermarked_mp4_url: orig.watermarked_mp4_url || '',
           poster_url:          orig.poster_url || '',
           duration_secs:       orig.duration_secs || 0,
           width:               orig.width || 0,
@@ -2750,7 +2655,6 @@ async function _pollTusStatus(uploadId, wrap, modal, postBtn, filename) {
     } else if (job.status === 'ready' && job.output) {
       _stashVideoFields(modal, {
         master_url:            job.output.master_url,
-        watermarked_mp4_url: job.output.watermarked_mp4_url || '',
         poster_url:            job.output.poster_url || '',
         duration_secs:         job.output.duration_seconds || 0,
         width:                 job.output.source_width || 0,
@@ -2790,12 +2694,10 @@ function _stashVideoFields(modal, data) {
   modal.querySelectorAll('input[data-video-asset="1"]').forEach(function (n) { n.remove(); });
   var pairs = [
     ['video_master_url',      data.master_url],
-    ['video_watermarked_url', data.watermarked_mp4_url || ''],
     ['video_poster_url',      data.poster_url || ''],
     ['video_duration_secs',   String(data.duration_secs || 0)],
     ['video_width',           String(data.width || 0)],
     ['video_height',          String(data.height || 0)],
-    ['tus_upload_id',         data.upload_id || ''],
   ];
   pairs.forEach(function (kv) {
     var h = document.createElement('input');
@@ -2997,15 +2899,15 @@ window.submitThreadCompose = async function() {
         headers: { 'Content-Type': 'application/json', 'HX-Request': 'true' },
         body: JSON.stringify(env),
       });
+      // A refused segment stops the thread; the reason is the server's compose
+      // status Facet, already on its way over FA Live.
       if (!res.ok) {
-        toast(await res.text() || 'Thread post failed', 'error');
         btn.disabled = false; btn.textContent = 'Post';
         return;
       }
       var data = await res.json();
       prevCID = data.cid;
     }
-    toast('Thread posted');
     ta.value = '';
     updateCharCount();
     clearMediaPreviews();

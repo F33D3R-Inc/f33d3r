@@ -155,15 +155,16 @@ F33D3R.page('feed_items', function () {
   }
 
   function openReplyRestriction(postId, current) {
+    // The one reply-gating vocabulary (feed-engine db.CommentGatings): the value
+    // stored is the value shown, with no mapping between them.
     const opts = [
       {value:'everyone', label:'Everyone'},
-      {value:'followers', label:'Followers only'},
-      {value:'verified', label:'Verified users'},
-      {value:'none', label:'Nobody'}
+      {value:'followers', label:'Your followers'},
+      {value:'circle', label:'Your circle (you follow each other)'},
+      {value:'verified', label:'Verified accounts'},
+      {value:'none', label:'Only you'}
     ];
-    // Map DB values to display values
-    const dbToDisplay = {open:'everyone', followers:'followers', verified:'verified', none:'none'};
-    const currentDisplay = dbToDisplay[current] || 'everyone';
+    const currentDisplay = current || 'everyone';
     const html = opts.map(o =>
       `<button onclick="setReplyRestriction('${postId}','${o.value}',this.closest('.rr-modal'))" style="width:100%;padding:10px 16px;text-align:left;background:${o.value===currentDisplay?'var(--accent-dim,rgba(139,92,246,.15))':'none'};border:none;border-radius:8px;color:inherit;cursor:pointer;font-size:14px">${o.label}${o.value===currentDisplay?' ✓':''}</button>`
     ).join('');

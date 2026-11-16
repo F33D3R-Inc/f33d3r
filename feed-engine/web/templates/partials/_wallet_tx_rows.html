@@ -1,0 +1,42 @@
+{{/*
+FACET wallet_tx_rows
+  version: 1.0 | status: stable | layer: 2
+
+  inputs:
+    AccountID  string          — the session's account; the Facet's entity id
+    Rows       []walletTxRow   — .Direction (in|out|self) .Label .Amount .TimeAgo
+    Notice     string          — set when the history could not be read
+
+  states:
+    default | empty | unavailable
+
+  children: none
+
+  signals:
+    emits:    none
+    receives: none (re-requested by wallet_tx_list on fa:wallet-moved / fa:resync)
+
+  context:
+    wallet_tx_list → #tx-list
+
+  note:
+    No row names the other party. The ledger records PIALs, which are never
+    written into a page, and records no account, so there is no persona a row
+    could truthfully name.
+*/}}
+{{define "wallet_tx_rows"}}
+<div data-facet-id="facet:f33d3r:wallet:{{.AccountID}}:tx_rows">
+{{if .Notice}}<p class="wallet-tx-loading">{{.Notice}}</p>
+{{else if not .Rows}}<p class="wallet-tx-loading">No transactions yet.</p>
+{{else}}{{range .Rows}}
+  <div class="wallet-tx-item">
+    <div class="wallet-tx-icon wallet-tx-icon--{{if eq .Direction "in"}}in{{else if eq .Direction "out"}}out{{else}}fee{{end}}">{{if eq .Direction "in"}}↓{{else if eq .Direction "out"}}↑{{else}}⊙{{end}}</div>
+    <div class="wallet-tx-body">
+      <p class="wallet-tx-label">{{.Label}}</p>
+      <p class="wallet-tx-sub">{{.TimeAgo}}</p>
+    </div>
+    <span class="wallet-tx-amount wallet-tx-amount--{{if eq .Direction "in"}}in{{else if eq .Direction "out"}}out{{else}}fee{{end}}">{{if eq .Direction "in"}}+{{else if eq .Direction "out"}}−{{end}}{{.Amount}}</span>
+  </div>
+{{end}}{{end}}
+</div>
+{{end}}

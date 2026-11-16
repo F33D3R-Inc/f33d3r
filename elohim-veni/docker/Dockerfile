@@ -25,6 +25,9 @@ COPY elohim-veni/Cargo.toml elohim-veni/Cargo.lock* ./elohim-veni/
 RUN mkdir elohim-veni/src && echo 'fn main(){}' > elohim-veni/src/main.rs
 RUN cargo build --release --manifest-path elohim-veni/Cargo.toml
 
+# Migrations are compiled into the binary (include_str! in src/migrate.rs), so
+# they are build inputs, not runtime assets.
+COPY elohim-veni/migrations ./elohim-veni/migrations
 COPY elohim-veni/src ./elohim-veni/src
 RUN touch elohim-veni/src/main.rs && cargo build --release --manifest-path elohim-veni/Cargo.toml
 

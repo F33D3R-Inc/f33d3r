@@ -13,7 +13,7 @@ FACET wallet_panel_history
     wallet_tx_list
 
   signals:
-    emits:    none (JS loadTxHistory fetches rows)
+    emits:    none (wallet_tx_list requests its rows from the server)
     receives: balance (SSE — triggers balance refresh)
 
   context:

@@ -29,7 +29,11 @@ FACET work_card
 {{$ctx := .Ctx}}
 
 {{if eq $w.ScanState "blocked"}}
+{{/* The removed state: the card's own Facet root, so FA Live can replace a card
+     on screen with it the moment a block lands (safety_events.go). */}}
+<article class="post-card post-card--removed" data-facet-id="facet:f33d3r:work:{{$w.ID}}:card" data-work-id="{{$w.ID}}" role="article">
 {{template "violation_notice" (dict "PostID" $w.ID)}}
+</article>
 {{else if and $w.SubscriberOnly (not $w.ViewerSubscribed) (or (not $ctx) (ne $w.AuthorHandle $ctx.CurrentUserHandle))}}
 <article class="post-card post-card--locked" data-facet-id="facet:f33d3r:work:{{$w.ID}}:card" data-work-id="{{$w.ID}}" role="article">
   <div class="pcd">
@@ -105,8 +109,8 @@ FACET work_card
                relationship, it does not report it. The single btn_follow entry
                point renders it, so the card-surface pill a click swaps in is the
                same pill the card drew. */}}
-          {{if and $ctx (ne $w.AuthorHandle $ctx.CurrentUserHandle) (not $w.ViewerFollowsAuthor) $w.AuthorPIAL}}
-          {{template "btn_follow" (dict "TargetPIAL" $w.AuthorPIAL "TargetHandle" $w.AuthorHandle "IsFollowing" false "Surface" "card")}}
+          {{if and $ctx (ne $w.AuthorHandle $ctx.CurrentUserHandle) (not $w.ViewerFollowsAuthor) $w.AuthorID}}
+          {{template "btn_follow" (dict "TargetAccount" $w.AuthorID "TargetHandle" $w.AuthorHandle "IsFollowing" false "Surface" "card")}}
           {{end}}
 
           {{/* Facet(work_menu) — single source of truth for all work 3-dot menus */}}
@@ -182,13 +186,8 @@ FACET work_card
   <div class="pcf">
     {{if not (adultMediaOpen $w $ctx.User)}}
     <div class="focus-bg"><div class="focus-bg-text"></div></div>
-    {{else if eq $w.Kind "react_video"}}
-    <div class="focus-bg">
-      <video class="focus-bg-video" src="{{$w.VideoMasterURL}}"
-             preload="metadata" playsinline muted loop autoplay
-             style="width:100%;height:100%;object-fit:cover;display:block;background:#000"></video>
-    </div>
     {{else if $w.VideoMasterURL}}
+    {{/* The watermarked HLS master — a reaction's too: every viewer-facing copy is watermarked. */}}
     <div class="focus-bg">
       <video class="focus-bg-video" data-f33d-hls="{{$w.VideoMasterURL}}"
              {{if $w.VideoPosterURL}}poster="{{$w.VideoPosterURL}}"{{end}}

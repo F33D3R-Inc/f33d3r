@@ -16,3 +16,9 @@ SELECT 'CREATE DATABASE f33d3r_library' WHERE NOT EXISTS (SELECT FROM pg_databas
 SELECT 'CREATE DATABASE f33d3r_market'  WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'f33d3r_market')\gexec
 SELECT 'CREATE DATABASE f33d3r_manhattan' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'f33d3r_manhattan')\gexec
 SELECT 'CREATE DATABASE f33d3r_frequencies' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'f33d3r_frequencies')\gexec
+-- Caeor, the media-asset authority. Caeor also creates it at boot on a cluster
+-- that predates it, because this script runs only on an empty data volume.
+SELECT 'CREATE DATABASE f33d3r_media' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'f33d3r_media')\gexec
+-- Abraxas, the integrity authority. Abraxas also creates it at boot on a
+-- cluster that predates it, because this script runs only on an empty data volume.
+SELECT 'CREATE DATABASE f33d3r_integrity' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'f33d3r_integrity')\gexec

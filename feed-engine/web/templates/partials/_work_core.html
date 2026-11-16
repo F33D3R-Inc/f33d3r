@@ -43,7 +43,7 @@ FACET work_core
     {{if or $w.IsNSFW $w.IsGore}}
     <div class="quoted-media-flag" onclick="event.stopPropagation()">{{if $w.IsNSFW}}18+ content{{else}}Sensitive content{{end}} — open to view</div>
     {{else}}
-    {{template "media_container" (dict "P" $w "PIALID" "")}}
+    {{template "media_container" (dict "P" $w "AccountID" "")}}
     {{end}}
   {{end}}
   {{/* A quoted ballot is shown, never taken — the vote belongs to the work's own

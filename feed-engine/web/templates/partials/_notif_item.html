@@ -112,6 +112,8 @@ FACET notif_item
       {{else if eq .Type "number_budget_low"}} One of your Numbers is nearly full — <a href="/settings/contact" class="notif-link" onclick="event.stopPropagation()">raise the limit ↗</a>
       {{else if eq .Type "number_budget_spent"}} One of your Numbers is full and is no longer letting new people in — <a href="/settings/contact" class="notif-link" onclick="event.stopPropagation()">raise the limit ↗</a>
       {{else if eq .Type "violation"}} Your post was removed for violating the <a href="/terms" class="notif-link" onclick="event.stopPropagation()">F33D3R Rules</a>.
+      {{else if and (eq .Type "moderation") (eq .TargetType "law_enforcement_report")}} A report is waiting to be filed. Open Admin, then CSAM reports.
+      {{else if and (eq .Type "moderation") (eq .TargetType "abraxas_review")}} Something is waiting in the review queue — <a href="/admin/moderation" class="notif-link" onclick="event.stopPropagation()">open queue ↗</a>
       {{else if eq .Type "moderation"}} A post needs moderation review — <a href="/admin" class="notif-link" onclick="event.stopPropagation()">open queue ↗</a>
       {{else}} sent you a notification
       {{end}}

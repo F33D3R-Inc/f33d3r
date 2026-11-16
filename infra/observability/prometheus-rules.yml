@@ -9,7 +9,7 @@ groups:
     rules:
 
       - alert: BrainDown
-        expr: up{job=~"herald|nantar|aethyrrank|zior|caeor|ain-soph|aethyr-ledger|verity|elohim-veni|zodacare|schema-registry|registrar|ekyc|auralis"} == 0
+        expr: up{job=~"herald|nantar|aethyrrank|zior|caeor|ain-soph|aethyr-ledger|verity|elohim-veni|abraxas-shield|schema-registry|registrar|ekyc|auralis"} == 0
         for: 2m
         labels: { severity: critical }
         annotations:
@@ -84,6 +84,24 @@ groups:
         annotations:
           summary: "Disk usage > 85% on {{ $labels.mountpoint }}"
           description: "Run cleanup or expand disk. CCX23 has 160 GB total."
+
+  - name: legal_reporting
+    interval: 30s
+    rules:
+
+      - alert: CSAMMatchNeedsReport
+        expr: increase(csam_matches_total[1h]) > 0
+        labels: { severity: critical }
+        annotations:
+          summary: "CSAM match on {{ $labels.surface }}"
+          description: "Content matched the registry. An admin must file the report from the admin panel. No content or identity is in this alert."
+
+      - alert: CSAMReportNotRecorded
+        expr: increase(csam_report_failures_total[1h]) > 0
+        labels: { severity: critical }
+        annotations:
+          summary: "A CSAM match could not be recorded"
+          description: "The content was refused but no report was opened. Search feed-engine logs for csam-REPORT-FAILED."
 
   - name: notifications
     interval: 30s

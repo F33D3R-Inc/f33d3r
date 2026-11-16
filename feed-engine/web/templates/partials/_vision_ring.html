@@ -11,7 +11,7 @@ FACET vision_ring
   chose, so a viewer always re-enters where they left off.
 
   inputs:
-    R       *model.VisionRing — .AuthorPIAL .AuthorHandle .AuthorName .AvatarURL
+    R       *model.VisionRing — .AuthorAccountID .AuthorHandle .AuthorName .AvatarURL
                                .State (none|unseen|seen) .Count .UnseenCount
     Scope   string — following | for_you (carried into the viewer)
     OpenURL string — server-resolved address of the resume frame
@@ -35,7 +35,7 @@ FACET vision_ring
 {{define "vision_ring"}}
 {{$r := .R}}
 <a class="vision-ring vision-ring--{{$r.State}}"
-   data-facet-id="facet:f33d3r:vision:{{$r.AuthorPIAL}}:ring"
+   data-facet-id="facet:f33d3r:vision:{{$r.AuthorAccountID}}:ring"
    id="{{.ElemID}}"
    href="{{.OpenURL}}"
    hx-get="{{.OpenURL}}"

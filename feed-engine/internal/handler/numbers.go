@@ -137,7 +137,7 @@ func (h *Handler) facetNumbers(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	h.renderNumbers(w, r, user.PIALID, "", "")
+	h.renderNumbers(w, r, user, "", "")
 }
 
 // mintNumber — POST /identity/numbers/mint
@@ -149,13 +149,6 @@ func (h *Handler) mintNumber(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	// The authority stores this Number's policy against the identity, so the
-	// identity has to exist there first. Refusing here is the same refusal the
-	// mint would produce a moment later, with the cause named.
-	if err := h.assertPIAL(r.Context(), user.PIALID); err != nil {
-		h.renderNumbers(w, r, user.PIALID, "Could not allocate a Number right now.", "")
-		return
-	}
 	policy := strings.TrimSpace(r.FormValue("policy"))
 	if policy == "" {
 		policy = "number_only"
@@ -165,7 +158,7 @@ func (h *Handler) mintNumber(w http.ResponseWriter, r *http.Request) {
 	// elohim-veni, which owns the columns.
 	lease, err := parseNumberLease(r)
 	if err != nil {
-		h.renderNumbers(w, r, user.PIALID, "An expiry is a whole number of days and a budget is a whole number of people.", "")
+		h.renderNumbers(w, r, user, "An expiry is a whole number of days and a budget is a whole number of people.", "")
 		return
 	}
 	body := map[string]interface{}{
@@ -184,10 +177,10 @@ func (h *Handler) mintNumber(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := h.callElohim(r.Context(), http.MethodPost, "/v1/numbers/mint", body, &out); err != nil {
 		log.Printf("[numbers] minting for pial %s: %v", user.PIALID, err)
-		h.renderNumbers(w, r, user.PIALID, mintRefusalNotice(statedRefusal(err)), "")
+		h.renderNumbers(w, r, user, mintRefusalNotice(statedRefusal(err)), "")
 		return
 	}
-	h.renderNumbers(w, r, user.PIALID, "", out.Number)
+	h.renderNumbers(w, r, user, "", out.Number)
 }
 
 // mintRefusalNotice turns the authority's stated reason into something the owner
@@ -231,10 +224,10 @@ func (h *Handler) revokeNumber(w http.ResponseWriter, r *http.Request) {
 	body := map[string]interface{}{"pial_id": user.PIALID, "number": number}
 	if err := h.callElohim(r.Context(), http.MethodPost, "/v1/numbers/revoke", body, nil); err != nil {
 		log.Printf("[numbers] revoking %s: %v", number, err)
-		h.renderNumbers(w, r, user.PIALID, "Could not retire that Number right now.", "")
+		h.renderNumbers(w, r, user, "Could not retire that Number right now.", "")
 		return
 	}
-	h.renderNumbers(w, r, user.PIALID, "", "")
+	h.renderNumbers(w, r, user, "", "")
 }
 
 // setNumberPolicy — POST /identity/numbers/policy
@@ -256,7 +249,7 @@ func (h *Handler) setNumberPolicy(w http.ResponseWriter, r *http.Request) {
 	// through a Number must not silently discard when it stops working.
 	lease, err := parseNumberLease(r)
 	if err != nil {
-		h.renderNumbers(w, r, user.PIALID, "An expiry is a whole number of days and a budget is a whole number of people.", "")
+		h.renderNumbers(w, r, user, "An expiry is a whole number of days and a budget is a whole number of people.", "")
 		return
 	}
 	body := map[string]interface{}{
@@ -268,10 +261,10 @@ func (h *Handler) setNumberPolicy(w http.ResponseWriter, r *http.Request) {
 	lease.applyTo(body)
 	if err := h.callElohim(r.Context(), http.MethodPost, "/v1/numbers/policy", body, nil); err != nil {
 		log.Printf("[numbers] policy for %s: %v", number, err)
-		h.renderNumbers(w, r, user.PIALID, "Could not change that Number's policy right now.", "")
+		h.renderNumbers(w, r, user, "Could not change that Number's policy right now.", "")
 		return
 	}
-	h.renderNumbers(w, r, user.PIALID, "", "")
+	h.renderNumbers(w, r, user, "", "")
 }
 
 // setContactPolicy — POST /identity/contact/policy
@@ -283,10 +276,6 @@ func (h *Handler) setContactPolicy(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	if err := h.assertPIAL(r.Context(), user.PIALID); err != nil {
-		h.renderNumbers(w, r, user.PIALID, "Could not save your contact policy right now.", "")
-		return
-	}
 	body := map[string]interface{}{"pial_id": user.PIALID}
 	if v := strings.TrimSpace(r.FormValue("handle_policy")); v != "" {
 		body["handle_policy"] = v
@@ -296,10 +285,10 @@ func (h *Handler) setContactPolicy(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := h.callElohim(r.Context(), http.MethodPost, "/v1/contact/policy", body, nil); err != nil {
 		log.Printf("[numbers] contact policy for pial %s: %v", user.PIALID, err)
-		h.renderNumbers(w, r, user.PIALID, "Could not save your contact policy right now.", "")
+		h.renderNumbers(w, r, user, "Could not save your contact policy right now.", "")
 		return
 	}
-	h.renderNumbers(w, r, user.PIALID, "", "")
+	h.renderNumbers(w, r, user, "", "")
 }
 
 // mintContactCapability — POST /identity/contact/capability/mint
@@ -309,10 +298,6 @@ func (h *Handler) mintContactCapability(w http.ResponseWriter, r *http.Request) 
 	user := h.userFromRequest(w, r)
 	if user == nil || user.PIALID == "" {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-	if err := h.assertPIAL(r.Context(), user.PIALID); err != nil {
-		h.renderNumbers(w, r, user.PIALID, "Could not create a contact link right now.", "")
 		return
 	}
 	body := map[string]interface{}{
@@ -335,10 +320,10 @@ func (h *Handler) mintContactCapability(w http.ResponseWriter, r *http.Request) 
 	}
 	if err := h.callElohim(r.Context(), http.MethodPost, "/v1/contact/capabilities/mint", body, &out); err != nil {
 		log.Printf("[numbers] minting capability for pial %s: %v", user.PIALID, err)
-		h.renderNumbers(w, r, user.PIALID, "Could not create a contact link right now.", "")
+		h.renderNumbers(w, r, user, "Could not create a contact link right now.", "")
 		return
 	}
-	h.renderNumbersWithCapability(w, r, user.PIALID, out.Capability)
+	h.renderNumbersWithCapability(w, r, user, out.Capability)
 }
 
 // revokeContactCapability — POST /identity/contact/capability/revoke
@@ -356,10 +341,10 @@ func (h *Handler) revokeContactCapability(w http.ResponseWriter, r *http.Request
 	body := map[string]interface{}{"pial_id": user.PIALID, "capability_id": id}
 	if err := h.callElohim(r.Context(), http.MethodPost, "/v1/contact/capabilities/revoke", body, nil); err != nil {
 		log.Printf("[numbers] revoking capability %s: %v", id, err)
-		h.renderNumbers(w, r, user.PIALID, "Could not revoke that contact link right now.", "")
+		h.renderNumbers(w, r, user, "Could not revoke that contact link right now.", "")
 		return
 	}
-	h.renderNumbers(w, r, user.PIALID, "", "")
+	h.renderNumbers(w, r, user, "", "")
 }
 
 // decideContactRequest — POST /identity/contact/requests/decide
@@ -376,9 +361,9 @@ func (h *Handler) decideContactRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	accept := r.FormValue("accept") == "1"
 	body := map[string]interface{}{
-		"pial_id":    user.PIALID,
-		"request_id": id,
-		"accept":     accept,
+		"pial_id":       user.PIALID,
+		"request_id":    id,
+		"accept":        accept,
 		"owner_account": user.ID,
 	}
 	var out struct {
@@ -386,7 +371,7 @@ func (h *Handler) decideContactRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := h.callElohim(r.Context(), http.MethodPost, "/v1/contact/requests/decide", body, &out); err != nil {
 		log.Printf("[numbers] deciding request %s: %v", id, err)
-		h.renderNumbers(w, r, user.PIALID, "Could not answer that request right now.", "")
+		h.renderNumbers(w, r, user, "Could not answer that request right now.", "")
 		return
 	}
 	if accept && out.RequesterPIAL != "" {
@@ -394,7 +379,7 @@ func (h *Handler) decideContactRequest(w http.ResponseWriter, r *http.Request) {
 			h.deliverHeldOnAccept(requester, user)
 		}
 	}
-	h.renderNumbers(w, r, user.PIALID, "", "")
+	h.renderNumbers(w, r, user, "", "")
 }
 
 // deliverHeldOnAccept keeps the promise the contact gate made.
@@ -487,7 +472,7 @@ func (h *Handler) resolveNumber(w http.ResponseWriter, r *http.Request) {
 		holdFloor(started, numberResolveFloor)
 		log.Printf("[numbers] resolving for pial %s: %v", user.PIALID, err)
 		h.renderPartial(w, "number_resolve", map[string]interface{}{
-			"PIALID":      user.PIALID,
+			"AccountID":   user.ID,
 			"Unavailable": true,
 		})
 		return
@@ -502,9 +487,9 @@ func (h *Handler) resolveNumber(w http.ResponseWriter, r *http.Request) {
 	// identity behind it surfaces only once a conversation actually opens.
 	holdFloor(started, numberResolveFloor)
 	h.renderPartial(w, "number_resolve", map[string]interface{}{
-		"PIALID":   user.PIALID,
-		"Decision": outcome.Decision,
-		"Number":   number,
+		"AccountID": user.ID,
+		"Decision":  outcome.Decision,
+		"Number":    number,
 	})
 }
 
@@ -533,13 +518,13 @@ func (h *Handler) startContactByNumber(w http.ResponseWriter, r *http.Request) {
 		holdFloor(started, numberResolveFloor)
 		log.Printf("[numbers] starting contact for pial %s: %v", user.PIALID, err)
 		h.renderPartial(w, "number_resolve", map[string]interface{}{
-			"PIALID": user.PIALID, "Unavailable": true})
+			"AccountID": user.ID, "Unavailable": true})
 		return
 	}
 	if outcome.Decision != "allow" || outcome.TargetPIAL == "" {
 		holdFloor(started, numberResolveFloor)
 		h.renderPartial(w, "number_resolve", map[string]interface{}{
-			"PIALID": user.PIALID, "Decision": outcome.Decision, "Number": number})
+			"AccountID": user.ID, "Decision": outcome.Decision, "Number": number})
 		return
 	}
 
@@ -547,21 +532,21 @@ func (h *Handler) startContactByNumber(w http.ResponseWriter, r *http.Request) {
 	if account == "" || account == user.ID {
 		holdFloor(started, numberResolveFloor)
 		h.renderPartial(w, "number_resolve", map[string]interface{}{
-			"PIALID": user.PIALID, "Decision": "deny", "Number": number})
+			"AccountID": user.ID, "Decision": "deny", "Number": number})
 		return
 	}
 	if _, err := h.ensureDirectConversation(user, account, outcome.TargetPIAL); err != nil {
 		holdFloor(started, numberResolveFloor)
 		log.Printf("[numbers] opening conversation for pial %s: %v", user.PIALID, err)
 		h.renderPartial(w, "number_resolve", map[string]interface{}{
-			"PIALID": user.PIALID, "Unavailable": true})
+			"AccountID": user.ID, "Unavailable": true})
 		return
 	}
 
 	holdFloor(started, numberResolveFloor)
 	w.Header().Set("HX-Redirect", "/messages")
 	h.renderPartial(w, "number_resolve", map[string]interface{}{
-		"PIALID": user.PIALID, "Decision": "allow", "Number": number})
+		"AccountID": user.ID, "Decision": "allow", "Number": number})
 }
 
 // holdFloor keeps a handler alive to a fixed minimum duration, so the work it
@@ -672,19 +657,19 @@ func (h *Handler) evaluateContact(ctx context.Context, user *model.User, q conta
 
 // ── Rendering ────────────────────────────────────────────────────────────────
 
-func (h *Handler) renderNumbers(w http.ResponseWriter, r *http.Request, pialID, notice, highlight string) {
-	h.renderNumbersFacet(w, r, pialID, notice, highlight, "")
+func (h *Handler) renderNumbers(w http.ResponseWriter, r *http.Request, user *model.User, notice, highlight string) {
+	h.renderNumbersFacet(w, r, user, notice, highlight, "")
 }
 
-func (h *Handler) renderNumbersWithCapability(w http.ResponseWriter, r *http.Request, pialID, capability string) {
-	h.renderNumbersFacet(w, r, pialID, "", "", capability)
+func (h *Handler) renderNumbersWithCapability(w http.ResponseWriter, r *http.Request, user *model.User, capability string) {
+	h.renderNumbersFacet(w, r, user, "", "", capability)
 }
 
 // renderNumbersFacet draws the f33d3r_numbers Facet. Every mutation above ends
 // here, so the fragment the browser swaps in is always the server's current
 // account of this identity's Numbers, policy, links and pending requests.
-func (h *Handler) renderNumbersFacet(w http.ResponseWriter, r *http.Request, pialID, notice, highlight, capability string) {
-	data := h.numbersData(r.Context(), pialID)
+func (h *Handler) renderNumbersFacet(w http.ResponseWriter, r *http.Request, user *model.User, notice, highlight, capability string) {
+	data := h.numbersData(r.Context(), user)
 	data["Notice"] = notice
 	if highlight != "" {
 		data["NewNumber"] = numberDisplay(highlight)
@@ -778,12 +763,15 @@ func (h *Handler) contactPolicyFor(ctx context.Context, pialID string) (contactP
 	return out, nil
 }
 
-// numbersData hydrates the Numbers surface for one identity. Every field is
-// fetched from the brain that owns it; nothing is cached here.
-func (h *Handler) numbersData(ctx context.Context, pialID string) map[string]interface{} {
+// numbersData hydrates the Numbers surface for one account's identity. Every
+// field is fetched from the brain that owns it; nothing is cached here. The
+// PIAL is used for those calls only: the Facet is addressed by the account id,
+// because the fragment is written into a page and a PIAL never is.
+func (h *Handler) numbersData(ctx context.Context, user *model.User) map[string]interface{} {
+	pialID := user.PIALID
 	data := map[string]interface{}{
-		"PIALID":   pialID,
-		"Policies": contactPolicies(),
+		"AccountID": user.ID,
+		"Policies":  contactPolicies(),
 		// The lease vocabulary the owner picks from. Server-rendered like
 		// everything else: the browser is handed a list of choices, not the rules
 		// behind them.

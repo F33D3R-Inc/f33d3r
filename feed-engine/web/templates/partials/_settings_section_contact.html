@@ -22,7 +22,7 @@ FACET settings_section_contact
 */}}
 {{define "settings_section_contact"}}
 <div class="settings-section-contact"
-     data-facet-id="facet:f33d3r:identity:{{if .User}}{{.User.PIALID}}{{end}}:contact_section">
+     data-facet-id="facet:f33d3r:account:{{if .User}}{{.User.ID}}{{end}}:contact_section">
 
   <div class="settings-panel-head">
     <h2 class="settings-panel-title">Contact</h2>

@@ -9,8 +9,6 @@ import (
 	"log"
 	"math"
 	"net/http"
-	"net/http/httputil"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -26,6 +24,7 @@ func (h *Handler) walletPage(w http.ResponseWriter, r *http.Request) {
 
 	type walletData struct {
 		Balance string
+		Amount  string // Balance without its unit, as wallet_hero shows it
 		Address string
 		Error   string
 		Online  bool
@@ -58,6 +57,7 @@ func (h *Handler) walletPage(w http.ResponseWriter, r *http.Request) {
 	if !data.Online {
 		data.Balance = "0.00 AET"
 	}
+	data.Amount = strings.TrimSuffix(data.Balance, " AET")
 
 	h.render(w, r, "wallet.html", h.withRail(map[string]interface{}{
 		"User":       user,
@@ -78,6 +78,7 @@ func (h *Handler) walletPanelData(w http.ResponseWriter, r *http.Request) (map[s
 
 	type walletData struct {
 		Balance string
+		Amount  string // Balance without its unit, as wallet_hero shows it
 		Address string
 		Error   string
 		Online  bool
@@ -109,6 +110,7 @@ func (h *Handler) walletPanelData(w http.ResponseWriter, r *http.Request) (map[s
 	if !data.Online {
 		data.Balance = "0.00 AET"
 	}
+	data.Amount = strings.TrimSuffix(data.Balance, " AET")
 
 	tplData := h.withRail(map[string]interface{}{
 		"User":       user,
@@ -155,81 +157,6 @@ func (h *Handler) walletPanelSend(w http.ResponseWriter, r *http.Request) {
 	}
 	tplData["ActiveSection"] = "send"
 	h.renderPartial(w, "wallet_panel_send", tplData)
-}
-
-// ainSophValueRoutes are the Ain Soph routes that move value out of the AET
-// ledger rather than around inside it. Ain Soph registers /withdraw and
-// /deposit under both a legacy and a /v1 path, so both spellings are listed —
-// a gate that covers only the spelling the UI happens to use is not a gate.
-//
-// Transfers and tips are absent: those are a person spending their own balance,
-// which is paying rather than being paid. Reads (balance, transactions,
-// proposals) are absent for the same reason /marketplace stays an age gate —
-// looking at your own wallet is not a payout.
-var ainSophValueRoutes = map[string]bool{
-	"/withdraw":    true,
-	"/v1/withdraw": true,
-	"/deposit":     true,
-	"/v1/deposit":  true,
-}
-
-// ── Ain Soph proxy — ETHRA/AET wallet + governance ────────────────────────────
-// Path: /ainsoph/v1/... → http://ain-soph:8089/v1/...
-// Injects X-Pial-Identity so ain-soph can bind operations to the caller's PIAL.
-func (h *Handler) ainSophProxy(w http.ResponseWriter, r *http.Request) {
-	user := h.userFromRequest(w, r)
-	if user.PIALID == "" {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusServiceUnavailable)
-		w.Write([]byte(`{"error":"pial_not_ready","message":"Identity anchor not ready."}`))
-		return
-	}
-
-	upstreamURL, err := url.Parse(h.cfg.AinSophURL)
-	if err != nil {
-		http.Error(w, "proxy config error", http.StatusInternalServerError)
-		return
-	}
-
-	pathSuffix := strings.TrimPrefix(r.URL.Path, "/ainsoph")
-	if pathSuffix == "" {
-		pathSuffix = "/"
-	}
-
-	// This is a blanket reverse proxy: every route Ain Soph serves is reachable
-	// through it, including the two that move value out of the ledger. Ain Soph
-	// itself asks no identity question, so an account that had done nothing but
-	// type a birthday into the signup form could POST /ainsoph/v1/withdraw and
-	// cash out. Value-moving routes ask the identity predicate here, at the only
-	// layer that holds a session.
-	if ainSophValueRoutes[pathSuffix] && !user.CanMonetize() {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		w.Write([]byte(`{"error":"identity_verification_required","message":"Moving value in or out of the AET ledger requires identity verification. Complete verification at /kyc."}`))
-		return
-	}
-
-	pialID := user.PIALID
-	handle := user.Handle
-
-	proxy := &httputil.ReverseProxy{
-		Director: func(req *http.Request) {
-			req.URL.Scheme = upstreamURL.Scheme
-			req.URL.Host = upstreamURL.Host
-			req.URL.Path = pathSuffix
-			if r.URL.RawQuery != "" {
-				req.URL.RawQuery = r.URL.RawQuery
-			}
-			req.Host = upstreamURL.Host
-			req.Header.Set("X-Pial-Identity", pialID)
-			req.Header.Set("X-Pial-Handle", handle)
-			req.Header.Del("Cookie")
-		},
-		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			http.Error(w, `{"error":"ain_soph_unavailable"}`, http.StatusBadGateway)
-		},
-	}
-	proxy.ServeHTTP(w, r)
 }
 
 // tipEvent handles POST /events {event_type:tip, target_handle, amount_aet}.
@@ -335,6 +262,8 @@ func (h *Handler) tipEvent(w http.ResponseWriter, r *http.Request) {
 	if facetRequest(r) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
+		// The wallet's history Facet re-requests itself on this.
+		w.Header().Set("HX-Trigger", "fa:wallet-moved")
 		h.renderPartial(w, "tip_result", map[string]interface{}{
 			"OK":      true,
 			"Handle":  targetHandle,
@@ -428,47 +357,15 @@ func (h *Handler) tipEventError(w http.ResponseWriter, r *http.Request, handle, 
 	fmt.Fprintf(w, `{"error":%q}`, msg)
 }
 
-// walletIdentity returns the PIAL a wallet is keyed on, or "" if the viewer has
-// no identity and one cannot be created.
-//
-// It exists because the two wallet pages used to do this instead:
-//
-//	walletID := user.PIALID
-//	if walletID == "" {
-//	    walletID = user.ID
-//	}
-//
-// which keyed a wallet on a feed-engine row id whenever a PIAL was missing. A
-// PIAL and a users.id are both UUIDs, so nothing downstream could tell them
-// apart — Ain Soph opened an account for whichever string arrived and the money
-// went to an identifier this brain is free to renumber. On this database that
-// produced four wallet accounts for two people, half of them keyed on the wrong
-// thing.
-//
-// A wallet is keyed on PIAL or it is not opened. There is no fallback, because a
-// fallback here is indistinguishable from correctness until someone's balance is
-// in the wrong place. If the viewer somehow has no PIAL, one is minted — that is
-// what a PIAL is for — and only a genuine failure to mint yields "".
+// walletIdentity is the identity a wallet belongs to: the viewer's PIAL. Every
+// account has one from the moment elohim-veni creates it; an account without
+// one is not a wallet holder, and "" says so — a wallet is never opened under
+// an account id instead.
 func (h *Handler) walletIdentity(user *model.User) string {
-	if user == nil {
+	if user == nil || user.PIALID == "" {
 		return ""
 	}
-	if user.PIALID != "" {
-		return user.PIALID
-	}
-	if h.db == nil || user.ID == "" {
-		return ""
-	}
-	// No PIAL yet: create the identity rather than borrowing an account id.
-	pial := dbpkg.BootstrapPIAL(h.db, user.ID, user.Handle)
-	if pial == "" {
-		log.Printf("[wallet] cannot open a wallet for account %s: no PIAL and bootstrap failed", user.ID)
-		return ""
-	}
-	// The handle predates this identity. Tell the authority.
-	h.ensureHandleAllocated(context.Background(), user.Handle, pial)
-	user.PIALID = pial
-	return pial
+	return user.PIALID
 }
 
 // doIfSet performs req, or returns (nil, nil) when there is no request to make.

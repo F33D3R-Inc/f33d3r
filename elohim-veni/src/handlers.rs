@@ -15,11 +15,11 @@ use uuid::Uuid;
 
 use axum::extract::Query;
 
+use crate::api::{ApiError, ApiResult};
+use crate::identity;
 use crate::models::{
-    BanRequest, BootstrapRequest, BootstrapResponse, BulkCapabilityResponse, BulkCapabilityUpdate,
-    CapabilityEntry, CapabilityMap, CapabilityUpdateRequest, CapabilityUpdateResponse,
-    DecisionLogEntry, DecisionLogQuery, DecisionRequest, DecisionResponse, StatsResponse,
-    TrustResponse, UpdateStatusRequest, UpdateStatusResponse,
+    BootstrapRequest, BootstrapResponse, DecisionLogEntry, DecisionLogQuery, DecisionRequest,
+    DecisionResponse, StatsResponse,
 };
 use crate::number_lease::{self, Admission};
 use crate::{contact, db, decision, follow_graph};
@@ -32,8 +32,11 @@ pub struct AppState {
     pub pool: PgPool,
     pub verity_url: String,
     pub http: reqwest::Client,
-    /// Shared secret for X-Internal-Key auth on PIAL key endpoints.
+    /// The shared secret every route but /health, /metrics and /v1/auth/jwks
+    /// requires as X-Internal-Key (api::require_internal_key).
     pub internal_api_key: String,
+    /// Signs PIAL assertion tokens and publishes their verification keys.
+    pub tokens: identity::tokens::TokenIssuer,
     /// In-memory nexus tier cache: pial_shard → (tier, cached_at). 5-minute TTL.
     pub nexus_tier_cache: Arc<Mutex<HashMap<String, (i16, Instant)>>>,
     /// The naming plane. Identity is resolved through it and never by joining
@@ -192,371 +195,162 @@ fn trusted_caller(headers: &HeaderMap) -> Option<Uuid> {
 pub async fn health(State(state): State<AppState>) -> impl IntoResponse {
     let configured = state.manhattan.configured();
 
-    match db::outbox_backlog(&state.pool).await {
-        Ok(backlog) => Json(json!({
-            "status":                              "ok",
-            "service":                             "elohim-veni",
-            "manhattan":                           configured,
+    let manhattan = match db::outbox_backlog(&state.pool).await {
+        Ok(backlog) => json!({
             "manhattan_outbox_pending":            backlog.pending,
             "manhattan_outbox_oldest_age_seconds": backlog.oldest_age_seconds,
             "manhattan_outbox_head_error":         backlog.head_last_error,
             // Rows the drain gave up on: naming-plane writes that did not happen
             // and will not until an operator clears blocked_at.
             "manhattan_outbox_quarantined":        backlog.quarantined,
-        })),
+        }),
         Err(e) => {
             warn!(error = %e, "manhattan outbox backlog query failed");
-            Json(json!({
-                "status":                   "degraded",
-                "service":                  "elohim-veni",
-                "manhattan":                configured,
-                "manhattan_outbox_pending": serde_json::Value::Null,
-                "manhattan_outbox_error":   e.to_string(),
-            }))
+            json!({ "manhattan_outbox_pending": null, "manhattan_outbox_error": e.to_string() })
+        }
+    };
+    // identity.events the estate has not heard yet, and any the relay gave up on.
+    let identity_events = match identity::relay::backlog(&state.pool).await {
+        Ok(b) => json!({
+            "identity_outbox_pending":            b.pending,
+            "identity_outbox_oldest_age_seconds": b.oldest_age_seconds,
+            "identity_outbox_quarantined":        b.quarantined,
+        }),
+        Err(e) => {
+            warn!(error = %e, "identity outbox backlog query failed");
+            json!({ "identity_outbox_pending": null, "identity_outbox_error": e.to_string() })
+        }
+    };
+    let degraded = manhattan.get("manhattan_outbox_error").is_some()
+        || identity_events.get("identity_outbox_error").is_some();
+    let mut body = json!({
+        "status":    if degraded { "degraded" } else { "ok" },
+        "service":   "elohim-veni",
+        "manhattan": configured,
+    });
+    for part in [manhattan, identity_events] {
+        if let (Some(dst), serde_json::Value::Object(src)) = (body.as_object_mut(), part) {
+            dst.extend(src);
         }
     }
+    Json(body)
 }
 
 // ── GET /v1/stats ─────────────────────────────────────────────────────────────
 
-pub async fn stats(State(state): State<AppState>) -> impl IntoResponse {
+pub async fn stats(State(state): State<AppState>) -> ApiResult<Json<StatsResponse>> {
     let pool = &state.pool;
-
-    let total_pials = db::count_pials(pool).await.unwrap_or(0);
-    let total_decisions = db::count_decisions_total(pool).await.unwrap_or(0);
-    let decisions_today = db::count_decisions_today(pool).await.unwrap_or(0);
-    let denials_today = db::count_denials_today(pool).await.unwrap_or(0);
-
+    let total_pials = db::count_pials(pool).await?;
+    let total_decisions = db::count_decisions_total(pool).await?;
+    let decisions_today = db::count_decisions_today(pool).await?;
+    let denials_today = db::count_denials_today(pool).await?;
     let deny_rate_today = if decisions_today == 0 {
         0.0
     } else {
         denials_today as f64 / decisions_today as f64
     };
-
-    Json(StatsResponse {
+    Ok(Json(StatsResponse {
         service: "elohim-veni",
         total_pials,
         total_decisions,
         decisions_today,
         deny_rate_today,
-    })
+    }))
 }
 
 // ── POST /v1/pial/bootstrap ───────────────────────────────────────────────────
 
+/// Asserts a PIAL minted elsewhere (feed-engine's assertPIAL). Idempotent; it
+/// cannot resurrect a revoked PIAL or change the tier of a live one. PIALs
+/// minted by this brain's own account creation need no assertion.
 pub async fn pial_bootstrap(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(req): Json<BootstrapRequest>,
-) -> impl IntoResponse {
+) -> ApiResult<impl IntoResponse> {
     let caller = trusted_caller(&headers);
-    info!(
-        pial_id = %req.pial_id,
-        caller = ?caller,
-        "pial_bootstrap"
-    );
-
+    info!(pial_id = %req.pial_id, caller = ?caller, "pial_bootstrap");
     let tier = req.tier.as_deref().unwrap_or("BASIC");
-
-    // Idempotent upsert keyed on the PIAL, which is the identity itself.
-    //
-    // This used to conflict on account_id — feed-engine's users.id, another
-    // brain's row id carried here as a second identity key — which let a
-    // re-bootstrap move a PIAL out from under an account. A PIAL is the root
-    // that never moves, so the only key a person is filed under here is their
-    // PIAL. The account mapping lives in f33d3r_feed, where the account is.
-    //
-    // The trigger on this table queues the identity's registration into the
-    // naming plane in this same transaction: either the PIAL exists here and is
-    // queued for Manhattan, or neither happened.
-    let row: (Uuid, bool) = match sqlx::query_as(
-        "INSERT INTO pial_states (pial_id, tier) VALUES ($1, $2)
-         ON CONFLICT (pial_id) DO UPDATE SET updated_at = NOW()
-         RETURNING pial_id, (xmax = 0) AS inserted",
-    )
-    .bind(req.pial_id)
-    .bind(tier)
-    .fetch_one(&state.pool)
-    .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            warn!(error = %e, "pial_bootstrap upsert failed");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(BootstrapResponse {
-                    pial_id: Uuid::nil(),
-                    created: false,
-                }),
-            );
-        }
-    };
-
-    let (pial_id, created) = row;
-
-    // Seed trust score row (idempotent).
-    let _ = sqlx::query("INSERT INTO trust_scores (pial_id) VALUES ($1) ON CONFLICT DO NOTHING")
-        .bind(pial_id)
-        .execute(&state.pool)
-        .await;
-
-    if created {
-        info!(pial_id = %pial_id, "PIAL asserted — identity queued for the naming plane");
-    }
-
-    let status = if created {
-        StatusCode::CREATED
-    } else {
-        StatusCode::OK
-    };
-    (status, Json(BootstrapResponse { pial_id, created }))
-}
-
-// ── GET /v1/pial/:pial_id/capabilities ───────────────────────────────────────
-
-pub async fn get_capabilities(
-    State(state): State<AppState>,
-    Path(pial_ref): Path<String>,
-) -> impl IntoResponse {
-    let pial_id = match resolve_pial_ref(&state, &pial_ref).await {
-        Ok(id) => id,
-        Err((status, body)) => return (status, body).into_response(),
-    };
-
-    // Verify the PIAL exists.
-    let exists: Option<(bool,)> = sqlx::query_as("SELECT TRUE FROM pial_states WHERE pial_id = $1")
-        .bind(pial_id)
-        .fetch_optional(&state.pool)
-        .await
-        .unwrap_or(None);
-
-    if exists.is_none() {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": "pial_not_found" })),
-        )
-            .into_response();
-    }
-
-    // Fetch all explicit grants (expired ones are included but flagged).
-    let rows: Vec<(String, bool, Option<chrono::DateTime<Utc>>)> = sqlx::query_as(
-        "SELECT capability, granted, expires_at \
-         FROM capability_grants \
-         WHERE pial_id = $1 \
-         ORDER BY capability ASC",
-    )
-    .bind(pial_id)
-    .fetch_all(&state.pool)
-    .await
-    .unwrap_or_default();
-
-    let now = Utc::now();
-    let capabilities: Vec<CapabilityEntry> = rows
-        .into_iter()
-        .map(|(capability, mut granted, expires_at)| {
-            // An expired grant is treated as revoked.
-            if let Some(exp) = expires_at {
-                if exp < now {
-                    granted = false;
-                }
-            }
-            CapabilityEntry {
-                capability,
-                granted,
-                expires_at,
-            }
-        })
-        .collect();
-
-    (
-        StatusCode::OK,
-        Json(CapabilityMap {
-            pial_id,
-            capabilities,
-        }),
-    )
-        .into_response()
-}
-
-// ── POST /v1/pial/:pial_id/capabilities ──────────────────────────────────────
-
-pub async fn update_capability(
-    State(state): State<AppState>,
-    Path(pial_ref): Path<String>,
-    headers: HeaderMap,
-    Json(req): Json<CapabilityUpdateRequest>,
-) -> impl IntoResponse {
-    let pial_id = match resolve_pial_ref(&state, &pial_ref).await {
-        Ok(id) => id,
-        Err((status, body)) => return (status, body).into_response(),
-    };
-
-    let caller = trusted_caller(&headers);
-    info!(
-        pial_id = %pial_id,
-        capability = %req.capability,
-        grant = req.grant,
-        caller = ?caller,
-        "update_capability"
-    );
-
-    // Verify the PIAL exists.
-    let exists: Option<(bool,)> = sqlx::query_as("SELECT TRUE FROM pial_states WHERE pial_id = $1")
-        .bind(pial_id)
-        .fetch_optional(&state.pool)
-        .await
-        .unwrap_or(None);
-
-    if exists.is_none() {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": "pial_not_found" })),
-        )
-            .into_response();
-    }
-
-    let result = sqlx::query(
-        "INSERT INTO capability_grants (pial_id, capability, granted, granted_by, reason, expires_at) \
-         VALUES ($1, $2, $3, $4, $5, $6) \
-         ON CONFLICT (pial_id, capability) DO UPDATE \
-           SET granted = EXCLUDED.granted, \
-               granted_by = EXCLUDED.granted_by, \
-               reason = EXCLUDED.reason, \
-               expires_at = EXCLUDED.expires_at, \
-               updated_at = NOW()"
-    )
-    .bind(pial_id)
-    .bind(&req.capability)
-    .bind(req.grant)
-    .bind(req.granted_by)
-    .bind(&req.reason)
-    .bind(req.expires_at)
-    .execute(&state.pool)
-    .await;
-
-    match result {
-        Ok(_) => (
-            StatusCode::OK,
-            Json(CapabilityUpdateResponse {
-                pial_id,
-                capability: req.capability,
-                granted: req.grant,
-            }),
-        )
-            .into_response(),
-        Err(e) => {
-            warn!(error = %e, "capability update failed");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": "db_error" })),
-            )
-                .into_response()
-        }
-    }
+    let mut tx = state.pool.begin().await?;
+    let created = identity::pial::bootstrap(&mut tx, req.pial_id, tier).await?;
+    tx.commit().await?;
+    let status = if created { StatusCode::CREATED } else { StatusCode::OK };
+    Ok((status, Json(BootstrapResponse { pial_id: req.pial_id, created })))
 }
 
 // ── GET /v1/pial/:pial_id/trust ───────────────────────────────────────────────
 
+/// The whole trust row — the decision engine's signal and the enforcement
+/// state — with the PIAL's tier.
 pub async fn get_trust(
     State(state): State<AppState>,
     Path(pial_ref): Path<String>,
-) -> impl IntoResponse {
+) -> axum::response::Response {
     let pial_id = match resolve_pial_ref(&state, &pial_ref).await {
         Ok(id) => id,
         Err((status, body)) => return (status, body).into_response(),
     };
-
-    let row: Option<(f64, f64, i32, Option<String>, String)> = sqlx::query_as(
-        "SELECT ts.score, ts.anomaly_score, ts.violation_count, ts.last_decision, ps.tier \
-         FROM trust_scores ts \
-         JOIN pial_states ps ON ps.pial_id = ts.pial_id \
-         WHERE ts.pial_id = $1",
-    )
-    .bind(pial_id)
-    .fetch_optional(&state.pool)
-    .await
-    .unwrap_or(None);
-
-    match row {
-        None => (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": "pial_not_found" })),
-        )
-            .into_response(),
-        Some((score, anomaly_score, violation_count, last_decision, tier)) => (
-            StatusCode::OK,
-            Json(TrustResponse {
-                pial_id,
-                score,
-                anomaly_score,
-                violation_count,
-                tier,
-                last_decision,
-            }),
-        )
-            .into_response(),
+    let load = async {
+        let mut conn = state.pool.acquire().await?;
+        identity::view::load_pial(&mut conn, pial_id).await
+    };
+    match load.await {
+        Ok(Some(v)) => {
+            let mut body = json!(v.trust);
+            body["pial_id"] = json!(pial_id);
+            body["tier"] = json!(v.tier);
+            Json(body).into_response()
+        }
+        Ok(None) => ApiError::not_found("not_found", "No such PIAL.").into_response(),
+        Err(e) => ApiError::from(e).into_response(),
     }
 }
 
 // ── POST /v1/decisions ────────────────────────────────────────────────────────
 
+/// The capability an action is gated on, in the one vocabulary. An action
+/// with none is decided on status, trust and risk alone (and node_relay on
+/// tier — see decision.rs).
+fn capability_for_action(action: &str) -> Option<&'static str> {
+    use identity::vocab::*;
+    match action {
+        "post" => Some(CAP_POSTING),
+        "message" => Some(CAP_MESSAGING),
+        "monetize" | "payout_activation" => Some(CAP_MONETIZATION),
+        "adult_content" => Some(CAP_NSFW_ACCESS),
+        "music_upload" => Some(CAP_MUSIC_UPLOAD),
+        _ => None,
+    }
+}
+
 pub async fn make_decision(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(req): Json<DecisionRequest>,
-) -> impl IntoResponse {
+) -> ApiResult<Json<DecisionResponse>> {
     let caller = trusted_caller(&headers);
-    info!(
-        pial_id = %req.pial_id,
-        action  = %req.action,
-        caller  = ?caller,
-        "make_decision"
-    );
+    info!(pial_id = %req.pial_id, action = %req.action, caller = ?caller, "make_decision");
 
-    // Load PIAL state.
-    let pial_row: Option<(String, String)> =
-        sqlx::query_as("SELECT status, tier FROM pial_states WHERE pial_id = $1")
-            .bind(req.pial_id)
-            .fetch_optional(&state.pool)
-            .await
-            .unwrap_or(None);
-
-    let (status, tier) = match pial_row {
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(json!({ "error": "pial_not_found" })),
-            )
-                .into_response();
-        }
-        Some(r) => r,
+    let pial_view = {
+        let mut conn = state.pool.acquire().await?;
+        identity::view::load_pial(&mut conn, req.pial_id)
+            .await?
+            .ok_or_else(|| ApiError::not_found("not_found", "No such PIAL."))?
     };
-
-    // Load capability grants for this action (if any explicit entry exists).
-    let cap_grant: Option<(bool, Option<chrono::DateTime<Utc>>)> = sqlx::query_as(
-        "SELECT granted, expires_at FROM capability_grants \
-         WHERE pial_id = $1 AND capability = $2",
-    )
-    .bind(req.pial_id)
-    .bind(&req.action)
-    .fetch_optional(&state.pool)
-    .await
-    .unwrap_or(None);
-
-    // Load current trust score.
-    let trust_row: Option<(f64, f64, i32)> = sqlx::query_as(
-        "SELECT score, anomaly_score, violation_count FROM trust_scores WHERE pial_id = $1",
-    )
-    .bind(req.pial_id)
-    .fetch_optional(&state.pool)
-    .await
-    .unwrap_or(None);
-    let (trust_score, stored_anomaly, violations) = trust_row.unwrap_or((1.0, 0.0, 0));
+    let now = Utc::now();
+    let capability = capability_for_action(&req.action);
+    // An explicit entry for the gating capability: whether it is held now.
+    let cap_grant = capability
+        .and_then(|c| pial_view.caps.get(c))
+        .map(|row| (row.is_granted(now), None));
+    let trust_score = pial_view.trust.score;
+    let stored_anomaly = pial_view.trust.anomaly_score;
+    let violations = pial_view.trust.violation_count;
 
     // Verity attestation gate — consult KYC brain for age/creator gated actions.
     // Uses NEXUS tier (shared across all linked personas) when available,
     // falling back to the PIAL-level attestation tier.
-    // Runs async, non-blocking. A Verity outage degrades to "no attestation" (not a hard fail).
+    // A Verity outage degrades to "no attestation" (not a hard fail).
     let verity_tier: i32 = {
         const VERITY_GATED: &[&str] = &[
             "monetize",
@@ -566,42 +360,35 @@ pub async fn make_decision(
             "creator_signup",
         ];
         if VERITY_GATED.contains(&req.action.as_str()) {
-            // 1. NEXUS tier (shared across personas — preferred when linked)
             let nexus_tier = nexus_tier_for_pial(&state, &req.pial_id.to_string()).await as i32;
-
-            // 2. PIAL attestation tier (per-account fallback)
             let pial_tier: i32 = {
                 let url = format!("{}/v1/profile/{}", state.verity_url, req.pial_id);
                 match state.http.get(&url).send().await {
-                    Ok(resp) if resp.status().is_success() => {
-                        resp.json::<serde_json::Value>()
-                            .await
-                            .ok()
-                            .and_then(|v| v["creator_tier"].as_i64())
-                            .unwrap_or(0) as i32
-                    }
+                    Ok(resp) if resp.status().is_success() => resp
+                        .json::<serde_json::Value>()
+                        .await
+                        .ok()
+                        .and_then(|v| v["creator_tier"].as_i64())
+                        .unwrap_or(0) as i32,
                     Ok(_) | Err(_) => {
                         warn!(pial_id = %req.pial_id, action = %req.action, "Verity unavailable — proceeding without attestation");
                         0
                     }
                 }
             };
-
-            // Use the higher of nexus tier and pial tier.
             nexus_tier.max(pial_tier)
         } else {
             -1 // sentinel: action is not verity-gated
         }
     };
 
-    // If action is verity-gated and user doesn't meet the minimum tier, DENY immediately.
     let verity_denial: Option<decision::EvalOutput> = match req.action.as_str() {
         "monetize" | "payout_activation" if verity_tier >= 0 && verity_tier < 3 => {
             Some(decision::EvalOutput {
                 decision: "DENY".into(),
                 confidence: 1.0,
                 reason: format!("Verity tier {} — creator monetization requires tier 3 (complete KYC + age verification)", verity_tier),
-                capability_required: Some("creator_verified".into()),
+                capability_required: Some(identity::vocab::CAP_MONETIZATION.into()),
             })
         }
         "adult_content" | "creator_signup" if verity_tier >= 0 && verity_tier < 2 => {
@@ -609,35 +396,46 @@ pub async fn make_decision(
                 decision: "DENY".into(),
                 confidence: 1.0,
                 reason: format!("Verity tier {} — adult content requires tier 2 (age verification)", verity_tier),
-                capability_required: Some("age_verified".into()),
+                capability_required: Some(identity::vocab::CAP_NSFW_ACCESS.into()),
             })
         }
         _ => None,
     };
 
-    // Run the deterministic decision engine (skipped if Verity already denied).
-    let outcome = if let Some(denial) = verity_denial {
-        denial
-    } else {
-        decision::evaluate(decision::EvalInput {
+    let outcome = match verity_denial {
+        Some(denial) => denial,
+        None => decision::evaluate(decision::EvalInput {
             pial_id: req.pial_id,
             action: &req.action,
-            pial_status: &status,
-            tier: &tier,
+            capability,
+            pial_status: &pial_view.status,
+            tier: &pial_view.tier,
             cap_grant,
             trust_score,
             stored_anomaly,
             violations,
             content_risk: req.context.content_risk,
             anomaly_score: req.context.anomaly_score,
-        })
+        }),
     };
 
-    // Audit-log the decision (best-effort, never fail the response).
-    let _ = sqlx::query(
+    let delta = match outcome.decision.as_str() {
+        "ALLOW" => 0.01_f64,
+        "QUARANTINE" => -0.05,
+        "DENY" => -0.10,
+        _ => 0.0,
+    };
+    let new_score = (trust_score + delta).clamp(0.0, 1.0);
+    let new_anomaly = ((stored_anomaly * 0.9) + (req.context.anomaly_score * 0.1)).clamp(0.0, 1.0);
+    let new_violations = if outcome.decision == "DENY" { violations + 1 } else { violations };
+
+    // The decision and the trust it moves are one write: an answer whose audit
+    // row or trust update failed is not given.
+    let mut tx = state.pool.begin().await?;
+    sqlx::query(
         "INSERT INTO decision_log \
          (pial_id, action, decision, confidence, reason, capability_required, content_risk, anomaly_score) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
     )
     .bind(req.pial_id)
     .bind(&req.action)
@@ -647,246 +445,28 @@ pub async fn make_decision(
     .bind(&outcome.capability_required)
     .bind(req.context.content_risk)
     .bind(req.context.anomaly_score)
-    .execute(&state.pool)
-    .await;
-
-    // Update trust score based on outcome.
-    let delta = match outcome.decision.as_str() {
-        "ALLOW" => 0.01_f64,
-        "ALLOW_RESTRICTED" => 0.0,
-        "QUARANTINE" => -0.05,
-        "DENY" => -0.10,
-        _ => 0.0,
-    };
-    let new_score = (trust_score + delta).clamp(0.0, 1.0);
-    let new_anomaly = ((stored_anomaly * 0.9) + (req.context.anomaly_score * 0.1)).clamp(0.0, 1.0);
-    let new_violations = if outcome.decision == "DENY" {
-        violations + 1
-    } else {
-        violations
-    };
-
-    let _ = sqlx::query(
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
         "UPDATE trust_scores \
          SET score = $2, anomaly_score = $3, violation_count = $4, last_decision = $5, updated_at = NOW() \
-         WHERE pial_id = $1"
+         WHERE pial_id = $1",
     )
     .bind(req.pial_id)
     .bind(new_score)
     .bind(new_anomaly)
     .bind(new_violations)
     .bind(&outcome.decision)
-    .execute(&state.pool)
-    .await;
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
 
-    (
-        StatusCode::OK,
-        Json(DecisionResponse {
-            decision: outcome.decision,
-            confidence: outcome.confidence,
-            reason: outcome.reason,
-            capability_required: outcome.capability_required,
-        }),
-    )
-        .into_response()
-}
-
-// ── POST /v1/pial/:pial_id/status ─────────────────────────────────────────────
-
-pub async fn update_pial_status(
-    State(state): State<AppState>,
-    Path(pial_ref): Path<String>,
-    Json(req): Json<UpdateStatusRequest>,
-) -> impl IntoResponse {
-    let pial_id = match resolve_pial_ref(&state, &pial_ref).await {
-        Ok(id) => id,
-        Err((status, body)) => return (status, body).into_response(),
-    };
-
-    let valid = ["ACTIVE", "SUSPENDED", "REVOKED"];
-    if !valid.contains(&req.status.as_str()) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "status must be ACTIVE | SUSPENDED | REVOKED" })),
-        )
-            .into_response();
-    }
-
-    let result =
-        sqlx::query("UPDATE pial_states SET status = $2, updated_at = NOW() WHERE pial_id = $1")
-            .bind(pial_id)
-            .bind(&req.status)
-            .execute(&state.pool)
-            .await;
-
-    match result {
-        Ok(r) if r.rows_affected() > 0 => {
-            info!(
-                pial_id = %pial_id,
-                status = %req.status,
-                updated_by = ?req.updated_by,
-                "PIAL status updated"
-            );
-
-            // A status change is an assertion about an identity, and this brain is
-            // where identity is asserted — so it belongs in the same immutable log
-            // every other decision does. The caller has always supplied a reason
-            // and an author with this request; until now both were accepted and
-            // dropped, which left the one kind of decision nobody could audit.
-            let reason = match (req.reason.as_deref(), req.updated_by.as_deref()) {
-                (Some(why), Some(by)) => format!("{why} (by {by})"),
-                (Some(why), None) => why.to_string(),
-                (None, Some(by)) => format!("status set to {} by {by}", req.status),
-                (None, None) => format!("status set to {}", req.status),
-            };
-            let decision = if req.status == "ACTIVE" {
-                "ALLOW"
-            } else {
-                "DENY"
-            };
-
-            if let Err(e) = sqlx::query(
-                "INSERT INTO decision_log \
-                 (pial_id, action, decision, confidence, reason) \
-                 VALUES ($1, 'status_change', $2, 1.0, $3)",
-            )
-            .bind(pial_id)
-            .bind(decision)
-            .bind(&reason)
-            .execute(&state.pool)
-            .await
-            {
-                // The status is already committed, so this cannot fail the
-                // response — but an unlogged enforcement action is a hole in an
-                // audit trail that claims to be complete, and it says so.
-                warn!(
-                    error = %e,
-                    pial_id = %pial_id,
-                    status = %req.status,
-                    "PIAL status change applied but NOT audit-logged"
-                );
-            }
-
-            (
-                StatusCode::OK,
-                Json(UpdateStatusResponse {
-                    pial_id,
-                    status: req.status,
-                }),
-            )
-                .into_response()
-        }
-        Ok(_) => (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": "pial_not_found" })),
-        )
-            .into_response(),
-        Err(e) => {
-            warn!(error = %e, "update_pial_status failed");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": "db_error" })),
-            )
-                .into_response()
-        }
-    }
-}
-
-// ── POST /v1/pial/:pial_id/ban ────────────────────────────────────────────────
-// Shorthand: REVOKE status + revoke all capabilities in one call (used by Zodacare).
-
-pub async fn ban_pial(
-    State(state): State<AppState>,
-    Path(pial_ref): Path<String>,
-    Json(req): Json<BanRequest>,
-) -> impl IntoResponse {
-    let pial_id = match resolve_pial_ref(&state, &pial_ref).await {
-        Ok(id) => id,
-        Err((status, body)) => return (status, body).into_response(),
-    };
-
-    // Set status to REVOKED.
-    let _ = sqlx::query(
-        "UPDATE pial_states SET status = 'REVOKED', updated_at = NOW() WHERE pial_id = $1",
-    )
-    .bind(pial_id)
-    .execute(&state.pool)
-    .await;
-
-    // Revoke all active capability grants.
-    let _ = sqlx::query(
-        "UPDATE capability_grants SET granted = FALSE, reason = $2, updated_at = NOW() \
-         WHERE pial_id = $1 AND granted = TRUE",
-    )
-    .bind(pial_id)
-    .bind(format!("Ban: {}", req.reason))
-    .execute(&state.pool)
-    .await;
-
-    // Audit log.
-    let _ = sqlx::query(
-        "INSERT INTO decision_log \
-         (pial_id, action, decision, confidence, reason, capability_required, content_risk, anomaly_score) \
-         VALUES ($1, 'ban', 'DENY', 1.0, $2, NULL, 0.0, 0.0)"
-    )
-    .bind(pial_id)
-    .bind(&req.reason)
-    .execute(&state.pool)
-    .await;
-
-    info!(pial_id = %pial_id, applied_by = ?req.applied_by, "PIAL banned — all capabilities revoked");
-
-    (
-        StatusCode::OK,
-        Json(json!({
-            "pial_id": pial_id,
-            "status":  "REVOKED",
-            "message": "PIAL banned and all capabilities revoked"
-        })),
-    )
-        .into_response()
-}
-
-// ── POST /v1/pial/capabilities/bulk ──────────────────────────────────────────
-
-pub async fn bulk_update_capabilities(
-    State(state): State<AppState>,
-    Json(req): Json<BulkCapabilityUpdate>,
-) -> impl IntoResponse {
-    let pial_id = req.pial_id;
-    let mut updated = 0usize;
-
-    for cap in &req.capabilities {
-        let result = sqlx::query(
-            "INSERT INTO capability_grants (pial_id, capability, granted, granted_by, reason, expires_at) \
-             VALUES ($1, $2, $3, $4, $5, $6) \
-             ON CONFLICT (pial_id, capability) DO UPDATE \
-               SET granted = EXCLUDED.granted, \
-                   granted_by = EXCLUDED.granted_by, \
-                   reason = EXCLUDED.reason, \
-                   expires_at = EXCLUDED.expires_at, \
-                   updated_at = NOW()"
-        )
-        .bind(pial_id)
-        .bind(&cap.capability)
-        .bind(cap.grant)
-        .bind(cap.granted_by)
-        .bind(&cap.reason)
-        .bind(cap.expires_at)
-        .execute(&state.pool)
-        .await;
-
-        if result.is_ok() {
-            updated += 1;
-        }
-    }
-
-    info!(pial_id = %pial_id, updated = updated, "bulk capability update");
-    (
-        StatusCode::OK,
-        Json(BulkCapabilityResponse { pial_id, updated }),
-    )
-        .into_response()
+    Ok(Json(DecisionResponse {
+        decision: outcome.decision,
+        confidence: outcome.confidence,
+        reason: outcome.reason,
+        capability_required: outcome.capability_required,
+    }))
 }
 
 // ── GET /v1/decisions/log ─────────────────────────────────────────────────────
@@ -1006,28 +586,14 @@ pub async fn nexus_tier(
     }
 }
 
-// ── Internal key guard ────────────────────────────────────────────────────────
-
-fn internal_key_ok(headers: &HeaderMap, cfg_key: &str) -> bool {
-    headers
-        .get("X-Internal-Key")
-        .and_then(|v| v.to_str().ok())
-        .map(|k| !cfg_key.is_empty() && k == cfg_key)
-        .unwrap_or(false)
-}
-
 // ── POST /v1/pial/signing-key/register ───────────────────────────────────────
 /// Register or update a PIAL's ECDSA-P256 signing public key.
 /// Body: {"pial_id": "<uuid>", "public_key_b64": "...", "algorithm": "ECDSA-P256"}
 /// Auth: X-Internal-Key
 pub async fn register_signing_key(
     State(state): State<AppState>,
-    headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    if !internal_key_ok(&headers, &state.internal_api_key) {
-        return (StatusCode::FORBIDDEN, Json(json!({"error":"forbidden"}))).into_response();
-    }
     let pial_id_str = body["pial_id"].as_str().unwrap_or_default();
     let pial_id = match Uuid::parse_str(pial_id_str) {
         Ok(id) => id,
@@ -1066,12 +632,8 @@ pub async fn register_signing_key(
 /// Auth: X-Internal-Key
 pub async fn get_signing_pubkey(
     State(state): State<AppState>,
-    headers: HeaderMap,
     Path(pial_ref): Path<String>,
 ) -> impl IntoResponse {
-    if !internal_key_ok(&headers, &state.internal_api_key) {
-        return (StatusCode::FORBIDDEN, Json(json!({"error":"forbidden"}))).into_response();
-    }
     let pial_id = match resolve_pial_ref(&state, &pial_ref).await {
         Ok(id) => id,
         Err((status, body)) => return (status, body).into_response(),
@@ -1097,12 +659,8 @@ pub async fn get_signing_pubkey(
 /// Auth: X-Internal-Key
 pub async fn register_ecdh_key(
     State(state): State<AppState>,
-    headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    if !internal_key_ok(&headers, &state.internal_api_key) {
-        return (StatusCode::FORBIDDEN, Json(json!({"error":"forbidden"}))).into_response();
-    }
     let pial_id_str = body["pial_id"].as_str().unwrap_or_default();
     let pial_id = match Uuid::parse_str(pial_id_str) {
         Ok(id) => id,
@@ -1140,12 +698,8 @@ pub async fn register_ecdh_key(
 /// Auth: X-Internal-Key
 pub async fn get_ecdh_pubkey(
     State(state): State<AppState>,
-    headers: HeaderMap,
     Path(pial_ref): Path<String>,
 ) -> impl IntoResponse {
-    if !internal_key_ok(&headers, &state.internal_api_key) {
-        return (StatusCode::FORBIDDEN, Json(json!({"error":"forbidden"}))).into_response();
-    }
     let pial_id = match resolve_pial_ref(&state, &pial_ref).await {
         Ok(id) => id,
         Err((status, body)) => return (status, body).into_response(),
@@ -1171,12 +725,8 @@ pub async fn get_ecdh_pubkey(
 /// Auth: X-Internal-Key
 pub async fn mint_address(
     State(state): State<AppState>,
-    headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    if !internal_key_ok(&headers, &state.internal_api_key) {
-        return (StatusCode::FORBIDDEN, Json(json!({"error":"forbidden"}))).into_response();
-    }
     let identity_node_id = body["identity_node_id"].as_str().unwrap_or_default();
     if identity_node_id.is_empty() {
         return (
@@ -1204,12 +754,8 @@ pub async fn mint_address(
 /// Auth: X-Internal-Key
 pub async fn revoke_address(
     State(state): State<AppState>,
-    headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    if !internal_key_ok(&headers, &state.internal_api_key) {
-        return (StatusCode::FORBIDDEN, Json(json!({"error":"forbidden"}))).into_response();
-    }
     let address = body["address"].as_str().unwrap_or_default();
     let identity_node_id = body["identity_node_id"].as_str().unwrap_or_default();
     if address.is_empty() || identity_node_id.is_empty() {
@@ -1384,12 +930,8 @@ async fn pial_for_identity_node(state: &AppState, node_id: &str) -> Result<Uuid,
 /// Auth: X-Internal-Key
 pub async fn mint_number(
     State(state): State<AppState>,
-    headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    if !internal_key_ok(&headers, &state.internal_api_key) {
-        return forbidden();
-    }
     let Some(pial) = body["pial_id"].as_str().and_then(parse_uuid) else {
         return bad("pial_id required");
     };
@@ -1512,12 +1054,8 @@ pub async fn mint_number(
 /// Auth: X-Internal-Key
 pub async fn revoke_number(
     State(state): State<AppState>,
-    headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    if !internal_key_ok(&headers, &state.internal_api_key) {
-        return forbidden();
-    }
     let Some(pial) = body["pial_id"].as_str().and_then(parse_uuid) else {
         return bad("pial_id required");
     };
@@ -1566,12 +1104,8 @@ pub async fn revoke_number(
 /// Auth: X-Internal-Key
 pub async fn list_numbers(
     State(state): State<AppState>,
-    headers: HeaderMap,
     Path(pial_ref): Path<String>,
 ) -> impl IntoResponse {
-    if !internal_key_ok(&headers, &state.internal_api_key) {
-        return forbidden();
-    }
     let pial = match resolve_pial_ref(&state, &pial_ref).await {
         Ok(id) => id,
         Err((status, body)) => return (status, body).into_response(),
@@ -1659,12 +1193,8 @@ pub async fn list_numbers(
 /// Auth: X-Internal-Key
 pub async fn set_number_policy(
     State(state): State<AppState>,
-    headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    if !internal_key_ok(&headers, &state.internal_api_key) {
-        return forbidden();
-    }
     let Some(pial) = body["pial_id"].as_str().and_then(parse_uuid) else {
         return bad("pial_id required");
     };
@@ -1721,12 +1251,8 @@ pub async fn set_number_policy(
 /// Auth: X-Internal-Key
 pub async fn get_contact_policy(
     State(state): State<AppState>,
-    headers: HeaderMap,
     Path(pial_ref): Path<String>,
 ) -> impl IntoResponse {
-    if !internal_key_ok(&headers, &state.internal_api_key) {
-        return forbidden();
-    }
     let pial = match resolve_pial_ref(&state, &pial_ref).await {
         Ok(id) => id,
         Err((status, body)) => return (status, body).into_response(),
@@ -1753,12 +1279,8 @@ pub async fn get_contact_policy(
 /// Auth: X-Internal-Key
 pub async fn set_contact_policy(
     State(state): State<AppState>,
-    headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    if !internal_key_ok(&headers, &state.internal_api_key) {
-        return forbidden();
-    }
     let Some(pial) = body["pial_id"].as_str().and_then(parse_uuid) else {
         return bad("pial_id required");
     };
@@ -1808,12 +1330,8 @@ pub async fn set_contact_policy(
 /// Auth: X-Internal-Key
 pub async fn evaluate_contact(
     State(state): State<AppState>,
-    headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    if !internal_key_ok(&headers, &state.internal_api_key) {
-        return forbidden();
-    }
     let Some(initiator) = body["initiator_pial"].as_str().and_then(parse_uuid) else {
         return bad("initiator_pial required");
     };
@@ -2157,12 +1675,8 @@ pub async fn evaluate_contact(
 /// Auth: X-Internal-Key
 pub async fn contact_key_bundle(
     State(state): State<AppState>,
-    headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    if !internal_key_ok(&headers, &state.internal_api_key) {
-        return forbidden();
-    }
     let Some(pial) = body["pial_id"].as_str().and_then(parse_uuid) else {
         return bad("pial_id required");
     };
@@ -2251,12 +1765,8 @@ pub async fn contact_key_bundle(
 /// Auth: X-Internal-Key
 pub async fn register_messaging_key(
     State(state): State<AppState>,
-    headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    if !internal_key_ok(&headers, &state.internal_api_key) {
-        return forbidden();
-    }
     let Some(pial) = body["pial_id"].as_str().and_then(parse_uuid) else {
         return bad("pial_id required");
     };
@@ -2287,12 +1797,8 @@ pub async fn register_messaging_key(
 /// Auth: X-Internal-Key
 pub async fn mint_contact_capability(
     State(state): State<AppState>,
-    headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    if !internal_key_ok(&headers, &state.internal_api_key) {
-        return forbidden();
-    }
     let Some(pial) = body["pial_id"].as_str().and_then(parse_uuid) else {
         return bad("pial_id required");
     };
@@ -2338,12 +1844,8 @@ pub async fn mint_contact_capability(
 /// Auth: X-Internal-Key
 pub async fn revoke_contact_capability(
     State(state): State<AppState>,
-    headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    if !internal_key_ok(&headers, &state.internal_api_key) {
-        return forbidden();
-    }
     let Some(pial) = body["pial_id"].as_str().and_then(parse_uuid) else {
         return bad("pial_id required");
     };
@@ -2368,12 +1870,8 @@ pub async fn revoke_contact_capability(
 /// Auth: X-Internal-Key
 pub async fn list_contact_capabilities(
     State(state): State<AppState>,
-    headers: HeaderMap,
     Path(pial_ref): Path<String>,
 ) -> impl IntoResponse {
-    if !internal_key_ok(&headers, &state.internal_api_key) {
-        return forbidden();
-    }
     let pial = match resolve_pial_ref(&state, &pial_ref).await {
         Ok(id) => id,
         Err((status, body)) => return (status, body).into_response(),
@@ -2406,12 +1904,8 @@ pub async fn list_contact_capabilities(
 /// Auth: X-Internal-Key
 pub async fn list_contact_requests(
     State(state): State<AppState>,
-    headers: HeaderMap,
     Path(pial_ref): Path<String>,
 ) -> impl IntoResponse {
-    if !internal_key_ok(&headers, &state.internal_api_key) {
-        return forbidden();
-    }
     let pial = match resolve_pial_ref(&state, &pial_ref).await {
         Ok(id) => id,
         Err((status, body)) => return (status, body).into_response(),
@@ -2445,12 +1939,8 @@ pub async fn list_contact_requests(
 /// Auth: X-Internal-Key
 pub async fn decide_contact_request(
     State(state): State<AppState>,
-    headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    if !internal_key_ok(&headers, &state.internal_api_key) {
-        return forbidden();
-    }
     let Some(pial) = body["pial_id"].as_str().and_then(parse_uuid) else {
         return bad("pial_id required");
     };
@@ -2483,12 +1973,8 @@ pub async fn decide_contact_request(
 /// Auth: X-Internal-Key
 pub async fn list_addresses(
     State(state): State<AppState>,
-    headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    if !internal_key_ok(&headers, &state.internal_api_key) {
-        return (StatusCode::FORBIDDEN, Json(json!({"error":"forbidden"}))).into_response();
-    }
     let identity_node_id = body["identity_node_id"].as_str().unwrap_or_default();
     if identity_node_id.is_empty() {
         return (

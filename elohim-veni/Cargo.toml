@@ -52,6 +52,9 @@ rand = "0.8"
 base64 = "0.22"
 ed25519-dalek = "2"
 
+# Constant-time comparison of X-Internal-Key and TOTP codes (as manhattan uses it)
+subtle = "2"
+
 [profile.release]
 opt-level = 3
 lto = true

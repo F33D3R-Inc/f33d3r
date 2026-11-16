@@ -67,28 +67,29 @@ func normalizeFollowSurface(source string) string {
 // template, and the POST /events response and the stream fan-out reach it
 // through this function, so every path emits identical markup.
 //
-// targetPIAL is the primary address; targetHandle is carried for the aria-label
-// and is the fallback address for the surfaces that only know a handle. surface
-// selects the modifier class (see followSurface constants).
-func (h *Handler) renderFollowButton(targetPIAL, targetHandle string, isFollowing bool, surface string) (template.HTML, error) {
+// targetAccount is the address and the Facet's entity id; targetHandle is
+// carried for the aria-label. Neither is a PIAL: the fragment goes to a browser,
+// and a PIAL never does. surface selects the modifier class (see followSurface
+// constants).
+func (h *Handler) renderFollowButton(targetAccount, targetHandle string, isFollowing bool, surface string) (template.HTML, error) {
 	if h.partial == nil {
 		return "", fmt.Errorf("btn_follow: no template set")
 	}
-	if targetPIAL == "" && targetHandle == "" {
-		return "", fmt.Errorf("btn_follow: no target")
+	if targetAccount == "" {
+		return "", fmt.Errorf("btn_follow: no target account (handle %q)", targetHandle)
 	}
 	var buf bytes.Buffer
 	err := h.partial.ExecuteTemplate(&buf, "btn_follow", map[string]interface{}{
-		"TargetPIAL":   targetPIAL,
-		"TargetHandle": targetHandle,
-		"IsFollowing":  isFollowing,
-		"Surface":      normalizeFollowSurface(surface),
+		"TargetAccount": targetAccount,
+		"TargetHandle":  targetHandle,
+		"IsFollowing":   isFollowing,
+		"Surface":       normalizeFollowSurface(surface),
 	})
 	if err != nil {
-		return "", fmt.Errorf("btn_follow render for %s/%s: %w", targetPIAL, targetHandle, err)
+		return "", fmt.Errorf("btn_follow render for %s/%s: %w", targetAccount, targetHandle, err)
 	}
 	if buf.Len() == 0 {
-		return "", fmt.Errorf("btn_follow produced an empty fragment for %s/%s", targetPIAL, targetHandle)
+		return "", fmt.Errorf("btn_follow produced an empty fragment for %s/%s", targetAccount, targetHandle)
 	}
 	return template.HTML(buf.String()), nil
 }
@@ -109,17 +110,21 @@ func (h *Handler) renderFollowButton(targetPIAL, targetHandle string, isFollowin
 // shapes at once (profile header plus a rail row). Each fragment carries the
 // surface it was rendered for, and the runtime replaces only the elements drawn
 // in that shape.
-func (h *Handler) publishFollowState(actorPIAL, targetPIAL, targetHandle string, isFollowing bool) {
-	if actorPIAL == "" {
+//
+// The stream is the acting account's, not the acting person's: a follow is an
+// edge between two accounts, so the fragment belongs only on the connections
+// signed in as the account that clicked — never on that person's other personas.
+func (h *Handler) publishFollowState(actorAccount, targetAccount, targetHandle string, isFollowing bool) {
+	if actorAccount == "" {
 		return
 	}
 	for _, surface := range followSurfaces {
-		fragment, err := h.renderFollowButton(targetPIAL, targetHandle, isFollowing, surface)
+		fragment, err := h.renderFollowButton(targetAccount, targetHandle, isFollowing, surface)
 		if err != nil {
 			log.Printf("[follow-sse] %v", err)
 			continue
 		}
-		PublishToUser(actorPIAL, SSEEvent{Type: "follow_state", Data: string(fragment)})
+		PublishToAccount(actorAccount, SSEEvent{Type: "follow_state", Data: string(fragment)})
 	}
 }
 

@@ -19,20 +19,27 @@ type Config struct {
 	AethyrRankTimeout time.Duration
 	// Ain-Soph wallet
 	AinSophURL string
-	// Zodacare (safety brain)
-	ZodacareURL string
-	// Elohim Veni (security brain)
+	// Abraxas — the integrity authority. Live frame checks, report filing and
+	// handling, and the review queue go there; its verdicts come back on
+	// safety.events. Called with InternalAPIKey as X-Internal-Key.
+	// Env: ABRAXAS_URL.
+	AbraxasURL string
+	// ElohimVeniURL — elohim-veni, the one identity and authentication
+	// authority: accounts, handles, credentials, sessions, second factors,
+	// role, capabilities and identity facts. Every session is resolved there,
+	// and an unreachable authority fails sessions closed. Env: ELOHIM_VENI_URL.
 	ElohimVeniURL string
 	// Verity (KYC / compliance brain)
 	VerityURL string
 	// Aethyr Ledger (AET settlement fabric)
 	LedgerURL string
-	// Caeor (media brain — image resize, WebP conversion, derivatives)
+	// Caeor — the one media-asset authority. Every uploaded byte is stored,
+	// watermarked, deduplicated, resolved and withdrawn there (video and clips
+	// are transcoded through it too); this brain is its client and calls it
+	// with InternalAPIKey as X-Service-Key. Env: CAEOR_URL.
 	CaeorURL string
 	// Themis — unified commerce + Bitcoin marketplace brain
 	ThemisURL string
-	// Transcoding brain — ffmpeg video processing (separate server in production)
-	TranscodingURL string
 	// Astraon — creator analytics brain (Rust, port 8088)
 	AstraonURL string
 	// Zior — audio brain (Rust, port 8082). Places a track or a voice work on
@@ -50,21 +57,12 @@ type Config struct {
 	// points at, and owns the edge graph. Every other brain reaches an entity
 	// through here instead of joining into the table that stores it.
 	ManhattanURL string
-	// RegistryBrainURL — the handle authority. A handle is an allocation, not a
-	// column: registration, transfer, auction and reclaim all belong to that
-	// brain, and Manhattan refuses a handle binding published by anyone else.
-	// Unset means handles cannot be allocated at all, which is a failure and
-	// not a degraded mode.
-	RegistryBrainURL string
 	// SMTP — outbound email (password reset, notifications)
 	SMTPHost string
 	SMTPPort int
 	SMTPUser string
 	SMTPPass string
 	SMTPFrom string
-	// Azure Content Moderator — CSAM detection
-	AzureCMEndpoint string
-	AzureCMKey      string
 	// Feed
 	FeedPageSize      int
 	FeedMaxCandidates int
@@ -129,27 +127,23 @@ func Load() *Config {
 		AethyrRankURL:     getEnv("AETHYRRANK_URL", "http://localhost:8080"),
 		AethyrRankTimeout: getDurationEnv("AETHYRRANK_TIMEOUT_MS", 200) * time.Millisecond,
 		AinSophURL:        getEnv("AIN_SOPH_URL", "http://localhost:8089"),
-		ZodacareURL:       getEnv("ZODACARE_URL", "http://localhost:8090"),
+		AbraxasURL:        getEnv("ABRAXAS_URL", ""),
 		ElohimVeniURL:     getEnv("ELOHIM_VENI_URL", "http://localhost:8093"),
 		VerityURL:         getEnv("VERITY_URL", "http://localhost:8095"),
 		LedgerURL:         getEnv("LEDGER_URL", "http://localhost:8096"),
 		CaeorURL:          getEnv("CAEOR_URL", "http://localhost:8086"),
 		ThemisURL:         getEnv("THEMIS_URL", "http://localhost:8100"),
-		TranscodingURL:    getEnv("TRANSCODING_URL", "http://transcoding:8085"),
 		AstraonURL:        getEnv("ASTRAON_URL", "http://astraon:8088"),
 		ZiorURL:           getEnv("ZIOR_URL", "http://localhost:8082"),
 		EKYCUrl:           getEnv("EKYC_URL", "http://ekyc:8099"),
 		AlexandriaURL:     getEnv("ALEXANDRIA_URL", "http://localhost:8098"),
 		HeraldURL:         getEnv("HERALD_URL", ""),
 		ManhattanURL:      getEnv("MANHATTAN_URL", ""),
-		RegistryBrainURL:  getEnv("REGISTRY_BRAIN_URL", "http://registry-brain:8094"),
 		SMTPHost:          getEnv("SMTP_HOST", ""),
 		SMTPPort:          getIntEnv("SMTP_PORT", 587),
 		SMTPUser:          getEnv("SMTP_USER", ""),
 		SMTPPass:          getEnv("SMTP_PASS", ""),
 		SMTPFrom:          getEnv("SMTP_FROM", "noreply@f33d3r.com"),
-		AzureCMEndpoint:   getEnv("AZURE_CM_ENDPOINT", ""),
-		AzureCMKey:        getEnv("AZURE_CM_KEY", ""),
 		FeedPageSize:      getIntEnv("FEED_PAGE_SIZE", 20),
 		FeedMaxCandidates: getIntEnv("FEED_MAX_CANDIDATES", 200),
 		DefaultSurface:    getEnv("DEFAULT_SURFACE", "feed"),

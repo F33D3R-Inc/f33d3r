@@ -14,7 +14,6 @@ import (
 	"log"
 	"mime"
 	"net/http"
-	"net/http/httputil"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -29,18 +28,19 @@ import (
 	"github.com/yuin/goldmark/extension"
 	"github.com/yuin/goldmark/renderer/html"
 
+	"github.com/f33d3r/feed-engine/internal/abraxas"
 	"github.com/f33d3r/feed-engine/internal/aethyr"
 	"github.com/f33d3r/feed-engine/internal/auralis"
+	"github.com/f33d3r/feed-engine/internal/caeor"
 	"github.com/f33d3r/feed-engine/internal/config"
 	dbpkg "github.com/f33d3r/feed-engine/internal/db"
-	"github.com/f33d3r/feed-engine/internal/jung"
+	"github.com/f33d3r/feed-engine/internal/identity"
 	"github.com/f33d3r/feed-engine/internal/manhattan"
 	"github.com/f33d3r/feed-engine/internal/middleware"
 	"github.com/f33d3r/feed-engine/internal/model"
 	"github.com/f33d3r/feed-engine/internal/nexus"
 	"github.com/f33d3r/feed-engine/internal/observ"
 	"github.com/f33d3r/feed-engine/internal/realm"
-	"github.com/f33d3r/feed-engine/internal/registry"
 	"github.com/f33d3r/feed-engine/internal/rss"
 	"github.com/f33d3r/feed-engine/internal/sitra"
 	"github.com/f33d3r/feed-engine/internal/sports"
@@ -139,7 +139,8 @@ func highlightComposeText(text string) template.HTML {
 }
 
 // Handler holds all shared dependencies.
-// sessionEntry caches a resolved user for 30 s to avoid 2 DB queries per request.
+// sessionEntry caches a session elohim-veni resolved, for sessionCacheTTL, so
+// a page and its Facet requests resolve the session once.
 type sessionEntry struct {
 	user *model.User
 	exp  time.Time
@@ -175,14 +176,13 @@ type Handler struct {
 	rlContactInit   *middleware.RateLimiter // 10/min per IP (contact + key bundle)
 	// In-memory presence: handle → last heartbeat time (SSE connection active = online)
 	onlineUsers sync.Map
-	// sessionCache: raw-token → sessionEntry (30 s TTL, evicted on logout)
+	// sessionCache: session token → sessionEntry (sessionCacheTTL, evicted on
+	// logout and on every identity change this process makes or projects)
 	sessionCache sync.Map
-	// Caeor media brain (images) + Transcoding brain (video HLS)
-	caeorURL       string
-	transcodingURL string
-	httpClient     *http.Client
-	// Separate client for large video uploads — no 30 s timeout
-	videoClient *http.Client
+	// caeor is the one media-asset authority: every upload is stored there and
+	// every served media path is resolved through it.
+	caeor      *caeor.Client
+	httpClient *http.Client
 	// Themis — unified commerce + Bitcoin marketplace brain
 	themisURL string
 	// Alexandria hypermedia library brain URL (content catalog + dual-write)
@@ -198,11 +198,21 @@ type Handler struct {
 	// it. Deliberately a client and not a database handle: this brain reaches
 	// another brain's entities by name, never by joining into its tables.
 	manhattan *manhattan.Client
-	// registry — registry-brain, the handle authority. A handle is allocated
-	// there and nowhere else; this brain asks, it does not decide.
-	registry *registry.Client
+	// identity — elohim-veni, the identity and authentication authority.
+	// Sessions are resolved there, accounts and handles are created there,
+	// and every identity fact is written there. This brain asks.
+	identity *identity.Resolver
+	// identityRelay delivers identity writes queued in a local transaction
+	// (identity_commands) to elohim-veni after commit.
+	identityRelay *identity.Relay
 	// auralis — the Frequencies brain. Owns every Frequency; this brain renders.
 	auralis *auralis.Client
+	// abraxas — the integrity authority. Reports, the review queue and live
+	// frame checks go there; its verdicts come back on safety.events.
+	abraxas *abraxas.Client
+	// BlockLiveStream ends a broadcast a person blocked in the review queue.
+	// Wired to the live lane's BlockStream at boot.
+	BlockLiveStream func(ctx context.Context, streamID, reason string) error
 }
 
 func New(cfg *config.Config, aethyrClient *aethyr.Client, database *sql.DB) *Handler {
@@ -211,7 +221,7 @@ func New(cfg *config.Config, aethyrClient *aethyr.Client, database *sql.DB) *Han
 		aethyr:    aethyrClient,
 		db:        database,
 		manhattan: manhattan.New(cfg.ManhattanURL),
-		registry:  registry.New(cfg.RegistryBrainURL),
+		identity:  identity.NewResolver(identity.New(cfg.ElohimVeniURL, cfg.InternalAPIKey)),
 		auralis:   auralis.New(cfg.AuralisURL, cfg.InternalAPIKey, cfg.AuralisTimeout),
 		rlRead:    middleware.NewRateLimiter(300),
 		rlWrite:   middleware.NewRateLimiter(60),
@@ -220,32 +230,32 @@ func New(cfg *config.Config, aethyrClient *aethyr.Client, database *sql.DB) *Han
 
 		rlNumberResolve: middleware.NewRateLimiter(20),
 		rlContactInit:   middleware.NewRateLimiter(10),
-		caeorURL:        cfg.CaeorURL,
-		transcodingURL:  cfg.TranscodingURL,
+		caeor:           caeor.New(cfg.CaeorURL, cfg.InternalAPIKey),
+		abraxas:         abraxas.New(cfg.AbraxasURL, cfg.InternalAPIKey),
 		themisURL:       cfg.ThemisURL,
 		alexandriaURL:   cfg.AlexandriaURL,
 		httpClient:      &http.Client{Timeout: 30 * time.Second},
-		videoClient:     &http.Client{Timeout: 2 * time.Hour},
 		nexusClient:     nexus.NewClient(cfg.VerityURL, cfg.InternalAPIKey),
 		rssCache:        rss.NewCache(),
 		sitra:           sitra.New(),
 	}
-	keyServiceCalls(h.httpClient, cfg.InternalAPIKey, cfg.ThemisURL, cfg.TranscodingURL)
-	keyServiceCalls(h.videoClient, cfg.InternalAPIKey, cfg.ThemisURL, cfg.TranscodingURL)
+	h.identityRelay = identity.NewRelay(dbpkg.IdentityCommandStore{DB: database}, h.identity.Client())
+	keyServiceCalls(h.httpClient, cfg.InternalAPIKey, cfg.ThemisURL, cfg.CaeorURL)
 	// The avatar ring: the author strip says who is hosting a Frequency right
 	// now, and the mappers that build it read this cache rather than the brain.
 	useFrequencyPresence(h.auralis)
-	// Legacy upload dirs kept so existing /static/uploads/* URLs keep working
-	os.MkdirAll(filepath.Join("web", "static", "uploads", "avatars"), 0755)
-	os.MkdirAll(filepath.Join("web", "static", "uploads", "headers"), 0755)
-	os.MkdirAll(filepath.Join("web", "static", "uploads", "posts"), 0755)
-	os.MkdirAll(filepath.Join("web", "static", "uploads", "voice"), 0755)
-	// New media dirs — Caeor writes here via shared volume
-	os.MkdirAll(filepath.Join("web", "static", "media", "avatars"), 0755)
-	os.MkdirAll(filepath.Join("web", "static", "media", "headers"), 0755)
-	os.MkdirAll(filepath.Join("web", "static", "media", "posts"), 0755)
-	// TUS resumable upload temp dir
-	os.MkdirAll(tusTempDir, 0755)
+	// Every uploaded byte is stored by Caeor; this process writes no media tree.
+	// The tus spool is where a resumable upload is assembled before it streams
+	// to Caeor, and a server that cannot spool cannot take an upload at all.
+	if err := os.MkdirAll(tusTempDir, 0o700); err != nil {
+		log.Printf("[upload] tus spool %s unavailable, resumable uploads will fail: %v", tusTempDir, err)
+	}
+	if !h.abraxas.Configured() {
+		log.Printf("[safety] ABRAXAS_URL or INTERNAL_API_KEY is not set: reports cannot be filed, the moderation queue cannot be read, and live frames are held unjudged")
+	}
+	if !h.caeor.Configured() {
+		log.Printf("[media] CAEOR_URL or INTERNAL_API_KEY is not set: every upload is refused and no media is served")
+	}
 	// Sports lane — ONE poller for the platform, one provider per league so each
 	// league keeps its own cadence. The lane is always on: NewProviders never
 	// returns an empty set (Big Balls when BBS_API is set, ESPN otherwise), and
@@ -396,6 +406,9 @@ func (h *Handler) loadTemplates() {
 		// template (Go's `and` is NOT short-circuit: `and .User (ne .User.ID …)`
 		// dereferences .User even when it is nil). The anon viewer is the
 		// non-nil demo_user sentinel, which this correctly treats as logged-out.
+		// governanceWeightModels is Ain Soph's closed weight vocabulary for the
+		// proposal form (wallet_facets.go).
+		"governanceWeightModels": func() interface{} { return governanceWeightModels },
 		"isRealUser": func(v interface{}) bool {
 			u, ok := v.(*model.User)
 			return ok && u != nil && u.ID != "" && u.ID != "demo_user"
@@ -434,6 +447,9 @@ func (h *Handler) loadTemplates() {
 		// dict — build a map[string]interface{} from key/value pairs for
 		// passing to shared template partials (Sprint 0 / S0.10).
 		"dict": templateDict,
+		// commentGatingOptions — the one reply-gating vocabulary, for the
+		// compose_gating Facet.
+		"commentGatingOptions": commentGatingOptions,
 		"socialLinks": func(raw string) map[string]string {
 			m := map[string]string{}
 			if raw == "" {
@@ -707,15 +723,21 @@ func (h *Handler) Routes() http.Handler {
 		http.ServeFile(w, r, filepath.Join("web", "static", ".well-known", "security.txt"))
 	})
 
-	// User media is the one static subtree with per-viewer rules — registered
-	// ahead of /static/ so it cannot be read around the wall (see media_gate.go).
+	// Every byte a person uploaded lives in one of these two trees — Caeor's
+	// /static/media/ (served layout /static/media/a/<asset_id>/...) and the
+	// legacy /static/uploads/ — and both are registered ahead of /static/ so none
+	// of it can be read around the wall (see media_gate.go). Every path is
+	// resolved through Caeor. What is left for /static/ is the site's own assets.
 	mux.Handle("/static/media/", h.staticMediaHandler())
+	mux.Handle("/static/uploads/", h.staticUploadsHandler())
 
 	// The JSON surface the native clients read; see api_v1.go.
 	h.registerAPIV1(mux)
 
-	// Directories do not exist under /static/: FileServer would otherwise
-	// render an index of web/static to anyone who asks for a trailing slash.
+	// The site's own assets — CSS, JS, icons, fonts. User uploads never reach
+	// this route (above). Directories do not exist under /static/: FileServer
+	// would otherwise render an index of web/static to anyone who asks for a
+	// trailing slash.
 	staticFS := http.FileServer(middleware.NoDirListing(http.Dir("web/static")))
 	mux.Handle("/static/", http.StripPrefix("/static/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
@@ -730,25 +752,6 @@ func (h *Handler) Routes() http.Handler {
 		}
 		staticFS.ServeHTTP(w, r)
 	})))
-
-	// /media/* → MinIO reverse proxy with NSFW token gate (D-005).
-	// Caeor generates URLs like /media/media-derived/posts/xxx/master.m3u8 (MINIO_PUBLIC_BASE=/media).
-	// Proxying through feed-engine keeps media on the same origin as the app — eliminates CORS for
-	// hls.js and mixed-content errors when the app is served over HTTPS via Caddy.
-	//
-	// Gate: if the media path belongs to an NSFW post, the request must carry a valid
-	// ?tok= HMAC-SHA256 token issued for the current viewer's PIAL (see internal/mediatoken).
-	// Non-NSFW media is served with no token requirement.
-	{
-		minioEndpoint := os.Getenv("MINIO_ENDPOINT")
-		if minioEndpoint == "" {
-			minioEndpoint = "http://minio:9000"
-		}
-		if minioTarget, err := url.Parse(minioEndpoint); err == nil {
-			mediaProxy := httputil.NewSingleHostReverseProxy(minioTarget)
-			mux.Handle("/media/", h.mediaGate(http.StripPrefix("/media", mediaProxy)))
-		}
-	}
 
 	// Auth — GET pages use rlRead (just rendering HTML, no brute-force risk).
 	// POST mutations (login attempts, signup) use rlAuth (brute-force protection).
@@ -1013,15 +1016,14 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("/api/data/delete", h.rlWrite.Limit(h.requireHandle(h.requestDataDeletion)))
 	mux.HandleFunc("/api/data/export", h.rlRead.Limit(h.requireHandle(h.requestDataExport)))
 
-	// Ain Soph proxy — ETHRA/AET wallet + governance (injects PIAL identity header)
-	mux.HandleFunc("/ainsoph/", h.rlRead.Limit(h.requireHandle(h.ainSophProxy)))
-	// Verity proxy — KYC/compliance decisions (injects PIAL identity header)
-	mux.HandleFunc("/verity/", h.rlRead.Limit(h.requireHandle(h.verityProxy)))
-	mux.HandleFunc("/library/", h.rlRead.Limit(h.requireHandle(h.alexandriaProxy)))
-	// Aethyr Ledger proxy — AET settlement fabric (write rate limited)
-	mux.HandleFunc("/ledger/", h.rlWrite.Limit(h.requireHandle(h.ledgerProxy)))
-	// Thessalon proxy — subscriptions, PPV, tips (write rate limited)
-	mux.HandleFunc("/thessalon/", h.rlWrite.Limit(h.requireHandle(h.thessalonProxy)))
+	// There are no browser proxies to the money, identity or catalog brains.
+	// /ainsoph/, /verity/, /library/, /ledger/ and /thessalon/ each relayed a
+	// brain's JSON to the browser verbatim, and that JSON names people by PIAL
+	// (counterparties, proposal authors, sellers, buyers, uploaders). A PIAL is
+	// never handed to a client. The wallet reads below render on the server.
+	mux.HandleFunc("GET /facets/wallet/tx", h.rlRead.Limit(h.requireHandle(h.facetWalletTx)))
+	mux.HandleFunc("GET /facets/wallet/proposals", h.rlRead.Limit(h.requireHandle(h.facetGovernanceProposals)))
+	mux.HandleFunc("GET /facets/wallet/proposals/{id}", h.rlRead.Limit(h.requireHandle(h.facetGovernanceProposal)))
 
 	// ── D-070 read lane — GET /facets/{name} returns HTML fragments only ────────
 	mux.HandleFunc("GET /facets/link_preview", h.rlRead.Limit(h.requireHandle(h.facetLinkPreview)))
@@ -1065,7 +1067,6 @@ func (h *Handler) Routes() http.Handler {
 	mux.Handle("POST /api/internal/balance-update", middleware.InternalOnly(http.HandlerFunc(h.balanceUpdateWebhook)))
 	mux.Handle("GET /api/internal/pial/{pial_id}/ecdh-pubkey", middleware.InternalOnly(http.HandlerFunc(h.pialEcdhPubkeyInternal)))
 	mux.Handle("POST /api/internal/themis/purchase-delivered", middleware.InternalOnly(http.HandlerFunc(h.themisPurchaseDeliveredWebhook)))
-	mux.Handle("POST /api/internal/scan-complete", middleware.InternalOnly(http.HandlerFunc(h.scanCompleteEvent)))
 
 	// HTMX partials (write rate limit)
 	mux.HandleFunc("/feed", h.rlRead.Limit(h.feedPartial))
@@ -1117,9 +1118,11 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("/api/subscribe", h.rlWrite.Limit(h.requireHandle(h.subscribeToCreator)))
 	mux.HandleFunc("/api/unsubscribe", h.rlWrite.Limit(h.requireHandle(h.unsubscribeFromCreator)))
 	mux.HandleFunc("/api/creator/plans", h.rlRead.Limit(h.requireHandle(h.getCreatorPlans)))
-	mux.HandleFunc("/api/track/like", h.rlWrite.Limit(h.trackLikeAction))
-	mux.HandleFunc("/api/track/play", h.rlWrite.Limit(h.trackPlayAction))
-	mux.HandleFunc("/api/track/delete", h.rlWrite.Limit(h.requireHandle(h.deleteTrackAPI)))
+	// Tracks are works (music.go): likes and plays are a signed-in listener's,
+	// counted by the server and pushed back as Fragments.
+	mux.HandleFunc("POST /api/track/like", h.rlWrite.Limit(h.requireHandle(h.trackLikeAction)))
+	mux.HandleFunc("POST /api/track/play", h.rlWrite.Limit(h.requireHandle(h.trackPlayAction)))
+	mux.HandleFunc("POST /api/track/delete", h.rlWrite.Limit(h.requireHandle(h.deleteTrackAPI)))
 	mux.HandleFunc("/api/follow", h.rlWrite.Limit(h.followAPI))
 	mux.HandleFunc("/api/feedback", h.rlWrite.Limit(h.feedbackAPI))
 	mux.HandleFunc("POST /api/notifications/read-all", h.rlWrite.Limit(h.requireHandle(h.markNotificationsRead)))
@@ -1129,7 +1132,6 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("/api/online/", h.rlRead.Limit(h.userOnlineStatus))
 	mux.HandleFunc("GET /api/profiles/mini", h.rlRead.Limit(h.profilesMini))
 	mux.HandleFunc("/api/report", h.rlWrite.Limit(h.requireHandle(h.reportContent)))
-	mux.HandleFunc("/api/admin/report/resolve", h.rlWrite.Limit(h.requireHandle(h.resolveReport)))
 	mux.HandleFunc("/api/admin/set-role", h.rlWrite.Limit(h.requireHandle(h.adminSetRole)))
 	mux.HandleFunc("/api/admin/inject-aet", h.rlWrite.Limit(h.requireHandle(h.adminInjectAET)))
 	mux.HandleFunc("/api/admin/reset-password", h.rlWrite.Limit(h.requireHandle(h.adminResetPassword)))
@@ -1137,12 +1139,9 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("/api/admin/set-cap", h.rlWrite.Limit(h.requireHandle(h.adminSetCap)))
 	mux.HandleFunc("POST /api/admin/set-realm-grant", h.rlWrite.Limit(h.requireHandle(h.adminSetRealmGrant)))
 	mux.HandleFunc("POST /api/admin/scan-sweep", h.rlWrite.Limit(h.requireHandle(h.adminScanSweep)))
-	mux.HandleFunc("POST /api/admin/media-fingerprint-sweep", h.rlWrite.Limit(h.requireHandle(h.adminMediaFingerprintSweep)))
-	mux.HandleFunc("POST /api/admin/clear-orphan-hashes", h.rlWrite.Limit(h.requireHandle(h.adminClearOrphanHashes)))
 	mux.HandleFunc("POST /api/admin/delete-post", h.rlWrite.Limit(h.requireHandle(h.adminDeletePost)))
 	mux.HandleFunc("POST /api/admin/purge-user", h.rlWrite.Limit(h.requireHandle(h.adminPurgeUser)))
 	mux.HandleFunc("GET /api/admin/human-review-count", h.rlRead.Limit(h.requireHandle(h.adminHumanReviewCount)))
-	mux.HandleFunc("POST /api/admin/bulk-approve-review", h.rlWrite.Limit(h.requireHandle(h.adminBulkApproveReview)))
 	mux.HandleFunc("POST /api/admin/resync-follow-counts", h.rlWrite.Limit(h.requireHandle(h.adminResyncFollowCounts)))
 	mux.HandleFunc("POST /api/admin/user-action", h.rlWrite.Limit(h.requireHandle(h.adminUserAction)))
 	mux.HandleFunc("POST /api/admin/user/nsfw-toggle", h.rlWrite.Limit(h.requireHandle(h.adminNSFWToggle)))
@@ -1165,23 +1164,29 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /admin/partials/users", h.rlRead.Limit(h.requireHandle(h.adminPanelUsers)))
 	mux.HandleFunc("GET /admin/partials/moderation", h.rlRead.Limit(h.requireHandle(h.adminPanelModeration)))
 	mux.HandleFunc("GET /admin/partials/dmca", h.rlRead.Limit(h.requireHandle(h.adminPanelDMCA)))
+	mux.HandleFunc("GET /admin/partials/csam-queue", h.rlRead.Limit(h.requireHandle(h.adminPanelCSAMQueue)))
+	mux.HandleFunc("POST /admin/csam-queue/{id}/{action}", h.rlWrite.Limit(h.requireHandle(h.adminCSAMReportAction)))
 	mux.HandleFunc("GET /admin/partials/devtools", h.rlRead.Limit(h.requireHandle(h.adminPanelDevtools)))
 	mux.HandleFunc("GET /admin/partials/analytics", h.rlRead.Limit(h.requireHandle(h.adminPanelAnalytics)))
 	mux.HandleFunc("GET /admin/partials/abraxas", h.rlRead.Limit(h.requireHandle(h.abraxasConfigGet)))
 	mux.HandleFunc("GET /admin/partials/celebrations", h.rlRead.Limit(h.requireHandle(h.adminPanelCelebrations)))
 	mux.HandleFunc("GET /admin/partials/treasury", h.rlRead.Limit(h.requireHandle(h.adminPanelTreasury)))
 	mux.HandleFunc("POST /api/admin/sweep-fees", h.rlWrite.Limit(h.requireHandle(h.adminSweepFees)))
-	// Trust & Safety moderation queue and admin actions
-	mux.HandleFunc("GET /admin/moderation/queue", h.rlRead.Limit(h.requireHandle(h.ModerationQueueGet)))
-	mux.HandleFunc("POST /admin/moderation/action", h.rlWrite.Limit(h.requireHandle(h.ModerationActionPost)))
+	// Trust & Safety: the review queue and reports are Abraxas's; these carry a
+	// moderator's decision to it and answer with the decided card Facet.
+	mux.HandleFunc("POST /admin/moderation/review/{id}/decide", h.rlWrite.Limit(h.requireHandle(h.moderationReviewDecide)))
+	mux.HandleFunc("POST /admin/moderation/report/{id}/{action}", h.rlWrite.Limit(h.requireHandle(h.moderationReportAction)))
+	// The banned registry is Abraxas's; these carry an admin's change to it.
 	mux.HandleFunc("POST /admin/moderation/hash-ban", h.rlWrite.Limit(h.requireHandle(h.ModerationHashBan)))
+	mux.HandleFunc("POST /admin/moderation/hash-revoke", h.rlWrite.Limit(h.requireHandle(h.ModerationHashRevoke)))
+	mux.HandleFunc("POST /admin/moderation/asset-ban", h.rlWrite.Limit(h.requireHandle(h.ModerationAssetBan)))
 	mux.HandleFunc("/api/users/search", h.rlRead.Limit(h.mentionSearchAPI))
 	mux.HandleFunc("GET /api/vault/recovery", h.rlRead.Limit(h.requireHandle(h.vaultRecoveryGet)))
 	mux.HandleFunc("POST /api/vault/recovery", h.rlWrite.Limit(h.requireHandle(h.vaultRecoverySet)))
 	// Malkuth: PIAL signing key registration (ECDSA-P256, browser-generated)
 	mux.HandleFunc("POST /api/pial/signing-key/register", h.rlWrite.Limit(h.requireHandle(h.registerPIALSigningKey)))
 	mux.HandleFunc("POST /api/pial/ecdh-key/register", h.rlWrite.Limit(h.requireHandle(h.registerPIALEcdhKey)))
-	mux.HandleFunc("GET /api/pial/by-handle/{handle}", h.rlRead.Limit(h.requireHandle(h.pialByHandle)))
+	mux.HandleFunc("GET /api/pial/ecdh-key", h.requireHandle(h.ownEcdhKey))
 	mux.HandleFunc("/api/health", h.healthAPI)
 
 	// Hashtag and cashtag dedicated pages
@@ -1212,17 +1217,14 @@ func (h *Handler) Routes() http.Handler {
 	mux.Handle("/metrics", middleware.InternalOnly(observ.MetricsHandler()))
 
 	// File uploads (write rate limit)
-	mux.HandleFunc("/upload/avatar", h.rlWrite.Limit(h.uploadAvatar))
-	mux.HandleFunc("/upload/header", h.rlWrite.Limit(h.uploadHeader))
-	mux.HandleFunc("/upload/track", h.rlWrite.Limit(h.uploadTrack))
+	// Every lane stores through Caeor under the signed-in uploader (media.go).
+	mux.HandleFunc("POST /upload/avatar", h.rlWrite.Limit(h.requireHandle(h.uploadAvatar)))
+	mux.HandleFunc("POST /upload/header", h.rlWrite.Limit(h.requireHandle(h.uploadHeader)))
+	mux.HandleFunc("POST /upload/track", h.rlWrite.Limit(h.requireHandle(h.uploadTrack)))
 	mux.HandleFunc("/upload/post-media", h.rlWrite.Limit(h.requireHandle(h.uploadPostMedia)))
 	mux.HandleFunc("/upload/voice", h.rlWrite.Limit(h.requireHandle(h.uploadVoicePost)))
 	mux.HandleFunc("POST /upload/react-video", h.rlWrite.Limit(h.requireHandle(h.uploadReactVideo)))
 	mux.HandleFunc("POST /api/media/upload-encrypted", h.rlWrite.Limit(h.requireHandle(h.uploadEncryptedMedia)))
-	// Pre-upload hash gates — client computes SHA-256 locally and checks here before upload starts.
-	mux.HandleFunc("POST /upload/check-dedup", h.rlRead.Limit(h.requireHandle(h.checkVideoDedupHandler)))
-	mux.HandleFunc("POST /upload/check-video-hash", h.rlRead.Limit(h.requireHandle(h.checkVideoHashHandler)))
-	mux.HandleFunc("POST /upload/check-image-hash", h.rlRead.Limit(h.requireHandle(h.checkImageHashHandler)))
 	// TUS resumable upload (S0.7)
 	mux.HandleFunc("POST /upload/tus/", h.rlWrite.Limit(h.requireHandle(h.tusCreate)))
 	mux.HandleFunc("HEAD /upload/tus/{id}", h.rlRead.Limit(h.requireHandle(h.tusHead)))
@@ -1274,12 +1276,21 @@ func (h *Handler) Routes() http.Handler {
 	return middleware.Recover(middleware.SecurityHeaders(middleware.RequestLog(middleware.Compress(securityHandler))))
 }
 
-// requireHandle redirects to /login if no handle cookie is set.
+// requireHandle sends the request to /login unless its session resolves to a
+// real account. A token that names no live session is the same as no token:
+// the page behind this gate is never rendered for the anonymous sentinel.
+// When the identity authority cannot confirm the session at all, the answer is
+// 503 and the identity_unavailable Fragment — fail closed, never a guess.
 // It also sets Cache-Control: no-store so browsers never serve stale
 // authenticated pages from cache after a Docker rebuild or logout.
 func (h *Handler) requireHandle(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if HandleFromCookie(r) == "" {
+		viewer, err := h.viewer(w, r)
+		if err != nil {
+			h.identityUnavailable(w)
+			return
+		}
+		if viewerAccountID(viewer) == "" {
 			// The browser Shell cannot take a login page into its Playground: the
 			// login page is a different Shell. It is told to load the document.
 			if playgroundRequest(r) {
@@ -1345,142 +1356,13 @@ func (h *Handler) rootDispatch(w http.ResponseWriter, r *http.Request) {
 // ── Session-aware user resolution ────────────────────────────────────────────
 
 func (h *Handler) userFromRequest(w http.ResponseWriter, r *http.Request) *model.User {
-	tok := GetSessionToken(r)
-
-	// ── Prefer session token (new auth) ─────────────────────────────────────
-	if h.db != nil && tok != "" && !strings.HasPrefix(tok, "__handle__") {
-		// Fast path: check in-memory cache first (30 s TTL)
-		if v, ok := h.sessionCache.Load(tok); ok {
-			if e := v.(sessionEntry); time.Now().Before(e.exp) {
-				return e.user
-			}
-			h.sessionCache.Delete(tok)
-		}
-
-		// Slow path: DB lookup — resolves PIAL + active account in one query.
-		if ident, _ := dbpkg.GetSessionIdentity(h.db, tok); ident.UserID != "" {
-			if u, err := dbpkg.GetUserByID(h.db, ident.UserID); err == nil && u != nil {
-				// Prefer PIAL from session; fall back to account lookup / bootstrap.
-				if ident.PIALID != "" {
-					u.PIALID = ident.PIALID
-				} else if u.PIALID == "" {
-					if pid := dbpkg.BootstrapPIAL(h.db, u.ID, u.Handle); pid != "" {
-						u.PIALID = pid
-						// The handle predates this identity. Tell the authority.
-						h.ensureHandleAllocated(r.Context(), u.Handle, pid)
-					}
-				}
-				// The identity authority governs this PIAL and keys every contact
-				// row and messaging key to it, so it has to know the identity
-				// exists before anyone tries to reach this person. Detached: the
-				// person is not waiting on it.
-				h.ensurePIALAsserted(r.Context(), u.PIALID)
-				// Identity/authz resolved from PIAL — the single system of record.
-				// age_verified is the age-gate fact (self-report is enough). The verified
-				// badge is the stricter identity fact — kyc_tier=='full' — never age_verified.
-				// Role drives IsAdmin().
-				if ps := dbpkg.LoadPIALState(h.db, u.PIALID); ps != nil {
-					u.IsAgeVerified = ps.AgeVerified
-					u.IsVerified = model.KYCTierIsIdentity(ps.KYCTier)
-					u.KYCTier = ps.KYCTier
-					u.IsMinor = ps.IsMinor
-					u.IsAdult = ps.IsAdult
-					u.Role = ps.Role
-				}
-				// Birthday is authoritative — override DB flags if birthday is set
-				ApplyBirthdayAgeGate(u)
-				// Interest vector on the Jung axes: the stored online average of
-				// engaged works' vectors, or — when none has been stored yet — a
-				// fresh computation from recent engagement and the declared
-				// archetype, persisted so the next request reads it.
-				if stored, ok := jung.FromSlice(dbpkg.LoadInterestVector(h.db, u.ID)); ok {
-					u.InterestVector = stored.Slice()
-				} else {
-					u.InterestVector = h.computeInterestVector(u)
-					go dbpkg.SaveInterestVector(h.db, u.ID, u.InterestVector)
-				}
-				u.RecentContentIDs = []string{}
-				u.CreatorAffinities = map[string]float32{}
-				u.IsColdStart = u.PostCount == 0
-				u.SafetyEpsilon = SafetyEpsilon(u.ContentSetting)
-				h.sessionCache.Store(tok, sessionEntry{user: u, exp: time.Now().Add(30 * time.Second)})
-				return u
-			}
-		}
-		// Session token present but session not found or expired.
-		// Only clear the cookie on full-page responses — never on HTMX partials,
-		// which would silently destroy the session mid-navigation.
-		if r.Header.Get("HX-Request") != "true" {
-			ClearSessionCookie(w)
-		}
-	}
-
-	// ── Legacy handle cookie — READ ONLY, never auto-create ──────────────────
-	handle := HandleFromCookie(r)
-	// Reject invalid or suspiciously long handles (hashes, etc.)
-	if handle == "" || len(handle) > 30 || !handleRe.MatchString(handle) {
+	// No live, confirmed session: the request belongs to nobody. Identity comes
+	// from elohim-veni's answer and nothing else — never from a value the
+	// client names, and never from a local table when the authority is down.
+	u, err := h.viewer(w, r)
+	if err != nil || u == nil {
 		return DemoUser()
 	}
-
-	// Legacy path also uses cache (keyed on handle token)
-	legacyKey := "__handle__" + handle
-	if v, ok := h.sessionCache.Load(legacyKey); ok {
-		if e := v.(sessionEntry); time.Now().Before(e.exp) {
-			return e.user
-		}
-		h.sessionCache.Delete(legacyKey)
-	}
-
-	if h.db != nil {
-		if u, err := dbpkg.GetUserByHandle(h.db, handle); err == nil && u != nil {
-			if u.PIALID == "" {
-				if pid := dbpkg.BootstrapPIAL(h.db, u.ID, u.Handle); pid != "" {
-					u.PIALID = pid
-					// The handle predates this identity. Tell the authority.
-					h.ensureHandleAllocated(r.Context(), u.Handle, pid)
-				} else {
-					log.Printf("[pial] auto-bootstrap failed for account %s", u.ID)
-				}
-			}
-			if stored, ok := jung.FromSlice(dbpkg.LoadInterestVector(h.db, u.ID)); ok {
-				u.InterestVector = stored.Slice()
-			} else {
-				u.InterestVector = h.computeInterestVector(u)
-				go dbpkg.SaveInterestVector(h.db, u.ID, u.InterestVector)
-			}
-			u.RecentContentIDs = []string{}
-			u.CreatorAffinities = map[string]float32{}
-			u.IsColdStart = u.PostCount == 0
-			u.SafetyEpsilon = SafetyEpsilon(u.ContentSetting)
-			if u.ThemeID == "" {
-				u.ThemeID = "void"
-			}
-			if u.Tier == "" {
-				u.Tier = "free"
-			}
-			if u.ContentSetting == "" {
-				u.ContentSetting = "default"
-			}
-			// Identity/authz resolved from PIAL — the single system of record.
-			// age_verified is the age-gate fact; the verified badge is the stricter
-			// kyc_tier=='full' identity fact.
-			if ps := dbpkg.LoadPIALState(h.db, u.PIALID); ps != nil {
-				u.IsAgeVerified = ps.AgeVerified
-				u.IsVerified = model.KYCTierIsIdentity(ps.KYCTier)
-				u.KYCTier = ps.KYCTier
-				u.IsMinor = ps.IsMinor
-				u.IsAdult = ps.IsAdult
-				u.Role = ps.Role
-			}
-			// Birthday is authoritative — override DB flags if birthday is set
-			ApplyBirthdayAgeGate(u)
-			h.sessionCache.Store(legacyKey, sessionEntry{user: u, exp: time.Now().Add(30 * time.Second)})
-			return u
-		}
-	}
-
-	u := DemoUser()
-	u.Handle = handle
 	return u
 }
 
@@ -1665,6 +1547,10 @@ func (h *Handler) renderPartial(w http.ResponseWriter, name string, data interfa
 	_, _ = w.Write(buf.Bytes())
 }
 
+// eventsBodyMaxBytes bounds a JSON event body. The largest is a signed work: a
+// body of worktext.MaxRunes runes at four bytes each, plus the envelope.
+const eventsBodyMaxBytes = 256 << 10
+
 // ── D-070 mutation lane ───────────────────────────────────────────────────────
 // eventsPost is the single entry point for all state changes from the browser.
 // event_type field dispatches to the correct handler.
@@ -1675,11 +1561,22 @@ func (h *Handler) eventsPost(w http.ResponseWriter, r *http.Request) {
 	var rawBodyMap map[string]json.RawMessage
 	eventType := r.FormValue("event_type")
 	if eventType == "" {
-		bodyBytes, _ := io.ReadAll(r.Body)
+		bodyBytes, err := io.ReadAll(http.MaxBytesReader(w, r.Body, eventsBodyMaxBytes))
+		if err != nil {
+			http.Error(w, "request body unreadable or too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-		if err := json.Unmarshal(bodyBytes, &rawBodyMap); err == nil {
+		if len(bytes.TrimSpace(bodyBytes)) > 0 {
+			if err := json.Unmarshal(bodyBytes, &rawBodyMap); err != nil {
+				http.Error(w, "malformed JSON: "+err.Error(), http.StatusBadRequest)
+				return
+			}
 			if v, ok := rawBodyMap["event_type"]; ok {
-				json.Unmarshal(v, &eventType)
+				if err := json.Unmarshal(v, &eventType); err != nil {
+					http.Error(w, "event_type must be a string", http.StatusBadRequest)
+					return
+				}
 			}
 		}
 	}
@@ -1760,6 +1657,14 @@ func (h *Handler) eventsPost(w http.ResponseWriter, r *http.Request) {
 
 	case "tip":
 		h.tipEvent(w, r)
+		return
+
+	case "governance_vote":
+		h.governanceVoteEvent(w, r)
+		return
+
+	case "governance_propose":
+		h.governanceProposeEvent(w, r)
 		return
 
 	case "pin_surface", "unpin_surface":
@@ -1873,7 +1778,7 @@ func (h *Handler) eventsPost(w http.ResponseWriter, r *http.Request) {
 		}
 		reason := eventField(r, rawBodyMap, "reason")
 		switch reason {
-		case "spam", "harassment", "hate", "nsfw", "violence", "illegal", "other":
+		case "spam", "harassment", "hate", "nsfw", "violence", "illegal", "stolen", "other":
 		default:
 			http.Error(w, "reason required", http.StatusBadRequest)
 			return
@@ -1899,7 +1804,7 @@ func (h *Handler) eventsPost(w http.ResponseWriter, r *http.Request) {
 		}
 		detail := truncate(eventField(r, rawBodyMap, "detail"), 500)
 		if err := h.fileContentReport(user, contentID, contentType, reason, detail); err != nil {
-			http.Error(w, "could not file report", http.StatusInternalServerError)
+			http.Error(w, "could not file report", http.StatusBadGateway)
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -2141,27 +2046,30 @@ func (h *Handler) eventsPost(w http.ResponseWriter, r *http.Request) {
 		}
 		postID := r.FormValue("post_id")
 		restriction := r.FormValue("restriction")
-		if postID == "" && rawBodyMap != nil {
-			json.Unmarshal(rawBodyMap["post_id"], &postID)
+		if raw, ok := rawBodyMap["post_id"]; ok && postID == "" {
+			if err := json.Unmarshal(raw, &postID); err != nil {
+				http.Error(w, "post_id must be a string", http.StatusBadRequest)
+				return
+			}
 		}
-		if restriction == "" && rawBodyMap != nil {
-			json.Unmarshal(rawBodyMap["restriction"], &restriction)
+		if raw, ok := rawBodyMap["restriction"]; ok && restriction == "" {
+			if err := json.Unmarshal(raw, &restriction); err != nil {
+				http.Error(w, "restriction must be a string", http.StatusBadRequest)
+				return
+			}
 		}
-		// Map public values to DB values
-		gatingMap := map[string]string{
-			"everyone":  "open",
-			"open":      "open",
-			"followers": "followers",
-			"verified":  "verified",
-			"none":      "none",
-		}
-		gating, ok := gatingMap[restriction]
-		if !ok {
-			http.Error(w, "invalid restriction value", http.StatusBadRequest)
+		// One vocabulary: the one the clients sign into a work (dbpkg.CommentGatings).
+		if !dbpkg.ValidCommentGating(restriction) {
+			http.Error(w, "restriction must be one of "+strings.Join(dbpkg.CommentGatings, ", "), http.StatusBadRequest)
 			return
 		}
-		if err := dbpkg.SetCommentGating(h.db, postID, user.ID, gating); err != nil {
-			htmxError(w, r, "Could not update reply restriction", http.StatusForbidden)
+		if err := dbpkg.SetCommentGating(h.db, postID, user.ID, restriction); err != nil {
+			if errors.Is(err, dbpkg.ErrWorkNotOwned) {
+				htmxError(w, r, "You can only change who replies to your own posts", http.StatusForbidden)
+				return
+			}
+			log.Printf("[reply-restriction] %v", err)
+			htmxError(w, r, "Could not update reply restriction", http.StatusInternalServerError)
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -2253,17 +2161,24 @@ func (h *Handler) eventsPost(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		reason := eventField(r, rawBodyMap, "reason")
-		if err := dbpkg.DeactivateUser(h.db, user.ID, reason); err != nil {
-			htmxError(w, r, "Could not deactivate account", http.StatusInternalServerError)
+		// Deactivation is an account standing, so elohim-veni records it and
+		// ends every session on the account. The projection is marked at once
+		// so the account leaves this brain's surfaces without waiting for the
+		// identity.events record that confirms it.
+		if err := h.identity.Client().DeactivateAccount(r.Context(), user.ID, reason); err != nil {
+			log.Printf("[accounts] deactivate @%s: %v", user.Handle, err)
+			htmxError(w, r, "Could not deactivate account", http.StatusServiceUnavailable)
 			return
 		}
+		if err := dbpkg.SetProjectedDeactivated(h.db, user.ID, reason); err != nil {
+			log.Printf("[accounts] deactivate @%s: accepted by elohim-veni, projection not marked (identity.events will): %v", user.Handle, err)
+		}
+		h.evictCachedAccount(user.ID, "")
 		// Award Emotional Damage to users whose posts this person argued with recently
 		go dbpkg.TryAwardTrollOnDeactivation(h.db, user.ID)
 		if !facetRequest(r) {
-			// A client with no cookie to clear is signed out by ending the
-			// sessions themselves — otherwise the bearer token it still holds
-			// keeps working on a deactivated account.
-			h.endEverySession(r, user)
+			// A client with no cookie to clear is signed out by the authority
+			// having ended every session on the account.
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
@@ -2288,7 +2203,14 @@ func (h *Handler) eventsPost(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		rawToken := GetSessionToken(r)
-		if err := dbpkg.SwitchActiveAccount(h.db, rawToken, accountID, user.PIALID); err != nil {
+		// The session is elohim-veni's, and so is the rule that the target must
+		// belong to the same identity.
+		if err := h.identity.Client().SwitchSessionAccount(r.Context(), rawToken, accountID); err != nil {
+			log.Printf("[accounts] switch for @%s to %s: %v", user.Handle, accountID, err)
+			if identity.IsUnavailable(err) {
+				htmxError(w, r, "Could not switch account right now — try again.", http.StatusServiceUnavailable)
+				return
+			}
 			htmxError(w, r, "Could not switch account", http.StatusForbidden)
 			return
 		}
@@ -2336,6 +2258,10 @@ func (h *Handler) eventsPost(w http.ResponseWriter, r *http.Request) {
 
 	case "work_delete":
 		h.workDeleteEvent(w, r, rawBodyMap)
+		return
+
+	case "work_set_downloads":
+		h.workSetDownloadsEvent(w, r, rawBodyMap)
 		return
 
 	case "content.reveal":
@@ -2553,6 +2479,75 @@ func (h *Handler) addAccountPage(w http.ResponseWriter, r *http.Request) {
 	h.render(w, r, "settings/add_account.html", data)
 }
 
+// openAccountOnIdentity opens a further account on the viewer's identity.
+// elohim-veni creates the account, the handle and the credential, and binds it
+// to the identity; this brain then sets up what it owns — the projection row,
+// the profile and the onboarding record — keyed by the account id it returned.
+// The new account shares the identity's facts, role and capabilities.
+func (h *Handler) openAccountOnIdentity(r *http.Request, user *model.User, handle, password, confirm, displayName string) (*identity.AddedAccount, *accountError) {
+	handle = strings.TrimSpace(strings.ToLower(handle))
+	if !handleRe.MatchString(handle) {
+		return nil, accountRefused(http.StatusBadRequest, "invalid_handle", "Handle must be 1–30 characters, letters/numbers/underscore only.")
+	}
+	if reservedHandle(handle) {
+		return nil, accountRefused(http.StatusBadRequest, "handle_reserved", "That handle is reserved. Try another.")
+	}
+	if len(password) < 8 {
+		return nil, accountRefused(http.StatusBadRequest, "weak_password", "Password must be at least 8 characters.")
+	}
+	if password != confirm {
+		return nil, accountRefused(http.StatusBadRequest, "password_mismatch", "Passwords don't match.")
+	}
+	displayName = strings.TrimSpace(displayName)
+	if displayName == "" {
+		displayName = handle
+	}
+	added, err := h.identity.Client().AddAccount(r.Context(), user.PIALID, identity.CreateAccountRequest{
+		Handle:      handle,
+		Password:    password,
+		DisplayName: truncate(displayName, 100),
+		DeviceName:  apiDeviceName(r, ""),
+		IP:          requestIP(r),
+	})
+	if err != nil {
+		log.Printf("[add-account] @%s on %s: %v", handle, user.PIALID, err)
+		return nil, identityRefusal(err)
+	}
+	if err := h.setUpAddedAccount(user, added, displayName); err != nil {
+		log.Printf("[add-account] CRITICAL: account %s (@%s) created at elohim-veni but its feed-engine setup failed: %v",
+			added.AccountID, added.Handle, err)
+		return nil, accountRefused(http.StatusInternalServerError, "setup_incomplete",
+			"The account was created, but we could not finish setting it up. Switch to it to continue.")
+	}
+	dbpkg.LogPIALEvent(h.db, user.PIALID, added.AccountID, "account_added", map[string]interface{}{
+		"handle": added.Handle,
+	}, "nantar")
+	return added, nil
+}
+
+// setUpAddedAccount writes this brain's part of a further account: the
+// projection row on the viewer's identity, the profile, the onboarding record.
+func (h *Handler) setUpAddedAccount(user *model.User, added *identity.AddedAccount, displayName string) error {
+	if err := dbpkg.SeedIdentity(h.db, dbpkg.IdentitySnapshot{
+		PIALID: user.PIALID, AccountID: added.AccountID, Handle: added.Handle,
+		Role: user.Role, Status: identity.StatusActive, Caps: user.Caps,
+	}); err != nil {
+		return err
+	}
+	if err := dbpkg.SaveProfile(h.db, &model.ProfileSave{
+		UserID:      added.AccountID,
+		DisplayName: truncate(displayName, 100),
+		ThemeID:     user.ThemeID,
+	}); err != nil {
+		return err
+	}
+	return dbpkg.UpsertUserRole(h.db, &dbpkg.UserRole{
+		UserID:      added.AccountID,
+		RoleType:    "user",
+		OnboardDone: true,
+	})
+}
+
 // handleAddAccount creates a new account bound to the current user's PIAL.
 // No new PIAL is created — the new account shares identity with the existing one.
 func (h *Handler) handleAddAccount(w http.ResponseWriter, r *http.Request) {
@@ -2561,100 +2556,18 @@ func (h *Handler) handleAddAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user := h.userFromRequest(w, r)
-	if user == nil || user.PIALID == "" {
+	if viewerAccountID(user) == "" || user.PIALID == "" {
 		http.Redirect(w, r, "/login", http.StatusFound)
 		return
 	}
-
-	renderErr := func(msg string) {
+	if _, aerr := h.openAccountOnIdentity(r, user, r.FormValue("handle"), r.FormValue("password"),
+		r.FormValue("confirm_password"), r.FormValue("display_name")); aerr != nil {
 		data := h.baseData(user)
 		data["Title"] = "Add Account · F33D3R"
-		data["Error"] = msg
+		data["Error"] = aerr.Message
 		h.render(w, r, "settings/add_account.html", data)
-	}
-
-	handle := strings.TrimSpace(strings.ToLower(r.FormValue("handle")))
-	if !handleRe.MatchString(handle) {
-		renderErr("Handle must be 1–30 characters, letters/numbers/underscore only.")
 		return
 	}
-	if reservedHandle(handle) {
-		renderErr("That handle is reserved. Try another.")
-		return
-	}
-	password := r.FormValue("password")
-	confirmPassword := r.FormValue("confirm_password")
-	if len(password) < 8 {
-		renderErr("Password must be at least 8 characters.")
-		return
-	}
-	if password != confirmPassword {
-		renderErr("Passwords don't match.")
-		return
-	}
-
-	taken, _ := dbpkg.IsHandleTaken(h.db, handle)
-	if taken {
-		renderErr("That handle is already taken. Try another.")
-		return
-	}
-
-	// The handle is allocated at the registrar before the local row exists.
-	// This account joins an identity that already has a PIAL, so there is
-	// nothing to mint — only the grant to obtain.
-	if aerr := h.allocateHandle(r, handle, user.PIALID); aerr != nil {
-		renderErr(aerr.Error())
-		return
-	}
-
-	newID, err := dbpkg.UpsertUserByHandle(h.db, handle)
-	if err != nil {
-		log.Printf("[add-account] upsert error: %v", err)
-		renderErr("Could not create account — try again.")
-		return
-	}
-	if err := dbpkg.SetPassword(h.db, newID, password); err != nil {
-		log.Printf("[add-account] SetPassword error: %v", err)
-		renderErr("Could not save password — try again.")
-		return
-	}
-
-	displayName := strings.TrimSpace(r.FormValue("display_name"))
-	if displayName == "" {
-		displayName = handle
-	}
-	if err := dbpkg.SaveProfile(h.db, &model.ProfileSave{
-		UserID:      newID,
-		DisplayName: truncate(displayName, 100),
-		ThemeID:     user.ThemeID,
-	}); err != nil {
-		log.Printf("[add-account] SaveProfile error for %s: %v", handle, err)
-		renderErr("Could not save the new account's profile — try again.")
-		return
-	}
-
-	if err := dbpkg.BindAdditionalAccount(h.db, user.PIALID, newID); err != nil {
-		log.Printf("[add-account] BindAdditionalAccount error: %v", err)
-		renderErr("Could not link account to identity — try again.")
-		return
-	}
-
-	if err := dbpkg.UpsertUserRole(h.db, &dbpkg.UserRole{
-		UserID:      newID,
-		RoleType:    "user",
-		IsAdult:     user.IsAdult,
-		IsMinor:     user.IsMinor,
-		OnboardDone: true,
-	}); err != nil {
-		log.Printf("[add-account] UpsertUserRole error for %s: %v", handle, err)
-		renderErr("Could not finish setting up the new account — try again.")
-		return
-	}
-
-	dbpkg.LogPIALEvent(h.db, user.PIALID, newID, "account_added", map[string]interface{}{
-		"handle": handle,
-	}, "nantar")
-
 	http.Redirect(w, r, "/settings/personas", http.StatusSeeOther)
 }
 
@@ -2700,143 +2613,47 @@ func (h *Handler) partialAamLink(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleAamCreate creates a new account in the modal context, returning
-// fragments instead of a full-page redirect.
+// Fragments instead of a full-page redirect.
 func (h *Handler) handleAamCreate(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
 	user := h.userFromRequest(w, r)
-	if user == nil || user.PIALID == "" {
+	if viewerAccountID(user) == "" || user.PIALID == "" {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-
-	renderErr := func(msg string) {
+	added, aerr := h.openAccountOnIdentity(r, user, r.FormValue("handle"), r.FormValue("password"),
+		r.FormValue("confirm_password"), r.FormValue("display_name"))
+	if aerr != nil {
 		w.Header().Set("Content-Type", "text/html")
-		h.renderPartial(w, "add_account_modal_create_step", map[string]interface{}{
-			"Error": msg,
-		})
-	}
-
-	handle := strings.TrimSpace(strings.ToLower(r.FormValue("handle")))
-	if !handleRe.MatchString(handle) {
-		renderErr("Handle must be 1–30 characters, letters/numbers/underscore only.")
+		h.renderPartial(w, "add_account_modal_create_step", map[string]interface{}{"Error": aerr.Message})
 		return
 	}
-	password := r.FormValue("password")
-	confirm := r.FormValue("confirm_password")
-	if len(password) < 8 {
-		renderErr("Password must be at least 8 characters.")
-		return
-	}
-	if password != confirm {
-		renderErr("Passwords don't match.")
-		return
-	}
-	taken, _ := dbpkg.IsHandleTaken(h.db, handle)
-	if taken {
-		renderErr("That handle is already taken.")
-		return
-	}
-	// Allocated at the registrar first, for the same reason as everywhere else:
-	// the local row records a grant, it does not make one.
-	if aerr := h.allocateHandle(r, handle, user.PIALID); aerr != nil {
-		renderErr(aerr.Error())
-		return
-	}
-
-	newID, err := dbpkg.UpsertUserByHandle(h.db, handle)
-	if err != nil {
-		log.Printf("[aam-create] upsert: %v", err)
-		renderErr("Could not create account — try again.")
-		return
-	}
-	if err := dbpkg.SetPassword(h.db, newID, password); err != nil {
-		log.Printf("[aam-create] set password: %v", err)
-		renderErr("Could not save password — try again.")
-		return
-	}
-	displayName := strings.TrimSpace(r.FormValue("display_name"))
-	if displayName == "" {
-		displayName = handle
-	}
-	if err := dbpkg.SaveProfile(h.db, &model.ProfileSave{
-		UserID:      newID,
-		DisplayName: truncate(displayName, 100),
-		ThemeID:     user.ThemeID,
-	}); err != nil {
-		log.Printf("[aam-create] SaveProfile error for %s: %v", handle, err)
-		renderErr("Could not save the new account's profile — try again.")
-		return
-	}
-	if err := dbpkg.BindAdditionalAccount(h.db, user.PIALID, newID); err != nil {
-		log.Printf("[aam-create] bind: %v", err)
-		renderErr("Could not link account — try again.")
-		return
-	}
-	if err := dbpkg.UpsertUserRole(h.db, &dbpkg.UserRole{
-		UserID:      newID,
-		RoleType:    "user",
-		IsAdult:     user.IsAdult,
-		IsMinor:     user.IsMinor,
-		OnboardDone: true,
-	}); err != nil {
-		log.Printf("[aam-create] UpsertUserRole error for %s: %v", handle, err)
-		renderErr("Could not finish setting up the new account — try again.")
-		return
-	}
-	dbpkg.LogPIALEvent(h.db, user.PIALID, newID, "account_added", map[string]interface{}{
-		"handle": handle,
-	}, "nantar")
-
-	// Generate backup codes for the new account and show them in the modal.
-	// The account has no codes yet; the backup-codes gate only fires at password
-	// login, which linked accounts never go through.
-	newCodes := make([]string, 8)
-	for i := range newCodes {
-		c, err := dbpkg.GenerateBackupCode()
-		if err != nil {
-			log.Printf("[aam-create] gen code: %v", err)
-			continue
-		}
-		newCodes[i] = c
-	}
-	// These codes are about to be shown to the person as their way back into the
-	// account. If the store failed they would save eight strings that unlock
-	// nothing and only find out when they are already locked out.
-	if err := dbpkg.StoreBackupCodes(h.db, newID, newCodes); err != nil {
-		log.Printf("[aam-create] CRITICAL: backup codes not stored for %s: %v", handle, err)
-		htmxError(w, r, "Your account was created but its recovery codes could not be saved. "+
-			"Generate new codes from Settings before signing out.", http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "text/html")
-	h.renderPartial(w, "add_account_modal_codes_step", map[string]interface{}{
-		"Codes":  newCodes,
-		"Handle": handle,
-	})
+	// The new account's recovery codes, shown once in the modal. It has none
+	// yet, and the backup-codes gate only fires at a password sign-in, which an
+	// account reached by switching never goes through.
+	h.renderNewAccountCodes(w, r, added.AccountID, added.Handle)
 }
 
 // handleLinkAccount links an existing independently-created account to the
-// current user's PIAL. Ownership is proved by a valid backup code for the
-// target account. On success the target's codes are rotated and returned
-// for the user to save.
+// current user's PIAL. Ownership is proved by one of the target account's
+// backup codes, which elohim-veni checks and spends; the target must be the
+// only account on its own identity. On success the target's codes are rotated
+// and shown for the person to save.
 func (h *Handler) handleLinkAccount(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
 	user := h.userFromRequest(w, r)
-	if user == nil || user.PIALID == "" {
+	if viewerAccountID(user) == "" || user.PIALID == "" {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-
-	handle := strings.TrimSpace(strings.ToLower(r.FormValue("handle")))
+	handle := strings.TrimSpace(strings.ToLower(strings.TrimPrefix(r.FormValue("handle"), "@")))
 	code := strings.TrimSpace(r.FormValue("backup_code"))
-
 	renderErr := func(msg string) {
 		w.Header().Set("Content-Type", "text/html")
 		h.renderPartial(w, "add_account_modal_link_step", map[string]interface{}{
@@ -2844,86 +2661,63 @@ func (h *Handler) handleLinkAccount(w http.ResponseWriter, r *http.Request) {
 			"Handle": handle,
 		})
 	}
-
 	if handle == "" || code == "" {
 		renderErr("Enter the account handle and a backup code.")
 		return
 	}
-
-	target, err := dbpkg.GetUserByHandle(h.db, handle)
-	// Always spend bcrypt time to prevent timing-based enumeration.
-	if err != nil || target == nil {
-		dbpkg.GenerateBackupCode() //nolint:errcheck
-		renderErr("Invalid handle or backup code.")
-		return
-	}
-	if target.ID == user.ID {
+	if handle == user.Handle {
 		renderErr("That's your current account.")
 		return
 	}
 
-	existing, _ := dbpkg.GetAccountsForPIAL(h.db, user.PIALID, user.ID)
-	for _, a := range existing {
-		if a.ID == target.ID {
-			renderErr("That account is already linked to yours.")
-			return
-		}
-	}
-
-	// Validate link eligibility before consuming the backup code.
-	var otherCount int
-	h.db.QueryRow(`
-		SELECT COUNT(*) FROM pial_account_bindings
-		WHERE pial_id = (SELECT pial_id FROM users WHERE id = $1)
-		  AND account_id != $1 AND status = 'active'
-	`, target.ID).Scan(&otherCount)
-	if otherCount > 0 {
+	linked, err := h.identity.Client().LinkAccount(r.Context(), user.PIALID, handle, code)
+	switch {
+	case err == nil:
+	case errors.Is(err, identity.ErrBackupCodeInvalid), errors.Is(err, identity.ErrNotFound):
+		renderErr("Invalid handle or backup code.")
+		return
+	case errors.Is(err, identity.ErrAlreadyLinked):
+		renderErr("That account is already linked to yours.")
+		return
+	case errors.Is(err, identity.ErrNotSolo):
 		renderErr("That account already has linked accounts.")
 		return
-	}
-
-	ok, err := dbpkg.VerifyAndConsumeBackupCode(h.db, target.ID, code)
-	if err != nil {
-		log.Printf("[link-account] verify: %v", err)
-		renderErr("Something went wrong — try again.")
-		return
-	}
-	if !ok {
-		renderErr("Invalid backup code.")
+	default:
+		log.Printf("[link-account] @%s onto %s: %v", handle, user.PIALID, err)
+		renderErr("Could not link account right now — try again.")
 		return
 	}
 
-	if err := dbpkg.LinkExistingAccount(h.db, user.PIALID, target.ID); err != nil {
-		log.Printf("[link-account] link: %v", err)
-		renderErr("Could not link account — try again.")
-		return
+	// The account moves onto this identity in the projection now; the
+	// identity.events record that follows confirms it.
+	if err := dbpkg.SeedIdentity(h.db, dbpkg.IdentitySnapshot{
+		PIALID: user.PIALID, AccountID: linked.AccountID, Handle: linked.Handle,
+		Role: user.Role, Status: identity.StatusActive, Caps: user.Caps,
+	}); err != nil {
+		log.Printf("[link-account] @%s linked at elohim-veni; projection will follow from identity.events: %v", handle, err)
 	}
-
-	newCodes := make([]string, 8)
-	for i := range newCodes {
-		c, err := dbpkg.GenerateBackupCode()
-		if err != nil {
-			log.Printf("[link-account] gen code: %v", err)
-			continue
-		}
-		newCodes[i] = c
-	}
-	// Rotated codes replace the ones just spent to prove ownership. Shown to the
-	// person as their new way in, so they must exist before they are shown.
-	if err := dbpkg.StoreBackupCodes(h.db, target.ID, newCodes); err != nil {
-		log.Printf("[link-account] CRITICAL: rotated backup codes not stored for %s: %v", handle, err)
-		htmxError(w, r, "The account was linked but its new recovery codes could not be saved. "+
-			"Generate new codes from Settings before signing out.", http.StatusInternalServerError)
-		return
-	}
-
-	dbpkg.LogPIALEvent(h.db, user.PIALID, target.ID, "account_linked", map[string]interface{}{
-		"handle": handle,
+	h.evictCachedAccount(linked.AccountID, "")
+	dbpkg.LogPIALEvent(h.db, user.PIALID, linked.AccountID, "account_linked", map[string]interface{}{
+		"handle": linked.Handle,
 	}, "nantar")
+	h.renderNewAccountCodes(w, r, linked.AccountID, linked.Handle)
+}
 
+// renderNewAccountCodes has fresh recovery codes issued for an account just
+// added or linked and shows them in the modal. Codes that were not issued are
+// never shown: eight strings that unlock nothing would be found out only when
+// the person is already locked out.
+func (h *Handler) renderNewAccountCodes(w http.ResponseWriter, r *http.Request, accountID, handle string) {
+	codes, err := h.identity.Client().IssueBackupCodes(r.Context(), accountID)
+	if err != nil {
+		log.Printf("[add-account] CRITICAL: backup codes not issued for @%s: %v", handle, err)
+		htmxError(w, r, "The account is ready but its recovery codes could not be generated. "+
+			"Generate new codes from Settings before signing out.", http.StatusServiceUnavailable)
+		return
+	}
 	w.Header().Set("Content-Type", "text/html")
 	h.renderPartial(w, "add_account_modal_codes_step", map[string]interface{}{
-		"Codes":  newCodes,
+		"Codes":  codes,
 		"Handle": handle,
 	})
 }

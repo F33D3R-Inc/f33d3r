@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 
 	dbpkg "github.com/f33d3r/feed-engine/internal/db"
+	"github.com/f33d3r/feed-engine/internal/identity"
 	"github.com/f33d3r/feed-engine/internal/model"
 )
 
@@ -102,16 +103,13 @@ func (h *Handler) handleMRZAgeVerify(w http.ResponseWriter, r *http.Request) {
 			// Never told to the person as done unless it was done — an unrecorded age
 			// verification is the difference between a gate that opens and one that
 			// should not have.
-			if err := dbpkg.SetPIALVerifiedNotifying(h.db, user.PIALID, "soft", "ekyc:dev", user.ID); err != nil {
+			if err := h.recordVerification(r.Context(), user, model.KYCTierSoft, "ekyc:dev", ""); err != nil {
 				log.Printf("[kyc] CRITICAL: age verification not recorded on PIAL %s for %s: %v",
 					user.PIALID, user.Handle, err)
 				w.Write([]byte(`<span style="color:#ef4444;font-size:13px">Could not record your verification — please try again.</span>`))
 				return
 			}
-			if tok := GetSessionToken(r); tok != "" && !strings.HasPrefix(tok, "__handle__") {
-				h.sessionCache.Delete(tok)
-			}
-			h.sessionCache.Delete("__handle__" + user.Handle)
+			h.evictCachedAccount(user.ID, "")
 		}
 		w.Write([]byte(`<span style="color:#22c55e;font-size:13px;font-weight:500">✓ Age verified — reload to continue.</span>`))
 		return
@@ -168,16 +166,13 @@ func (h *Handler) handleMRZAgeVerify(w http.ResponseWriter, r *http.Request) {
 
 	if h.db != nil && user.PIALID != "" {
 		// MRZ document verified 18+ (no liveness) → soft tier on PIAL.
-		if err := dbpkg.SetPIALVerifiedNotifying(h.db, user.PIALID, "soft", "ekyc:mrz", user.ID); err != nil {
+		if err := h.recordVerification(r.Context(), user, model.KYCTierSoft, "ekyc:mrz", ""); err != nil {
 			log.Printf("[kyc] CRITICAL: MRZ age verification not recorded on PIAL %s for %s: %v",
 				user.PIALID, user.Handle, err)
 			w.Write([]byte(`<span style="color:#ef4444;font-size:13px">Could not record your verification — please try again.</span>`))
 			return
 		}
-		if tok := GetSessionToken(r); tok != "" && !strings.HasPrefix(tok, "__handle__") {
-			h.sessionCache.Delete(tok)
-		}
-		h.sessionCache.Delete("__handle__" + user.Handle)
+		h.evictCachedAccount(user.ID, "")
 	}
 
 	w.Write([]byte(`<span style="color:#22c55e;font-size:13px;font-weight:500">✓ Age verified — reload to continue.</span>`))
@@ -391,10 +386,7 @@ func (h *Handler) kycSubmit(w http.ResponseWriter, r *http.Request) {
 	if h.db != nil && user.PIALID != "" {
 		// Invalidate session cache so the next request immediately sees the new state.
 		// Without this the feed gate stays stale for up to 30 seconds after KYC.
-		if tok := GetSessionToken(r); tok != "" && !strings.HasPrefix(tok, "__handle__") {
-			h.sessionCache.Delete(tok)
-		}
-		h.sessionCache.Delete("__handle__" + user.Handle)
+		h.evictCachedAccount(user.ID, "")
 
 		// Propagate the eKYC result to PIAL — the single record. A confirmed minor is
 		// never marked age_verified (is_minor is derived from the DOB we lock here);
@@ -402,15 +394,11 @@ func (h *Handler) kycSubmit(w http.ResponseWriter, r *http.Request) {
 		if ekyc != nil {
 			isMinorConfirmed := ekyc.AgeBand == "minor"
 			// OCR DOB is authoritative — record + lock it so is_adult/is_minor derive from it.
-			if ekyc.OCR.DOB != "" {
-				if _, err := h.db.Exec(`
-					UPDATE pial_roots
-					SET date_of_birth = $1::date, dob_locked = TRUE,
-					    is_adult = (date_part('year', age($1::date)) >= 18),
-					    is_minor = (date_part('year', age($1::date)) <  18)
-					WHERE pial_id = $2::uuid`,
-					ekyc.OCR.DOB, user.PIALID,
-				); err != nil {
+			if ekyc.OCR.DOB != "" && isMinorConfirmed {
+				locked := true
+				if err := h.identity.Client().PutFacts(r.Context(), user.PIALID, identity.FactsUpdate{
+					DOB: &ekyc.OCR.DOB, DOBLocked: &locked, Source: "ekyc",
+				}); err != nil {
 					log.Printf("[kyc] CRITICAL: documented date of birth from eKYC not recorded on PIAL %s for %s: %v",
 						user.PIALID, user.Handle, err)
 					w.Write([]byte(`<span style="color:#ef4444;font-size:13px">Could not record your verification — please try again.</span>`))
@@ -418,7 +406,7 @@ func (h *Handler) kycSubmit(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if !isMinorConfirmed {
-				if err := dbpkg.SetPIALVerifiedNotifying(h.db, user.PIALID, "full", "ekyc", user.ID); err != nil {
+				if err := h.recordVerification(r.Context(), user, model.KYCTierFull, "ekyc", ekyc.OCR.DOB); err != nil {
 					log.Printf("[kyc] CRITICAL: eKYC age verification not recorded on PIAL %s for %s: %v",
 						user.PIALID, user.Handle, err)
 					w.Write([]byte(`<span style="color:#ef4444;font-size:13px">Could not record your verification — please try again.</span>`))
@@ -427,7 +415,7 @@ func (h *Handler) kycSubmit(w http.ResponseWriter, r *http.Request) {
 			}
 		} else {
 			// Dev mode: still mark age_verified so the flag is set.
-			if err := dbpkg.SetPIALVerifiedNotifying(h.db, user.PIALID, "full", "ekyc:dev", user.ID); err != nil {
+			if err := h.recordVerification(r.Context(), user, model.KYCTierFull, "ekyc:dev", ""); err != nil {
 				log.Printf("[kyc] CRITICAL: age verification not recorded on PIAL %s for %s: %v",
 					user.PIALID, user.Handle, err)
 				w.Write([]byte(`<span style="color:#ef4444;font-size:13px">Could not record your verification — please try again.</span>`))
@@ -566,10 +554,7 @@ func (h *Handler) kycCreatorAccept(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Invalidate session cache so the next request sees the updated flags.
-		if tok := GetSessionToken(r); tok != "" && !strings.HasPrefix(tok, "__handle__") {
-			h.sessionCache.Delete(tok)
-		}
-		h.sessionCache.Delete("__handle__" + user.Handle)
+		h.evictCachedAccount(user.ID, "")
 	}
 
 	w.Write([]byte(`<span style="color:#22c55e;font-size:13px;font-weight:500">✓ Adult Creator activated — <a href="/shop" style="color:var(--accent)">Set up your shop →</a></span>`))
@@ -649,4 +634,30 @@ func (h *Handler) kycAdultEnable(w http.ResponseWriter, r *http.Request) {
 	} else {
 		w.Write([]byte(`<span style="color:#ef4444;font-size:13px">Could not enable — complete Tier 2 verification first.</span>`))
 	}
+}
+
+// recordVerification records a documented age or identity verification with
+// elohim-veni — the tier, age_verified, the locked date of birth when the
+// document gave one — and then tells the account. Documented verification
+// implies an adult; a confirmed minor is never sent here. The authority derives
+// is_adult and is_minor from the date of birth itself.
+//
+// Never told to the person as done unless it was done: the error is returned
+// whenever the authority did not accept the verification.
+func (h *Handler) recordVerification(ctx context.Context, user *model.User, tier, source, documentedDOB string) error {
+	verified, locked := true, true
+	update := identity.FactsUpdate{KYCTier: &tier, AgeVerified: &verified, DOBLocked: &locked, Source: source}
+	if documentedDOB != "" {
+		update.DOB = &documentedDOB
+	}
+	if err := h.identity.Client().PutFacts(ctx, user.PIALID, update); err != nil {
+		return err
+	}
+	h.evictCachedAccount(user.ID, "")
+	if err := dbpkg.NotifyVerified(h.db, user.PIALID, user.ID); err != nil {
+		// The verification stands at the authority; only the notice of it is
+		// missing, and that is said rather than unwound.
+		log.Printf("[kyc] verification for @%s recorded, but its notice was not written: %v", user.Handle, err)
+	}
+	return nil
 }

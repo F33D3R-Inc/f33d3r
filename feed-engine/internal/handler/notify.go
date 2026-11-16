@@ -3,88 +3,84 @@ package handler
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log"
 	"strings"
 
 	dbpkg "github.com/f33d3r/feed-engine/internal/db"
 )
 
-// publishNewPostToFollowers tells followers there is something new. The stream carries
-// a count for the web and the work's id for the app; the card is read per person.
-func (h *Handler) publishNewPostToFollowers(posterUserID, workID string) {
-	if h.db == nil || h.partial == nil {
-		return
+// publishNewPostToFollowers is the follower_fanout obligation: it tells the
+// author's followers there is something new. The stream carries a count for the
+// web and the work's id for the app; the card is read per person. Who is told is
+// decided in SQL (FanoutFollowerPIALs) against the following feed's own rules,
+// replies included, so a reply is never announced as a post.
+func (h *Handler) publishNewPostToFollowers(posterUserID, workID string) error {
+	_, _, authorHandle, err := dbpkg.WorkFanoutFacts(h.db, workID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil // removed before it was announced
 	}
-	kind, _, authorHandle, err := dbpkg.WorkKindAndAuthor(h.db, workID)
 	if err != nil {
-		log.Printf("[new-work-sse] work %s: %v", workID, err)
-		return
+		return fmt.Errorf("reading work %s for fan-out: %w", workID, err)
 	}
-	if !newPostFanoutKind(kind) {
-		return
+	twin, err := json.Marshal(map[string]string{"work_id": workID, "author_handle": authorHandle})
+	if err != nil {
+		return fmt.Errorf("encoding fan-out twin of %s: %w", workID, err)
 	}
-	twin, _ := json.Marshal(map[string]string{"work_id": workID, "author_handle": authorHandle})
-	h.fanOutNewPost(posterUserID, workID, string(twin))
-}
-
-// newPostFanoutKind reports whether a work of this kind is a feed item, and so
-// whether its arrival is a new_post for the people following its author.
-//
-// A reply is not. The following feed excludes kind='reply' — it always has —
-// but the fan-out did not, so every reply anyone wrote was pushed to all of
-// their followers as a card that the feed those followers were looking at
-// would never have shown them, and that no amount of scrolling would reproduce.
-// The exclusion belongs in one sentence that both paths can be read against.
-func newPostFanoutKind(kind string) bool {
-	return kind != "reply"
+	return h.fanOutNewPost(posterUserID, workID, string(twin))
 }
 
 // publishRepostToFollowers announces a repost to the reposter's followers.
 //
 // A repost is a first-class feed item — GetWorksFeedFollowing unions reposts by
 // followed accounts into the feed at the time of the repost — so a feed that is
-// being kept live must be told about one. It never was: the stream only fired
-// on an original work, which meant the live feed and the fetched feed disagreed
-// about what had happened for as long as the reader stayed on the page.
+// being kept live must be told about one.
 //
 // The twin names both people. The card is the work; the reason it is on this
 // person's screen is the reposter, and a client that was only told the author
 // cannot draw the line that says so.
 func (h *Handler) publishRepostToFollowers(reposterID, workID string) {
-	if h.db == nil || h.partial == nil || reposterID == "" || workID == "" {
+	if reposterID == "" || workID == "" {
 		return
 	}
-	kind, _, authorHandle, err := dbpkg.WorkKindAndAuthor(h.db, workID)
+	_, _, authorHandle, err := dbpkg.WorkFanoutFacts(h.db, workID)
 	if err != nil {
 		log.Printf("[repost-sse] work %s: %v", workID, err)
 		return
 	}
-	if !newPostFanoutKind(kind) {
+	var reposterHandle string
+	if err := h.db.QueryRow(`SELECT handle FROM users WHERE id = $1::uuid`, reposterID).Scan(&reposterHandle); err != nil {
+		log.Printf("[repost-sse] reposter %s: %v", reposterID, err)
 		return
 	}
-	var reposterHandle string
-	_ = h.db.QueryRow(`SELECT handle FROM users WHERE id = $1::uuid`, reposterID).Scan(&reposterHandle)
-	twin, _ := json.Marshal(map[string]string{
+	twin, err := json.Marshal(map[string]string{
 		"work_id":       workID,
 		"author_handle": authorHandle,
 		"reposted_by":   reposterHandle,
 	})
-	h.fanOutNewPost(reposterID, workID, string(twin))
+	if err != nil {
+		log.Printf("[repost-sse] twin %s: %v", workID, err)
+		return
+	}
+	if err := h.fanOutNewPost(reposterID, workID, string(twin)); err != nil {
+		log.Printf("[repost-sse] %v", err)
+	}
 }
 
 // fanOutNewPost tells everyone following sourceUserID who may see the work. Who that is
 // is decided per follower, in SQL, against the same rules the following feed reads with.
-func (h *Handler) fanOutNewPost(sourceUserID, workID, twin string) {
+func (h *Handler) fanOutNewPost(sourceUserID, workID, twin string) error {
 	pials, err := dbpkg.FanoutFollowerPIALs(h.db, sourceUserID, workID)
 	if err != nil {
-		log.Printf("[new-work-sse] audience for work %s: %v", workID, err)
-		return
+		return fmt.Errorf("audience for work %s: %w", workID, err)
 	}
 	h.tellNewPost(pials)
 	event := SSEEvent{Type: "new_post", Data: workID, JSON: twin}
 	for _, pial := range pials {
 		PublishToUser(pial, event)
 	}
+	return nil
 }
 
 // ── Notifications for engagement ─────────────────────────────────────────────
@@ -103,23 +99,26 @@ func notificationPreview(body string) string {
 	return strings.TrimSpace(string(r[:notificationPreviewRunes])) + "…"
 }
 
-// publishCitedWork updates anyone with the cited work on screen: its counts, and the
-// new row in its replies. What the work owes people is queued with the work itself
-// and paid by StartWorkNoticeWorker.
-func (h *Handler) publishCitedWork(workID, kind, citedCID string) {
-	if h.db == nil || citedCID == "" || (kind != "reply" && kind != "quote") {
-		return
-	}
-	var citedWorkID string
-	err := h.db.QueryRow(`SELECT id::text FROM works WHERE cid = $1 AND deleted_at IS NULL LIMIT 1`, citedCID).Scan(&citedWorkID)
+// publishCitedWorks is the cited_update obligation: everyone with a cited work
+// on screen gets its new counts, and the thread of a replied-to work gets the new
+// row. A cited work that is gone, or held by moderation, has nobody to update.
+func (h *Handler) publishCitedWorks(workID string) error {
+	targets, err := dbpkg.WorkCitationTargets(h.db, workID)
 	if err != nil {
-		if err != sql.ErrNoRows {
-			log.Printf("[work] reading cited work %s: %v", citedCID, err)
+		return err
+	}
+	for _, t := range targets {
+		cited, err := dbpkg.GetWorkByID(h.db, t.WorkID, "")
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
 		}
-		return
+		if err != nil {
+			return fmt.Errorf("reloading cited work %s: %w", t.WorkID, err)
+		}
+		h.publishWorkEngagementFor(cited)
+		if t.Type == "reply" {
+			h.publishNewReply(t.WorkID, workID)
+		}
 	}
-	h.publishWorkEngagement(citedWorkID)
-	if kind == "reply" {
-		h.publishNewReply(citedWorkID, workID)
-	}
+	return nil
 }

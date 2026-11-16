@@ -125,6 +125,14 @@ func PublishFacetToUser(pial string, m FacetMutation) {
 	publishFacet(m, func(e SSEEvent) { PublishToUser(pial, e) })
 }
 
+// PublishFacetToAccount delivers a mutation to every connection signed in as one
+// account (persona). A Facet that belongs to one persona — its compose status, its
+// badge, its contact surfaces — is published here, so another persona of the same
+// person never receives it.
+func PublishFacetToAccount(account string, m FacetMutation) {
+	publishFacet(m, func(e SSEEvent) { PublishToAccount(account, e) })
+}
+
 // PublishFacetToPostWatchers delivers a mutation to everyone watching a work.
 func PublishFacetToPostWatchers(workID string, m FacetMutation) {
 	publishFacet(m, func(e SSEEvent) { PublishToPostWatchers(workID, e) })
@@ -353,8 +361,10 @@ func (h *Handler) publishPollTally(workID, voterID string) {
 }
 
 // publishToast shows a short message to one person. contentHTML must already be escaped.
+// The toast is its own entity, named by name. The recipient is the stream it is
+// delivered on and is never part of the Facet id: a PIAL is not written into a page.
 func publishToast(pial, name, contentHTML string) {
-	facetID := "facet:f33d3r:toast:" + html.EscapeString(pial) + ":" + html.EscapeString(name)
+	facetID := "facet:f33d3r:toast:" + html.EscapeString(name) + ":message"
 	PublishFacetToUser(pial, FacetMutation{
 		FacetID: facetID,
 		Fragment: `<div class="toast toast-show toast--success" role="status" data-expires-ms="6000" data-facet-id="` +
@@ -387,7 +397,7 @@ func (h *Handler) applyNotificationUpdate(u sitra.NotificationUpdate) {
 			log.Printf("[notify] recording unread for %s: %v", u.Account, err)
 		}
 	}
-	badge := h.renderFacet("notif_badge", map[string]interface{}{"PIALID": u.Pial, "UnreadCount": u.Unread})
+	badge := h.renderFacet("notif_badge", map[string]interface{}{"ID": u.Account, "UnreadCount": u.Unread})
 	deliverLive(liveKindAccount, u.Account, SSEEvent{
 		ID: nextLiveID(), Type: "notify", Data: badge, JSON: fmt.Sprintf(`{"unread":%d}`, u.Unread),
 	})

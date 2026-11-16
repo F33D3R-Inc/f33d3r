@@ -3,7 +3,7 @@ FACET marketplace_seller_listings
   version: 1.0 | status: stable | layer: 2
 
   inputs:
-    FacetID   string          — facet:f33d3r:shop:<pial>:listings
+    FacetID   string          — facet:f33d3r:shop:<account>:listings
     Listings  []PublicListing — the seller's own listings, active and inactive
     Count     int             — number of listings held
     Limit     int             — listings one shop may hold
@@ -29,7 +29,7 @@ FACET marketplace_seller_listings
   <div class="marketplace-empty-state"><p class="marketplace-empty-state__body">{{.Error}}</p></div>
   {{else if .Listings}}
   {{range .Listings}}
-  {{template "marketplace_listing_card" (dict "ID" .ID "Title" .Title "Description" .Description "PriceSats" .PriceSats "PriceXrpDrops" .PriceXrpDrops "PaymentCurrency" .PaymentCurrency "Visibility" .Visibility "IsActive" .IsActive "IsSeller" true "ShopPial" .ShopPial)}}
+  {{template "marketplace_listing_card" (dict "ID" .ID "Title" .Title "Description" .Description "PriceSats" .PriceSats "PriceXrpDrops" .PriceXrpDrops "PaymentCurrency" .PaymentCurrency "Visibility" .Visibility "IsActive" .IsActive "IsSeller" true)}}
   {{end}}
   {{else}}
   <div class="marketplace-empty-state">

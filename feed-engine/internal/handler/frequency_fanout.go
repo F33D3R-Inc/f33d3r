@@ -417,7 +417,7 @@ func frequencyToast(pial, message string) {
 	if pial == "" {
 		return
 	}
-	facetID := "facet:f33d3r:toast:" + html.EscapeString(pial) + ":" + uuid.NewString()
+	facetID := "facet:f33d3r:toast:" + uuid.NewString() + ":message"
 	PublishFacetToUser(pial, FacetMutation{
 		FacetID: facetID,
 		Fragment: `<div class="toast toast-show toast--error" role="alert" data-expires-ms="6000" data-facet-id="` +
