@@ -122,6 +122,7 @@ mod tests {
             self_reply_cadence: 0.0,
             char_count: 0,
             is_in_network: false,
+            creator_pial: None,
         }
     }
 

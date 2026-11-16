@@ -10,9 +10,8 @@ pub struct AppConfig {
     pub scoring: ScoringConfig,
     pub velocity: VelocityConfig,
     pub revenue: RevenueConfig,
-    pub safety: SafetyConfig,
     pub bandit: BanditConfig,
-    pub model_store: ModelStoreConfig,
+    pub learning: LearningConfig,
     pub network: NetworkConfig,
 }
 
@@ -82,23 +81,10 @@ pub struct RevenueConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct SafetyConfig {
-    pub default_epsilon: f64,
-    pub sfw_epsilon: f64,
-    pub hard_block_score: f64,
-}
-
-#[derive(Debug, Clone, Deserialize)]
 pub struct BanditConfig {
-    pub alpha_ucb: f64,
     pub feature_dim: usize,
     pub exploration_count: usize,
     pub cold_start_explore_count: usize,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct ModelStoreConfig {
-    pub surfaces: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -106,6 +92,44 @@ pub struct NetworkConfig {
     /// Score boost added to in-network content (creator is followed by the user).
     /// Mirrors X's in-network pool priority — social graph content floats up.
     pub network_boost: f64,
+}
+
+/// How much the viewer's learned LinUCB preference moves a work's score.
+#[derive(Debug, Clone, Deserialize)]
+pub struct LearningConfig {
+    /// Weight on θᵀx, the reward the viewer's model expects for this work's
+    /// feature vector (clamped to [0, 1]). See config/default.toml for why it
+    /// is the value it is.
+    pub learned_weight: f64,
+}
+
+/// Process settings that come only from the environment. Every one is
+/// required: AethyrRank owns the ranking state and its intake, and a process
+/// that could not keep either would only pretend to rank.
+#[derive(Debug, Clone)]
+pub struct Runtime {
+    /// f33d3r_rank. Created at boot when it does not exist.
+    pub database_url: String,
+    /// Sitra Achra brokers, for ranking.events and its dead-letter topic.
+    pub kafka_brokers: String,
+    /// The shared X-Internal-Key every caller must present.
+    pub internal_api_key: String,
+}
+
+impl Runtime {
+    pub fn from_env() -> Result<Self> {
+        fn required(name: &str) -> Result<String> {
+            match std::env::var(name) {
+                Ok(v) if !v.trim().is_empty() => Ok(v),
+                _ => anyhow::bail!("{name} is not set; AethyrRank refuses to start without it"),
+            }
+        }
+        Ok(Self {
+            database_url: required("DATABASE_URL")?,
+            kafka_brokers: required("KAFKA_BROKERS")?,
+            internal_api_key: required("INTERNAL_API_KEY")?,
+        })
+    }
 }
 
 impl AppConfig {

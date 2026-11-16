@@ -1,4 +1,3 @@
-pub mod brain;
 pub mod handlers;
 pub mod types;
 
@@ -9,20 +8,19 @@ use axum::{
 use std::sync::Arc;
 use tower_http::trace::TraceLayer;
 
-use brain::{brain_heartbeat, brain_status, receive_signal, register_brain};
-use handlers::{feedback_handler, health_handler, rank_handler, AppState};
+use handlers::{health_handler, rank_handler, AppState};
 
+/// /rank is the only working route. Ranking signals arrive on Sitra Achra
+/// ranking.events (crate::learning), never over HTTP.
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/metrics", get(crate::observ::metrics_handler))
         .route("/rank", post(rank_handler))
-        .route("/feedback", post(feedback_handler))
         .route("/health", get(health_handler))
-        // Brain registry endpoints
-        .route("/brain/register", post(register_brain))
-        .route("/brain/heartbeat", post(brain_heartbeat))
-        .route("/brain/status", get(brain_status))
-        .route("/brain/signal", post(receive_signal))
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::clone(&state),
+            crate::auth::require_internal_key,
+        ))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
         .layer(axum::middleware::from_fn(crate::observ::http_middleware))

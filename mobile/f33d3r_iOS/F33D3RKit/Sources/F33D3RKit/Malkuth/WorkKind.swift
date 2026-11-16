@@ -28,16 +28,54 @@ public enum WorkKind: String, CaseIterable, Codable, Hashable, Sendable {
 
 /// Who may reply to a Work.
 ///
-/// Mirrors the documented values of `comment_gating` on `workCanonicalPayload`.
-/// The column itself has no CHECK constraint and defaults to `open`, so the
-/// server will store whatever it is handed — which makes this enum the only
-/// thing standing between a typo and a Work nobody can reply to for reasons no
-/// surface explains.
+/// Mirrors `CommentGatings` in `feed-engine/internal/db/works.go`, the closed
+/// vocabulary the `works_comment_gating_vocabulary` CHECK enforces and the
+/// create path validates, in the server's order:
+///
+/// - `everyone` — anyone who may read the work
+/// - `followers` — accounts that follow the author
+/// - `circle` — accounts the author and they follow both ways
+/// - `verified` — accounts with a fully verified identity
+/// - `none` — nobody but the author
 public enum CommentGating: String, CaseIterable, Codable, Hashable, Sendable {
     case everyone
     case followers
     case circle
+    case verified
     case none
+
+    /// What a reader is told the choice means — the server's own labels for
+    /// the compose_gating Facet (`commentGatingLabels`, work_create.go).
+    public var title: String {
+        switch self {
+        case .everyone: return "Everyone"
+        case .followers: return "Your followers"
+        case .circle: return "Your circle (you follow each other)"
+        case .verified: return "Verified accounts"
+        case .none: return "Only you"
+        }
+    }
+
+    public var systemImage: String {
+        switch self {
+        case .everyone: return "globe"
+        case .followers: return "person.2"
+        case .circle: return "person.3"
+        case .verified: return "checkmark.seal"
+        case .none: return "bubble.left.and.exclamationmark.bubble.right"
+        }
+    }
+
+    /// The compose screen's one-line summary of the choice.
+    public var replySummary: String {
+        switch self {
+        case .everyone: return "Everyone can reply"
+        case .followers: return "Your followers can reply"
+        case .circle: return "Your circle can reply"
+        case .verified: return "Verified accounts can reply"
+        case .none: return "Only you can reply"
+        }
+    }
 
     /// What the server assumes when the field is empty, and what `malkuth.js`
     /// sends by default. Named rather than inlined so the two agree by

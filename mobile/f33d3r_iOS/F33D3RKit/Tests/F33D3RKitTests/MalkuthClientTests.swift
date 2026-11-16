@@ -7,12 +7,12 @@ import Testing
 @Suite(.serialized)
 struct MalkuthClientTests {
 
-    static let pial = MalkuthCanonicalTests.pial
+    static let account = MalkuthCanonicalTests.account
     static let uuid = "7c9e6679-7425-40de-944b-e07fc1f90ae7"
     static let cid = "sha256:" + String(repeating: "ab", count: 32)
 
     static func payload(_ mutate: (inout WorkPayload) -> Void = { _ in }) -> WorkPayload {
-        var p = WorkPayload(authorPIAL: pial, body: "hello", timestampMS: 1_767_225_600_000)
+        var p = WorkPayload(authorAccount: account, body: "hello", timestampMS: 1_767_225_600_000)
         mutate(&p)
         return p
     }
@@ -34,22 +34,27 @@ struct MalkuthClientTests {
 
     // MARK: - Validation
 
-    /// Signing with an empty `author_pial` is the failure that would be silent:
-    /// `verifyCID` recomputes the hash of whatever was sent and passes, and
-    /// `verifyMalkuthSig` looks up the key by the *session's* PIAL and passes
-    /// too. The work is stored, permanently, with an author field naming nobody.
-    @Test("Signing without a PIAL is refused rather than attempted")
-    func refusesToSignWithoutPIAL() throws {
+    /// The server refuses a work whose `author_account` is not the session's
+    /// account, so signing without one is refused here rather than attempted.
+    @Test("Signing without an account is refused rather than attempted")
+    func refusesToSignWithoutAccount() throws {
         let key = MalkuthKey.generate()
         for absent in ["", "   "] {
-            #expect(throws: MalkuthError.pialUnknown) {
-                try WorkEnvelope(payload: Self.payload { $0.authorPIAL = absent }, key: key)
+            #expect(throws: MalkuthError.accountUnknown) {
+                try WorkEnvelope(payload: Self.payload { $0.authorAccount = absent }, key: key)
             }
         }
 
-        let identity = AuthenticatedIdentity(user: try Self.sampleUser(), pialID: nil)
+        let identity = AuthenticatedIdentity(user: try Self.sampleUser(), accountID: nil)
         #expect(!identity.canSign)
-        #expect(throws: MalkuthError.pialUnknown) { try identity.requirePIAL() }
+        #expect(throws: MalkuthError.accountUnknown) { try identity.requireAccount() }
+    }
+
+    @Test("An author_account that is not an account id is refused")
+    func refusesMalformedAccount() throws {
+        #expect(throws: MalkuthError.malformedUUID(field: "author_account", value: "nope")) {
+            try WorkEnvelope(payload: Self.payload { $0.authorAccount = "nope" }, key: MalkuthKey.generate())
+        }
     }
 
     @Test("A reply with no parent is refused here, not by a round trip")
@@ -66,12 +71,13 @@ struct MalkuthClientTests {
         }
     }
 
-    @Test("A repost with no source is refused")
-    func refusesRepostWithoutSource() throws {
-        let key = MalkuthKey.generate()
-        #expect(throws: MalkuthError.repostMissingSourceID) {
-            try WorkEnvelope(payload: Self.payload { $0.isRepost = true }, key: key)
-        }
+    /// A repost is a reaction, never a signed work: the payload hashes
+    /// `is_repost` and `repost_source_id` as constants, and nothing can set them.
+    @Test("is_repost and repost_source_id are hashed as false and null")
+    func repostFieldsAreConstants() {
+        let text = String(decoding: Self.payload().canonicalJSON(), as: UTF8.self)
+        #expect(text.contains(#""is_repost":false"#))
+        #expect(text.contains(#""repost_source_id":null"#))
     }
 
     /// The server never checks `parent_cid`'s shape. A malformed one matches no
@@ -91,16 +97,6 @@ struct MalkuthClientTests {
                     payload: Self.payload { $0.kind = .reply; $0.parentCID = bad }, key: key
                 )
             }
-        }
-    }
-
-    @Test("A repost source that is not a UUID is caught, because ::uuid would 500")
-    func rejectsMalformedRepostSource() throws {
-        let key = MalkuthKey.generate()
-        #expect(throws: MalkuthError.malformedUUID(field: "repost_source_id", value: "nope")) {
-            try WorkEnvelope(
-                payload: Self.payload { $0.isRepost = true; $0.repostSourceID = "nope" }, key: key
-            )
         }
     }
 
@@ -138,24 +134,67 @@ struct MalkuthClientTests {
 
     @Test("rfc3339String formats what the validator and Go both accept")
     func formatsTimestampsGoCanRead() throws {
-        let formatted = WorkPayload.rfc3339String(Date(timeIntervalSince1970: 1_767_225_600))
-        #expect(formatted == "2026-01-01T00:00:00Z")
+        let formatted = WorkPayload.rfc3339String(Date(timeIntervalSince1970: 1_767_225_600 + 86_400))
+        #expect(formatted == "2026-01-02T00:00:00Z")
         #expect(throws: Never.self) {
-            try WorkEnvelope(payload: Self.payload { $0.pollEndsAt = formatted },
-                             key: MalkuthKey.generate())
+            try WorkEnvelope(
+                payload: Self.payload {
+                    $0.kind = .poll
+                    $0.pollOptions = ["yes", "no"]
+                    $0.pollEndsAt = formatted
+                },
+                key: MalkuthKey.generate()
+            )
         }
     }
 
-    /// Postgres `TEXT` rejects NUL outright, so this reaches the author as
-    /// `500 server error` with nothing to act on.
-    @Test("A NUL byte is caught here rather than as a 500 from Postgres")
-    func rejectsNULBytes() throws {
+    /// The server cannot rewrite signed text, so it refuses any that is not
+    /// already normalised — a NUL or a bidi override included.
+    @Test("Text that is not normalised is refused before signing")
+    func rejectsUnnormalisedText() throws {
         let key = MalkuthKey.generate()
-        #expect(throws: MalkuthError.nulByteInText(field: "body")) {
-            try WorkEnvelope(payload: Self.payload { $0.body = "a\u{0}b" }, key: key)
+        #expect(throws: MalkuthError.textNotNormalized(field: "body")) {
+            try WorkEnvelope(payload: Self.payload { $0.body = "a" + String(UnicodeScalar(0)) + "b" }, key: key)
         }
-        #expect(throws: MalkuthError.nulByteInText(field: "tags")) {
-            try WorkEnvelope(payload: Self.payload { $0.tags = ["ok", "b\u{0}d"] }, key: key)
+        #expect(throws: MalkuthError.textNotNormalized(field: "body")) {
+            try WorkEnvelope(payload: Self.payload { $0.body = " padded " }, key: key)
+        }
+        #expect(throws: MalkuthError.invalidTag("b d")) {
+            try WorkEnvelope(payload: Self.payload { $0.tags = ["ok", "b d"] }, key: key)
+        }
+    }
+
+    @Test("A body over the weighted limit is refused with how far over it is")
+    func rejectsTooLongText() throws {
+        // CJK weighs two: 1001 of them is 2002 units.
+        #expect(throws: MalkuthError.textTooLong(over: 2)) {
+            try WorkEnvelope(
+                payload: Self.payload { $0.body = String(repeating: "字", count: 1001) },
+                key: MalkuthKey.generate()
+            )
+        }
+    }
+
+    @Test("A poll is two to four distinct options and an end five minutes to seven days out")
+    func validatesPolls() throws {
+        let key = MalkuthKey.generate()
+        let day = WorkPayload.rfc3339String(Date(timeIntervalSince1970: 1_767_225_600 + 86_400))
+        func poll(_ options: [String], ends: String?) -> WorkPayload {
+            Self.payload { $0.kind = .poll; $0.pollOptions = options; $0.pollEndsAt = ends }
+        }
+        #expect(throws: Never.self) { try WorkEnvelope(payload: poll(["a", "b"], ends: day), key: key) }
+        #expect(throws: MalkuthError.pollInvalid("A poll has 2 to 4 options.")) {
+            try WorkEnvelope(payload: poll(["a"], ends: day), key: key)
+        }
+        #expect(throws: MalkuthError.pollInvalid("Options must differ.")) {
+            try WorkEnvelope(payload: poll(["Yes", "yes"], ends: day), key: key)
+        }
+        #expect(throws: MalkuthError.pollInvalid("A poll needs an end time.")) {
+            try WorkEnvelope(payload: poll(["a", "b"], ends: nil), key: key)
+        }
+        let tooLong = WorkPayload.rfc3339String(Date(timeIntervalSince1970: 1_767_225_600 + 8 * 86_400))
+        #expect(throws: MalkuthError.pollInvalid("A poll runs from 5 minutes to 7 days.")) {
+            try WorkEnvelope(payload: poll(["a", "b"], ends: tooLong), key: key)
         }
     }
 
@@ -203,40 +242,53 @@ struct MalkuthClientTests {
 
     // MARK: - Idempotency
 
-    /// The whole of idempotency here: the CID is a content hash and `works.cid`
-    /// is UNIQUE, so re-sending identical bytes cannot make a second row. What
-    /// makes a second row is re-*signing*, because that re-stamps
-    /// `timestamp_ms`.
-    @Test("Re-sending the same submission cannot post twice; re-signing would")
+    /// The CID is a content hash and the server answers a re-delivered CID with
+    /// the work it already created, so re-sending identical bytes cannot make a
+    /// second work. What makes a different work is signing again, because that
+    /// re-stamps `timestamp_ms` — which a submission does only on the server's
+    /// own word that the CID never landed.
+    @Test("Signing the same draft at the same moment is the same work; later is a different one")
     func cidIsTheIdempotencyKey() async throws {
         let signer = MalkuthSigner(store: InMemoryMalkuthKeyStore())
-        let payload = Self.payload()
+        let moment = Date(timeIntervalSince1970: 1_767_225_600)
 
-        let first = try await WorkSubmission.prepare(payload, signer: signer)
-        let second = try await WorkSubmission.prepare(payload, signer: signer)
-        // Same payload, same clock reading, therefore same CID: the second send
-        // is refused by the unique index, not accepted as a new work.
+        var first = WorkSubmission(draft: Self.payload(), signer: signer)
+        var second = WorkSubmission(draft: Self.payload(), signer: signer)
+        try await first.sign(now: moment)
+        try await second.sign(now: moment)
         #expect(first.contentID == second.contentID)
 
-        // Re-stamping the clock is what makes a different work. This is why
-        // WorkSubmission holds the envelope instead of the payload.
-        var later = payload
-        later.timestampMS += 1
-        let third = try await WorkSubmission.prepare(later, signer: signer)
+        var third = WorkSubmission(draft: Self.payload(), signer: signer)
+        try await third.sign(now: moment.addingTimeInterval(0.001))
         #expect(third.contentID != first.contentID)
+    }
+
+    @Test("A submission is signed when it is sent, not when it is made")
+    func signsAtSendTime() async throws {
+        let (client, _) = Self.makeClient()
+        let signer = MalkuthSigner(store: InMemoryMalkuthKeyStore())
+        var submission = WorkSubmission(draft: Self.payload(), signer: signer)
+        #expect(submission.envelope == nil)
+
+        MalkuthMockURLProtocol.headers = ["X-Work-Create-State": "ok"]
+        MalkuthMockURLProtocol.handler = { _ in (201, Data(#"{"work_id":"w-1","cid":"x"}"#.utf8)) }
+        let before = WorkPayload.nowMS()
+        _ = await submission.send(using: client)
+        let stamped = try #require(submission.envelope?.payload.timestampMS)
+        #expect(stamped >= before)
     }
 
     @Test("A timed-out post is retried with the identical bytes, not rebuilt")
     func retriesTheSameBytes() async throws {
         let (client, _) = Self.makeClient()
         let signer = MalkuthSigner(store: InMemoryMalkuthKeyStore())
-        let submission = try await WorkSubmission.prepare(Self.payload(), signer: signer)
+        var submission = WorkSubmission(draft: Self.payload(), signer: signer)
 
         let bodies = Mutex<[Data]>([])
         MalkuthMockURLProtocol.handler = { request in
             bodies.withLock { $0.append(request.bodyData ?? Data()) }
             return bodies.withLock { $0.count } < 3
-                ? (500, Data("server error\n".utf8))
+                ? (502, Data("bad gateway\n".utf8))
                 : (201, Data(#"{"work_id":"w-1","cid":"x"}"#.utf8))
         }
 
@@ -252,22 +304,19 @@ struct MalkuthClientTests {
         let sent = bodies.withLock { $0 }
         #expect(sent.count == 3)
         // Every attempt is byte-identical, so at most one of them can have
-        // created a row.
+        // created a work.
         #expect(Set(sent).count == 1)
-        #expect(sent[0] == submission.envelope.httpBody)
+        #expect(sent[0] == submission.envelope?.httpBody)
     }
 
-    /// `500` is what a *duplicate insert* answers as well as what a genuine
-    /// fault answers — `InsertWork` returns the unique violation and `workEvent`
-    /// turns it into `server error`. Reporting that as a refusal would be a lie
-    /// in one direction and reporting it as success a lie in the other.
     @Test("An exhausted retry is uncertain, never a claim either way")
     func reportsUncertaintyHonestly() async throws {
         let (client, _) = Self.makeClient()
         let signer = MalkuthSigner(store: InMemoryMalkuthKeyStore())
-        let submission = try await WorkSubmission.prepare(Self.payload(), signer: signer)
+        var submission = WorkSubmission(draft: Self.payload(), signer: signer)
 
-        MalkuthMockURLProtocol.handler = { _ in (500, Data("server error\n".utf8)) }
+        MalkuthMockURLProtocol.headers = ["X-Work-Create-State": "server_error"]
+        MalkuthMockURLProtocol.handler = { _ in (500, Data("Something went wrong. Your post was not sent.".utf8)) }
         let outcome = await submission.sendWithRetries(
             using: client, attempts: 2, backoff: { _ in .zero }
         )
@@ -275,33 +324,97 @@ struct MalkuthClientTests {
             Issue.record("expected uncertainty, got \(outcome)")
             return
         }
-        // The CID travels with the uncertainty, because it is the question a
-        // read would need to answer: "is there a work with this content id?"
         #expect(cid == submission.contentID)
     }
 
-    @Test("A deterministic refusal is not retried")
+    @Test("A Duplicate is final and never retried")
+    func duplicateIsFinal() async throws {
+        let (client, _) = Self.makeClient()
+        let signer = MalkuthSigner(store: InMemoryMalkuthKeyStore())
+        var submission = WorkSubmission(draft: Self.payload(), signer: signer)
+
+        let attempts = Mutex<Int>(0)
+        MalkuthMockURLProtocol.headers = ["X-Work-Create-State": "duplicate"]
+        MalkuthMockURLProtocol.handler = { _ in
+            attempts.withLock { $0 += 1 }
+            return (409, Data("You already posted this.".utf8))
+        }
+        let outcome = await submission.sendWithRetries(using: client, attempts: 5, backoff: { _ in .zero })
+        #expect(outcome == .rejected(.workRefused(state: .duplicate, message: "You already posted this.")))
+        #expect(attempts.withLock { $0 } == 1)
+    }
+
+    @Test("A rate limit backs off and retries the same bytes")
+    func rateLimitBacksOff() async throws {
+        let (client, _) = Self.makeClient()
+        let signer = MalkuthSigner(store: InMemoryMalkuthKeyStore())
+        var submission = WorkSubmission(draft: Self.payload(), signer: signer)
+
+        let attempts = Mutex<Int>(0)
+        let waits = Mutex<[Int]>([])
+        MalkuthMockURLProtocol.headers = ["X-Work-Create-State": "rate_limited"]
+        MalkuthMockURLProtocol.handler = { _ in
+            attempts.withLock { $0 += 1 }
+            return attempts.withLock { $0 } < 2
+                ? (429, Data("You have reached the posting limit. Try again later.".utf8))
+                : (201, Data(#"{"work_id":"w-1","cid":"x"}"#.utf8))
+        }
+        let outcome = await submission.sendWithRetries(
+            using: client, attempts: 3, backoff: { n in waits.withLock { $0.append(n) }; return .zero }
+        )
+        guard case .accepted = outcome else {
+            Issue.record("expected acceptance after backing off, got \(outcome)")
+            return
+        }
+        // The wait after a 429 is longer than the wait after a transport blip.
+        #expect(waits.withLock { $0 } == [3])
+    }
+
+    @Test("A signature the server calls too old is signed again once, and only then")
+    func resignsOnlyOnTheServersWord() async throws {
+        let (client, _) = Self.makeClient()
+        let signer = MalkuthSigner(store: InMemoryMalkuthKeyStore())
+        var submission = WorkSubmission(draft: Self.payload(), signer: signer)
+
+        let cids = Mutex<[String]>([])
+        MalkuthMockURLProtocol.handler = { request in
+            let body = try? JSONSerialization.jsonObject(with: request.bodyData ?? Data()) as? [String: Any]
+            cids.withLock { $0.append(body?["cid"] as? String ?? "") }
+            if cids.withLock({ $0.count }) == 1 {
+                MalkuthMockURLProtocol.headers = ["X-Work-Create-State": "invalid_field"]
+                return (400, Data("This post could not be sent: timestamp_ms — the work must be signed within the last hour.".utf8))
+            }
+            MalkuthMockURLProtocol.headers = ["X-Work-Create-State": "ok"]
+            return (201, Data(#"{"work_id":"w-1","cid":"x"}"#.utf8))
+        }
+        let outcome = await submission.sendWithRetries(using: client, attempts: 3, backoff: { _ in .zero })
+        guard case .accepted = outcome else {
+            Issue.record("expected acceptance after re-signing, got \(outcome)")
+            return
+        }
+        let sent = cids.withLock { $0 }
+        #expect(sent.count == 2)
+        #expect(sent[0] != sent[1])
+    }
+
+    @Test("A deterministic refusal is not retried, and keeps the server's words")
     func doesNotRetryDeterministicRefusals() async throws {
         let (client, _) = Self.makeClient()
         let signer = MalkuthSigner(store: InMemoryMalkuthKeyStore())
-        let submission = try await WorkSubmission.prepare(Self.payload(), signer: signer)
+        var submission = WorkSubmission(draft: Self.payload(), signer: signer)
 
         let attempts = Mutex<Int>(0)
+        let words = "This post could not be sent: cid — does not match the payload."
+        MalkuthMockURLProtocol.headers = ["X-Work-Create-State": "invalid_field"]
         MalkuthMockURLProtocol.handler = { _ in
             attempts.withLock { $0 += 1 }
-            return (400, Data("cid mismatch\n".utf8))
+            return (400, Data(words.utf8))
         }
 
         let outcome = await submission.sendWithRetries(
             using: client, attempts: 5, backoff: { _ in .zero }
         )
-        guard case .rejected(let error) = outcome else {
-            Issue.record("expected refusal, got \(outcome)")
-            return
-        }
-        // The server's own words survive: `cid mismatch` is the entire
-        // diagnostic the write path emits for a canonical-encoding bug.
-        #expect(error == .rejected(status: 400, reason: "cid mismatch"))
+        #expect(outcome == .rejected(.workRefused(state: .invalidField, message: words)))
         #expect(attempts.withLock { $0 } == 1)
     }
 
@@ -467,13 +580,30 @@ struct MalkuthClientTests {
     @Test("A signing key is generated once and reused")
     func reusesTheStoredKey() async throws {
         let store = InMemoryMalkuthKeyStore()
-        let first = try await MalkuthSigner(store: store).key()
-        let second = try await MalkuthSigner(store: store).key()
+        let first = try await MalkuthSigner(store: store).key(for: Self.account)
+        let second = try await MalkuthSigner(store: store).key(for: Self.account)
         #expect(first.publicKeySPKIBase64 == second.publicKeySPKIBase64)
 
-        try await MalkuthSigner(store: store).destroyKey()
-        let third = try await MalkuthSigner(store: store).key()
+        try await MalkuthSigner(store: store).destroyKey(for: Self.account)
+        let third = try await MalkuthSigner(store: store).key(for: Self.account)
         #expect(third.publicKeySPKIBase64 != first.publicKeySPKIBase64)
+    }
+
+    @Test("Each account on a device has its own key")
+    func keysAreKeptPerAccount() async throws {
+        let stores = Mutex<[String: InMemoryMalkuthKeyStore]>([:])
+        let signer = MalkuthSigner(storeFor: { account in
+            stores.withLock { all in
+                if let store = all[account] { return store }
+                let store = InMemoryMalkuthKeyStore()
+                all[account] = store
+                return store
+            }
+        })
+        let other = "11111111-2222-3333-4444-555555555555"
+        let mine = try await signer.key(for: Self.account)
+        let theirs = try await signer.key(for: other)
+        #expect(mine.publicKeySPKIBase64 != theirs.publicKeySPKIBase64)
     }
 
     @Test("Registration happens once a launch unless forced")
@@ -486,13 +616,13 @@ struct MalkuthClientTests {
         }
 
         let signer = MalkuthSigner(store: InMemoryMalkuthKeyStore())
-        #expect(try await signer.registerIfNeeded(with: client))
-        #expect(!(try await signer.registerIfNeeded(with: client)))
+        #expect(try await signer.registerIfNeeded(with: client, accountID: Self.account))
+        #expect(!(try await signer.registerIfNeeded(with: client, accountID: Self.account)))
         #expect(calls.withLock { $0 } == 1)
 
-        // A 403 from a post means another device may have registered over this
-        // key; forcing is the fix.
-        #expect(try await signer.registerIfNeeded(with: client, force: true))
+        // Every sign-in forces it: another device may have registered over
+        // this key.
+        #expect(try await signer.registerIfNeeded(with: client, accountID: Self.account, force: true))
         #expect(calls.withLock { $0 } == 2)
     }
 
@@ -512,42 +642,39 @@ struct MalkuthClientTests {
 
     // MARK: - Identity
 
-    @Test("meIdentity reads the PIAL when the server sends one, and nil when it does not")
-    func readsPIALFromMe() async throws {
+    @Test("meIdentity reads account_id, and refuses to sign without it")
+    func readsAccountFromMe() async throws {
         let (client, _) = Self.makeClient()
         let base = try ContractTests.fixture("me")
 
-        // Today's MeDTO, with no pial_id.
         MalkuthMockURLProtocol.handler = { _ in (200, base) }
-        let without = try await client.meIdentity()
-        #expect(without.pialID == nil)
-        #expect(!without.canSign)
-
-        // With pial_id, as the DTO is about to carry it.
-        var object = try #require(try JSONSerialization.jsonObject(with: base) as? [String: Any])
-        object["pial_id"] = Self.pial
-        let withPIAL = try JSONSerialization.data(withJSONObject: object)
-        MalkuthMockURLProtocol.reset()
-        MalkuthMockURLProtocol.handler = { _ in (200, withPIAL) }
         let identity = try await client.meIdentity()
-        #expect(identity.pialID == Self.pial)
+        #expect(identity.accountID == Self.account)
         #expect(identity.canSign)
-        #expect(try identity.requirePIAL() == Self.pial)
-
+        #expect(try identity.requireAccount() == Self.account)
         // One request per call, not two.
         #expect(MalkuthMockURLProtocol.recorded.count == 1)
+
+        var object = try #require(try JSONSerialization.jsonObject(with: base) as? [String: Any])
+        object.removeValue(forKey: "account_id")
+        let without = try JSONSerialization.data(withJSONObject: object)
+        MalkuthMockURLProtocol.reset()
+        MalkuthMockURLProtocol.handler = { _ in (200, without) }
+        let absent = try await client.meIdentity()
+        #expect(absent.accountID == nil)
+        #expect(!absent.canSign)
     }
 
-    @Test("An empty pial_id is treated as absent, not as a PIAL")
-    func treatsEmptyPIALAsAbsent() async throws {
+    @Test("An empty account_id is treated as absent")
+    func treatsEmptyAccountAsAbsent() async throws {
         let (client, _) = Self.makeClient()
         var object = try #require(
             try JSONSerialization.jsonObject(with: try ContractTests.fixture("me")) as? [String: Any]
         )
-        object["pial_id"] = ""
+        object["account_id"] = ""
         let data = try JSONSerialization.data(withJSONObject: object)
         MalkuthMockURLProtocol.handler = { _ in (200, data) }
-        #expect(try await client.meIdentity().pialID == nil)
+        #expect(try await client.meIdentity().accountID == nil)
     }
 
     // MARK: Helpers
@@ -589,10 +716,13 @@ extension URLRequest {
 final class MalkuthMockURLProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) static var handler: (@Sendable (URLRequest) -> (Int, Data))?
     nonisolated(unsafe) static var recorded: [URLRequest] = []
+    /// Extra response headers, such as `X-Work-Create-State`.
+    nonisolated(unsafe) static var headers: [String: String] = [:]
 
     static func reset() {
         handler = nil
         recorded = []
+        headers = [:]
     }
 
     static func makeSession() -> URLSession {
@@ -609,7 +739,8 @@ final class MalkuthMockURLProtocol: URLProtocol, @unchecked Sendable {
         let (status, body) = Self.handler?(request) ?? (500, Data())
         let response = HTTPURLResponse(
             url: request.url!, statusCode: status,
-            httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"]
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "application/json"].merging(Self.headers) { _, new in new }
         )!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: body)

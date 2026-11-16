@@ -3,12 +3,14 @@ FACET admin_analytics_panel
   version: 1.0 | status: stable | layer: 2
 
   inputs:
-    SiteSummary  *AstraonSiteSummary — platform-wide stats (nil = unavailable)
-    UserSummary  *AstraonSummary     — per-user analytics (nil = unavailable)
-    UserPosts    *AstraonCreatorPosts — top posts for looked-up user (nil = unavailable)
+    SiteSummary   *db.SiteAnalytics   — platform-wide totals (always present)
+    QueriedHandle string              — the handle the admin asked for ("" = no lookup)
+    LookupHandle  string              — the account found for it ("" = no such account)
+    UserSummary   *db.CreatorSummary  — that account's last 30 days
+    UserPosts     *analyticsWorks     — that account's top works
 
   states:
-    default | unavailable (when all nil)
+    default | looked_up | no_such_account
 
   children:
     admin_stat_card
@@ -21,7 +23,7 @@ FACET admin_analytics_panel
     admin → analytics tab panel (hx-get /admin/analytics)
 */}}
 {{define "admin_analytics_panel"}}
-<div class="aap-root">
+<div class="aap-root" data-facet-id="facet:f33d3r:analytics:site:admin_panel">
 
   {{/* ── Platform health header ── */}}
   <div class="aap-section-head">
@@ -119,7 +121,7 @@ FACET admin_analytics_panel
       <input class="aap-lookup-input"
              type="text"
              name="handle"
-             value="{{.LookupHandle}}"
+             value="{{.QueriedHandle}}"
              placeholder="handle"
              autocomplete="off"
              autocapitalize="none"
@@ -129,8 +131,8 @@ FACET admin_analytics_panel
   </form>
 
   {{if .LookupHandle}}
-    {{if .UserSummary}}
-    {{$s := .UserSummary}}
+    {{with .UserSummary}}
+    {{$s := .}}
     <div class="aap-user-result">
       <div class="aap-user-head">
         <span class="aap-user-handle">@{{$.LookupHandle}}</span>
@@ -175,8 +177,6 @@ FACET admin_analytics_panel
         </div>
       </div>
     </div>
-    {{else}}
-    <div class="aap-user-notfound">No data found for @{{.LookupHandle}}</div>
     {{end}}
 
     {{if .UserPosts}}
@@ -192,6 +192,8 @@ FACET admin_analytics_panel
       </div>
     </div>
     {{end}}
+  {{else if .QueriedHandle}}
+    <div class="aap-user-notfound">No account is @{{.QueriedHandle}}</div>
   {{end}}
 
 </div>

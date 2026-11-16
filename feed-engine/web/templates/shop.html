@@ -44,14 +44,7 @@
       {{else}}
         {{/* Subscribe CTA */}}
         {{if .IsEnabled}}
-        <button class="shop-subscribe-btn{{if .IsSubscribed}} subscribed{{end}}"
-                id="shop-sub-btn"
-                hx-post="{{if .IsSubscribed}}/api/unsubscribe{{else}}/api/subscribe{{end}}"
-                hx-vals='{"creator_id":"{{.ShopUser.ID}}","plan_id":"{{if .Plans}}{{(index .Plans 0).ID}}{{end}}"}'
-                hx-swap="none"
-                hx-on:htmx:after-request="toggleShopSubscribe(this)">
-          {{if .IsSubscribed}}Subscribed{{else}}Subscribe{{end}}
-        </button>
+        {{template "btn_subscribe" (dict "CreatorID" .ShopUser.ID "CreatorHandle" .ShopUser.Handle "IsSubscribed" .Subscription.IsSubscribed "CancelledUntil" .Subscription.CancelledUntil "Unavailable" .Subscription.Unavailable)}}
         {{end}}
         {{/* Tip button */}}
         <button class="shop-tip-btn" type="button"
@@ -73,7 +66,7 @@
     </div>
     <div class="shop-earnings-grid">
       <div class="shop-earn-card">
-        <div class="shop-earn-value">{{.Earnings.TotalDisplay}} AET</div>
+        <div class="shop-earn-value">{{.Earnings.TotalDisplay}}</div>
         <div class="shop-earn-label">Total earned</div>
       </div>
       <div class="shop-earn-card">
@@ -93,9 +86,11 @@
   <div class="shop-section">
     <div class="shop-section-head">
       <h2 class="shop-section-title">Subscription plans</h2>
-      {{if .IsOwner}}<button class="shop-section-btn" onclick="openAddPlan()">+ Add plan</button>{{end}}
+      {{if .IsOwner}}<a class="shop-section-btn" href="/create/memberships">+ Add plan</a>{{end}}
     </div>
-    {{if .Plans}}
+    {{if .PlansError}}
+    <p class="shop-setup-sub" role="alert">{{.PlansError}}</p>
+    {{else if .Plans}}
     <div class="shop-plans-grid">
       {{range $i, $p := .Plans}}
       <div class="shop-plan-card{{if eq $i 0}} shop-plan-featured{{end}}">
@@ -109,14 +104,15 @@
             <span class="shop-plan-unit">AET / month</span>
           </div>
         </div>
-        {{if not $.IsOwner}}
-        <button class="btn-primary shop-plan-cta"
+        {{if and (not $.IsOwner) (not $.IsSubscribed) (not $.Subscription.Unavailable)}}
+        <button class="btn-primary shop-plan-cta" type="button"
                 hx-post="/api/subscribe"
-                hx-vals='{"creator_id":"{{$.ShopUser.ID}}","plan_id":"{{$p.ID}}","price_aet":"{{$p.PriceAET}}"}'
-                hx-swap="none"
-                hx-on:htmx:after-request="toast('Subscribed to {{$p.Name}}')">
-          {{if $.IsSubscribed}}Current plan{{else}}Subscribe · {{$p.PriceDisplay}} AET/mo{{end}}
+                hx-vals='{"creator_id":"{{$.ShopUser.ID}}","plan_id":"{{$p.ID}}"}'
+                hx-target="#shop-plan-result-{{$p.ID}}" hx-swap="innerHTML"
+                hx-disabled-elt="this">
+          Subscribe · {{$p.PriceDisplay}} AET/mo
         </button>
+        <span id="shop-plan-result-{{$p.ID}}" aria-live="polite"></span>
         {{end}}
       </div>
       {{end}}
@@ -126,7 +122,7 @@
       <div class="shop-setup-icon">💰</div>
       <h3 class="shop-setup-title">Set up your subscription</h3>
       <p class="shop-setup-sub">Create subscription tiers to let your fans support you monthly and unlock exclusive content.</p>
-      <button class="btn-primary" onclick="openAddPlan()">Create your first plan</button>
+      <a class="btn-primary" href="/create/memberships">Create your first plan</a>
     </div>
     {{else}}
     {{template "stateEmpty" (dict "Title" "No plans yet" "Sub" "This creator hasn't set up subscription plans yet")}}
@@ -176,15 +172,4 @@
 </main>
 {{end}}
 {{define "right-panel"}}{{template "sidebar_right" .}}{{end}}
-{{define "page-scripts"}}<script>
-window.toggleShopSubscribe = function(btn) {
-  var subscribed = btn.classList.contains('subscribed');
-  btn.classList.toggle('subscribed', !subscribed);
-  btn.textContent = subscribed ? 'Subscribe' : 'Subscribed';
-  btn.setAttribute('hx-post', subscribed ? '/api/subscribe' : '/api/unsubscribe');
-  toast(subscribed ? 'Unsubscribed' : 'Subscribed! Welcome aboard 🎉');
-};
-window.openAddPlan = function() {
-  toast('Plan management coming soon — contact support to set up plans', 'info');
-};
-</script>{{end}}
+

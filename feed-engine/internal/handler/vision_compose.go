@@ -615,6 +615,7 @@ func (h *Handler) visionCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	in := dbpkg.VisionInput{
+		AuthorAccount:      user.ID,
 		AuthorPIAL:         user.PIALID,
 		ContentType:        contentType,
 		Body:               body,
@@ -739,7 +740,7 @@ func (h *Handler) visionCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	ref, err := dbpkg.InsertVision(h.db, in)
+	ref, addr, err := dbpkg.InsertVision(h.db, in)
 	if err != nil {
 		log.Printf("[vision] insert for %s: %v", user.ID, err)
 		h.renderVisionComposerError(w, r, user, composerMode,
@@ -748,11 +749,11 @@ func (h *Handler) visionCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	// The content-safety fabric is server-to-server and addresses the Vision by
 	// its lane ref; the page is handed the wire address, which names the
-	// account and never the PIAL.
-	visionID := dbpkg.VisionAddress{AuthorAccount: user.ID, Seq: ref.Seq}.String()
+	// posting account and its own ordinal, never the PIAL.
+	visionID := addr.String()
 
-	// Milestones belong to the lane that owns the object.
-	go dbpkg.TryAwardVisionAchievements(h.db, user.ID, user.PIALID)
+	// Milestones belong to the account that posted: a persona earns its own.
+	go dbpkg.TryAwardVisionAchievements(h.db, user.ID)
 
 	// Hand the new Vision to the content-safety fabric. The row opens 'pending'
 	// and stays there until a scan answers for it.

@@ -482,17 +482,17 @@ func TryAwardRealmAchievements(database *sql.DB, userID string, realm int) {
 	}
 }
 
-// CountUserVisions returns how many Visions a user has authored, over their
+// CountUserVisions returns how many Visions an account has posted, over its
 // whole history. Expiry is not a filter: a milestone counts what was posted,
 // and an expired Vision was still posted.
 //
-// This used to count works.kind='vision'. The ephemeral lane moved to its own
-// table in migration 0008, then to PIAL-only addressing in migration 0023, so
-// that count would now read 0 forever if it still queried the old shape.
-func CountUserVisions(database *sql.DB, authorPIAL string) int {
+// The count is the posting account's (visions.author_account, migration 0040),
+// never its PIAL's: counting by PIAL awarded one persona public milestones for
+// Visions another persona of the same person posted, which links the two.
+func CountUserVisions(database *sql.DB, accountID string) int {
 	return countQuery(database,
-		`SELECT COUNT(*) FROM visions WHERE author_pial = $1::uuid AND deleted_at IS NULL`,
-		authorPIAL)
+		`SELECT COUNT(*) FROM visions WHERE author_account = $1::uuid AND deleted_at IS NULL`,
+		accountID)
 }
 
 // TryAwardVisionAchievements checks Vision posting milestones and awards
@@ -500,8 +500,8 @@ func CountUserVisions(database *sql.DB, authorPIAL string) int {
 //
 // The achievement ids stay vision_* — they are stable keys already referenced by
 // earned user_achievements rows. Migration 0024 relabels their display text.
-func TryAwardVisionAchievements(database *sql.DB, userID, authorPIAL string) {
-	n := CountUserVisions(database, authorPIAL)
+func TryAwardVisionAchievements(database *sql.DB, userID string) {
+	n := CountUserVisions(database, userID)
 	if n == 1 {
 		AwardAchievement(database, userID, "vision_first")
 	}

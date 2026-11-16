@@ -53,6 +53,9 @@ https://dev.f33d3r.com:8443, https://localhost:8443, https://XXXG-00W0.local:844
     # public edge never serves it. Answered before the catch-all so the path
     # is not proxied.
     respond /metrics 404
+    # Brain-to-brain routes are reached on the container network only, never
+    # from the edge — the same wall prod's public and tor sites have.
+    respond /api/internal/* 404
 
     # Frequency audio signaling. The server API under /twirp is never published.
     @livekit path /rtc /rtc/*

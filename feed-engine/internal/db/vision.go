@@ -30,6 +30,12 @@ const visionMediaPurgeGrace = time.Hour
 // path in this file carries it, including the single-address fetch.
 const visionLiveSQL = `(v.deleted_at IS NULL AND v.expires_at > NOW())`
 
+// visionScannedSQL is the content-safety half of "readable": a Vision whose
+// scan is still pending is visible to the account that posted it and to no one
+// else, until its verdict arrives on safety.events — the rule works follow. $1
+// is always the viewer's account id in every query that carries it.
+const visionScannedSQL = `(v.scan_state <> 'pending' OR v.author_account = $1::uuid)`
+
 // Closed value sets, mirrored by CHECK constraints in migration 0023.
 var (
 	visionContentTypes = map[string]bool{"text": true, "image": true, "video": true, "share": true}
@@ -38,11 +44,11 @@ var (
 	visionMediaKinds   = map[string]bool{"image": true, "video": true}
 )
 
-// VisionRef is a Vision's address. A Vision has no id of its own: it is a
-// position in one PIAL's vision lane, addressed as (author_pial, seq) — the
-// PIAL that owns the lane and the ordinal the server handed out from that
-// lane's counter. The canonical text form is `<author_pial>.<seq>`, and that
-// string is what the wire carries everywhere an id used to go.
+// VisionRef is a Vision's server-internal key: a position in one PIAL's vision
+// lane, (author_pial, seq). It is the content-safety subject Abraxas judges and
+// never leaves the server. Everything an observer sees — reads, rings,
+// ownership, the wire address — is keyed by the posting account instead
+// (migration 0040), so nothing links two of one person's accounts.
 type VisionRef struct {
 	AuthorPIAL string
 	Seq        int64
@@ -57,9 +63,9 @@ func (r VisionRef) String() string {
 }
 
 // VisionAddress is a Vision's address as a client holds it:
-// `<author_account>.<seq>`. A PIAL is a person's root identity and never leaves
-// the server, so the wire names the author's account and the server resolves
-// the lane's PIAL from it (ResolveVisionAddress).
+// `<author_account>.<account_seq>` — the posting account and that account's own
+// ordinal from vision_account_lanes. Each account numbers its Visions alone, so
+// one persona's numbering never interleaves with another's.
 type VisionAddress struct {
 	AuthorAccount string
 	Seq           int64
@@ -88,22 +94,26 @@ func ParseVisionAddress(s string) (VisionAddress, error) {
 	return VisionAddress{AuthorAccount: account, Seq: seq}, nil
 }
 
-// ErrVisionAuthorUnknown is a wire address whose account does not exist or has
-// no identity: there is no lane it can name.
-var ErrVisionAuthorUnknown = errors.New("vision: author account has no identity")
+// ErrVisionAddressUnknown is a wire address that names no Vision that account
+// ever posted.
+var ErrVisionAddressUnknown = errors.New("vision: address names no vision")
 
-// ResolveVisionAddress turns a wire address into the server's ref by resolving
-// the account's PIAL through the identity projection (users.pial_id).
+// ResolveVisionAddress turns a wire address into the server's ref. The lookup
+// is by the posting account and its own ordinal, so an address can only ever
+// reach a Vision that account posted — never one another persona of the same
+// person posted.
 func ResolveVisionAddress(database *sql.DB, a VisionAddress) (VisionRef, error) {
-	var pial sql.NullString
-	err := database.QueryRow(`SELECT pial_id::text FROM users WHERE id = $1::uuid`, a.AuthorAccount).Scan(&pial)
-	if errors.Is(err, sql.ErrNoRows) || (err == nil && pial.String == "") {
-		return VisionRef{}, ErrVisionAuthorUnknown
+	var ref VisionRef
+	err := database.QueryRow(`
+		SELECT author_pial::text, seq FROM visions
+		 WHERE author_account = $1::uuid AND account_seq = $2`, a.AuthorAccount, a.Seq).Scan(&ref.AuthorPIAL, &ref.Seq)
+	if errors.Is(err, sql.ErrNoRows) {
+		return VisionRef{}, ErrVisionAddressUnknown
 	}
 	if err != nil {
-		return VisionRef{}, fmt.Errorf("vision address %s: resolving author: %w", a, err)
+		return VisionRef{}, fmt.Errorf("vision address %s: resolving: %w", a, err)
 	}
-	return VisionRef{AuthorPIAL: pial.String, Seq: a.Seq}, nil
+	return ref, nil
 }
 
 // VisionMediaInput is one stored object backing a Vision.
@@ -119,7 +129,10 @@ type VisionMediaInput struct {
 
 // VisionInput is everything needed to create one Vision and its media rows.
 type VisionInput struct {
-	AuthorPIAL string
+	// AuthorAccount is the persona that posts; AuthorPIAL is its identity root,
+	// checked against the account inside the insert transaction.
+	AuthorAccount string
+	AuthorPIAL    string
 
 	ContentType string
 	Body        string
@@ -160,24 +173,25 @@ type VisionMediaRef struct {
 	PurgeAfter   time.Time
 }
 
-// $1 is always the viewer PIAL, so the viewed flag is resolved in the same
-// query as the row it belongs to.
+// $1 is always the viewer's account id, so the viewed flag and the viewer's
+// ballot are resolved in the same query as the row they belong to. The author
+// join is the posting account alone — never every account on its PIAL.
 const visionSelectSQL = `
 SELECT
-    v.author_pial::text, v.seq, v.content_type, v.body,
+    v.author_pial::text, v.seq, v.account_seq, v.content_type, v.body,
     v.artboard_background, v.artboard_typeface, v.artboard_type_scale, v.artboard_align,
     v.media_urls, COALESCE(v.shared_work_id::text, ''), v.scan_state,
     v.is_nsfw, v.is_blocked, v.created_at, v.expires_at, v.metadata,
     u.handle, u.id::text, COALESCE(up.display_name, ''), COALESCE(up.avatar_url, ''),
-    (vv.viewer_pial IS NOT NULL),
+    (vv.viewer_account IS NOT NULL),
     (SELECT COUNT(*) FROM vision_views c WHERE c.author_pial = v.author_pial AND c.seq = v.seq)::int,
     v.poll_options, v.audience, v.allow_replies,
     COALESCE((SELECT p.option_idx FROM vision_poll_votes p
-               WHERE p.author_pial = v.author_pial AND p.seq = v.seq AND p.voter_pial = $1::uuid), -1)
+               WHERE p.author_pial = v.author_pial AND p.seq = v.seq AND p.voter_account = $1::uuid), -1)
 FROM visions v
-JOIN users u ON u.pial_id = v.author_pial
+JOIN users u ON u.id = v.author_account
 LEFT JOIN user_profiles up ON up.user_id = u.id
-LEFT JOIN vision_views vv ON vv.author_pial = v.author_pial AND vv.seq = v.seq AND vv.viewer_pial = $1::uuid
+LEFT JOIN vision_views vv ON vv.author_pial = v.author_pial AND vv.seq = v.seq AND vv.viewer_account = $1::uuid
 `
 
 // scanVision scans one row from visionSelectSQL. Column order must stay in sync.
@@ -187,7 +201,7 @@ func scanVision(rows *sql.Rows) (*model.Vision, error) {
 	var metadata []byte
 
 	if err := rows.Scan(
-		&v.AuthorPIAL, &v.Seq, &v.ContentType, &v.Body,
+		&v.AuthorPIAL, &v.Seq, &v.AccountSeq, &v.ContentType, &v.Body,
 		&v.ArtboardBackground, &v.ArtboardTypeface, &v.ArtboardTypeScale, &v.ArtboardAlign,
 		&mediaURLs, &v.SharedWorkID, &v.ScanState,
 		&v.IsNSFW, &v.IsBlocked, &v.CreatedAt, &v.ExpiresAt, &metadata,
@@ -216,6 +230,9 @@ func nullUUID(id string) interface{} {
 // closed sets the schema enforces, so a bad value fails here with a readable
 // error instead of as a constraint violation.
 func (in *VisionInput) applyVisionDefaults() error {
+	if in.AuthorAccount == "" {
+		return errors.New("vision: author_account is required")
+	}
 	if in.AuthorPIAL == "" {
 		return errors.New("vision: author_pial is required")
 	}
@@ -280,17 +297,21 @@ func (in *VisionInput) applyVisionDefaults() error {
 }
 
 // InsertVision creates a Vision and its media rows in one transaction, so a
-// crash can never leave stored objects with no row that owns their purge. The
-// address comes from vision_lanes inside the same transaction as the row, so
-// two posts racing on one lane get two ordinals and neither is ever reused.
-func InsertVision(database *sql.DB, in VisionInput) (VisionRef, error) {
+// crash can never leave stored objects with no row that owns their purge. Both
+// ordinals — the PIAL lane's internal seq and the account's own account_seq —
+// come from their counters inside the same transaction as the row, so two
+// posts racing on one lane get two ordinals and neither is ever reused.
+//
+// It returns the internal ref (the content-safety subject) and the wire
+// address (what a client is handed).
+func InsertVision(database *sql.DB, in VisionInput) (VisionRef, VisionAddress, error) {
 	if err := in.applyVisionDefaults(); err != nil {
-		return VisionRef{}, err
+		return VisionRef{}, VisionAddress{}, err
 	}
 
 	tx, err := database.Begin()
 	if err != nil {
-		return VisionRef{}, err
+		return VisionRef{}, VisionAddress{}, err
 	}
 	committed := false
 	defer func() {
@@ -303,35 +324,57 @@ func InsertVision(database *sql.DB, in VisionInput) (VisionRef, error) {
 
 	expiresAt := time.Now().UTC().Add(in.TTL)
 
+	// The posting account must be bound to the identity the Vision is judged
+	// under; the row is held so nothing re-binds it mid-insert.
+	var boundPIAL sql.NullString
+	err = tx.QueryRow(`SELECT pial_id::text FROM users WHERE id = $1::uuid FOR SHARE`, in.AuthorAccount).Scan(&boundPIAL)
+	if errors.Is(err, sql.ErrNoRows) {
+		return VisionRef{}, VisionAddress{}, fmt.Errorf("vision: author account %s does not exist", in.AuthorAccount)
+	}
+	if err != nil {
+		return VisionRef{}, VisionAddress{}, fmt.Errorf("vision: reading author account %s: %w", in.AuthorAccount, err)
+	}
+	if !boundPIAL.Valid || boundPIAL.String != in.AuthorPIAL {
+		return VisionRef{}, VisionAddress{}, fmt.Errorf("vision: account %s is not bound to the posting identity", in.AuthorAccount)
+	}
+
 	ref := VisionRef{AuthorPIAL: in.AuthorPIAL}
 	if err := tx.QueryRow(`
 		INSERT INTO vision_lanes (pial_id, last_seq) VALUES ($1::uuid, 1)
 		ON CONFLICT (pial_id) DO UPDATE SET last_seq = vision_lanes.last_seq + 1
 		RETURNING last_seq
 	`, in.AuthorPIAL).Scan(&ref.Seq); err != nil {
-		return VisionRef{}, err
+		return VisionRef{}, VisionAddress{}, err
+	}
+	addr := VisionAddress{AuthorAccount: in.AuthorAccount}
+	if err := tx.QueryRow(`
+		INSERT INTO vision_account_lanes (account_id, last_seq) VALUES ($1::uuid, 1)
+		ON CONFLICT (account_id) DO UPDATE SET last_seq = vision_account_lanes.last_seq + 1
+		RETURNING last_seq
+	`, in.AuthorAccount).Scan(&addr.Seq); err != nil {
+		return VisionRef{}, VisionAddress{}, err
 	}
 
 	_, err = tx.Exec(`
 		INSERT INTO visions (
-			author_pial, seq, content_type, body,
+			author_pial, seq, author_account, account_seq, content_type, body,
 			artboard_background, artboard_typeface, artboard_type_scale, artboard_align,
 			media_urls, shared_work_id, is_nsfw, expires_at, metadata,
 			poll_options, audience, allow_replies
 		) VALUES (
-			$1::uuid, $2, $3, $4,
-			$5, $6, $7, $8,
-			$9, $10::uuid, $11, $12, $13::jsonb,
-			$14, $15, $16
+			$1::uuid, $2, $3::uuid, $4, $5, $6,
+			$7, $8, $9, $10,
+			$11, $12::uuid, $13, $14, $15::jsonb,
+			$16, $17, $18
 		)
 	`,
-		ref.AuthorPIAL, ref.Seq, in.ContentType, in.Body,
+		ref.AuthorPIAL, ref.Seq, addr.AuthorAccount, addr.Seq, in.ContentType, in.Body,
 		in.ArtboardBackground, in.ArtboardTypeface, in.ArtboardTypeScale, in.ArtboardAlign,
 		pq.Array(in.MediaURLs), nullUUID(in.SharedWorkID), in.IsNSFW, expiresAt, string(in.Metadata),
 		pq.Array(in.PollOptions), in.Audience, in.AllowReplies,
 	)
 	if err != nil {
-		return VisionRef{}, err
+		return VisionRef{}, VisionAddress{}, err
 	}
 
 	purgeAfter := expiresAt.Add(visionMediaPurgeGrace)
@@ -344,25 +387,27 @@ func InsertVision(database *sql.DB, in VisionInput) (VisionRef, error) {
 			ON CONFLICT (author_pial, seq, object_key) DO NOTHING
 		`, ref.AuthorPIAL, ref.Seq, m.ObjectKey, m.CaeorAssetID, m.AssetURL,
 			m.MediaKind, m.Width, m.Height, m.DurationSecs, purgeAfter); err != nil {
-			return VisionRef{}, err
+			return VisionRef{}, VisionAddress{}, err
 		}
 	}
 
 	if err := tx.Commit(); err != nil {
-		return VisionRef{}, err
+		return VisionRef{}, VisionAddress{}, err
 	}
 	committed = true
-	return ref, nil
+	return ref, addr, nil
 }
 
 // GetVisionByRef returns one live Vision. An expired or soft-deleted Vision
 // is not readable by direct address, which is the only thing that makes
-// expiry real.
-func GetVisionByRef(database *sql.DB, ref VisionRef, viewerPIAL string) (*model.Vision, error) {
+// expiry real; a Vision still pending its scan is readable only by the
+// account that posted it.
+func GetVisionByRef(database *sql.DB, ref VisionRef, viewerAccount string) (*model.Vision, error) {
 	rows, err := database.Query(visionSelectSQL+`
 		WHERE v.author_pial = $2::uuid AND v.seq = $3
 		  AND `+visionLiveSQL+`
-	`, nullUUID(viewerPIAL), ref.AuthorPIAL, ref.Seq)
+		  AND `+visionScannedSQL+`
+	`, nullUUID(viewerAccount), ref.AuthorPIAL, ref.Seq)
 	if err != nil {
 		return nil, err
 	}
@@ -384,19 +429,21 @@ func GetVisionByRef(database *sql.DB, ref VisionRef, viewerPIAL string) (*model.
 	return v, nil
 }
 
-// GetActiveVisionsForAuthor returns one author's live Visions, oldest first —
-// the order the sequential viewer plays them in.
-func GetActiveVisionsForAuthor(database *sql.DB, authorPIAL, viewerPIAL string, limit int) ([]*model.Vision, error) {
+// GetActiveVisionsForAuthor returns one account's live Visions, oldest first —
+// the order the sequential viewer plays them in. The run is the account's
+// alone; another persona of the same person is a different author.
+func GetActiveVisionsForAuthor(database *sql.DB, authorAccount, viewerAccount string, limit int) ([]*model.Vision, error) {
 	if limit <= 0 {
 		limit = 50
 	}
 	rows, err := database.Query(visionSelectSQL+`
-		WHERE v.author_pial = $2::uuid
+		WHERE v.author_account = $2::uuid
 		  AND NOT v.is_blocked
 		  AND `+visionLiveSQL+`
-		ORDER BY v.seq ASC
+		  AND `+visionScannedSQL+`
+		ORDER BY v.account_seq ASC
 		LIMIT $3
-	`, nullUUID(viewerPIAL), authorPIAL, limit)
+	`, nullUUID(viewerAccount), authorAccount, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -416,49 +463,50 @@ func GetActiveVisionsForAuthor(database *sql.DB, authorPIAL, viewerPIAL string, 
 	return out, nil
 }
 
-// GetVisionRingsForViewer returns the avatar rings for the viewer and
-// everyone they follow. Ring state, the unseen count and the resume point are
-// all resolved by this one query; the browser is told the answer, never the
-// inputs.
+// GetVisionRingsForViewer returns the avatar rings for the viewer's account
+// and every account it follows. Ring state, the unseen count and the resume
+// point are all resolved by this one query; the browser is told the answer,
+// never the inputs.
 //
-// The follow graph and vision_mutes are keyed by PIAL now, not users.id, so
-// this reaches the follow graph through users.pial_id the same way
-// devserver's VisionTray does.
-func GetVisionRingsForViewer(database *sql.DB, viewerID, viewerPIAL string, limit int) ([]*model.VisionRing, error) {
+// Everything here is account to account: the viewer's own ring is the Visions
+// this account posted, the follow graph is accounts, views and mutes are the
+// viewing account's. A ring is one account's run, so another persona of the
+// same person is never folded into it.
+func GetVisionRingsForViewer(database *sql.DB, viewerID string, limit int) ([]*model.VisionRing, error) {
 	if limit <= 0 {
 		limit = 100
 	}
 	rows, err := database.Query(`
 SELECT
-    v.author_pial::text,
     u.id::text,
     u.handle,
     COALESCE(up.display_name, ''),
     COALESCE(up.avatar_url, ''),
     COUNT(*)::int,
-    COUNT(*) FILTER (WHERE vv.viewer_pial IS NULL)::int,
-    CASE WHEN COUNT(*) FILTER (WHERE vv.viewer_pial IS NULL) > 0
+    COUNT(*) FILTER (WHERE vv.viewer_account IS NULL)::int,
+    CASE WHEN COUNT(*) FILTER (WHERE vv.viewer_account IS NULL) > 0
          THEN 'unseen' ELSE 'seen' END,
     COALESCE(
-        (ARRAY_AGG(v.seq ORDER BY v.seq) FILTER (WHERE vv.viewer_pial IS NULL))[1],
-        (ARRAY_AGG(v.seq ORDER BY v.seq))[1]
+        (ARRAY_AGG(v.account_seq ORDER BY v.account_seq) FILTER (WHERE vv.viewer_account IS NULL))[1],
+        (ARRAY_AGG(v.account_seq ORDER BY v.account_seq))[1]
     ),
     MAX(v.created_at)
 FROM visions v
-JOIN users u ON u.pial_id = v.author_pial
+JOIN users u ON u.id = v.author_account
 LEFT JOIN user_profiles up ON up.user_id = u.id
-LEFT JOIN vision_views vv ON vv.author_pial = v.author_pial AND vv.seq = v.seq AND vv.viewer_pial = $1::uuid
+LEFT JOIN vision_views vv ON vv.author_pial = v.author_pial AND vv.seq = v.seq AND vv.viewer_account = $1::uuid
 WHERE `+visionLiveSQL+`
+  AND `+visionScannedSQL+`
   AND NOT v.is_blocked
   AND (
-        v.author_pial = $1::uuid
-     OR v.author_pial IN (SELECT u2.pial_id FROM follows f JOIN users u2 ON u2.id = f.following_id WHERE f.follower_id = $2::uuid)
+        v.author_account = $1::uuid
+     OR v.author_account IN (SELECT f.following_id FROM follows f WHERE f.follower_id = $1::uuid)
   )
-  AND v.author_pial NOT IN (SELECT muted_pial FROM vision_mutes WHERE muter_pial = $1::uuid)
-GROUP BY v.author_pial, u.id, u.handle, up.display_name, up.avatar_url
-ORDER BY (COUNT(*) FILTER (WHERE vv.viewer_pial IS NULL) > 0) DESC, MAX(v.created_at) DESC
-LIMIT $3
-	`, nullUUID(viewerPIAL), viewerID, limit)
+  AND v.author_account NOT IN (SELECT muted_account FROM vision_mutes WHERE muter_account = $1::uuid)
+GROUP BY u.id, u.handle, up.display_name, up.avatar_url
+ORDER BY (COUNT(*) FILTER (WHERE vv.viewer_account IS NULL) > 0) DESC, MAX(v.created_at) DESC
+LIMIT $2
+	`, viewerID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -469,7 +517,7 @@ LIMIT $3
 		var r model.VisionRing
 		var nextSeq int64
 		if err := rows.Scan(
-			&r.AuthorPIAL, &r.AuthorAccountID, &r.AuthorHandle, &r.AuthorName, &r.AvatarURL,
+			&r.AuthorAccountID, &r.AuthorHandle, &r.AuthorName, &r.AvatarURL,
 			&r.Count, &r.UnseenCount, &r.State, &nextSeq, &r.LatestAt,
 		); err != nil {
 			return nil, err
@@ -483,21 +531,25 @@ LIMIT $3
 	return out, nil
 }
 
-// MarkVisionViewed records that a viewer opened a Vision. Reopening is
-// idempotent. A zero-row write is disambiguated rather than assumed:
-// already-viewed is success, anything else is ErrVisionNotLive.
-func MarkVisionViewed(database *sql.DB, ref VisionRef, viewerPIAL string) error {
-	if viewerPIAL == "" {
-		return errors.New("vision: viewer_pial is required")
+// MarkVisionViewed records that a viewing account opened a Vision. Reopening
+// is idempotent. A zero-row write is disambiguated rather than assumed:
+// already-viewed is success, anything else is ErrVisionNotLive. The posting
+// account is never one of its own Vision's viewers, and a Vision still
+// pending its scan has no viewers to record.
+func MarkVisionViewed(database *sql.DB, ref VisionRef, viewerAccount string) error {
+	if viewerAccount == "" {
+		return errors.New("vision: viewer_account is required")
 	}
 	res, err := database.Exec(`
-		INSERT INTO vision_views (author_pial, seq, viewer_pial)
+		INSERT INTO vision_views (author_pial, seq, viewer_account)
 		SELECT v.author_pial, v.seq, $3::uuid
 		  FROM visions v
 		 WHERE v.author_pial = $1::uuid AND v.seq = $2
+		   AND v.author_account <> $3::uuid
+		   AND v.scan_state <> 'pending'
 		   AND `+visionLiveSQL+`
-		ON CONFLICT (author_pial, seq, viewer_pial) DO NOTHING
-	`, ref.AuthorPIAL, ref.Seq, viewerPIAL)
+		ON CONFLICT (author_pial, seq, viewer_account) DO NOTHING
+	`, ref.AuthorPIAL, ref.Seq, viewerAccount)
 	if err != nil {
 		return err
 	}
@@ -511,10 +563,13 @@ func MarkVisionViewed(database *sql.DB, ref VisionRef, viewerPIAL string) error 
 
 	var live, alreadyViewed bool
 	if err := database.QueryRow(`
-		SELECT EXISTS (SELECT 1 FROM visions v WHERE v.author_pial = $1::uuid AND v.seq = $2 AND `+visionLiveSQL+`),
+		SELECT EXISTS (SELECT 1 FROM visions v
+		                WHERE v.author_pial = $1::uuid AND v.seq = $2
+		                  AND v.author_account <> $3::uuid AND v.scan_state <> 'pending'
+		                  AND `+visionLiveSQL+`),
 		       EXISTS (SELECT 1 FROM vision_views
-		                WHERE author_pial = $1::uuid AND seq = $2 AND viewer_pial = $3::uuid)
-	`, ref.AuthorPIAL, ref.Seq, viewerPIAL).Scan(&live, &alreadyViewed); err != nil {
+		                WHERE author_pial = $1::uuid AND seq = $2 AND viewer_account = $3::uuid)
+	`, ref.AuthorPIAL, ref.Seq, viewerAccount).Scan(&live, &alreadyViewed); err != nil {
 		return err
 	}
 	if !live {
@@ -526,20 +581,22 @@ func MarkVisionViewed(database *sql.DB, ref VisionRef, viewerPIAL string) error 
 	return fmt.Errorf("vision %s: view not recorded and no reason found", ref)
 }
 
-// GetVisionViewers returns who has opened a live Vision, most recent first.
+// GetVisionViewers returns which accounts have opened a live Vision, most
+// recent first — one entry per viewing account, never every persona of the
+// person behind it.
 func GetVisionViewers(database *sql.DB, ref VisionRef, limit int) ([]model.VisionViewer, error) {
 	if limit <= 0 {
 		limit = 100
 	}
 	rows, err := database.Query(`
-		SELECT vv.viewer_pial::text,
-		       COALESCE(u.handle, ''),
+		SELECT vv.viewer_account::text,
+		       u.handle,
 		       COALESCE(up.display_name, ''),
 		       COALESCE(up.avatar_url, ''),
 		       vv.viewed_at
 		  FROM vision_views vv
 		  JOIN visions v ON v.author_pial = vv.author_pial AND v.seq = vv.seq
-		  LEFT JOIN users u ON u.pial_id = vv.viewer_pial
+		  JOIN users u ON u.id = vv.viewer_account
 		  LEFT JOIN user_profiles up ON up.user_id = u.id
 		 WHERE vv.author_pial = $1::uuid AND vv.seq = $2
 		   AND `+visionLiveSQL+`
@@ -554,7 +611,7 @@ func GetVisionViewers(database *sql.DB, ref VisionRef, limit int) ([]model.Visio
 	out := make([]model.VisionViewer, 0, limit)
 	for rows.Next() {
 		var v model.VisionViewer
-		if err := rows.Scan(&v.ViewerPIAL, &v.Handle, &v.Name, &v.AvatarURL, &v.ViewedAt); err != nil {
+		if err := rows.Scan(&v.ViewerAccountID, &v.Handle, &v.Name, &v.AvatarURL, &v.ViewedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, v)
@@ -566,19 +623,20 @@ func GetVisionViewers(database *sql.DB, ref VisionRef, limit int) ([]model.Visio
 }
 
 // SoftDeleteVision removes a live Vision from every read path. Ownership is
-// the address itself: the caller's PIAL must be the lane the address names.
+// the posting account: another persona of the same person does not own it.
 // A delete that matched nothing returns ErrVisionNotLive rather than
 // reporting success.
-func SoftDeleteVision(database *sql.DB, ref VisionRef, callerPIAL string) error {
-	if ref.AuthorPIAL != callerPIAL {
+func SoftDeleteVision(database *sql.DB, ref VisionRef, callerAccount string) error {
+	if callerAccount == "" {
 		return ErrVisionNotLive
 	}
 	res, err := database.Exec(`
 		UPDATE visions v
 		   SET deleted_at = NOW()
 		 WHERE v.author_pial = $1::uuid AND v.seq = $2
+		   AND v.author_account = $3::uuid
 		   AND `+visionLiveSQL+`
-	`, ref.AuthorPIAL, ref.Seq)
+	`, ref.AuthorPIAL, ref.Seq, callerAccount)
 	if err != nil {
 		return err
 	}
@@ -645,9 +703,9 @@ func MarkVisionMediaPurged(database *sql.DB, ids []string) error {
 // author happens here, in SQL, so the surface is handed a sequence it only
 // has to walk.
 const visionSequenceOrderSQL = `
-	ORDER BY MAX(v.created_at) OVER (PARTITION BY v.author_pial) DESC,
-	         v.author_pial,
-	         v.seq ASC
+	ORDER BY MAX(v.created_at) OVER (PARTITION BY v.author_account) DESC,
+	         v.author_account,
+	         v.account_seq ASC
 `
 
 // visionSequenceLimit caps a sequence read. A viewer walks one Vision at a
@@ -658,21 +716,23 @@ const visionSequenceLimit = 300
 // accounts they follow, in play order. includeNSFW is the viewer's
 // clearance, decided by the caller: a viewer who must not see 18+ content
 // never has one selected, so it can never reach a Fragment.
-func GetActiveVisionsForViewer(database *sql.DB, viewerID, viewerPIAL string, includeNSFW bool, limit int) ([]*model.Vision, error) {
+func GetActiveVisionsForViewer(database *sql.DB, viewerID string, includeNSFW bool, limit int) ([]*model.Vision, error) {
 	if limit <= 0 {
 		limit = visionSequenceLimit
 	}
 	rows, err := database.Query(visionSelectSQL+`
 		WHERE `+visionLiveSQL+`
+		  AND `+visionScannedSQL+`
 		  AND NOT v.is_blocked
-		  AND (NOT v.is_nsfw OR $3)
+		  AND (NOT v.is_nsfw OR $2)
 		  AND (
-		        v.author_pial = $1::uuid
-		     OR v.author_pial IN (SELECT u2.pial_id FROM follows f JOIN users u2 ON u2.id = f.following_id WHERE f.follower_id = $2::uuid)
+		        v.author_account = $1::uuid
+		     OR v.author_account IN (SELECT f.following_id FROM follows f WHERE f.follower_id = $1::uuid)
 		  )
+		  AND v.author_account NOT IN (SELECT muted_account FROM vision_mutes WHERE muter_account = $1::uuid)
 	`+visionSequenceOrderSQL+`
-		LIMIT $4
-	`, nullUUID(viewerPIAL), viewerID, includeNSFW, limit)
+		LIMIT $3
+	`, viewerID, includeNSFW, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -681,18 +741,20 @@ func GetActiveVisionsForViewer(database *sql.DB, viewerID, viewerPIAL string, in
 }
 
 // GetActiveVisions returns every live Vision on the platform in play order —
-// the discovery scope behind the reels Playground.
-func GetActiveVisions(database *sql.DB, viewerPIAL string, includeNSFW bool, limit int) ([]*model.Vision, error) {
+// the discovery scope behind the reels Playground. viewerAccount may be empty
+// (no viewer): then only scanned Visions are in it.
+func GetActiveVisions(database *sql.DB, viewerAccount string, includeNSFW bool, limit int) ([]*model.Vision, error) {
 	if limit <= 0 {
 		limit = visionSequenceLimit
 	}
 	rows, err := database.Query(visionSelectSQL+`
 		WHERE `+visionLiveSQL+`
+		  AND `+visionScannedSQL+`
 		  AND NOT v.is_blocked
 		  AND (NOT v.is_nsfw OR $2)
 	`+visionSequenceOrderSQL+`
 		LIMIT $3
-	`, nullUUID(viewerPIAL), includeNSFW, limit)
+	`, nullUUID(viewerAccount), includeNSFW, limit)
 	if err != nil {
 		return nil, err
 	}

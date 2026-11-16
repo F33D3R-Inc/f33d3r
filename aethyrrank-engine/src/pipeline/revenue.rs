@@ -60,6 +60,7 @@ mod tests {
             user_tier: tier.to_string(),
             realm_level: 1,
             nexus_shard_id: None,
+            viewer_pial: None,
         }
     }
 
@@ -92,6 +93,7 @@ mod tests {
             self_reply_cadence: 0.0,
             char_count: 0,
             is_in_network: false,
+            creator_pial: None,
         }
     }
 

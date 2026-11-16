@@ -847,6 +847,13 @@ func SoftDeleteWork(db *sql.DB, workID, authorID string) error {
 		return fmt.Errorf("retiring work %s: %w", workID, err)
 	}
 
+	// AethyrRank stops holding the contexts this work was ranked in.
+	if err := EnqueueRankingSignal(tx, RankingSignal{
+		Action: RankDelete, Viewer: authorID, WorkID: workID,
+	}); err != nil {
+		return fmt.Errorf("retiring work %s: %w", workID, err)
+	}
+
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("retiring work %s: commit: %w", workID, err)
 	}
@@ -933,9 +940,11 @@ const (
 //   - Tables that reference a person by account id or PIAL with NO FOREIGN KEY
 //     at all, so nothing cascades and nothing ever would have. These are the rows
 //     a purge silently left behind: the person's E2E signing and key-agreement
-//     public keys, their media fingerprints, their Vision view history, their
-//     ranking telemetry, and the sealed message keys addressed to them on
-//     conversations they do not own.
+//     public keys, their media fingerprints, their ranking telemetry, and the
+//     sealed message keys addressed to them on conversations they do not own.
+//     (Visions, Vision views, ballots and mutes are keyed by account since
+//     migration 0040 and go with the account by cascade — only that account's,
+//     never another persona's on the same PIAL.)
 //
 //   - Handles and PIALs copied as plain text onto rows that SURVIVE the purge.
 //     A foreign key releases an id; it cannot release a string. Left alone,
@@ -979,11 +988,6 @@ var purgeOrphanStatements = []struct {
 		`DELETE FROM media_fingerprints WHERE uploader_pial = $1::text`,
 	},
 	{
-		"who viewed whose Vision — the account's own viewing history",
-		scopeIdentity,
-		`DELETE FROM vision_views WHERE viewer_pial = $1::uuid`,
-	},
-	{
 		"ranking telemetry: dwell, position and explore signals. The column is text and holds account ids and PIAL ids interchangeably, so both are named",
 		scopeBoth,
 		`DELETE FROM feedback_events WHERE user_id IN ($1::text, $2::text)`,
@@ -1001,16 +1005,6 @@ var purgeOrphanStatements = []struct {
 		  WHERE reason = 'follow' AND content_id = $1::text AND user_id <> $1::uuid`,
 	},
 	// ── PIAL-scoped state that no users cascade reaches ───────────────────────
-	{
-		"the account's own Visions and everything hung off them (views, poll votes, media) — migration 0023 addresses a Vision as (author_pial, seq) with no id and no foreign key to users, so deleting the account no longer cascades to them",
-		scopeIdentity,
-		`DELETE FROM visions WHERE author_pial = $1::uuid`,
-	},
-	{
-		"Vision mutes, either direction — migration 0023 made vision_mutes PIAL-to-PIAL with no foreign key to users, so a mute this account set or was the target of would otherwise outlive it",
-		scopeIdentity,
-		`DELETE FROM vision_mutes WHERE muter_pial = $1::uuid OR muted_pial = $1::uuid`,
-	},
 	{
 		"trust level, NSFW tier and violation counters — meaningless once the root is tombstoned, and enforcement_actions keeps the record of what was actually done",
 		scopeIdentity,

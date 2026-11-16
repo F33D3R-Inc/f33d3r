@@ -76,10 +76,17 @@ public final class VisionComposer {
         do {
             imagePath = try await client.uploadImage(data, filename: filename, mimeType: mimeType)
         } catch let error as APIError {
-            uploadFailure = error.userMessage
+            uploadFailure = error.uploadMessage
         } catch {
             uploadFailure = error.localizedDescription
         }
+    }
+
+    /// Says a picked file could not be posted, without uploading anything.
+    public func refuseAttachment(_ reason: String) {
+        imageData = nil
+        imagePath = nil
+        uploadFailure = reason
     }
 
     public func removeImage() {

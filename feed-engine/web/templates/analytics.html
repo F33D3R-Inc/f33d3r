@@ -1,7 +1,7 @@
 {{define "title"}}Analytics · F33D3R{{end}}
 {{define "nav-active-analytics"}}active{{end}}
 {{define "body"}}
-<main class="f33d3r-main" id="main-col"
+<main class="f33d3r-main" id="main-col" data-facet-id="facet:f33d3r:analytics:{{.User.ID}}:page"
       hx-get="/analytics?period={{if eq .Period 0}}all{{else}}{{.Period}}{{end}}&sort={{.SortBy}}"
       hx-trigger="fa:engagement from:body delay:5s"
       hx-select="#main-col"
@@ -9,15 +9,11 @@
       hx-swap="outerHTML"
       hx-push-url="false">
 
-  {{/* Facet(analytics_header) — title + period selector + astraon status */}}
+  {{/* Facet(analytics_header) — title + period selector */}}
   <div class="main-head anl-head">
     <div class="main-head-row">
       <div class="main-head-title">Analytics</div>
       {{if .Summary}}<div class="main-head-sub">Your analytics</div>{{end}}
-      <div class="anl-status-dot" title="{{if .AstraonOnline}}Astraon live{{else}}DB fallback{{end}}">
-        <span class="dot{{if not .AstraonOnline}} dot-muted{{end}}"></span>
-        {{if .AstraonOnline}}Live{{else}}Cached{{end}}
-      </div>
     </div>
 
     {{/* Facet(analytics_period_tabs) — 7d / 30d / 90d / All */}}
@@ -31,7 +27,7 @@
 
   {{if .Summary}}
   {{$s := .Summary}}
-  {{/* Facet(analytics_summary_grid) — 6 key metric cards */}}
+  {{/* Facet(analytics_summary_grid) — key metric cards */}}
   <div class="anl-stats-grid">
     <div class="anl-stat-card">
       <div class="anl-stat-icon">
@@ -41,11 +37,6 @@
         <div class="anl-stat-value">{{fmtNum $s.Impressions}}</div>
         <div class="anl-stat-label">Impressions</div>
       </div>
-      {{if notNil $s.ImpressionsPctChange}}
-      <div class="anl-stat-change {{if gt (derefF64 $s.ImpressionsPctChange) 0.0}}anl-change-up{{else}}anl-change-down{{end}}">
-        {{if gt (derefF64 $s.ImpressionsPctChange) 0.0}}↑{{else}}↓{{end}}{{printf "%.0f" (absFloat (derefF64 $s.ImpressionsPctChange))}}%
-      </div>
-      {{end}}
     </div>
 
     <div class="anl-stat-card">
@@ -106,16 +97,6 @@
         <div class="anl-stat-value">{{fmtNum $s.CurrentFollowers}}</div>
         <div class="anl-stat-label">Followers</div>
         {{if gt $s.FollowersGained 0}}<div class="anl-stat-sub">+{{fmtNum $s.FollowersGained}} this period</div>{{end}}
-      </div>
-    </div>
-
-    <div class="anl-stat-card">
-      <div class="anl-stat-icon">
-        <svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
-      </div>
-      <div class="anl-stat-body">
-        <div class="anl-stat-value">{{fmtDuration64 $s.ViewTimeSecs}}</div>
-        <div class="anl-stat-label">Watch time</div>
       </div>
     </div>
   </div>
@@ -230,7 +211,7 @@
   {{end}}
 
   {{/* Empty state */}}
-  {{if and (not .Summary) (not .Posts)}}
+  {{if eq .Summary.TotalPosts 0}}
   {{template "stateEmpty" (dict "Title" "No analytics yet" "Sub" "Post something to start tracking performance")}}
   {{end}}
 

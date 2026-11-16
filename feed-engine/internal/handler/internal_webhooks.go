@@ -8,11 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"math"
 	"net/http"
 	"net/url"
-	"strconv"
-	"strings"
 
 	dbpkg "github.com/f33d3r/feed-engine/internal/db"
 )
@@ -47,44 +44,23 @@ func (h *Handler) balanceUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		PialID     string `json:"pial_id"`
-		BalanceAet string `json:"balance_aet"`
+		PialID       string `json:"pial_id"`
+		BalanceUnits int64  `json:"balance_units"`
+		BalanceAet   string `json:"balance_aet"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.PialID == "" {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	PublishToUser(body.PialID, SSEEvent{Type: "balance", Data: body.BalanceAet, JSON: balanceJSON(body.BalanceAet)})
-	w.WriteHeader(http.StatusOK)
-}
-
-// themisPurchaseDeliveredWebhook is called by Themis when CEK wrapping is complete.
-// It pushes a marketplace_purchase_delivered SSE event to the buyer's session.
-// POST /api/internal/themis/purchase-delivered
-// Auth: X-Internal-Key header
-func (h *Handler) themisPurchaseDeliveredWebhook(w http.ResponseWriter, r *http.Request) {
-	if !h.internalCallerOK(r) {
-		http.Error(w, "forbidden", http.StatusForbidden)
-		return
+	// The native clients carry µAET; the ratio to the ledger's unit is the
+	// ledger's. Without it the web's text form still goes out.
+	native := ""
+	if unit, err := h.aetUnit(r.Context()); err == nil {
+		native = fmt.Sprintf(`{"balance_uaet":%d,"pending_uaet":0}`, body.BalanceUnits*unit.UAETPerUnit)
+	} else {
+		log.Printf("[balance] native balance not sent: %v", err)
 	}
-	var body struct {
-		BuyerPial   string `json:"buyer_pial"`
-		PurchaseID  string `json:"purchase_id"`
-		ContentURL  string `json:"content_url"`
-		ContentHash string `json:"content_hash"`
-		CekForBuyer string `json:"cek_for_buyer"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.BuyerPial == "" {
-		http.Error(w, "bad request", http.StatusBadRequest)
-		return
-	}
-	data, _ := json.Marshal(map[string]string{
-		"purchase_id":   body.PurchaseID,
-		"content_url":   body.ContentURL,
-		"content_hash":  body.ContentHash,
-		"cek_for_buyer": body.CekForBuyer,
-	})
-	PublishToUser(body.BuyerPial, SSEEvent{Type: "marketplace_purchase_delivered", Data: string(data)})
+	PublishToUser(body.PialID, SSEEvent{Type: "balance", Data: body.BalanceAet, JSON: native})
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -231,17 +207,6 @@ func (h *Handler) ownEcdhKey(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(map[string]string{"public_key_b64": pub}); err != nil {
 		log.Printf("[pial] own ECDH key response for account %s: %v", user.ID, err)
 	}
-}
-
-// balanceJSON is the native form of a balance Ain Soph reports as an AET
-// string ("12.50"): settled µAET, and pending 0 — the webhook carries only
-// the settled figure.
-func balanceJSON(balanceAET string) string {
-	f, err := strconv.ParseFloat(strings.TrimSpace(balanceAET), 64)
-	if err != nil {
-		return ""
-	}
-	return fmt.Sprintf(`{"balance_uaet":%d,"pending_uaet":0}`, int64(math.Round(f*1_000_000)))
 }
 
 // primaryAccountForPIAL answers which account a person's notifications belong to,

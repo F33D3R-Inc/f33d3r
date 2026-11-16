@@ -2,156 +2,227 @@ import Foundation
 
 /// One attempt to publish a Work, retried without ever becoming two Works.
 ///
-/// ## What the CID gives us for free
+/// ## Signed at send time, resent as signed
 ///
-/// `works.cid` is `UNIQUE NOT NULL`. The CID is a hash of the signed payload,
-/// and `timestamp_ms` is inside that payload. Put together:
+/// The server accepts a work signed within the last hour (and no more than
+/// five minutes ahead), so a submission signs its draft the first time it is
+/// sent — never when the draft was composed. Every retry after that resends
+/// the **same bytes**: the server answers a re-delivered CID with the work it
+/// already created, before any rule that depends on the clock, so resending is
+/// always safe and never makes a second work.
 ///
-/// - **The same envelope can be sent any number of times and produce at most one
-///   Work.** The second insert violates the unique index and no row is written.
-/// - **A re-signed envelope is a different Work**, because re-signing means
-///   re-stamping `timestamp_ms`, which changes the payload, which changes the
-///   CID. The duplicate-post bug is therefore not a race in the request — it is
-///   the client deciding to rebuild the envelope on retry.
+/// The one time a submission signs again is on the server's own word that the
+/// signature is too old (`400` naming `timestamp_ms`). That answer is proof the
+/// CID never landed — a CID that had landed would have been answered with its
+/// work — so the new signature cannot duplicate anything. The server's content
+/// dedup (`409 Duplicate`) stands behind that as well.
 ///
-/// So the whole of idempotency here is one rule: **build and sign once, then
-/// retry those exact bytes.** ``WorkSubmission`` holds the envelope so that rule
-/// is structural rather than remembered. Nothing needs an idempotency key,
-/// because the content already is one.
+/// ## How answers are classified
 ///
-/// ## The gap the server leaves
-///
-/// The server does not answer the duplicate case gracefully. `workEvent` calls
-/// `InsertWork`, and a unique violation comes back as
-/// `500 server error` — indistinguishable, from outside, from a genuine failure.
-/// So a retry that races a first attempt which *did* land looks like a server
-/// error, and this type reports that honestly as ``Outcome/uncertain`` rather
-/// than guessing. The correct resolution is a read: the CID is known, so the
-/// question "did this post" has a definite answer as soon as any surface can be
-/// asked about a CID. There is no such route on `api/v1` today, which is why
-/// ``Outcome/uncertain`` exists as a state and not as a retry.
-///
-/// What it must not do is retry an `uncertain` result by re-signing. That is the
-/// one action that can turn a network blip into two posts.
+/// | answer | outcome |
+/// |---|---|
+/// | `201` | `accepted` |
+/// | `409` Duplicate | `rejected` — final, never retried |
+/// | `429` RateLimited | backed off and retried; `rejected` once the attempts run out (nothing was written) |
+/// | `400` on `timestamp_ms` | signed again and resent |
+/// | other `400`, `401`, `403`, `404`, `422` | `rejected` |
+/// | `500`, `502`, `503`, transport failure | retried; `uncertain` once the attempts run out |
 public struct WorkSubmission: Sendable {
 
     /// How a submission ended.
     public enum Outcome: Sendable, Equatable {
         /// The server stored it and named the row.
         case accepted(WorkAccepted)
-        /// The server refused it, and will refuse the identical bytes again.
-        /// Retrying is pointless; the payload or the key is wrong.
+        /// The server refused it. Nothing was written.
         case rejected(MalkuthError)
-        /// The request may or may not have landed: it timed out, or answered
-        /// `500`, which is also what a duplicate insert answers.
-        ///
-        /// The envelope is carried so the caller can retry *these* bytes, which
-        /// is always safe — either it lands for the first time, or the unique
-        /// index refuses it and the state is unchanged.
+        /// The request may or may not have landed. Sending the same bytes again
+        /// is always safe.
         case uncertain(cid: String, reason: String)
     }
 
-    public let envelope: WorkEnvelope
+    /// The unsigned outer fields of the envelope.
+    public struct Unsigned: Sendable, Equatable {
+        public var eventType: String?
+        public var isNSFW: Bool
+        public var videoWidth: Int?
+        public var videoHeight: Int?
+        public var quotedWorkID: String?
+        public var reactLayout: String?
+        public var downloadsAllowed: Bool?
 
-    public init(envelope: WorkEnvelope) {
-        self.envelope = envelope
-    }
-
-    /// Signs once and returns a submission that can be retried freely.
-    public static func prepare(
-        _ payload: WorkPayload,
-        signer: MalkuthSigner,
-        eventType: String? = nil,
-        isNSFW: Bool = false,
-        videoWatermarkedURL: String? = nil,
-        videoWidth: Int? = nil,
-        videoHeight: Int? = nil,
-        quotedWorkID: String? = nil,
-        reactLayout: String? = nil,
-        tusUploadID: String? = nil
-    ) async throws -> WorkSubmission {
-        WorkSubmission(envelope: try await signer.sign(
-            payload,
-            eventType: eventType,
-            isNSFW: isNSFW,
-            videoWatermarkedURL: videoWatermarkedURL,
-            videoWidth: videoWidth,
-            videoHeight: videoHeight,
-            quotedWorkID: quotedWorkID,
-            reactLayout: reactLayout,
-            tusUploadID: tusUploadID
-        ))
-    }
-
-    public var contentID: String { envelope.contentID }
-
-    /// Sends the envelope once and classifies what came back.
-    ///
-    /// The classification is the substance of this type:
-    ///
-    /// | answer | outcome | why |
-    /// |---|---|---|
-    /// | `201` | `accepted` | the row exists and is named |
-    /// | `400` | `rejected` | `cid mismatch`, `unknown work kind`, `reply requires parent_cid` — deterministic, the same bytes fail the same way |
-    /// | `401` | `rejected` | the session is gone; nothing was written and a retry cannot help |
-    /// | `403` | `rejected` | `signature invalid`, posting restricted, or the CSRF middleware refusing an origin-less write |
-    /// | `429` | `uncertain` | nothing was written, but the caller should back off rather than treat it as refusal |
-    /// | `500` | `uncertain` | a genuine fault **or** a duplicate insert — the server does not distinguish them |
-    /// | `502` | `uncertain` | the key authority is down; nothing was written |
-    /// | timeout | `uncertain` | the request may have been processed after the client stopped listening |
-    public func send(using client: APIClient) async -> Outcome {
-        do {
-            return .accepted(try await client.post(envelope))
-        } catch let error as MalkuthError {
-            switch error {
-            case .rejected(let status, let reason):
-                switch status {
-                case 400, 401, 403, 404, 413, 422:
-                    return .rejected(error)
-                default:
-                    return .uncertain(cid: envelope.contentID, reason: "HTTP \(status): \(reason)")
-                }
-            case .keyAuthorityUnavailable:
-                return .rejected(error)
-            default:
-                return .rejected(error)
-            }
-        } catch let error as APIError {
-            // Transport failures are the whole reason this type exists: the
-            // request may have been received and processed after the client
-            // stopped waiting for the answer.
-            return .uncertain(cid: envelope.contentID, reason: error.userMessage)
-        } catch {
-            return .uncertain(cid: envelope.contentID, reason: String(describing: error))
+        public init(
+            eventType: String? = nil,
+            isNSFW: Bool = false,
+            videoWidth: Int? = nil,
+            videoHeight: Int? = nil,
+            quotedWorkID: String? = nil,
+            reactLayout: String? = nil,
+            downloadsAllowed: Bool? = nil
+        ) {
+            self.eventType = eventType
+            self.isNSFW = isNSFW
+            self.videoWidth = videoWidth
+            self.videoHeight = videoHeight
+            self.quotedWorkID = quotedWorkID
+            self.reactLayout = reactLayout
+            self.downloadsAllowed = downloadsAllowed
         }
     }
 
-    /// Sends, retrying the identical bytes on an uncertain outcome.
+    /// What the author wrote. Its text is normalised and its `timestamp_ms`
+    /// stamped when it is signed (``WorkPayload/preparedForSigning(at:)``).
+    public let draft: WorkPayload
+    public let unsigned: Unsigned
+    /// The signed envelope, once the first send has signed it.
+    public private(set) var envelope: WorkEnvelope?
+    private let signer: MalkuthSigner
+
+    public init(draft: WorkPayload, unsigned: Unsigned = Unsigned(), signer: MalkuthSigner) {
+        self.draft = draft
+        self.unsigned = unsigned
+        self.signer = signer
+    }
+
+    /// The CID of the signed envelope; nil before the first send.
+    public var contentID: String? { envelope?.contentID }
+
+    /// Signs the draft as of now, replacing any earlier envelope.
+    public mutating func sign(now: Date = Date()) async throws {
+        let stamp = Int64((now.timeIntervalSince1970 * 1000).rounded())
+        envelope = try await signer.sign(
+            draft.preparedForSigning(at: stamp),
+            eventType: unsigned.eventType,
+            isNSFW: unsigned.isNSFW,
+            videoWidth: unsigned.videoWidth,
+            videoHeight: unsigned.videoHeight,
+            quotedWorkID: unsigned.quotedWorkID,
+            reactLayout: unsigned.reactLayout,
+            downloadsAllowed: unsigned.downloadsAllowed
+        )
+    }
+
+    /// What one attempt came to.
+    enum Attempt: Equatable {
+        case done(Outcome)
+        /// Nothing was decided; send the same bytes again.
+        case retry(reason: String)
+        /// Nothing was written; wait longer, then send the same bytes again.
+        case backOff(MalkuthError)
+        /// The signature is too old by the server's clock; sign again.
+        case resign
+    }
+
+    /// Sends once, signing first when nothing has been signed yet.
+    public mutating func send(using client: APIClient) async -> Outcome {
+        switch await attempt(using: client) {
+        case .done(let outcome): return outcome
+        case .retry(let reason): return .uncertain(cid: envelope?.contentID ?? "", reason: reason)
+        case .backOff(let error): return .rejected(error)
+        case .resign: return .rejected(.signedOutsideWindow)
+        }
+    }
+
+    mutating func attempt(using client: APIClient) async -> Attempt {
+        if envelope == nil {
+            do {
+                try await sign()
+            } catch let error as MalkuthError {
+                return .done(.rejected(error))
+            } catch {
+                return .done(.rejected(.keyGenerationFailed(String(describing: error))))
+            }
+        }
+        guard let envelope else { return .done(.rejected(.accountUnknown)) }
+        do {
+            return .done(.accepted(try await client.post(envelope)))
+        } catch let error as MalkuthError {
+            return Self.classify(error)
+        } catch let error as APIError {
+            // The request may have been received and processed after the
+            // client stopped waiting for the answer.
+            return .retry(reason: error.userMessage)
+        } catch {
+            return .retry(reason: String(describing: error))
+        }
+    }
+
+    static func classify(_ error: MalkuthError) -> Attempt {
+        switch error {
+        case .workRefused(let state, let message):
+            switch state {
+            case .rateLimited:
+                return .backOff(error)
+            case .serverError:
+                return .retry(reason: message)
+            case .invalidField where WorkRefusal.field(in: message) == "timestamp_ms":
+                return .resign
+            case .ok, .duplicate, .textTooLong, .textBlank, .invalidField,
+                 .citedNotFound, .repliesRestricted, .postingRestricted:
+                return .done(.rejected(error))
+            }
+        case .rejected(let status, let reason):
+            // An answer that is not the create path's own: the session
+            // middleware, or a proxy in front of the server.
+            if status >= 500 || status == 0 { return .retry(reason: "HTTP \(status): \(reason)") }
+            return .done(.rejected(error))
+        default:
+            return .done(.rejected(error))
+        }
+    }
+
+    /// Sends, retrying the identical bytes on anything undecided.
     ///
-    /// Safe to call with any `attempts` because every attempt sends the same
-    /// CID: the unique index, not this loop, is what guarantees one Work. The
-    /// loop only decides how long to keep asking.
-    ///
-    /// It deliberately does **not** retry a `rejected` outcome. `cid mismatch`
-    /// answered once is `cid mismatch` answered a hundred times, and spending
-    /// the write rate limit on it delays the error reaching the author.
-    public func sendWithRetries(
+    /// A `429` waits longer before the next attempt. A signature the server
+    /// calls too old is signed again once and sent. A refusal is never retried.
+    public mutating func sendWithRetries(
         using client: APIClient,
         attempts: Int = 3,
         backoff: @Sendable (Int) -> Duration = { .seconds(1 << $0) }
     ) async -> Outcome {
-        var last: Outcome = .uncertain(cid: envelope.contentID, reason: "not attempted")
-        for attempt in 0..<max(1, attempts) {
-            last = await send(using: client)
+        var resigned = false
+        var last: Attempt = .retry(reason: "not attempted")
+        var attempt = 0
+        while attempt < max(1, attempts) {
+            last = await self.attempt(using: client)
             switch last {
-            case .accepted, .rejected:
-                return last
-            case .uncertain:
-                if attempt < attempts - 1 {
-                    try? await Task.sleep(for: backoff(attempt))
+            case .done(let outcome):
+                return outcome
+            case .resign:
+                guard !resigned else { return .rejected(.signedOutsideWindow) }
+                resigned = true
+                do {
+                    try await sign()
+                } catch let error as MalkuthError {
+                    return .rejected(error)
+                } catch {
+                    return .rejected(.keyGenerationFailed(String(describing: error)))
                 }
+                continue
+            case .retry:
+                if attempt < attempts - 1 { try? await Task.sleep(for: backoff(attempt)) }
+            case .backOff:
+                if attempt < attempts - 1 { try? await Task.sleep(for: backoff(attempt + 3)) }
             }
+            attempt += 1
         }
-        return last
+        switch last {
+        case .done(let outcome): return outcome
+        case .backOff(let error): return .rejected(error)
+        case .resign: return .rejected(.signedOutsideWindow)
+        case .retry(let reason): return .uncertain(cid: envelope?.contentID ?? "", reason: reason)
+        }
+    }
+}
+
+/// Reading the create path's plain-text refusals.
+public enum WorkRefusal {
+    /// The field an `invalid_field` refusal names. The server words it as
+    /// `This post could not be sent: <field> — <detail>.` (work_create.go).
+    public static func field(in message: String) -> String? {
+        let prefix = "This post could not be sent: "
+        guard message.hasPrefix(prefix) else { return nil }
+        let rest = message.dropFirst(prefix.count)
+        guard let dash = rest.range(of: " — ") else { return nil }
+        return String(rest[..<dash.lowerBound])
     }
 }

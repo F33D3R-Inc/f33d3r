@@ -5,7 +5,6 @@ use crate::{
     AppState,
 };
 use anyhow::{anyhow, Result};
-use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -363,30 +362,16 @@ async fn deliver_purchase(state: &Arc<AppState>, purchase_id: Uuid, buyer_pial: 
             return;
         }
     };
-    // plaintext_cek drops here
+    // The plaintext key overwrites itself here, before anything else runs.
+    drop(plaintext_cek);
 
     let notices = delivery_notices(&purchase_id.to_string(), buyer_pial.text(), listing.shop_pial.text());
-    match db::purchase_mark_delivered(&state.pool, purchase_id, &cek_for_buyer, &notices).await {
-        Ok(true) => {}
-        Ok(false) => return,
-        Err(e) => {
-            error!("Failed to mark purchase delivered: {e}");
-            return;
-        }
-    }
-
-    // Refreshes the buyer's open library. The notification above is the durable record.
-    if let Err(e) = notify_nantar_delivered(
-        state,
-        purchase_id,
-        &buyer_pial.text(),
-        &listing.content_url,
-        &listing.content_hash,
-        &cek_for_buyer,
-    )
-    .await
+    // Delivered, notified and announced on commerce.events in one transaction:
+    // feed-engine redraws the buyer's library from that event.
+    if let Err(e) =
+        db::purchase_mark_delivered(&state.pool, purchase_id, &buyer_pial, listing_id, &cek_for_buyer, &notices).await
     {
-        warn!("Failed to notify Nantar of delivery (purchase still marked delivered): {e}");
+        error!("Failed to mark purchase delivered: {e}");
     }
 }
 
@@ -408,35 +393,6 @@ async fn fetch_buyer_ecdh_pubkey(state: &Arc<AppState>, pial_id: &str) -> Result
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
         .ok_or_else(|| anyhow::anyhow!("no public_key_b64 in response"))
-}
-
-async fn notify_nantar_delivered(
-    state: &Arc<AppState>,
-    purchase_id: Uuid,
-    buyer_pial: &str,
-    content_url: &str,
-    content_hash: &str,
-    cek_for_buyer: &[u8],
-) -> Result<()> {
-    let url = format!(
-        "{}/api/internal/themis/purchase-delivered",
-        state.cfg.nantar_url
-    );
-    state
-        .http
-        .post(&url)
-        .header("X-Internal-Key", &state.cfg.internal_api_key)
-        .json(&serde_json::json!({
-            "buyer_pial":    buyer_pial,
-            "purchase_id":   purchase_id.to_string(),
-            "content_url":   content_url,
-            "content_hash":  content_hash,
-            "cek_for_buyer": B64.encode(cek_for_buyer),
-        }))
-        .send()
-        .await?
-        .error_for_status()?;
-    Ok(())
 }
 
 /// What the buyer and seller are told when a purchase is delivered.

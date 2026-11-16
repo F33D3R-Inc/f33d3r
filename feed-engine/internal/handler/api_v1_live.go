@@ -181,7 +181,13 @@ func (h *Handler) liveMayWatch(s *model.LiveStream, u *model.User) bool {
 		ok, _ := dbpkg.IsFollowing(h.db, u.ID, s.AuthorID)
 		return ok
 	case "subscribers":
-		return dbpkg.IsSubscribed(h.db, u.ID, s.AuthorID)
+		ok, err := dbpkg.IsSubscribed(h.db, u.ID, s.AuthorID)
+		if err != nil {
+			// Fails closed: the broadcast stays walled, and the fault is reported.
+			log.Printf("[live] subscription of %s to %s unreadable: %v", u.ID, s.AuthorID, err)
+			return false
+		}
+		return ok
 	default:
 		return true
 	}

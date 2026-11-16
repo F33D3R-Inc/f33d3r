@@ -19,7 +19,7 @@ import Testing
 @Suite("Work composer", .serialized)
 struct WorkComposerTests {
 
-    static let pial = MalkuthCanonicalTests.pial
+    static let account = MalkuthCanonicalTests.account
 
     // MARK: Harness
 
@@ -30,7 +30,7 @@ struct WorkComposerTests {
             tokens: StubTokens(token: "tok"),
             session: ComposerMockURLProtocol.makeSession()
         )
-        let identity = AuthenticatedIdentity(user: try MalkuthClientTests.sampleUser(), pialID: pial)
+        let identity = AuthenticatedIdentity(user: try MalkuthClientTests.sampleUser(), accountID: account)
         let composer = WorkComposer(
             mode: mode, client: client, signer: MalkuthSigner(store: InMemoryMalkuthKeyStore()), identity: identity
         )
@@ -174,9 +174,9 @@ struct WorkComposerTests {
         #expect(payloads[2]["parent_cid"] as? String == cids[1])
         #expect(head.cid == cids[0])
 
-        // Timestamps step so the parts read in order.
+        // Each part is signed when it is sent, so the stamps never go backwards.
         let stamps = payloads.map { ($0["timestamp_ms"] as? NSNumber)?.int64Value ?? 0 }
-        #expect(stamps[1] == stamps[0] + 1 && stamps[2] == stamps[0] + 2)
+        #expect(stamps[0] <= stamps[1] && stamps[1] <= stamps[2])
 
         // Finished: nothing left on the screen, and the next work is a new one.
         #expect(composer.publishedParts.count == 3)
@@ -420,7 +420,7 @@ struct WorkComposerTests {
         return url
     }
 
-    nonisolated static let readyJob = #"{"upload_id":"upl-1","status":"ready","master_url":"/static/media/posts/a1/master.m3u8","poster_url":"/static/media/posts/a1/poster.jpg","watermarked_url":"/static/media/posts/a1/watermarked.mp4","duration_secs":42.25,"width":1280,"height":720}"#
+    nonisolated static let readyJob = #"{"upload_id":"upl-1","status":"ready","master_url":"/static/media/posts/a1/master.m3u8","poster_url":"/static/media/posts/a1/poster.jpg","duration_secs":42.25,"width":1280,"height":720}"#
 
     @Test("A video is uploaded as a streamed multipart file, polled to ready, and lands in the signed and unsigned halves")
     func videoFlow() async throws {
@@ -485,13 +485,13 @@ struct WorkComposerTests {
         #expect(payload["video_poster_url"] as? String == "/static/media/posts/a1/poster.jpg")
         #expect((payload["video_duration_secs"] as? NSNumber)?.intValue == 42)
         #expect(payload["media_urls"] as? [String] == [])
-        // Unsigned, beside the payload: the watermarked file and the frame size.
-        #expect(envelope["video_watermarked_url"] as? String == "/static/media/posts/a1/watermarked.mp4")
+        // Unsigned, beside the payload: the frame size.
         #expect((envelope["video_width"] as? NSNumber)?.intValue == 1280)
         #expect((envelope["video_height"] as? NSNumber)?.intValue == 720)
-        // Inside the payload object but outside the signature: the upload id.
-        #expect(payload["tus_upload_id"] as? String == "upl-1")
-        #expect(!(payload.keys.contains("video_watermarked_url")))
+        // Never sent: the downloadable file and the upload binding are the
+        // media registry's.
+        #expect(envelope["video_watermarked_url"] == nil)
+        #expect(payload["tus_upload_id"] == nil)
     }
 
     @Test("A spooled multipart body is the prefix, the file's bytes and the suffix, and nothing else")
@@ -517,7 +517,7 @@ struct WorkComposerTests {
         let (composer, _) = try Self.makeComposer()
         Self.acceptMedia { request in
             guard request.url?.path == "/api/v1/media/video" else { return nil }
-            return (200, Data(#"{"status":"duplicate","duplicate_of_work_id":"w-1","duplicate_of_handle":"miiyazuko","master_url":"/static/media/posts/a1/master.m3u8","poster_url":"/static/media/posts/a1/poster.jpg","duration_secs":12.5,"width":1920,"height":1080}"#.utf8))
+            return (200, Data(#"{"status":"duplicate","duplicate_of_handle":"miiyazuko","master_url":"/static/media/posts/a1/master.m3u8","poster_url":"/static/media/posts/a1/poster.jpg","duration_secs":12.5,"width":1920,"height":1080}"#.utf8))
         }
         let clip = try Self.temporaryFile("dup", extension: "mov")
         defer { try? FileManager.default.removeItem(at: clip) }
@@ -525,11 +525,11 @@ struct WorkComposerTests {
         composer.attachVideo(fileURL: clip, filename: "clip.mov", mimeType: "video/quicktime")
         await composer.settleVideo()
 
-        guard case .duplicate(let handle, let workID, let renditions) = composer.video?.state else {
+        guard case .duplicate(let handle, let renditions) = composer.video?.state else {
             Issue.record("expected a duplicate, got \(String(describing: composer.video?.state))")
             return
         }
-        #expect(handle == "miiyazuko" && workID == "w-1")
+        #expect(handle == "miiyazuko")
         #expect(renditions?.masterURL == "/static/media/posts/a1/master.m3u8")
         // Waiting on the author: nothing to post yet, and nothing blocking either.
         #expect(!composer.canSubmit)
@@ -548,7 +548,6 @@ struct WorkComposerTests {
         let envelope = try #require(request.bodyData.flatMap(Self.object))
         let payload = try #require(envelope["payload"] as? [String: Any])
         #expect(payload["video_master_url"] as? String == "/static/media/posts/a1/master.m3u8")
-        // No upload of ours to keep from the sweep.
         #expect(payload["tus_upload_id"] == nil)
     }
 
@@ -699,7 +698,7 @@ struct WorkComposerTests {
         let (composer, _) = try Self.makeComposer()
         let renditions = WorkComposer.VideoRenditions(
             masterURL: "/static/media/posts/a1/master.m3u8", posterURL: "/static/media/posts/a1/poster.jpg",
-            watermarkedURL: "/static/media/posts/a1/watermarked.mp4", durationSecs: 42, width: 1280, height: 720,
+            durationSecs: 42, width: 1280, height: 720,
             uploadID: "upl-1", creditedTo: "miiyazuko"
         )
         composer.body = "kept media"
@@ -767,16 +766,15 @@ struct WorkComposerTests {
         let ready = try decoder.decode(VideoJob.self, from: Data(Self.readyJob.utf8))
         #expect(ready.status == .ready && ready.isSettled)
         #expect(ready.masterURL == "/static/media/posts/a1/master.m3u8")
-        #expect(ready.watermarkedURL == "/static/media/posts/a1/watermarked.mp4")
         #expect(ready.durationSecs == 42.25 && ready.width == 1280 && ready.height == 720)
 
         let failed = try decoder.decode(VideoJob.self, from: Data(#"{"upload_id":"upl-1","status":"failed","error":"ffmpeg exited with 1"}"#.utf8))
         #expect(failed.status == .failed && failed.error == "ffmpeg exited with 1" && failed.isSettled)
 
-        let duplicate = try decoder.decode(VideoJob.self, from: Data(#"{"status":"duplicate","duplicate_of_work_id":"w-1","duplicate_of_handle":"miiyazuko","master_url":"/static/media/posts/a1/master.m3u8","poster_url":"/static/media/posts/a1/poster.jpg","duration_secs":12.5,"width":1920,"height":1080}"#.utf8))
+        let duplicate = try decoder.decode(VideoJob.self, from: Data(#"{"status":"duplicate","duplicate_of_handle":"miiyazuko","master_url":"/static/media/posts/a1/master.m3u8","poster_url":"/static/media/posts/a1/poster.jpg","duration_secs":12.5,"width":1920,"height":1080}"#.utf8))
         #expect(duplicate.status == .duplicate && duplicate.isSettled)
         #expect(duplicate.uploadID == nil)
-        #expect(duplicate.duplicateOfHandle == "miiyazuko" && duplicate.duplicateOfWorkID == "w-1")
+        #expect(duplicate.duplicateOfHandle == "miiyazuko")
         #expect(WorkComposer.VideoRenditions(job: duplicate, uploadID: nil)?.durationSecs == 13)
 
         // A word outside the contract is a decoding error, not a guess.

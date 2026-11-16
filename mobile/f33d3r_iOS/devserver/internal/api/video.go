@@ -2,7 +2,6 @@ package api
 
 import (
 	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -25,7 +24,7 @@ import (
 // this stand-in keeps the shape and only changes what happens in the middle:
 // with no ffmpeg on the machine there is no transcode, so the file itself is
 // the master rendition (AVPlayer plays an MP4 by URL as readily as an HLS
-// playlist), the watermarked rendition is the same file, and the duration and
+// playlist), served as an asset like every upload (media.go), and the duration and
 // picture size come from the MP4's own `moov` box (mp4probe.go) rather than
 // from a decode. Jobs live in memory for the life of the process; a restart
 // forgets them, and the composer's poll gets the 404 the contract names.
@@ -47,12 +46,10 @@ type VideoJobDTO struct {
 	Status            string   `json:"status"`
 	MasterURL         string   `json:"master_url,omitempty"`
 	PosterURL         string   `json:"poster_url,omitempty"`
-	WatermarkedURL    string   `json:"watermarked_url,omitempty"`
 	DurationSecs      *float64 `json:"duration_secs,omitempty"`
 	Width             *int     `json:"width,omitempty"`
 	Height            *int     `json:"height,omitempty"`
 	Error             string   `json:"error,omitempty"`
-	DuplicateOfWorkID string   `json:"duplicate_of_work_id,omitempty"`
 	DuplicateOfHandle string   `json:"duplicate_of_handle,omitempty"`
 }
 
@@ -98,8 +95,10 @@ func (j *videoJobs) update(id string, fn func(*VideoJobDTO)) {
 }
 
 // uploadVideo — POST /api/v1/media/video (multipart, field `file` or `media`)
-// → 202 VideoJobDTO{queued}, or 200 VideoJobDTO{duplicate} when a live work
-// already carries these exact bytes and nothing was queued.
+// → 202 VideoJobDTO{queued}. When the bytes are an exact copy of somebody
+// else's upload the job is a duplicate: it carries the original's renditions
+// and duplicate_of_handle names its uploader, who keeps the credit. A held or
+// banned asset is refused as media.go refuses it.
 func (s *Server) uploadVideo(w http.ResponseWriter, r *http.Request, u *store.User) {
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "The upload could not be read.")
@@ -126,32 +125,25 @@ func (s *Server) uploadVideo(w http.ResponseWriter, r *http.Request, u *store.Us
 	// one file is what makes the duplicate check below mean anything.
 	canonicalExt, _ := sniffVideo(head)
 
-	url, path, err := s.storeVideo(file, canonicalExt)
+	url, path, assetID, err := s.storeVideo(file, canonicalExt)
 	if err != nil {
 		serverError(w, err)
 		return
 	}
-
-	// The same bytes already on a live work: nothing to transcode, and the
-	// author decides whether to post a reference to the original.
-	if original, err := s.store.FindWorkByVideoMaster(r.Context(), url); err == nil {
-		dto := VideoJobDTO{Status: videoJobDuplicate, DuplicateOfWorkID: original.ID}
-		if original.Author != nil {
-			dto.DuplicateOfHandle = original.Author.Handle
-		}
-		dto.setRenditions(original.VideoMasterURL, original.VideoPosterURL, original.VideoWatermarkedURL,
-			original.VideoDurationSecs, original.VideoWidth, original.VideoHeight)
-		writeJSON(w, http.StatusOK, dto)
-		return
-	} else if !errors.Is(err, store.ErrNotFound) {
-		serverError(w, err)
+	asset, ok := s.admitAsset(w, r, u, assetID, "video")
+	if !ok {
 		return
 	}
 
 	job := &videoJob{id: uuid.NewString(), ownerID: u.ID, dto: VideoJobDTO{Status: videoJobQueued}}
 	job.dto.UploadID = job.id
 	s.videos.put(job)
-	go s.finishVideo(job.id, url, path)
+	// Somebody else's bytes: the job resolves to their original, credited to them.
+	creditTo := ""
+	if asset.UploaderID != u.ID {
+		creditTo = asset.UploaderHandle
+	}
+	go s.finishVideo(job.id, url, path, creditTo)
 	writeJSON(w, http.StatusAccepted, VideoJobDTO{UploadID: job.id, Status: videoJobQueued})
 }
 
@@ -170,7 +162,10 @@ func (s *Server) videoJob(w http.ResponseWriter, r *http.Request, u *store.User)
 // and declare the job ready. A file the probe cannot read is still playable
 // — the player measures it — so an unreadable moov is a ready job with no
 // numbers, and only a file that cannot be opened at all is a failure.
-func (s *Server) finishVideo(id, url, path string) {
+//
+// creditTo names the original uploader when the bytes were somebody else's;
+// the job then ends duplicate, carrying the original's renditions.
+func (s *Server) finishVideo(id, url, path, creditTo string) {
 	s.videos.update(id, func(d *VideoJobDTO) { d.Status = videoJobProcessing })
 
 	f, err := os.Open(path)
@@ -189,16 +184,19 @@ func (s *Server) finishVideo(id, url, path string) {
 	}
 	s.videos.update(id, func(d *VideoJobDTO) {
 		d.Status = videoJobReady
-		d.setRenditions(url, "", url, probe.DurationSecs, probe.Width, probe.Height)
+		if creditTo != "" {
+			d.Status = videoJobDuplicate
+			d.DuplicateOfHandle = creditTo
+		}
+		d.setRenditions(url, "", probe.DurationSecs, probe.Width, probe.Height)
 	})
 }
 
 // setRenditions fills the media fields, leaving unknown numbers absent
 // rather than zero so the client does not draw a 0:00 badge.
-func (d *VideoJobDTO) setRenditions(master, poster, watermarked string, durationSecs float64, width, height int) {
+func (d *VideoJobDTO) setRenditions(master, poster string, durationSecs float64, width, height int) {
 	d.MasterURL = master
 	d.PosterURL = poster
-	d.WatermarkedURL = watermarked
 	if durationSecs > 0 {
 		d.DurationSecs = &durationSecs
 	}
@@ -209,16 +207,16 @@ func (d *VideoJobDTO) setRenditions(master, poster, watermarked string, duration
 }
 
 // storeVideo streams the upload to disk under its content hash — a phone's
-// video is not something to hold in memory — and returns the served path and
-// the file path.
-func (s *Server) storeVideo(file io.Reader, ext string) (url, path string, err error) {
-	dir := filepath.Join(s.mediaDir, "video")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", "", err
+// video is not something to hold in memory — as the master rendition of its
+// asset, and returns the served path, the file path and the asset id.
+func (s *Server) storeVideo(file io.Reader, ext string) (url, path, assetID string, err error) {
+	staging := filepath.Join(s.mediaDir, "staging")
+	if err := os.MkdirAll(staging, 0o755); err != nil {
+		return "", "", "", err
 	}
-	tmp, err := os.CreateTemp(dir, "upload-*")
+	tmp, err := os.CreateTemp(staging, "upload-*")
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	tmpPath := tmp.Name()
 	hasher := sha256.New()
@@ -226,15 +224,22 @@ func (s *Server) storeVideo(file io.Reader, ext string) (url, path string, err e
 	closeErr := tmp.Close()
 	if copyErr != nil || closeErr != nil {
 		os.Remove(tmpPath)
-		return "", "", fmt.Errorf("store video: %v %v", copyErr, closeErr)
+		return "", "", "", fmt.Errorf("store video: %v %v", copyErr, closeErr)
 	}
-	name := hex.EncodeToString(hasher.Sum(nil)[:16]) + ext
-	path = filepath.Join(dir, name)
-	if _, err := os.Stat(path); err == nil {
+	assetID = assetIDOf(hasher.Sum(nil))
+	rendition := "master" + ext
+	path, err = s.assetFile(assetID, rendition)
+	if err != nil {
 		os.Remove(tmpPath)
+		return "", "", "", err
+	}
+	if _, statErr := os.Stat(path); statErr == nil {
+		if err := os.Remove(tmpPath); err != nil {
+			return "", "", "", err
+		}
 	} else if err := os.Rename(tmpPath, path); err != nil {
 		os.Remove(tmpPath)
-		return "", "", err
+		return "", "", "", err
 	}
-	return "/media/video/" + name, path, nil
+	return assetPathPrefix + assetID + "/" + rendition, path, assetID, nil
 }

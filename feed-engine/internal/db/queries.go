@@ -803,18 +803,30 @@ func FollowStateFor(database *sql.DB, viewerID string, targetIDs []string) (map[
 // follower_id/following_id foreign keys are ON DELETE CASCADE, so deleting an
 // account removes its follow edges inside the database with no Go code running.
 // A trigger fires for cascades too, so it cannot be bypassed by any writer.
+//
+// The unfollow and the ranking signal that takes the follow back commit together.
 func UnfollowUser(database *sql.DB, followerID, followingID string) (bool, error) {
-	res, err := database.Exec(`
-		DELETE FROM follows
-		WHERE follower_id = $1::uuid AND following_id = $2::uuid`, followerID, followingID)
-	if err != nil {
-		return false, err
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return false, err
-	}
-	return n > 0, nil
+	changed := false
+	err := WithTx(database, func(tx *sql.Tx) error {
+		res, err := tx.Exec(`
+			DELETE FROM follows
+			WHERE follower_id = $1::uuid AND following_id = $2::uuid`, followerID, followingID)
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		changed = n > 0
+		if !changed {
+			return nil
+		}
+		return EnqueueRankingSignal(tx, RankingSignal{
+			Action: RankUnfollow, Viewer: followerID, TargetAccount: followingID,
+		})
+	})
+	return changed, err
 }
 
 // FollowListEntry is a minimal user row for the followers/following list.
@@ -1370,84 +1382,8 @@ func GetPinnedPostID(database *sql.DB, userID string) string {
 
 // ── Creator subscriptions ─────────────────────────────────────────────────────
 
-// IsSubscribed returns true if subscriberID is currently subscribed to creatorID.
-func IsSubscribed(database *sql.DB, subscriberID, creatorID string) bool {
-	var exists bool
-	_ = database.QueryRow(`
-		SELECT EXISTS(
-			SELECT 1 FROM subscriptions
-			WHERE subscriber_id = $1 AND creator_id = $2
-			  AND status = 'active'
-			  AND (expires_at IS NULL OR expires_at > NOW())
-		)
-	`, subscriberID, creatorID).Scan(&exists)
-	return exists
-}
-
-type CreatorPlan struct {
-	ID          string
-	Name        string
-	Description string
-	PriceAet    int
-}
-
-func GetCreatorPlans(database *sql.DB, creatorID string) ([]CreatorPlan, error) {
-	rows, err := database.Query(`
-		SELECT id, name, description, price_aet
-		FROM creator_plans
-		WHERE creator_id = $1 AND active = TRUE
-		ORDER BY price_aet ASC
-	`, creatorID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var plans []CreatorPlan
-	for rows.Next() {
-		var p CreatorPlan
-		if err := rows.Scan(&p.ID, &p.Name, &p.Description, &p.PriceAet); err == nil {
-			plans = append(plans, p)
-		}
-	}
-	return plans, nil
-}
-
-func CreateSubscription(database *sql.DB, subscriberID, creatorID, planID string, priceAet int, durationDays int) error {
-	var expiresAt interface{}
-	if durationDays > 0 {
-		expiresAt = time.Now().AddDate(0, 0, durationDays)
-	}
-	_, err := database.Exec(`
-		INSERT INTO subscriptions (subscriber_id, creator_id, plan_id, price_aet, expires_at)
-		VALUES ($1, $2, $3, $4, $5)
-		ON CONFLICT (subscriber_id, creator_id) DO UPDATE SET
-			status     = 'active',
-			plan_id    = EXCLUDED.plan_id,
-			price_aet  = EXCLUDED.price_aet,
-			expires_at = EXCLUDED.expires_at,
-			cancelled_at = NULL
-	`, subscriberID, creatorID, planID, priceAet, expiresAt)
-	return err
-}
-
-func CancelSubscription(database *sql.DB, subscriberID, creatorID string) error {
-	_, err := database.Exec(`
-		UPDATE subscriptions
-		SET status = 'cancelled', cancelled_at = NOW()
-		WHERE subscriber_id = $1 AND creator_id = $2 AND status = 'active'
-	`, subscriberID, creatorID)
-	return err
-}
-
-func GetSubscriberCount(database *sql.DB, creatorID string) int {
-	var n int
-	_ = database.QueryRow(`
-		SELECT COUNT(*) FROM subscriptions
-		WHERE creator_id = $1 AND status = 'active'
-		  AND (expires_at IS NULL OR expires_at > NOW())
-	`, creatorID).Scan(&n)
-	return n
-}
+// IsSubscribed, the plan reads and the subscriber count live in commerce.go,
+// beside the projection that feeds them.
 
 // GetSubscribers returns a creator's active subscribers as follow-list rows. It
 // takes the viewer because those rows render a follow control: without the viewer's
@@ -1528,182 +1464,6 @@ func BatchGetSelfReplyFirst30m(database *sql.DB, postIDs []string) map[string]bo
 func SetUserEmail(database *sql.DB, userID, email string) error {
 	_, err := database.Exec(`UPDATE users SET email = $1 WHERE id = $2`, email, userID)
 	return err
-}
-
-// ── Analytics queries (Astraon stub) ─────────────────────────────────────────
-// TODO_ASTRAON: all functions in this section migrate to HTTP calls to
-// Astraon (port 8088, f33d3r_analytics DB) once that brain is online.
-// For now they query f33d3r_feed directly.
-
-// CreatorAnalyticsSummary holds aggregate stats for a PIAL's posts.
-type CreatorAnalyticsSummary struct {
-	TotalPosts       int
-	TotalImpressions int64
-	TotalLikes       int64
-	TotalReposts     int64
-	TotalComments    int64
-	TotalSaves       int64
-	TotalViewSeconds int64
-	EngagementRate   float64 // (likes+reposts+comments) / max(impressions,1) * 100
-}
-
-// AnalyticsPostRow holds per-post metrics for the analytics table.
-type AnalyticsPostRow struct {
-	PostID        string
-	Body          string // truncated to 80 chars
-	CreatedAt     time.Time
-	Impressions   int64
-	Likes         int64
-	Reposts       int64
-	Comments      int64
-	Saves         int64
-	EngagementPct float64 // (likes+reposts+comments) / max(impressions,1) * 100
-	MaxPct        float64 // normalised bar width: row_total / max_total * 100
-}
-
-// SiteAnalytics holds platform-wide aggregate counters.
-type SiteAnalytics struct {
-	TotalUsers       int
-	TotalPosts       int
-	TotalImpressions int64
-	TotalLikes       int64
-	NewUsersWeek     int
-	NewPostsWeek     int
-}
-
-// GetCreatorAnalyticsSummary returns aggregate metrics across all non-deleted
-// posts for a given PIAL owner.
-// TODO_ASTRAON: migrate to GET /v1/analytics/creator/{pial_id}/summary
-func GetCreatorAnalyticsSummary(database *sql.DB, pialID string) (*CreatorAnalyticsSummary, error) {
-	if database == nil || pialID == "" {
-		return &CreatorAnalyticsSummary{}, nil
-	}
-	row := database.QueryRow(`
-		SELECT
-		    COUNT(w.id),
-		    COALESCE(SUM(w.view_count), 0),
-		    COALESCE(SUM((SELECT COUNT(*) FROM work_reactions wr WHERE wr.work_id = w.id AND wr.reaction_type='like')), 0),
-		    COALESCE(SUM((SELECT COUNT(*) FROM work_reactions wr WHERE wr.work_id = w.id AND wr.reaction_type='repost')), 0),
-		    COALESCE(SUM((SELECT COUNT(*) FROM work_citations wc WHERE wc.target_id = w.id AND wc.citation_type='reply')), 0),
-		    COALESCE(SUM((SELECT COUNT(*) FROM work_reactions wr WHERE wr.work_id = w.id AND wr.reaction_type='bookmark')), 0),
-		    0
-		FROM works w
-		JOIN users u ON u.id = w.author_id
-		WHERE u.pial_id = $1::uuid
-		  AND NOT w.is_reply
-		  AND w.deleted_at IS NULL
-	`, pialID)
-	s := &CreatorAnalyticsSummary{}
-	err := row.Scan(
-		&s.TotalPosts,
-		&s.TotalImpressions,
-		&s.TotalLikes,
-		&s.TotalReposts,
-		&s.TotalComments,
-		&s.TotalSaves,
-		&s.TotalViewSeconds,
-	)
-	if err != nil {
-		return s, err
-	}
-	if s.TotalImpressions > 0 {
-		total := float64(s.TotalLikes + s.TotalReposts + s.TotalComments)
-		s.EngagementRate = total / float64(s.TotalImpressions) * 100
-	}
-	return s, nil
-}
-
-// GetCreatorTopPosts returns up to limit posts for a PIAL owner ordered by
-// total engagement (likes+reposts+comments) descending.
-// TODO_ASTRAON: migrate to GET /v1/analytics/creator/{pial_id}/top-posts
-func GetCreatorTopPosts(database *sql.DB, pialID string, limit int) ([]AnalyticsPostRow, error) {
-	if database == nil || pialID == "" {
-		return nil, nil
-	}
-	rows, err := database.Query(`
-		SELECT * FROM (
-		    SELECT
-		        w.id,
-		        w.body,
-		        w.created_at,
-		        COALESCE(w.view_count, 0) AS impressions,
-		        (SELECT COUNT(*) FROM work_reactions wr WHERE wr.work_id = w.id AND wr.reaction_type='like')     AS likes,
-		        (SELECT COUNT(*) FROM work_reactions wr WHERE wr.work_id = w.id AND wr.reaction_type='repost')   AS reposts,
-		        (SELECT COUNT(*) FROM work_citations wc WHERE wc.target_id = w.id AND wc.citation_type='reply') AS comments,
-		        (SELECT COUNT(*) FROM work_reactions wr WHERE wr.work_id = w.id AND wr.reaction_type='bookmark') AS saves
-		    FROM works w
-		    JOIN users u ON u.id = w.author_id
-		    WHERE u.pial_id = $1::uuid
-		      AND NOT w.is_reply
-		      AND w.deleted_at IS NULL
-		) t
-		ORDER BY (likes + reposts + comments) DESC, created_at DESC
-		LIMIT $2
-	`, pialID, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var out []AnalyticsPostRow
-	var maxEngagement int64
-	for rows.Next() {
-		var r AnalyticsPostRow
-		if err := rows.Scan(
-			&r.PostID, &r.Body, &r.CreatedAt,
-			&r.Impressions, &r.Likes, &r.Reposts, &r.Comments, &r.Saves,
-		); err != nil {
-			return nil, err
-		}
-		// Truncate body to 80 chars
-		runes := []rune(r.Body)
-		if len(runes) > 80 {
-			r.Body = string(runes[:80]) + "…"
-		}
-		eng := r.Likes + r.Reposts + r.Comments
-		if eng > maxEngagement {
-			maxEngagement = eng
-		}
-		imp := r.Impressions
-		if imp < 1 {
-			imp = 1
-		}
-		r.EngagementPct = float64(eng) / float64(imp) * 100
-		if r.EngagementPct > 100 {
-			r.EngagementPct = 100
-		}
-		out = append(out, r)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-
-	// Normalise MaxPct so CSS bars are relative to the top post.
-	for i := range out {
-		eng := out[i].Likes + out[i].Reposts + out[i].Comments
-		if maxEngagement > 0 {
-			out[i].MaxPct = float64(eng) / float64(maxEngagement) * 100
-		} else {
-			out[i].MaxPct = 0
-		}
-	}
-	return out, nil
-}
-
-// GetSiteAnalytics returns platform-wide aggregate counters for the admin panel.
-// TODO_ASTRAON: migrate to GET /v1/analytics/site/summary
-func GetSiteAnalytics(database *sql.DB) (*SiteAnalytics, error) {
-	if database == nil {
-		return &SiteAnalytics{}, nil
-	}
-	s := &SiteAnalytics{}
-	database.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&s.TotalUsers)
-	database.QueryRow(`SELECT COUNT(*) FROM works WHERE NOT is_reply AND deleted_at IS NULL`).Scan(&s.TotalPosts)
-	database.QueryRow(`SELECT COALESCE(SUM(view_count),0) FROM works WHERE deleted_at IS NULL`).Scan(&s.TotalImpressions)
-	database.QueryRow(`SELECT COUNT(*) FROM work_reactions WHERE reaction_type = 'like'`).Scan(&s.TotalLikes)
-	database.QueryRow(`SELECT COUNT(*) FROM users WHERE created_at > NOW() - INTERVAL '7 days'`).Scan(&s.NewUsersWeek)
-	database.QueryRow(`SELECT COUNT(*) FROM works WHERE NOT is_reply AND deleted_at IS NULL AND created_at > NOW() - INTERVAL '7 days'`).Scan(&s.NewPostsWeek)
-	return s, nil
 }
 
 // ── Admin queries ─────────────────────────────────────────────────────────────

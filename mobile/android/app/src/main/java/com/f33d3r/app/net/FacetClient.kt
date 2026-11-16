@@ -49,9 +49,30 @@ sealed interface JsonAnswer {
     data class Ok(val body: JsonElement) : JsonAnswer
     data object Unauthorized : JsonAnswer
 
-    /** The server refused, in its own words. */
-    data class Refused(val code: Int, val message: String) : JsonAnswer
+    /**
+     * The server refused, in its own words. [state] is the create path's
+     * `X-Work-Create-State` when the answer carried one.
+     */
+    data class Refused(val code: Int, val message: String, val state: String? = null) : JsonAnswer
     data class Unreachable(val cause: Throwable) : JsonAnswer
+}
+
+/** What a sign-in attempt came to. */
+sealed interface SignInResult {
+    /** The server opened a session. */
+    data object SignedIn : SignInResult
+
+    /**
+     * The password was right and the account has a second factor: the server asks for
+     * an authenticator code or a backup code. [message] is the server's reason when a
+     * code was given and was wrong; empty on the first ask.
+     */
+    data class NeedsCode(val message: String) : SignInResult
+
+    /** Refused, in the server's words: unknown handle or password, suspended, and so on. */
+    data class Refused(val message: String) : SignInResult
+
+    data class Unreachable(val cause: Throwable) : SignInResult
 }
 
 /**
@@ -206,12 +227,17 @@ class FacetClient(
      * The password is sent once, to the endpoint that already owns credential
      * checking, and is never stored. What persists is the token the server returned,
      * which is the only thing the client is entitled to hold.
+     *
+     * [code] is the second factor — six digits from an authenticator, or one of the
+     * account's backup codes — sent only once the server has asked for one. The
+     * server asks by re-rendering its sign-in form with the code field in it.
      */
-    suspend fun signIn(handle: String, password: String): LaneResult =
+    suspend fun signIn(handle: String, password: String, code: String = ""): SignInResult =
         withContext(Dispatchers.IO) {
             val body = FormBody.Builder()
                 .add("handle", handle.trim().lowercase())
                 .add("password", password)
+                .apply { if (code.isNotBlank()) add("code", code.trim()) }
                 .build()
             val request = Request.Builder()
                 .url(session.origin.trimEnd('/') + Endpoints.LOGIN)
@@ -221,13 +247,16 @@ class FacetClient(
                 http.newCall(request).execute().use { response ->
                     val text = response.body.string()
                     when {
-                        session.token != null -> LaneResult.Accepted
+                        session.token != null -> SignInResult.SignedIn
                         // The login page re-renders itself with the reason on failure, so
-                        // a 200 with no cookie is a refusal, not a success.
-                        else -> LaneResult.Refused(response.code, loginError(text))
+                        // a 200 with no cookie is a refusal, not a success. When the
+                        // render carries the code field, the server is asking for the
+                        // second factor.
+                        CODE_FIELD.containsMatchIn(text) -> SignInResult.NeedsCode(loginErrorOrEmpty(text))
+                        else -> SignInResult.Refused(loginError(text))
                     }
                 }
-            }.getOrElse { LaneResult.Unreachable(it) }
+            }.getOrElse { SignInResult.Unreachable(it) }
         }
 
     /** Ends the session on the server, then locally. */
@@ -243,7 +272,7 @@ class FacetClient(
     /**
      * Reads the signed-in identity from the server.
      *
-     * The three names come from the page shell's own meta tags — the same values the
+     * The account and handle come from the page shell's own meta tags — the same values the
      * web client reads — so the app and the browser agree on who is signed in without
      * this client inferring an identity from a token it cannot interpret.
      *
@@ -271,14 +300,12 @@ class FacetClient(
 
         val handle = meta(shell, "f33d3r:handle").orEmpty()
         val account = meta(shell, "f33d3r:account").orEmpty()
-        val pial = meta(shell, "f33d3r:pial").orEmpty()
         if (handle.isEmpty() || account.isEmpty()) return@withContext WhoAmI.Nobody
 
         // The same flags the web navigation gates on, stated by the server in the
         // shell it rendered — so the drawer here shows exactly the entries the web
         // sidebar would, without this client forming its own view of the account.
         val base = Identity(
-            pial = pial,
             account = account,
             handle = handle,
             verified = meta(shell, "f33d3r:verified") == "1",
@@ -362,7 +389,11 @@ class FacetClient(
                         JsonAnswer.Unauthorized
 
                     !response.isSuccessful ->
-                        JsonAnswer.Refused(response.code, plainText(text).ifBlank { response.message })
+                        JsonAnswer.Refused(
+                            response.code,
+                            refusalText(text).ifBlank { response.message },
+                            response.header("X-Work-Create-State"),
+                        )
 
                     else -> JsonAnswer.Ok(
                         if (text.isBlank()) json.parseToJsonElement("{}") else json.parseToJsonElement(text),
@@ -414,11 +445,30 @@ class FacetClient(
                 .replace(Regex("\\s+"), " ")
                 .trim()
 
-        /** Pulls the human-readable reason out of the login page the server re-rendered. */
-        fun loginError(html: String): String {
-            val error = Regex("""class="[^"]*\berror\b[^"]*"[^>]*>([^<]{3,200})<""")
-                .find(html)?.groupValues?.get(1)?.trim()
-            return error ?: "Sign-in was refused."
+        /**
+         * The reason in a JSON lane's refusal: the `message` of the `{"error":{...}}`
+         * envelope, the `error` of a `{"error":"..."}` body, or the text itself.
+         */
+        fun refusalText(body: String): String {
+            val parsed = runCatching { Json.parseToJsonElement(body) }.getOrNull() as? kotlinx.serialization.json.JsonObject
+                ?: return plainText(body)
+            val error = parsed["error"]
+            return when {
+                error is kotlinx.serialization.json.JsonObject ->
+                    error["message"]?.jsonPrimitive?.content ?: error["code"]?.jsonPrimitive?.content.orEmpty()
+                error is kotlinx.serialization.json.JsonPrimitive -> error.content
+                else -> plainText(body)
+            }
         }
+
+        /** Pulls the human-readable reason out of the login page the server re-rendered. */
+        fun loginError(html: String): String = loginErrorOrEmpty(html).ifEmpty { "Sign-in was refused." }
+
+        fun loginErrorOrEmpty(html: String): String =
+            Regex("""class="[^"]*\berror\b[^"]*"[^>]*>([^<]{3,200})<""")
+                .find(html)?.groupValues?.get(1)?.trim().orEmpty()
+
+        /** The second-factor input the sign-in form carries when the server asks for one. */
+        val CODE_FIELD = Regex("""<input[^>]*\bname=["']code["']""", RegexOption.IGNORE_CASE)
     }
 }

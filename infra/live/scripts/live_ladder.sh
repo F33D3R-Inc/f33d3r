@@ -28,6 +28,29 @@
 # that can size one against the others.
 #
 # The ladder never upscales, and that rule lives in the server's ladder table.
+#
+# ── the watermark ────────────────────────────────────────────────────────────
+#
+# Every viewer-facing copy on this platform carries the moving mark, and live is
+# no exception: every rung and the poster have "@handle • f33d3r.com" burned
+# into their pixels, drifting across the frame the way transcoding draws it on
+# every video rendition. The words come from the control plane with the plan
+# (mark_text), reach drawtext through a file with expansion off so nothing in a
+# handle is ever read as filter syntax, and a plan without them is refused —
+# this script never packages an unmarked broadcast. The safety sampler alone
+# reads the unmarked picture, into the private scan volume the edge cannot reach,
+# so the integrity checks see what the publisher sent.
+#
+# The mark is drawn ONCE, on the decoded source ahead of the split, and every
+# rung inherits it through its own scale: one drawtext per broadcast, not one
+# per rung. Its cost is that pass (estimated at 0.05 cores for a 1080p30 source,
+# feed-engine/internal/live/capacity.go markCoresPerMegapixel) plus the real
+# price: no rung can be passed through any more, because a remuxed rung is the
+# publisher's picture untouched. The top rung of every H.264 source that used to
+# qualify is now encoded — 1.14 cores at 1080p30 on libx264, measured — which on
+# the 7.8 core budget takes the software lane from three concurrent 1080p30
+# broadcasts to two. The governor costs all of it; nothing here spends a core it
+# was not given.
 
 set -euo pipefail
 
@@ -208,14 +231,7 @@ fi
 # keyframe cadence that aligns the rungs, and the encoders' rate control all
 # need a rate that does not move. A source that declares one keeps it, so the
 # CFR ingest paths are untouched; a source that does not gets the default.
-#
-# FPS_DECLARED records which of those two happened, and it is reported to the
-# control plane rather than kept here, because it is one of the conditions on
-# passing the top rung through: a rung copied from a source whose real cadence
-# is unknown cannot be guaranteed to stay in step with rungs being emitted at a
-# rate the ladder invented.
 FPS=""
-FPS_DECLARED=false
 if [ -n "${AVG_RATE:-}" ] && [ "${AVG_RATE}" != "0/0" ]; then
   num="${AVG_RATE%%/*}"
   den="${AVG_RATE##*/}"
@@ -227,7 +243,6 @@ if [ -n "${AVG_RATE:-}" ] && [ "${AVG_RATE}" != "0/0" ]; then
         log "source declares ${AVG_RATE} fps, capped to ${MAX_FPS}"
       else
         FPS="${AVG_RATE}"
-        FPS_DECLARED=true
       fi
     else
       log "source declares an implausible ${AVG_RATE} fps; ignoring it"
@@ -242,44 +257,6 @@ fi
 # keeps the exact rational so a 30000/1001 source is not quantised to 30.
 FPS_INT="$(awk "BEGIN{split(\"${FPS}\",p,\"/\"); d=(p[2]==\"\"?1:p[2]); printf \"%d\", int(p[1]/d + 0.5)}")"
 log "output frame rate: ${FPS}"
-
-# ── keyframe cadence of the publisher ────────────────────────────────────────
-# This is measured for one reason: a rung that is copied rather than encoded is
-# not cut where we ask for it, it is cut where the publisher put its keyframes.
-# There is no option that changes that — a remux writes through the elementary
-# stream it was given. So if the top rung is going to be copied, every other
-# rung has to be forced to keyframe on the publisher's cadence, and the segment
-# duration has to become that cadence, or the rungs break at different instants
-# and every bitrate switch stalls on a player waiting for a boundary that is not
-# there.
-#
-# It is measured rather than assumed because it is the publisher's setting, not
-# ours: OBS defaults to 2 seconds, hardware encoders vary, and a source we
-# guessed wrong about would produce exactly the misalignment being avoided.
-#
-# The measurement is the median gap between keyframes over a short window. A
-# median rather than a mean: a scene cut inserts an extra keyframe and would
-# drag a mean down, and the interval that matters is the regular one.
-GOP_SECONDS=0
-if [ "${SRC_CODEC}" = "h264" ]; then
-  gop="$(ffprobe -v error -rtsp_transport tcp -select_streams v:0 \
-          -show_entries packet=pts_time,flags -of csv=p=0 \
-          -read_intervals "%+12" "${SRC}" 2>/dev/null |
-        awk -F, '
-          /K/ { if (last != "") { d = $1 - last; if (d > 0.05) gaps[n++] = d } last = $1 }
-          END {
-            if (n < 2) exit
-            for (i = 0; i < n; i++) for (j = i+1; j < n; j++)
-              if (gaps[j] < gaps[i]) { t = gaps[i]; gaps[i] = gaps[j]; gaps[j] = t }
-            printf "%.3f", gaps[int(n/2)]
-          }' || true)"
-  if [ -n "${gop}" ]; then
-    GOP_SECONDS="${gop}"
-    log "publisher keyframe interval: ${GOP_SECONDS}s"
-  else
-    log "publisher keyframe interval could not be measured; the top rung will be encoded"
-  fi
-fi
 
 # ── hardware encoder capability ──────────────────────────────────────────────
 # Reported to the control plane, never decided here — but it can only be
@@ -399,7 +376,7 @@ if ! curl -fsS -m 15 -X POST "${CONTROL_URL}/live/hook/ready" \
       -H "Content-Type: application/json" \
       -H "X-Internal-Key: ${INTERNAL_API_KEY}" \
       -o "${PLAN_FILE}" \
-      -d "{\"stream_id\":\"${STREAM_ID}\",\"width\":${WIDTH},\"height\":${HEIGHT},\"protocol\":\"${SOURCE_TYPE}\",\"codec\":\"${SRC_CODEC}\",\"fps\":${FPS_INT},\"fps_declared\":${FPS_DECLARED},\"gop_seconds\":${GOP_SECONDS},\"nvenc_available\":${NVENC_AVAILABLE}}"; then
+      -d "{\"stream_id\":\"${STREAM_ID}\",\"width\":${WIDTH},\"height\":${HEIGHT},\"protocol\":\"${SOURCE_TYPE}\",\"codec\":\"${SRC_CODEC}\",\"fps\":${FPS_INT},\"nvenc_available\":${NVENC_AVAILABLE}}"; then
   log "FATAL: control plane issued no plan — refusing to package this stream"
   exit 1
 fi
@@ -408,6 +385,7 @@ ENCODER="$(jq -r '.encoder' "${PLAN_FILE}")"
 SEGMENT_SECONDS="$(jq -r '.segment_seconds' "${PLAN_FILE}")"
 DEGRADED="$(jq -r '.degraded' "${PLAN_FILE}")"
 PLAN_REASON="$(jq -r '.reason // ""' "${PLAN_FILE}")"
+MARK_TEXT="$(jq -r '.mark_text // ""' "${PLAN_FILE}")"
 N="$(jq -r '.rungs | length' "${PLAN_FILE}")"
 
 if [ -z "${ENCODER}" ] || [ "${ENCODER}" = "null" ] || ! [ "${N:-0}" -ge 1 ] 2>/dev/null; then
@@ -418,6 +396,10 @@ if ! [ "${SEGMENT_SECONDS:-0}" -ge 1 ] 2>/dev/null; then
   log "FATAL: control plane returned an unusable segment duration: ${SEGMENT_SECONDS}"
   exit 1
 fi
+if [ -z "${MARK_TEXT}" ]; then
+  log "FATAL: the plan carries no watermark text — refusing to package an unmarked broadcast"
+  exit 1
+fi
 if [ "${DEGRADED}" = "true" ]; then
   log "DEGRADED: ${PLAN_REASON}"
 fi
@@ -425,6 +407,26 @@ fi
 # The plan's rungs, one per line, as height:kbps:maxkbps:bufkbps:name:mode:threads.
 mapfile -t RUNGS < <(jq -r '.rungs[] | "\(.height):\(.video_kbps):\(.max_kbps):\(.buf_kbps):\(.name):\(.mode):\(.threads)"' "${PLAN_FILE}")
 log "plan: ${ENCODER} seg=${SEGMENT_SECONDS}s rungs=${RUNGS[*]}"
+# Every rung is an encode: only an encode carries the burned-in mark.
+for rung in "${RUNGS[@]}"; do
+  IFS=':' read -r _h _v _m _b rname rmode _t <<< "${rung}"
+  if [ "${rmode}" != "encode" ]; then
+    log "FATAL: the plan asks for rung ${rname} as '${rmode}'; every rung must be encoded to carry the watermark"
+    exit 1
+  fi
+done
+
+# The mark's words reach drawtext through a file with expansion off, exactly as
+# transcoding and caeor draw them: nothing in a handle is read as filter syntax
+# and the bullet needs no escaping. The path is this script's own and holds only
+# [A-Za-z0-9/._-], so it needs no quoting inside the filter.
+MARK_FILE="/tmp/live-mark-${STREAM_ID}.txt"
+printf '%s' "${MARK_TEXT}" > "${MARK_FILE}"
+MARK_FONT="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+if [ ! -r "${MARK_FONT}" ]; then
+  log "FATAL: watermark font ${MARK_FONT} is missing from this image — refusing to package an unmarked broadcast"
+  exit 1
+fi
 
 # atomic_writing keeps a half-written poster from ever being served.
 ATOMIC=()
@@ -449,50 +451,31 @@ chmod 0777 "${SCAN}" 2>/dev/null || log "could not relax permissions on ${SCAN}"
 # One process, one decode, N scaled encodes plus the poster and the safety
 # sampler. Splitting this into several processes would decode the source once
 # per output for no benefit.
-#
-# A copied rung takes no branch of the filter graph at all: it is mapped from
-# the input stream directly, which is the whole point — no scale, no colour
-# conversion, no encode, and the picture the publisher sent arrives at the
-# viewer having been through exactly one encoder rather than two.
-ENCODED=0
-COPY_RUNGS_PLANNED=0
-for rung in "${RUNGS[@]}"; do
-  IFS=':' read -r _h _v _m _b _n rmode _t <<< "${rung}"
-  if [ "${rmode}" = "copy" ]; then
-    COPY_RUNGS_PLANNED=$((COPY_RUNGS_PLANNED + 1))
-  else
-    ENCODED=$((ENCODED + 1))
-  fi
-done
-
 SPLIT_LABELS=""
-for i in $(seq 0 $((ENCODED - 1))); do
+for i in $(seq 0 $((N - 1))); do
   SPLIT_LABELS="${SPLIT_LABELS}[s${i}]"
 done
-# The rate is normalised once, ahead of the split, so every encoded rung and the
+# The rate is normalised once, ahead of every split, so every rung and the
 # poster share one timeline and the forced keyframes land on the same frames.
-FILTER="[0:v]fps=${FPS},split=$((ENCODED + 1))${SPLIT_LABELS}[sposter];"
-ei=0
-for rung in "${RUNGS[@]}"; do
-  IFS=':' read -r rh _v _m _b _n rmode _t <<< "${rung}"
-  if [ "${rmode}" = "copy" ]; then
-    continue
-  fi
-  FILTER="${FILTER}[s${ei}]scale=-2:${rh}[v${ei}];"
-  ei=$((ei + 1))
-done
-# One decode feeds the ladder, the poster and the safety sampler. The sample
-# branch is split because a filter output may be consumed exactly once.
 #
-# The decimation comes BEFORE the scale, and the order is worth 0.19 cores per
+# Then the source is split in two: the marked picture, which every rung and the
+# poster are cut from, and the unmarked picture, which only the safety sampler
+# reads. The mark is the transcoding lane's moving mark — the same font, size
+# and drift — drawn once on the source so every rung inherits it.
+MARK="drawtext=fontfile=${MARK_FONT}:textfile=${MARK_FILE}:expansion=none:fontcolor=white@0.6:fontsize='max(12,min(w,h)*0.035)':shadowx=2:shadowy=2:shadowcolor=black@0.8:x='(w-tw)/2+((w-tw)/2)*0.9*sin(2*PI*t/20)':y='(h-th)/2+((h-th)/2)*0.85*sin(2*PI*t/10)'"
+FILTER="[0:v]fps=${FPS},split=2[vsrc][vclean];"
+FILTER="${FILTER}[vsrc]${MARK},split=$((N + 1))${SPLIT_LABELS}[sposter];"
+for i in $(seq 0 $((N - 1))); do
+  IFS=':' read -r rh _v _m _b _n _mode _t <<< "${RUNGS[$i]}"
+  FILTER="${FILTER}[s${i}]scale=-2:${rh}[v${i}];"
+done
+# The poster and the sampler both keep one frame in SAMPLE_SECONDS, and the
+# decimation comes BEFORE the scale on both, which is worth 0.19 cores per
 # broadcast — measured, paired, in one load window: 2.543 cores against 2.352
 # for an otherwise identical ladder. Scaling first meant resizing 1080 lines to
-# 720 thirty times a second in order to keep one frame in three hundred, and
-# throwing away the other two hundred and ninety-nine after paying for them.
-# Selecting the frame first means that scale runs a tenth of a time a second.
-# The frames chosen are the same frames either way: the fps filter picks by
-# timestamp, and a picture is not changed by when it was resized.
-FILTER="${FILTER}[sposter]fps=1/${SAMPLE_SECONDS},scale=-2:720,split=2[vposter][vsample]"
+# 720 thirty times a second in order to keep one frame in three hundred.
+FILTER="${FILTER}[sposter]fps=1/${SAMPLE_SECONDS},scale=-2:720[vposter];"
+FILTER="${FILTER}[vclean]fps=1/${SAMPLE_SECONDS},scale=-2:720[vsample]"
 
 # -timeout bounds socket reads: when the publisher goes away the demuxer errors
 # out and the process ends, rather than running on against a source that is no
@@ -506,37 +489,6 @@ FILTER="${FILTER}[sposter]fps=1/${SAMPLE_SECONDS},scale=-2:720,split=2[vposter][
 FF=(ffmpeg -hide_banner -loglevel warning -nostdin -y
     -progress "${PROGRESS}")
 
-# ── one clock for the whole ladder ───────────────────────────────────────────
-# A copied rung and an encoded rung do not otherwise share a timeline, and one
-# HLS muxer cannot segment two.
-#
-# The copied rung is written through carrying the publisher's own timestamps,
-# which over RTSP are RTP timestamps starting at whatever the sender's clock
-# happened to be — measured at 146045 on one broadcast. The encoded rungs go
-# through the fps filter, which hands the encoder a timeline starting at zero.
-# Muxed together the segmenter has two clocks, and what it produced was a
-# copied rung cutting correctly every 2 seconds while the encoded rungs never
-# reached a boundary at all: measured, on four live broadcasts, as ONE 23
-# second segment per encoded rung against #EXT-X-TARGETDURATION:23. Every rung
-# individually playable, the ladder as a whole unswitchable — the exact defect
-# passthrough was supposed to avoid, arriving through a door I had not checked.
-#
-# -copyts keeps the input's own timestamps instead of rebasing each output
-# independently, and -start_at_zero shifts that single shared timeline to begin
-# at zero. Both branches then measure "2 seconds" from the same origin.
-#
-# It is applied only when a rung is actually being copied. An all-encoded
-# ladder has one clock already, and every WebRTC broadcast is all-encoded —
-# those sources carry the noisiest timestamps of any ingest here and there is
-# no reason to hand them the demuxer's clock when nothing needs it.
-#
-# This is why the offline proof of this feature was not enough: a source FILE
-# starts at zero, so both timelines coincide by accident and the ladder looks
-# aligned. Only a live RTSP source has a clock that starts somewhere else.
-if [ "${COPY_RUNGS_PLANNED}" -gt 0 ]; then
-  FF+=(-copyts -start_at_zero)
-fi
-
 FF+=(-rtsp_transport tcp
     -timeout "$((SOURCE_TIMEOUT_SECONDS * 1000000))"
     -i "${SRC}")
@@ -546,18 +498,12 @@ FF+=(-filter_complex "${FILTER}")
 # core it is offered, and on the hardware path they are the only CPU cost left.
 # Bounded to the ladder's own width so one broadcast's filtering cannot occupy
 # the cores another broadcast was admitted on the promise of.
-FF+=(-filter_threads "$((ENCODED + 1))")
+FF+=(-filter_threads "$((N + 1))")
 
 VAR_MAP=""
-ei=0
 for i in $(seq 0 $((N - 1))); do
-  IFS=':' read -r _h _v _m _b rname rmode _t <<< "${RUNGS[$i]}"
-  if [ "${rmode}" = "copy" ]; then
-    FF+=(-map "0:v:0")
-  else
-    FF+=(-map "[v${ei}]")
-    ei=$((ei + 1))
-  fi
+  IFS=':' read -r _h _v _m _b rname _mode _t <<< "${RUNGS[$i]}"
+  FF+=(-map "[v${i}]")
   if [ "${HAS_AUDIO}" -eq 1 ]; then
     VAR_MAP="${VAR_MAP}v:${i},a:${i},name:${rname} "
   else
@@ -574,16 +520,8 @@ else
   log "source carries no audio track; packaging video only"
 fi
 
-COPY_RUNGS=0
 for i in $(seq 0 $((N - 1))); do
-  IFS=':' read -r _h vkbps maxkbps bufkbps _n rmode rthreads <<< "${RUNGS[$i]}"
-  if [ "${rmode}" = "copy" ]; then
-    # Passed through untouched. No bitrate, no rate control, no frame rate mode:
-    # every one of those is a property of an encode that is not happening.
-    FF+=("-c:v:${i}" copy)
-    COPY_RUNGS=$((COPY_RUNGS + 1))
-    continue
-  fi
+  IFS=':' read -r _h vkbps maxkbps bufkbps _n _mode rthreads <<< "${RUNGS[$i]}"
   case "${ENCODER}" in
     h264_nvenc)
       FF+=("-c:v:${i}" h264_nvenc "-preset:v:${i}" p4 "-tune:v:${i}" ll
@@ -593,8 +531,7 @@ for i in $(seq 0 $((N - 1))); do
       # NVENC answers with a plain I-frame, which is a perfectly good picture
       # and is NOT an IDR. The HLS muxer splits on IDR and nothing else, so
       # without this it never finds a boundary: measured on four live NVENC
-      # broadcasts as ONE 26 second segment per encoded rung, against a copied
-      # rung cutting correctly every 2 seconds beside it. Each rung played;
+      # broadcasts as ONE 26 second segment per encoded rung. Each rung played;
       # the ladder could not be switched, which is the entire point of a ladder.
       #
       # -g pins the GOP to the segment duration as well, so the cadence holds
@@ -626,21 +563,11 @@ for i in $(seq 0 $((N - 1))); do
   FF+=("-fps_mode:v:${i}" cfr)
 done
 
-# yuv420p is the encoders' input format and must not be applied to a copied
-# rung: -pix_fmt against a stream that is being remuxed is a request to convert
-# a picture nothing is decoding.
-if [ "${COPY_RUNGS}" -lt "${N}" ]; then
-  ei=0
-  for i in $(seq 0 $((N - 1))); do
-    IFS=':' read -r _h _v _m _b _n rmode _t <<< "${RUNGS[$i]}"
-    [ "${rmode}" = "copy" ] && continue
-    FF+=("-pix_fmt:v:${i}" yuv420p)
-  done
-fi
+# yuv420p is the encoders' input format.
+for i in $(seq 0 $((N - 1))); do
+  FF+=("-pix_fmt:v:${i}" yuv420p)
+done
 # Aligned keyframes across every rung — without this a bitrate switch stalls.
-# When a rung is copied this cadence is the publisher's own, measured above and
-# handed back by the control plane as the segment duration, so the encoded rungs
-# break on the same frames the copied one does.
 FF+=(-force_key_frames "expr:gte(t,n_forced*${SEGMENT_SECONDS})")
 if [ "${HAS_AUDIO}" -eq 1 ]; then
   FF+=(-c:a aac -b:a 192k -ac 2 -ar 48000)
@@ -657,9 +584,10 @@ FF+=(-f hls
      -hls_segment_filename "${OUT}/%v/seg_%05d.m4s"
      "${OUT}/%v/index.m3u8")
 
-# Poster: the still the Facet shows before playback starts.
+# Poster: the still the Facet shows before playback starts. Marked, like every
+# rung — it is served by the edge.
 FF+=(-map "[vposter]" -f image2 -update 1 "${ATOMIC[@]}" "${OUT}/poster.jpg")
-# Safety sampler: the same frame, into a private volume the edge cannot reach.
+# Safety sampler: the unmarked frame, into a private volume the edge cannot reach.
 FF+=(-map "[vsample]" -f image2 -strftime 1 "${ATOMIC[@]}" "${SCAN}/%Y%m%d-%H%M%S.jpg")
 
 log "encoding: ${VAR_MAP}"
@@ -902,7 +830,7 @@ STALLED=0
 if [ -e "${PROGRESS}.stalled" ]; then
   STALLED=1
 fi
-rm -f "${PROGRESS}" "${PROGRESS}.restart" "${PROGRESS}.stalled" "${LAUNCH_MARK}" "${PLAN_FILE}" 2>/dev/null || true
+rm -f "${PROGRESS}" "${PROGRESS}.restart" "${PROGRESS}.stalled" "${LAUNCH_MARK}" "${PLAN_FILE}" "${MARK_FILE}" 2>/dev/null || true
 
 # A stop we asked for is the ordinary end of a broadcast, not a failure, and no
 # status is read from it. Two things make that status meaningless here: ffmpeg

@@ -17,7 +17,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -88,13 +87,15 @@ func (h *Handler) creatorSetupPage(w http.ResponseWriter, r *http.Request) {
 //	bio                    string
 //	content_types          []string  (multi-value: video, photos, music, writing, gaming, fitness)
 //	is_adult               "1"|""
-//	subscription_price_aet int       (AET cents, 0 = free)
+//	subscription_price_aet string    (decimal AET a month, e.g. "5" or "5.50"; empty or 0 = no plan)
 //	btc_address            string    (optional)
 //
 // Side effects (all async-safe, fire-and-forget where possible):
 //  1. Updates display_name + bio via dbpkg.SaveProfile.
 //  2. Stores content_type tags in user_tags.
-//  3. Calls Themis /v1/plans to create/update subscription plan if price > 0.
+//  3. Enables the creator in Themis and creates their first plan if a price
+//     above zero was given; a refusal fails the setup rather than leaving a
+//     creator without the plan they asked for.
 //  4. Calls Themis marketplace.shop.open if btc_address is provided.
 //  5. Pushes SSE event creator_welcome_banner to the user's session.
 //  6. Returns HX-Redirect to /create.
@@ -147,13 +148,19 @@ func (h *Handler) handleCreatorSetupComplete(w http.ResponseWriter, r *http.Requ
 
 	isAdult := isAdultStr == "1" || isAdultStr == "true"
 
-	var priceAET int
-	fmt.Sscanf(priceStr, "%d", &priceAET)
-	if priceAET < 0 {
-		priceAET = 0
-	}
-	if priceAET > 1_000_000 { // sanity cap
-		priceAET = 1_000_000
+	// The price is decimal AET as typed, turned into the ledger's units here.
+	var priceUnits int64
+	if priceStr != "" && priceStr != "0" {
+		unit, err := h.aetUnit(r.Context())
+		if err != nil {
+			log.Printf("[creator_setup] %v", err)
+			htmxError(w, r, "Subscriptions are unavailable right now — please try again.", http.StatusServiceUnavailable)
+			return
+		}
+		if priceUnits, err = parseAETAmount(priceStr, unit); err != nil {
+			htmxError(w, r, "Enter a monthly price like 5 or 5.50, or leave it empty.", http.StatusBadRequest)
+			return
+		}
 	}
 
 	// ── 2. Profile update (display_name + bio + adult flag) ───────────────────
@@ -224,8 +231,11 @@ func (h *Handler) handleCreatorSetupComplete(w http.ResponseWriter, r *http.Requ
 
 	// ── 4. Themis: create subscription plan ────────────────────────────────────
 
-	if priceAET > 0 && h.themisURL != "" && user.PIALID != "" {
-		go h.creatorSetupThemisPlan(user.PIALID, user.Handle, displayName, priceAET)
+	if priceUnits > 0 && user.PIALID != "" {
+		if msg := h.creatorSetupThemisPlan(r.Context(), user, displayName, priceUnits); msg != "" {
+			htmxError(w, r, msg, http.StatusBadGateway)
+			return
+		}
 	}
 
 	// ── 5. Themis: open marketplace shop with BTC address ───────────────────────
@@ -253,39 +263,25 @@ func (h *Handler) handleCreatorSetupComplete(w http.ResponseWriter, r *http.Requ
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// creatorSetupThemisPlan calls Themis to create or update the creator's default
-// subscription plan. Fire-and-forget — errors are logged but do not fail the setup.
-func (h *Handler) creatorSetupThemisPlan(pialID, handle, displayName string, priceAET int) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	body, _ := json.Marshal(map[string]interface{}{
-		"event_type":  "plan.create_or_update",
-		"pial_id":     pialID,
-		"name":        displayName + " Fan Club",
-		"description": "Monthly subscription to " + displayName + "'s exclusive content.",
-		"price_aet":   priceAET,
-		"interval":    "month",
+// creatorSetupThemisPlan enables the creator in Themis and creates their first
+// plan. It answers "" on success and the reason otherwise.
+func (h *Handler) creatorSetupThemisPlan(ctx context.Context, user *model.User, displayName string, priceUnits int64) string {
+	status, body, err := h.themisCall(ctx, http.MethodPost, "/v1/creator/enable", user, nil)
+	if err != nil || status != http.StatusOK {
+		log.Printf("[creator_setup] themis enable for %s: status=%d err=%v", user.ID, status, err)
+		return themisRefusal(body, "Creator mode could not be enabled — please try again.")
+	}
+	status, body, err = h.themisCall(ctx, http.MethodPost, "/v1/plans", user, map[string]interface{}{
+		"creator_account": user.ID,
+		"name":            displayName + " Fan Club",
+		"description":     "Monthly subscription to " + displayName + "'s exclusive content.",
+		"price_units":     priceUnits,
 	})
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, h.themisURL+"/v1/plans", bytes.NewReader(body))
-	if err != nil {
-		log.Printf("[creator_setup] themis plan request build error: %v", err)
-		return
+	if err != nil || status != http.StatusOK {
+		log.Printf("[creator_setup] themis plan for %s: status=%d err=%v", user.ID, status, err)
+		return themisRefusal(body, "Your subscription plan could not be created — please try again.")
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Pial-Identity", pialID)
-	req.Header.Set("X-Pial-Handle", handle)
-
-	resp, err := h.httpClient.Do(req)
-	if err != nil {
-		log.Printf("[creator_setup] themis plan error: %v", err)
-		return
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		log.Printf("[creator_setup] themis plan non-OK: %d", resp.StatusCode)
-	}
+	return ""
 }
 
 // creatorSetupShopOpen calls Themis to open a marketplace shop with the user's BTC address.

@@ -283,13 +283,17 @@ func (h *Handler) apiBalanceTwin(ctx context.Context, u *model.User) string {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
+	unit, err := h.aetUnit(ctx)
+	if err != nil {
+		return ""
+	}
 	var bal struct {
 		BalanceUnits int64 `json:"balance_units"`
 	}
 	if err := h.ainSophGet(ctx, "/v1/balance/"+u.PIALID, &bal); err != nil {
 		return ""
 	}
-	return fmt.Sprintf(`{"balance_uaet":%d,"pending_uaet":0}`, bal.BalanceUnits*uaetPerAinSophUnit)
+	return fmt.Sprintf(`{"balance_uaet":%d,"pending_uaet":0}`, bal.BalanceUnits*unit.UAETPerUnit)
 }
 
 // ── Account events on POST /events ───────────────────────────────────────────

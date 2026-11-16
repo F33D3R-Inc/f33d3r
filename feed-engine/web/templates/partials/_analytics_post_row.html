@@ -29,7 +29,7 @@ FACET analytics_post_row
     creator_analytics → top posts table
 */}}
 {{define "analytics_post_row"}}
-<div class="anl-post-row" hx-get="/post/{{.PostID}}" hx-target="#playground" hx-swap="innerHTML show:window:top" hx-push-url="true">
+<div class="anl-post-row" data-facet-id="facet:f33d3r:analytics:{{.PostID}}:row" hx-get="/post/{{.PostID}}" hx-target="#playground" hx-swap="innerHTML show:window:top" hx-push-url="true">
   <div class="anl-post-preview">
     <span class="anl-post-type anl-type-{{.ContentType}}">{{.ContentType}}</span>
     <p class="anl-post-body">{{.BodyPreview}}</p>

@@ -33,10 +33,7 @@ pub struct MappedTrack {
 }
 
 /// Map audio features to the Jung psychological axes.
-pub fn map_to_axes(
-    features: &AudioFeatures,
-    behavioral_vector: Option<&PsychVector>,
-) -> MappedTrack {
+pub fn map_to_axes(features: &AudioFeatures) -> MappedTrack {
     let f = features;
 
     // ── Axis 0: Persona ───────────────────────────────────────────────────────
@@ -136,14 +133,10 @@ pub fn map_to_axes(
         release,
     ]);
 
-    // Blend with behavioral vector if available
-    let final_vec = if let Some(bv) = behavioral_vector {
-        // Behavioral signals carry 35% of the final vector weight
-        PsychVector::blend(&audio_vec, bv, 0.35)
-    } else {
-        audio_vec.normalise();
-        audio_vec
-    };
+    // The vector is the audio's alone: the same file always maps to the same
+    // place. What listeners do with it is AethyrRank's to learn, not Zior's.
+    audio_vec.normalise();
+    let final_vec = audio_vec;
 
     let mood = classify(
         f.bpm_normalised,
@@ -244,7 +237,7 @@ mod tests {
 
     #[test]
     fn dark_track_has_high_shadow_and_agency() {
-        let mapped = map_to_axes(&dark_heavy_features(), None);
+        let mapped = map_to_axes(&dark_heavy_features());
         let v = mapped.psych_vector.0;
         assert!(v[1] > 0.4, "shadow={:.3}", v[1]); // shadow
         assert!(v[2] > 0.4, "agency={:.3}", v[2]); // agency
@@ -252,7 +245,7 @@ mod tests {
 
     #[test]
     fn ballad_has_high_attachment_and_release() {
-        let mapped = map_to_axes(&bright_ballad_features(), None);
+        let mapped = map_to_axes(&bright_ballad_features());
         let v = mapped.psych_vector.0;
         assert!(v[4] > 0.4, "attachment={:.3}", v[4]); // attachment
         assert!(v[7] > 0.3, "release={:.3}", v[7]); // release
@@ -261,7 +254,7 @@ mod tests {
     #[test]
     fn all_axes_in_unit_interval() {
         for f in [dark_heavy_features(), bright_ballad_features()] {
-            let mapped = map_to_axes(&f, None);
+            let mapped = map_to_axes(&f);
             for &x in &mapped.psych_vector.0 {
                 assert!(x >= 0.0 && x <= 1.0, "axis out of range: {}", x);
             }
@@ -270,13 +263,13 @@ mod tests {
 
     #[test]
     fn dark_track_not_euphoric() {
-        let mapped = map_to_axes(&dark_heavy_features(), None);
+        let mapped = map_to_axes(&dark_heavy_features());
         assert_ne!(mapped.mood, crate::jung::mood::Mood::Euphoric);
     }
 
     #[test]
     fn descriptor_contains_bpm() {
-        let mapped = map_to_axes(&dark_heavy_features(), None);
+        let mapped = map_to_axes(&dark_heavy_features());
         assert!(mapped.descriptor.contains("BPM"), "{}", mapped.descriptor);
     }
 }

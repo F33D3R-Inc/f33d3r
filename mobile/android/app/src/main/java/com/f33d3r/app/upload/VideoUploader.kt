@@ -71,7 +71,6 @@ class VideoUploader(
                         durationSecs = out.text("duration_seconds").toFloatOrNull()?.toLong() ?: 0L,
                         width = out.text("source_width").toIntOrNull() ?: 0,
                         height = out.text("source_height").toIntOrNull() ?: 0,
-                        tusUploadId = id,
                     )
                 }
 
@@ -81,10 +80,11 @@ class VideoUploader(
                     return@withContext UploadState.Duplicate(
                         masterUrl = orig?.text("master_url").orEmpty(),
                         posterUrl = orig?.text("poster_url").orEmpty(),
-                        workId = orig?.text("work_id").orEmpty(),
+                        durationSecs = orig?.text("duration_secs")?.toFloatOrNull()?.toLong() ?: 0L,
+                        width = orig?.text("width")?.toIntOrNull() ?: 0,
+                        height = orig?.text("height")?.toIntOrNull() ?: 0,
                         creatorHandle = orig?.text("creator_handle").orEmpty(),
                         creatorName = orig?.text("creator_name").orEmpty(),
-                        bySelf = false,
                     )
                 }
 

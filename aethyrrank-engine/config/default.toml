@@ -60,26 +60,32 @@ w_ltv          = 0.20
 # Hard cap — revenue cannot exceed this fraction of base score adjustment
 max_adjustment = 0.30
 
-# ── Safety barrier ─────────────────────────────────────────────────────────────
-[safety]
-# Default epsilon for unclassified users (permissive)
-default_epsilon     = 0.10
-# SFW / "safe mode" users — near-zero adult content probability allowed
-sfw_epsilon         = 0.000001
-# Score applied when item exceeds epsilon (effectively -∞)
-hard_block_score    = -999999.0
-
 # ── Exploration / bandit ───────────────────────────────────────────────────────
 [bandit]
-# LinUCB kept ONLY for exploration controller
-alpha_ucb          = 1.0
 feature_dim        = 7
 exploration_count  = 2
 # Cold start: inject more exploration
 cold_start_explore_count = 4
 
-[model_store]
-surfaces = ["feed", "explore", "search", "notifications"]
+# ── Learned preference (LinUCB) ────────────────────────────────────────────────
+# Each viewer has one LinUCB model per surface, trained by ranking.events
+# (src/learning/). On /rank its expected reward θᵀx for the work's feature
+# vector, clamped to [0, 1], is added to the score as
+#
+#     learned_adj = learned_weight × θᵀx
+#
+# 0.15 because:
+#   * it is below the revenue cap (0.30): a person's own history should move
+#     their feed more than an in-network follow (0.08) but never outweigh the
+#     engagement model and the AESQ constraint, which see the whole pool;
+#   * θᵀx starts at 0 (b = 0) and grows only as rewards accumulate, so a new
+#     viewer is ranked exactly as before, and a heavy one can lift a work by at
+#     most 0.15 — enough to reorder works the base score rates as near-equal,
+#     not enough to bury a clearly better one;
+#   * only the expected reward is used, not the UCB bonus: exploration is the
+#     explorer's job (exploration slots), and adding it here would explore twice.
+[learning]
+learned_weight = 0.15
 
 # ── In-network boost ───────────────────────────────────────────────────────────
 # Score bonus applied to content from creators the requesting user follows.

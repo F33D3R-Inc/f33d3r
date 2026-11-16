@@ -99,14 +99,13 @@ func LadderFor(sourceHeight int) []Rung {
 // EncodeMode is how one rung is produced.
 type EncodeMode string
 
-const (
-	// ModeEncode scales and re-encodes the source into this rung.
-	ModeEncode EncodeMode = "encode"
-	// ModeCopy remuxes the source's own H.264 elementary stream into this rung
-	// without touching a pixel. It is only ever chosen for a rung whose height
-	// is exactly the source height, so the label on the rung is the truth.
-	ModeCopy EncodeMode = "copy"
-)
+// ModeEncode scales and re-encodes the source into this rung. It is the only
+// mode there is. Every rung a viewer can fetch carries the moving watermark
+// burned into its pixels, and a mark burned into pixels exists only on a rung
+// that was encoded: a rung remuxed from the publisher's own elementary stream
+// would carry the publisher's picture untouched, which is an unmarked copy on
+// the edge. The ladder script refuses any other mode.
+const ModeEncode EncodeMode = "encode"
 
 // EncoderX264 is the software encoder: always available, paid for in cores.
 const EncoderX264 = "libx264"
@@ -137,10 +136,8 @@ type EncodePlan struct {
 	Rungs   []PlannedRung `json:"rungs"`
 	Encoder string        `json:"encoder"`
 	// SegmentSeconds is the HLS target duration and, identically, the forced
-	// keyframe cadence of every encoded rung. When a rung is copied it is
-	// derived from the publisher's own GOP, because a copied rung's segments
-	// break where the publisher put its keyframes and nowhere else; making the
-	// encoded rungs break there too is what keeps the ladder switchable.
+	// keyframe cadence of every rung, so every rung breaks on the same frames
+	// and the ladder stays switchable.
 	SegmentSeconds int `json:"segment_seconds"`
 	// Degraded reports that this is less than the full ladder for this source.
 	// It exists so the row and the surfaces can say so rather than implying a
@@ -149,19 +146,13 @@ type EncodePlan struct {
 	Reason   string `json:"reason"`
 }
 
-// Summary renders the plan as one line for a log, a row or a report. A copied
-// rung is marked, because "1080p" produced by remux and "1080p" produced by an
-// encoder are not the same thing to anyone debugging a playback fault.
+// Summary renders the plan as one line for a log, a row or a report.
 func (p EncodePlan) Summary() string {
 	if len(p.Rungs) == 0 {
 		return ""
 	}
 	parts := make([]string, 0, len(p.Rungs))
 	for _, r := range p.Rungs {
-		if r.Mode == ModeCopy {
-			parts = append(parts, r.Name+"@copy")
-			continue
-		}
 		parts = append(parts, fmt.Sprintf("%s@%dk", r.Name, r.VideoKbps))
 	}
 	return strings.Join(parts, " ") + " [" + p.Encoder + "]"
@@ -178,7 +169,7 @@ func (p EncodePlan) Names() []string {
 }
 
 // plannedFrom turns ladder rungs into planned rungs, all encoded, no thread
-// ceiling. Capacity and passthrough are applied to this by the governor.
+// ceiling. Capacity is applied to this by the governor.
 func plannedFrom(rungs []Rung) []PlannedRung {
 	out := make([]PlannedRung, 0, len(rungs))
 	for _, r := range rungs {

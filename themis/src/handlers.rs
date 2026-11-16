@@ -1,4 +1,5 @@
 use crate::{
+    caeor::{self, AssetRefusal},
     db,
     models::*,
     pial_ref::{register_content, require_identity, ContentRef, IdentityError, PialRef},
@@ -62,7 +63,7 @@ async fn verify_pial_signature(
 }
 
 
-fn pial_from_headers(headers: &HeaderMap) -> Option<PialRef> {
+pub(crate) fn pial_from_headers(headers: &HeaderMap) -> Option<PialRef> {
     headers
         .get("X-Pial-Identity")
         .and_then(|v| v.to_str().ok())
@@ -77,7 +78,7 @@ fn pial_from_headers(headers: &HeaderMap) -> Option<PialRef> {
 /// registration is already queued durably in manhattan_outbox, so a caller that
 /// retries loses nothing, while a payment sent to an identity nobody agreed on
 /// cannot be taken back.
-fn identity_refused(pial: &PialRef, e: IdentityError) -> (StatusCode, Json<serde_json::Value>) {
+pub(crate) fn identity_refused(pial: &PialRef, e: IdentityError) -> (StatusCode, Json<serde_json::Value>) {
     tracing::error!("themis: identity gate refused {pial}: {e}");
     match e {
         IdentityError::NotActive | IdentityError::NotAnIdentity(_) => (
@@ -105,7 +106,7 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
-fn internal_key_ok(headers: &HeaderMap, cfg_key: &str) -> bool {
+pub(crate) fn internal_key_ok(headers: &HeaderMap, cfg_key: &str) -> bool {
     headers
         .get("X-Internal-Key")
         .and_then(|v| v.to_str().ok())
@@ -141,10 +142,20 @@ pub async fn health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     if let Err(ref e) = backlog {
         tracing::error!("manhattan outbox backlog query: {e}");
     }
+    let commerce = crate::commerce_events::backlog(&state.pool).await;
+    if let Err(ref e) = commerce {
+        tracing::error!("commerce outbox backlog query: {e}");
+    }
+    let (pending, quarantined) = match commerce {
+        Ok((p, q)) => (Some(p), Some(q)),
+        Err(_) => (None, None),
+    };
     Json(serde_json::json!({
         "ok":        true,
         "manhattan": state.manhattan.configured(),
         "manhattan_outbox_backlog": backlog.ok(),
+        "commerce_outbox_pending": pending,
+        "commerce_outbox_quarantined": quarantined,
     }))
 }
 
@@ -154,11 +165,38 @@ pub async fn pubkey(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 }
 
 // POST /v1/events — receives marketplace.* events from Nantar
+/// The content id of a signed marketplace event: sha256 over the event's own
+/// fields — everything but `cid` and `pial_sig` — as compact JSON with keys in
+/// sorted order. That is exactly what the browser hashes before signing
+/// (malkuth.js signMarketplaceEvent: JSON.stringify with sorted keys), so the
+/// signature is checked against what the request actually says, never against
+/// a cid the request merely claims.
+fn event_cid(raw: &serde_json::Value) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let obj = raw.as_object()?;
+    let fields: std::collections::BTreeMap<&String, &serde_json::Value> = obj
+        .iter()
+        .filter(|(k, _)| k.as_str() != "cid" && k.as_str() != "pial_sig")
+        .collect();
+    let canonical = serde_json::to_vec(&fields).ok()?;
+    Some(format!("sha256:{}", hex::encode(Sha256::digest(&canonical))))
+}
+
 pub async fn events(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(evt): Json<MarketplaceEvent>,
+    Json(raw): Json<serde_json::Value>,
 ) -> impl IntoResponse {
+    let evt: MarketplaceEvent = match serde_json::from_value(raw.clone()) {
+        Ok(e) => e,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error":"invalid_event","message": e.to_string()})),
+            )
+                .into_response()
+        }
+    };
     let requester = match pial_from_headers(&headers) {
         Some(p) => p,
         None => {
@@ -189,6 +227,16 @@ pub async fn events(
     if requires_sig {
         match (&evt.cid, &evt.pial_sig) {
             (Some(cid), Some(sig)) => {
+                if event_cid(&raw).as_deref() != Some(cid.as_str()) {
+                    return (
+                        StatusCode::UNAUTHORIZED,
+                        Json(serde_json::json!({
+                            "error": "cid_mismatch",
+                            "message": "The signed content id does not match the event"
+                        })),
+                    )
+                        .into_response();
+                }
                 if verify_pial_signature(
                     &state.http,
                     &state.cfg.elohim_veni_url,
@@ -273,10 +321,17 @@ pub async fn events(
             }
         }
 
-        "marketplace.shop.close" => {
-            let _ = db::shop_close(&state.pool, requester).await;
-            Json(serde_json::json!({"ok":true})).into_response()
-        }
+        "marketplace.shop.close" => match db::shop_close(&state.pool, requester).await {
+            Ok(()) => Json(serde_json::json!({"ok":true})).into_response(),
+            Err(e) => {
+                tracing::error!("shop_close: {e}");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error":"db_error"})),
+                )
+                    .into_response()
+            }
+        },
 
         "marketplace.listing.create" => {
             let req = ListingCreateReq {
@@ -311,6 +366,26 @@ pub async fn events(
                         .into_response()
                 }
             };
+            // The body sold must be the seller's own encrypted upload, as Caeor
+            // knows it — not a path the request merely names.
+            let asset_id = match caeor::seller_asset(&state, &req.content_url, &requester).await {
+                Ok(id) => id,
+                Err(AssetRefusal::NotTheSellers(why)) => {
+                    return (
+                        StatusCode::FORBIDDEN,
+                        Json(serde_json::json!({"error":"content_not_yours","message": why})),
+                    )
+                        .into_response()
+                }
+                Err(AssetRefusal::Unavailable(why)) => {
+                    tracing::error!("listing_create: caeor: {why}");
+                    return (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        Json(serde_json::json!({"error":"media_unavailable","message":"Your upload could not be checked right now. Try again shortly."})),
+                    )
+                        .into_response();
+                }
+            };
             // Count active listings — max 12
             match db::listings_for_shop(&state.pool, requester, true).await {
                 Ok(existing) if existing.len() >= 12 => {
@@ -322,7 +397,7 @@ pub async fn events(
                 }
                 _ => {}
             }
-            match db::listing_create(&state.pool, requester, &req, cek_bytes).await {
+            match db::listing_create(&state.pool, requester, &req, cek_bytes, asset_id).await {
                 Ok(l) => {
                     if let Some(content) = ContentRef::parse(&l.content_hash) {
                         register_content(&state.manhattan, KIND_WORK, &content).await;
@@ -377,17 +452,31 @@ pub async fn events(
                         .into_response();
                 }
             }
-            // Apply edit (title, description only — price/content immutable after listing)
-            if let Some(ref title) = evt.title {
-                let _ = db::listing_update_title(&state.pool, listing_id, title).await;
+            // Apply edit (title, description, active — price/content immutable after listing)
+            let applied = async {
+                if let Some(ref title) = evt.title {
+                    db::listing_update_title(&state.pool, listing_id, title).await?;
+                }
+                if let Some(ref desc) = evt.description {
+                    db::listing_update_description(&state.pool, listing_id, desc).await?;
+                }
+                if let Some(active) = evt.is_active {
+                    db::listing_set_active(&state.pool, listing_id, active).await?;
+                }
+                anyhow::Ok(())
             }
-            if let Some(ref desc) = evt.description {
-                let _ = db::listing_update_description(&state.pool, listing_id, desc).await;
+            .await;
+            match applied {
+                Ok(()) => Json(serde_json::json!({"ok":true})).into_response(),
+                Err(e) => {
+                    tracing::error!("listing_edit: {e}");
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({"error":"db_error"})),
+                    )
+                        .into_response()
+                }
             }
-            if let Some(active) = evt.is_active {
-                let _ = db::listing_set_active(&state.pool, listing_id, active).await;
-            }
-            Json(serde_json::json!({"ok":true})).into_response()
         }
 
         "marketplace.listing.delete" => {
@@ -403,8 +492,19 @@ pub async fn events(
             };
             match db::listing_get(&state.pool, listing_id).await {
                 Ok(Some(l)) if l.shop_pial == requester => {
-                    let _ = db::listing_set_active(&state.pool, listing_id, false).await;
-                    Json(serde_json::json!({"ok":true})).into_response()
+                    // Deleted, not paused: the maintenance loop withdraws its
+                    // encrypted asset through Caeor once no buyer holds it.
+                    match db::listing_delete(&state.pool, listing_id).await {
+                        Ok(()) => Json(serde_json::json!({"ok":true})).into_response(),
+                        Err(e) => {
+                            tracing::error!("listing_delete: {e}");
+                            (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                Json(serde_json::json!({"error":"db_error"})),
+                            )
+                                .into_response()
+                        }
+                    }
                 }
                 Ok(Some(_)) => (
                     StatusCode::FORBIDDEN,
@@ -561,8 +661,17 @@ pub async fn events(
                         .into_response()
                 }
             };
-            let _ = db::marketplace_subscription_cancel(&state.pool, requester, sp).await;
-            Json(serde_json::json!({"ok":true})).into_response()
+            match db::marketplace_subscription_cancel(&state.pool, requester, sp).await {
+                Ok(()) => Json(serde_json::json!({"ok":true})).into_response(),
+                Err(e) => {
+                    tracing::error!("marketplace_subscription_cancel: {e}");
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({"error":"db_error"})),
+                    )
+                        .into_response()
+                }
+            }
         }
 
         _ => (
@@ -807,889 +916,45 @@ pub async fn seller_stats(
     }
 }
 
-// ── Commerce handlers (from Thessalon) ────────────────────────────────────────
-
-// ── Payment intent: the record exists before the money moves ──────────────────
-//
-// `subscribe`, `purchase_ppv` and `send_tip` used to call Ain Soph first and
-// INSERT afterwards. A database failure in that window moved a user's money and
-// left no local record of it whatsoever — nothing to reconcile against, nothing
-// to refund from, and no way to discover it had happened at all. The user was
-// simply poorer.
-//
-// The order is inverted here: record the intent, move the money, settle the
-// record. The asymmetry is the whole argument — an abandoned `pending` row costs
-// nothing and is visible, while a transfer with no row costs someone their
-// balance and is invisible. When those are the two failure modes, you choose the
-// one you can see.
-//
-// A crash between the transfer and the settlement still leaves a `pending` row.
-// That is not a silent loss: the row names the payer, the payee, the amount and
-// the moment, so it can be reconciled against Ain Soph by hand or by a sweep.
-// idx_ctx_pending exists to make that set cheap to find.
-
-/// Writes the ledger row for a payment that has not happened yet.
-///
-/// `reference_id` is chosen by the caller before either row exists, so the
-/// domain row and its ledger entry can be inserted together in one transaction
-/// and point at each other without a round trip.
-async fn record_intent(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    tx_type: &str,
-    reference_id: Uuid,
-    payer: &PialRef,
-    payee: &PialRef,
-    gross_units: i64,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "INSERT INTO commerce_transactions \
-           (tx_type, reference_id, payer_pial_id, creator_pial_id, gross_aet, status) \
-         VALUES ($1, $2, $3, $4, $5, 'pending')",
-    )
-    .bind(tx_type)
-    .bind(reference_id)
-    .bind(payer.text())
-    .bind(payee.text())
-    .bind(gross_units)
-    .execute(&mut **tx)
-    .await
-    .map(|_| ())
-}
-
-/// Marks a recorded payment settled, in the ledger and in its domain table.
-///
-/// Both rows move together or neither does, so the ledger can never disagree
-/// with the thing it is the ledger for. `domain_table` and `domain_status` are
-/// passed rather than hardcoded because a subscription settles to 'active' while
-/// a tip settles to 'completed' — the same event, different vocabulary per table.
-///
-/// `domain_table` is interpolated into SQL, so it is `&'static str`: only a
-/// literal written in this crate can be passed, never anything a request
-/// carried. The type is the guarantee, not the callers' discipline.
-async fn settle_intent(
-    pool: &SqPool,
-    domain_table: &'static str,
-    domain_status: &str,
-    reference_id: Uuid,
-    outcome: Result<&str, &str>,
-    notice: Option<&crate::notifications::Event>,
-) -> Result<(), sqlx::Error> {
-    let (ledger_status, domain_state, tx_id, reason) = match outcome {
-        Ok(tx_id) => ("completed", domain_status, Some(tx_id), None),
-        Err(why) => ("failed", "failed", None, Some(why)),
-    };
-
-    // Only a row still pending may be settled. Without this, a settlement landing
-    // after something else moved the row — a cancellation, a sweep — would
-    // silently overwrite that decision and resurrect the payment.
-    let mut tx = pool.begin().await?;
-    let settled = sqlx::query(&format!(
-        "UPDATE {domain_table} SET status = $2, ain_soph_tx_id = $3, failure_reason = $4 \
-          WHERE id = $1 AND status = 'pending'"
-    ))
-    .bind(reference_id)
-    .bind(domain_state)
-    .bind(tx_id)
-    .bind(reason)
-    .execute(&mut *tx)
-    .await?
-    .rows_affected();
-    if let (true, Some(notice)) = (settled > 0, notice) {
-        crate::notifications::enqueue(&mut *tx, notice).await?;
-    }
-    sqlx::query(
-        "UPDATE commerce_transactions \
-            SET status = $2, ain_soph_tx_id = $3, failure_reason = $4 \
-          WHERE reference_id = $1 AND status = 'pending'",
-    )
-    .bind(reference_id)
-    .bind(ledger_status)
-    .bind(tx_id)
-    .bind(reason)
-    .execute(&mut *tx)
-    .await?;
-    tx.commit().await
-}
-
-/// Settlement failed to record even though the transfer succeeded. The money has
-/// moved and the row is still `pending`, which is exactly the state the pending
-/// row exists to make visible. Nothing here can fix it, so it says so loudly and
-/// names everything needed to reconcile it.
-fn settlement_unrecorded(
-    reference_id: Uuid,
-    tx_id: &str,
-    e: sqlx::Error,
-) -> (StatusCode, Json<Value>) {
-    tracing::error!(
-        reference_id = %reference_id,
-        ain_soph_tx_id = %tx_id,
-        "INCIDENT: transfer succeeded but settlement could not be recorded — \
-         the row is still pending and needs reconciling by hand: {e}"
-    );
-    cerr(
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "payment went through but could not be recorded — it has been logged for reconciliation, do not retry",
-    )
-}
-
-/// Establishes that the caller IS the PIAL it claims to be spending or acting as.
-///
-/// `require_identity` proves a PIAL *exists*. It cannot prove the caller *is*
-/// that PIAL — and every commerce endpoint below used to take the payer straight
-/// out of the request body. Anyone able to reach this port could therefore spend
-/// any PIAL's balance, open a shop as anyone, or enable monetisation for anyone,
-/// simply by naming them. Existence was being checked; authority was not.
-///
-/// The authenticated identity arrives in `X-Pial-Identity`, which feed-engine
-/// sets from the session after authenticating it and strips the inbound `Cookie`
-/// for, so the header cannot be forged by a browser. This is the same source the
-/// `/v1/events` handler has always used; the commerce handlers simply never
-/// consulted it.
-///
-/// `X-Internal-Key` is the service-to-service path — a chain watcher confirming
-/// a settlement acts for a buyer who is not making the call. It is honoured only
-/// when a key is actually configured, so an empty `INTERNAL_API_KEY` cannot turn
-/// into a blanket bypass.
-///
-/// Deny is the default: no header, no action.
-fn require_caller(
-    headers: &HeaderMap,
-    cfg_key: &str,
-    acting_as: &PialRef,
-) -> Result<(), (StatusCode, Json<Value>)> {
-    if internal_key_ok(headers, cfg_key) {
-        return Ok(());
-    }
-    match pial_from_headers(headers) {
-        None => Err(cerr(
-            StatusCode::UNAUTHORIZED,
-            "X-Pial-Identity is required: this endpoint spends or acts for an identity",
-        )),
-        Some(caller) if caller == *acting_as => Ok(()),
-        Some(caller) => {
-            tracing::warn!(
-                caller = %caller.text(),
-                claimed = %acting_as.text(),
-                "refused: caller tried to act as a different identity"
-            );
-            Err(cerr(
-                StatusCode::FORBIDDEN,
-                "you may only act as your own identity",
-            ))
-        }
-    }
-}
-
-use crate::clients;
-use axum::extract::Query as AxumQuery;
-use serde_json::{json, Value};
-use sqlx::PgPool as SqPool;
-
-type CommerceRes<T> = Result<Json<T>, (StatusCode, Json<Value>)>;
-
-fn cerr(status: StatusCode, msg: &str) -> (StatusCode, Json<Value>) {
-    (status, Json(json!({"error": msg})))
-}
-
-fn cdberr(e: sqlx::Error) -> (StatusCode, Json<Value>) {
-    cerr(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string())
-}
-
-pub async fn commerce_stats(State(state): State<Arc<AppState>>) -> Json<Value> {
-    let pool: &SqPool = &state.pool;
-    let creators: (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM creator_eligibility WHERE monetization_enabled")
-            .fetch_one(pool)
-            .await
-            .unwrap_or((0,));
-    let active_subs: (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM subscriptions WHERE status = 'active'")
-            .fetch_one(pool)
-            .await
-            .unwrap_or((0,));
-    let tx_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM commerce_transactions")
-        .fetch_one(pool)
-        .await
-        .unwrap_or((0,));
-    let volume: (Option<i64>,) = sqlx::query_as(
-        "SELECT SUM(gross_aet) FROM commerce_transactions WHERE status = 'completed'",
-    )
-    .fetch_one(pool)
-    .await
-    .unwrap_or((None,));
-    Json(json!({
-        "active_creators": creators.0,
-        "active_subscriptions": active_subs.0,
-        "total_transactions": tx_count.0,
-        "total_volume_aet": volume.0.unwrap_or(0),
-    }))
-}
-
-pub async fn creator_enable(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Json(req): Json<EnableCreatorReq>,
-) -> CommerceRes<Value> {
-    require_caller(&headers, &state.cfg.internal_api_key, &req.pial_id)?;
-    // Enabling monetization is the moment a PIAL becomes payable by this brain.
-    require_identity(&state.manhattan, &req.pial_id)
-        .await
-        .map_err(|e| identity_refused(&req.pial_id, e))?;
-    let tier = clients::kyc_tier(&state.http, &state.cfg.verity_url, &req.pial_id.text()).await;
-    sqlx::query(
-        "INSERT INTO creator_eligibility (pial_id, kyc_tier, monetization_enabled, enabled_at) \
-         VALUES ($1, $2, true, NOW()) \
-         ON CONFLICT (pial_id) DO UPDATE \
-         SET kyc_tier = $2, monetization_enabled = true, enabled_at = NOW(), \
-             disabled_at = NULL, disabled_reason = NULL",
-    )
-    .bind(req.pial_id.text())
-    .bind(tier)
-    .execute(&state.pool)
-    .await
-    .map_err(cdberr)?;
-    Ok(Json(
-        json!({"pial_id": req.pial_id, "monetization_enabled": true, "kyc_tier": tier}),
-    ))
-}
-
-pub async fn creator_status(
-    State(state): State<Arc<AppState>>,
-    Path(pial_id): Path<PialRef>,
-) -> CommerceRes<Value> {
-    let row: Option<(bool, i32)> = sqlx::query_as(
-        "SELECT monetization_enabled, kyc_tier FROM creator_eligibility WHERE pial_id = $1",
-    )
-    .bind(pial_id.text())
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(cdberr)?;
-    let (enabled, tier) = row.unwrap_or((false, 0));
-    Ok(Json(
-        json!({"pial_id": pial_id, "monetization_enabled": enabled, "kyc_tier": tier}),
-    ))
-}
-
-pub async fn list_plans(
-    State(state): State<Arc<AppState>>,
-    Path(pial_id): Path<PialRef>,
-) -> CommerceRes<Vec<PlanRow>> {
-    let rows = sqlx::query_as::<_, PlanRow>(
-        "SELECT id, creator_pial_id, name, price_aet, description, is_active, created_at \
-         FROM subscription_plans WHERE creator_pial_id = $1 ORDER BY price_aet ASC",
-    )
-    .bind(pial_id.text())
-    .fetch_all(&state.pool)
-    .await
-    .map_err(cdberr)?;
-    Ok(Json(rows))
-}
-
-pub async fn create_plan(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Json(req): Json<CreatePlanReq>,
-) -> CommerceRes<PlanRow> {
-    require_caller(&headers, &state.cfg.internal_api_key, &req.creator_pial_id)?;
-    require_identity(&state.manhattan, &req.creator_pial_id)
-        .await
-        .map_err(|e| identity_refused(&req.creator_pial_id, e))?;
-    let enabled: Option<(bool,)> =
-        sqlx::query_as("SELECT monetization_enabled FROM creator_eligibility WHERE pial_id = $1")
-            .bind(req.creator_pial_id.text())
-            .fetch_optional(&state.pool)
-            .await
-            .map_err(cdberr)?;
-    if !enabled.map(|r| r.0).unwrap_or(false) {
-        return Err(cerr(
-            StatusCode::FORBIDDEN,
-            "creator monetization not enabled",
-        ));
-    }
-    let price_units = aet_to_units(req.price_aet);
-    if price_units <= 0 {
-        return Err(cerr(
-            StatusCode::BAD_REQUEST,
-            "price must be greater than zero",
-        ));
-    }
-    let row = sqlx::query_as::<_, PlanRow>(
-        "INSERT INTO subscription_plans (creator_pial_id, name, price_aet, description) \
-         VALUES ($1, $2, $3, $4) \
-         RETURNING id, creator_pial_id, name, price_aet, description, is_active, created_at",
-    )
-    .bind(req.creator_pial_id.text())
-    .bind(&req.name)
-    .bind(price_units)
-    .bind(&req.description)
-    .fetch_one(&state.pool)
-    .await
-    .map_err(cdberr)?;
-    Ok(Json(row))
-}
-
-pub async fn update_plan(
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<Uuid>,
-    Json(req): Json<UpdatePlanReq>,
-) -> CommerceRes<PlanRow> {
-    let price = req.price_aet.map(aet_to_units);
-    let row = sqlx::query_as::<_, PlanRow>(
-        "UPDATE subscription_plans SET \
-           name        = COALESCE($2, name), \
-           price_aet   = COALESCE($3, price_aet), \
-           description = COALESCE($4, description), \
-           is_active   = COALESCE($5, is_active) \
-         WHERE id = $1 \
-         RETURNING id, creator_pial_id, name, price_aet, description, is_active, created_at",
-    )
-    .bind(id)
-    .bind(req.name)
-    .bind(price)
-    .bind(req.description)
-    .bind(req.is_active)
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(cdberr)?
-    .ok_or_else(|| cerr(StatusCode::NOT_FOUND, "plan not found"))?;
-    Ok(Json(row))
-}
-
-pub async fn delete_plan(
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<Uuid>,
-) -> CommerceRes<Value> {
-    sqlx::query("UPDATE subscription_plans SET is_active = false WHERE id = $1")
-        .bind(id)
-        .execute(&state.pool)
-        .await
-        .map_err(cdberr)?;
-    Ok(Json(json!({"id": id, "is_active": false})))
-}
-
-pub async fn subscribe(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Json(req): Json<SubscribeReq>,
-) -> CommerceRes<Value> {
-    require_caller(
-        &headers,
-        &state.cfg.internal_api_key,
-        &req.subscriber_pial_id,
-    )?;
-    // Both ends of a recurring payment, resolved before either is written into
-    // a row that decides where the money goes.
-    require_identity(&state.manhattan, &req.subscriber_pial_id)
-        .await
-        .map_err(|e| identity_refused(&req.subscriber_pial_id, e))?;
-    require_identity(&state.manhattan, &req.creator_pial_id)
-        .await
-        .map_err(|e| identity_refused(&req.creator_pial_id, e))?;
-    let existing: Option<(Uuid,)> = sqlx::query_as(
-        "SELECT id FROM subscriptions \
-         WHERE subscriber_pial_id = $1 AND creator_pial_id = $2 \
-           AND status IN ('active', 'pending')",
-    )
-    .bind(req.subscriber_pial_id.text())
-    .bind(req.creator_pial_id.text())
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(cdberr)?;
-    if existing.is_some() {
-        return Err(cerr(StatusCode::CONFLICT, "already subscribed"));
-    }
-    let plan: Option<(i64,)> =
-        sqlx::query_as("SELECT price_aet FROM subscription_plans WHERE id = $1 AND is_active")
-            .bind(req.plan_id)
-            .fetch_optional(&state.pool)
-            .await
-            .map_err(cdberr)?;
-    let price_units = plan
-        .ok_or_else(|| cerr(StatusCode::NOT_FOUND, "plan not found or inactive"))?
-        .0;
-    // Record first, charge second, settle third. See record_intent. A
-    // subscription settles to 'active' rather than 'completed' — same event,
-    // different vocabulary in that table.
-    let period_end = chrono::Utc::now() + chrono::Duration::days(30);
-    let sub_id = Uuid::new_v4();
-    let mut itx = state.pool.begin().await.map_err(cdberr)?;
-    sqlx::query(
-        "INSERT INTO subscriptions \
-           (id, subscriber_pial_id, creator_pial_id, plan_id, current_period_end, status) \
-         VALUES ($1, $2, $3, $4, $5, 'pending')",
-    )
-    .bind(sub_id)
-    .bind(req.subscriber_pial_id.text())
-    .bind(req.creator_pial_id.text())
-    .bind(req.plan_id)
-    .bind(period_end)
-    .execute(&mut *itx)
-    .await
-    .map_err(cdberr)?;
-    record_intent(
-        &mut itx,
-        "subscription",
-        sub_id,
-        &req.subscriber_pial_id,
-        &req.creator_pial_id,
-        price_units,
-    )
-    .await
-    .map_err(cdberr)?;
-    itx.commit().await.map_err(cdberr)?;
-
-    let transfer = clients::transfer(
-        &state.http,
-        &state.cfg.ain_soph_url,
-        &state.cfg.internal_api_key,
-        &req.subscriber_pial_id.text(),
-        &req.creator_pial_id.text(),
-        price_units,
-        "subscription",
-    )
-    .await;
-
-    let tx_id = match transfer {
-        Ok(tx_id) => {
-            settle_intent(&state.pool, "subscriptions", "active", sub_id, Ok(&tx_id), Some(&sale_notice(format!("themis:subscribe:{sub_id}"), req.creator_pial_id.text(), "subscribe", "New subscriber", sub_id.to_string(), units_to_aet(price_units).to_string())))
-                .await
-                .map_err(|e| settlement_unrecorded(sub_id, &tx_id, e))?;
-            tx_id
-        }
-        Err(e) => {
-            let why = e.to_string();
-            let _ = settle_intent(&state.pool, "subscriptions", "active", sub_id, Err(&why), None).await;
-            return Err(cerr(StatusCode::PAYMENT_REQUIRED, &why));
-        }
-    };
-    Ok(Json(json!({
-        "subscription_id": sub_id,
-        "subscriber_pial_id": req.subscriber_pial_id,
-        "creator_pial_id":    req.creator_pial_id,
-        "plan_id":            req.plan_id,
-        "amount_aet":         units_to_aet(price_units),
-        "period_end":         period_end,
-        "ain_soph_tx_id":     tx_id,
-        "status":             "active",
-    })))
-}
-
-pub async fn unsubscribe(
-    State(state): State<Arc<AppState>>,
-    Json(req): Json<UnsubscribeReq>,
-) -> CommerceRes<Value> {
-    // Cancels only an active subscription — deliberately NOT a pending one.
-    //
-    // A pending row is one whose payment is in flight. Cancelling it would race
-    // the settlement: either the settlement overwrites the cancellation and the
-    // subscriber is charged for something they just cancelled, or the
-    // cancellation wins and the transfer has already moved money for a
-    // subscription that no longer exists. Neither is recoverable from here.
-    //
-    // The window is one HTTP call wide, so the honest answer is to say what is
-    // actually happening and let the caller retry a moment later. Returning
-    // "no active subscription found" — which is what this did once pending
-    // existed — would tell the subscriber they were not subscribed while their
-    // payment was mid-flight.
-    let result = sqlx::query(
-        "UPDATE subscriptions SET status = 'cancelled', cancelled_at = NOW() \
-         WHERE subscriber_pial_id = $1 AND creator_pial_id = $2 AND status = 'active'",
-    )
-    .bind(req.subscriber_pial_id.text())
-    .bind(req.creator_pial_id.text())
-    .execute(&state.pool)
-    .await
-    .map_err(cdberr)?;
-    if result.rows_affected() == 0 {
-        let pending: Option<(Uuid,)> = sqlx::query_as(
-            "SELECT id FROM subscriptions \
-             WHERE subscriber_pial_id = $1 AND creator_pial_id = $2 AND status = 'pending'",
-        )
-        .bind(req.subscriber_pial_id.text())
-        .bind(req.creator_pial_id.text())
-        .fetch_optional(&state.pool)
-        .await
-        .map_err(cdberr)?;
-        if pending.is_some() {
-            return Err(cerr(
-                StatusCode::CONFLICT,
-                "this subscription's payment is still settling — try again in a moment",
-            ));
-        }
-        return Err(cerr(StatusCode::NOT_FOUND, "no active subscription found"));
-    }
-    Ok(Json(json!({"status": "cancelled"})))
-}
-
-pub async fn check_subscription(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    AxumQuery(q): AxumQuery<CommerceAccessQuery>,
-) -> CommerceRes<Value> {
-    let subscriber = q
-        .subscriber
-        .ok_or_else(|| cerr(StatusCode::BAD_REQUEST, "subscriber required"))?;
-    require_caller(&headers, &state.cfg.internal_api_key, &subscriber)?;
-    let creator = q
-        .creator
-        .ok_or_else(|| cerr(StatusCode::BAD_REQUEST, "creator required"))?;
-    let has: Option<(Uuid,)> = sqlx::query_as(
-        "SELECT id FROM subscriptions \
-         WHERE subscriber_pial_id = $1 AND creator_pial_id = $2 \
-           AND status = 'active' AND current_period_end > NOW()",
-    )
-    .bind(subscriber.text())
-    .bind(creator.text())
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(cdberr)?;
-    Ok(Json(json!({"has_access": has.is_some()})))
-}
-
-pub async fn list_subscribers(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Path(pial_id): Path<PialRef>,
-) -> CommerceRes<Vec<SubscriptionRow>> {
-    require_caller(&headers, &state.cfg.internal_api_key, &pial_id)?;
-    let rows = sqlx::query_as::<_, SubscriptionRow>(
-        "SELECT id, subscriber_pial_id, creator_pial_id, plan_id, status, \
-                current_period_start, current_period_end, cancelled_at, created_at \
-         FROM subscriptions \
-          WHERE creator_pial_id = $1 AND status <> 'failed' \
-          ORDER BY created_at DESC",
-    )
-    .bind(pial_id.text())
-    .fetch_all(&state.pool)
-    .await
-    .map_err(cdberr)?;
-    Ok(Json(rows))
-}
-
-pub async fn list_subscriptions(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Path(pial_id): Path<PialRef>,
-) -> CommerceRes<Vec<SubscriptionRow>> {
-    require_caller(&headers, &state.cfg.internal_api_key, &pial_id)?;
-    let rows = sqlx::query_as::<_, SubscriptionRow>(
-        "SELECT id, subscriber_pial_id, creator_pial_id, plan_id, status, \
-                current_period_start, current_period_end, cancelled_at, created_at \
-         FROM subscriptions \
-          WHERE subscriber_pial_id = $1 AND status <> 'failed' \
-          ORDER BY created_at DESC",
-    )
-    .bind(pial_id.text())
-    .fetch_all(&state.pool)
-    .await
-    .map_err(cdberr)?;
-    Ok(Json(rows))
-}
-
-pub async fn create_ppv(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Json(req): Json<CreatePpvReq>,
-) -> CommerceRes<PpvItemRow> {
-    require_caller(&headers, &state.cfg.internal_api_key, &req.creator_pial_id)?;
-    require_identity(&state.manhattan, &req.creator_pial_id)
-        .await
-        .map_err(|e| identity_refused(&req.creator_pial_id, e))?;
-    // The item being sold is a work owned by feed-engine, referenced here by
-    // name. Themis registers the name it must reference and resolves it; it
-    // never assumes another brain's id scheme.
-    if let Some(content) = ContentRef::parse(&req.content_id) {
-        register_content(&state.manhattan, KIND_WORK, &content).await;
-    }
-    let enabled: Option<(bool,)> =
-        sqlx::query_as("SELECT monetization_enabled FROM creator_eligibility WHERE pial_id = $1")
-            .bind(req.creator_pial_id.text())
-            .fetch_optional(&state.pool)
-            .await
-            .map_err(cdberr)?;
-    if !enabled.map(|r| r.0).unwrap_or(false) {
-        return Err(cerr(
-            StatusCode::FORBIDDEN,
-            "creator monetization not enabled",
-        ));
-    }
-    let price_units = aet_to_units(req.price_aet);
-    if price_units <= 0 {
-        return Err(cerr(
-            StatusCode::BAD_REQUEST,
-            "price must be greater than zero",
-        ));
-    }
-    let row = sqlx::query_as::<_, PpvItemRow>(
-        "INSERT INTO ppv_items (creator_pial_id, content_id, price_aet, title) \
-         VALUES ($1, $2, $3, $4) \
-         RETURNING id, creator_pial_id, content_id, price_aet, title, is_active, created_at",
-    )
-    .bind(req.creator_pial_id.text())
-    .bind(&req.content_id)
-    .bind(price_units)
-    .bind(&req.title)
-    .fetch_one(&state.pool)
-    .await
-    .map_err(cdberr)?;
-    Ok(Json(row))
-}
-
-pub async fn purchase_ppv(
-    State(state): State<Arc<AppState>>,
-    Path(item_id): Path<Uuid>,
-    headers: HeaderMap,
-    Json(req): Json<PurchasePpvReq>,
-) -> CommerceRes<Value> {
-    require_caller(&headers, &state.cfg.internal_api_key, &req.buyer_pial_id)?;
-    require_identity(&state.manhattan, &req.buyer_pial_id)
-        .await
-        .map_err(|e| identity_refused(&req.buyer_pial_id, e))?;
-    let item: Option<(PialRef, i64)> = sqlx::query_as(
-        "SELECT creator_pial_id, price_aet FROM ppv_items WHERE id = $1 AND is_active",
-    )
-    .bind(item_id)
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(cdberr)?;
-    let (creator_pial, price_units) =
-        item.ok_or_else(|| cerr(StatusCode::NOT_FOUND, "PPV item not found"))?;
-    require_identity(&state.manhattan, &creator_pial)
-        .await
-        .map_err(|e| identity_refused(&creator_pial, e))?;
-    // A purchase already paid for, or one whose payment is in flight, blocks a
-    // second charge. A FAILED one must not — otherwise one declined payment
-    // locks the buyer out of ever buying that item again. This mirrors the
-    // partial unique index uq_ppv_purchase_live.
-    let existing: Option<(Uuid,)> = sqlx::query_as(
-        "SELECT id FROM ppv_purchases \
-          WHERE buyer_pial_id = $1 AND ppv_item_id = $2 AND status <> 'failed'",
-    )
-    .bind(req.buyer_pial_id.text())
-    .bind(item_id)
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(cdberr)?;
-    if existing.is_some() {
-        return Err(cerr(StatusCode::CONFLICT, "already purchased"));
-    }
-    // Record first, charge second, settle third. See record_intent.
-    let purchase_id = Uuid::new_v4();
-    let mut itx = state.pool.begin().await.map_err(cdberr)?;
-    sqlx::query(
-        "INSERT INTO ppv_purchases (id, buyer_pial_id, ppv_item_id, amount_aet, status) \
-         VALUES ($1, $2, $3, $4, 'pending')",
-    )
-    .bind(purchase_id)
-    .bind(req.buyer_pial_id.text())
-    .bind(item_id)
-    .bind(price_units)
-    .execute(&mut *itx)
-    .await
-    .map_err(cdberr)?;
-    record_intent(
-        &mut itx,
-        "ppv",
-        purchase_id,
-        &req.buyer_pial_id,
-        &creator_pial,
-        price_units,
-    )
-    .await
-    .map_err(cdberr)?;
-    itx.commit().await.map_err(cdberr)?;
-
-    let transfer = clients::transfer(
-        &state.http,
-        &state.cfg.ain_soph_url,
-        &state.cfg.internal_api_key,
-        &req.buyer_pial_id.text(),
-        &creator_pial.text(),
-        price_units,
-        "ppv",
-    )
-    .await;
-
-    let tx_id = match transfer {
-        Ok(tx_id) => {
-            settle_intent(
-                &state.pool,
-                "ppv_purchases",
-                "completed",
-                purchase_id,
-                Ok(&tx_id),
-                Some(&sale_notice(format!("themis:ppv:{purchase_id}"), creator_pial.text(), "ppv_sale", "Pay-per-view sale", purchase_id.to_string(), units_to_aet(price_units).to_string())),
-            )
-            .await
-            .map_err(|e| settlement_unrecorded(purchase_id, &tx_id, e))?;
-            tx_id
-        }
-        Err(e) => {
-            let why = e.to_string();
-            let _ = settle_intent(
-                &state.pool,
-                "ppv_purchases",
-                "completed",
-                purchase_id,
-                Err(&why),
-                None,
-            )
-            .await;
-            return Err(cerr(StatusCode::PAYMENT_REQUIRED, &why));
-        }
-    };
-    Ok(Json(json!({
-        "purchase_id": purchase_id,
-        "item_id":     item_id,
-        "amount_aet":  units_to_aet(price_units),
-        "ain_soph_tx_id": tx_id,
-        "has_access":  true,
-    })))
-}
-
-pub async fn check_ppv_access(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    AxumQuery(q): AxumQuery<CommerceAccessQuery>,
-) -> CommerceRes<Value> {
-    let buyer = q
-        .buyer
-        .ok_or_else(|| cerr(StatusCode::BAD_REQUEST, "buyer required"))?;
-    require_caller(&headers, &state.cfg.internal_api_key, &buyer)?;
-    let content_id = q
-        .content_id
-        .ok_or_else(|| cerr(StatusCode::BAD_REQUEST, "content_id required"))?;
-    // Only a completed purchase unlocks content. The status filter is the whole
-    // check: a purchase row is now written BEFORE the transfer (see
-    // record_intent), so without it a buyer would gain access the instant they
-    // pressed buy — and keep it if the payment then failed.
-    let has: Option<(Uuid,)> = sqlx::query_as(
-        "SELECT p.id FROM ppv_purchases p \
-         JOIN ppv_items i ON i.id = p.ppv_item_id \
-         WHERE p.buyer_pial_id = $1 AND i.content_id = $2 \
-           AND p.status = 'completed'",
-    )
-    .bind(buyer.text())
-    .bind(&content_id)
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(cdberr)?;
-    Ok(Json(json!({"has_access": has.is_some()})))
-}
-
-pub async fn list_ppv_items(
-    State(state): State<Arc<AppState>>,
-    Path(pial_id): Path<PialRef>,
-) -> CommerceRes<Vec<PpvItemRow>> {
-    let rows = sqlx::query_as::<_, PpvItemRow>(
-        "SELECT id, creator_pial_id, content_id, price_aet, title, is_active, created_at \
-         FROM ppv_items WHERE creator_pial_id = $1 ORDER BY created_at DESC",
-    )
-    .bind(pial_id.text())
-    .fetch_all(&state.pool)
-    .await
-    .map_err(cdberr)?;
-    Ok(Json(rows))
-}
-
-pub async fn send_tip(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Json(req): Json<SendTipReq>,
-) -> CommerceRes<Value> {
-    require_caller(&headers, &state.cfg.internal_api_key, &req.sender_pial_id)?;
-    if req.amount_aet <= 0.0 {
-        return Err(cerr(
-            StatusCode::BAD_REQUEST,
-            "amount must be greater than zero",
-        ));
-    }
-    if req.sender_pial_id == req.recipient_pial_id {
-        return Err(cerr(StatusCode::BAD_REQUEST, "cannot tip yourself"));
-    }
-    require_identity(&state.manhattan, &req.sender_pial_id)
-        .await
-        .map_err(|e| identity_refused(&req.sender_pial_id, e))?;
-    require_identity(&state.manhattan, &req.recipient_pial_id)
-        .await
-        .map_err(|e| identity_refused(&req.recipient_pial_id, e))?;
-    if let Some(content) = req.content_id.as_deref().and_then(ContentRef::parse) {
-        register_content(&state.manhattan, KIND_WORK, &content).await;
-    }
-    // Record first, charge second, settle third. See record_intent.
-    let tip_id = Uuid::new_v4();
-    let units = aet_to_units(req.amount_aet);
-    let mut itx = state.pool.begin().await.map_err(cdberr)?;
-    sqlx::query(
-        "INSERT INTO tips \
-           (id, sender_pial_id, recipient_pial_id, amount_aet, message, content_id, status) \
-         VALUES ($1, $2, $3, $4, $5, $6, 'pending')",
-    )
-    .bind(tip_id)
-    .bind(req.sender_pial_id.text())
-    .bind(req.recipient_pial_id.text())
-    .bind(units)
-    .bind(&req.message)
-    .bind(req.content_id.as_deref())
-    .execute(&mut *itx)
-    .await
-    .map_err(cdberr)?;
-    record_intent(
-        &mut itx,
-        "tip",
-        tip_id,
-        &req.sender_pial_id,
-        &req.recipient_pial_id,
-        units,
-    )
-    .await
-    .map_err(cdberr)?;
-    itx.commit().await.map_err(cdberr)?;
-
-    let transfer = clients::tip(
-        &state.http,
-        &state.cfg.ain_soph_url,
-        &state.cfg.internal_api_key,
-        &req.sender_pial_id.text(),
-        &req.recipient_pial_id.text(),
-        req.amount_aet,
-        &req.message,
-    )
-    .await;
-
-    let tx_id = match transfer {
-        Ok(tx_id) => {
-            settle_intent(&state.pool, "tips", "completed", tip_id, Ok(&tx_id), Some(&sale_notice(format!("themis:tip:{tip_id}"), req.recipient_pial_id.text(), "tip", "You received a tip", tip_id.to_string(), req.amount_aet.to_string())))
-                .await
-                .map_err(|e| settlement_unrecorded(tip_id, &tx_id, e))?;
-            tx_id
-        }
-        Err(e) => {
-            let why = e.to_string();
-            let _ = settle_intent(&state.pool, "tips", "completed", tip_id, Err(&why), None).await;
-            return Err(cerr(StatusCode::PAYMENT_REQUIRED, &why));
-        }
-    };
-    Ok(Json(
-        json!({"tip_id": tip_id, "amount_aet": req.amount_aet, "ain_soph_tx_id": tx_id}),
-    ))
-}
-
 // GET /v1/qr/:id — BIP21 QR code PNG for a purchase
 pub async fn purchase_qr(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
     use axum::http::header;
     use image::{codecs::png::PngEncoder, ImageEncoder};
     use qrcode::QrCode;
 
-    let row: Option<(String, i64)> =
-        sqlx::query_as("SELECT btc_address, expected_sats FROM purchases WHERE id = $1")
-            .bind(id)
-            .fetch_optional(&state.pool)
-            .await
-            .unwrap_or(None);
+    // A payment request is its buyer's alone; anyone else is told it does not
+    // exist, the same as purchase_status.
+    let Some(requester) = pial_from_headers(&headers) else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            [(header::CONTENT_TYPE, "application/json")],
+            b"{}".to_vec(),
+        )
+            .into_response();
+    };
+    let row: Option<(String, i64)> = match sqlx::query_as(
+        "SELECT btc_address, expected_sats FROM purchases WHERE id = $1 AND buyer_pial = $2 AND currency = 'btc'",
+    )
+    .bind(id)
+    .bind(requester.uuid())
+    .fetch_optional(&state.pool)
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!("purchase_qr: {e}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(header::CONTENT_TYPE, "application/json")],
+                b"{}".to_vec(),
+            )
+                .into_response();
+        }
+    };
 
     let (btc_address, expected_sats) = match row {
         Some(r) => r,
@@ -1751,55 +1016,9 @@ pub async fn purchase_qr(
         .into_response()
 }
 
-pub async fn creator_earnings(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Path(pial_id): Path<PialRef>,
-) -> CommerceRes<Value> {
-    require_caller(&headers, &state.cfg.internal_api_key, &pial_id)?;
-    let total: (i64,) = sqlx::query_as(
-        "SELECT COALESCE(SUM(gross_aet), 0)::bigint FROM commerce_transactions \
-         WHERE creator_pial_id = $1 AND status = 'completed'",
-    )
-    .bind(pial_id.text())
-    .fetch_one(&state.pool)
-    .await
-    .map_err(cdberr)?;
-    let by_type: Vec<(String, i64, i64)> = sqlx::query_as(
-        "SELECT tx_type, COALESCE(SUM(gross_aet), 0)::bigint, COUNT(*)::bigint \
-         FROM commerce_transactions \
-         WHERE creator_pial_id = $1 AND status = 'completed' GROUP BY tx_type",
-    )
-    .bind(pial_id.text())
-    .fetch_all(&state.pool)
-    .await
-    .unwrap_or_default();
-    let mut subs_aet = 0i64;
-    let mut ppv_aet = 0i64;
-    let mut tips_aet = 0i64;
-    let mut tx_count = 0i64;
-    for (tx_type, amount, count) in &by_type {
-        tx_count += count;
-        match tx_type.as_str() {
-            "subscription" => subs_aet += amount,
-            "ppv" => ppv_aet += amount,
-            "tip" => tips_aet += amount,
-            _ => {}
-        }
-    }
-    Ok(Json(json!({
-        "pial_id":           pial_id,
-        "total_aet":         total.0,
-        "total_aet_display": units_to_aet(total.0),
-        "subscriptions_aet": subs_aet,
-        "ppv_aet":           ppv_aet,
-        "tips_aet":          tips_aet,
-        "tx_count":          tx_count,
-    })))
-}
-
-/// What a creator is told about a sale. It is written when the sale settles.
-fn sale_notice(event_id: String, pial: String, kind: &str, title: &str, target_id: String, amount_aet: String) -> crate::notifications::Event {
+/// What a creator is told about a sale. Fixed when the charge is recorded and
+/// sent when it settles.
+pub(crate) fn sale_notice(event_id: String, pial: String, kind: &str, title: &str, target_id: String, amount: String) -> crate::notifications::Event {
     crate::notifications::Event {
         actor_account: None,
         recipient_account: None,
@@ -1808,9 +1027,14 @@ fn sale_notice(event_id: String, pial: String, kind: &str, title: &str, target_i
         kind: kind.into(),
         target_id,
         target_type: "commerce".into(),
-        payload: serde_json::json!({ "amount_aet": amount_aet }),
-        push_body: format!("{amount_aet} AET"),
+        payload: serde_json::json!({ "amount_aet": amount }),
+        push_body: amount,
         push_title: title.into(),
         push_url: "/wallet".into(),
     }
+}
+
+/// Error body shared by every JSON route.
+pub(crate) fn cerr(status: StatusCode, msg: &str) -> (StatusCode, Json<serde_json::Value>) {
+    (status, Json(serde_json::json!({"error": msg, "message": msg})))
 }

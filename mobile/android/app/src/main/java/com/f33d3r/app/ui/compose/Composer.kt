@@ -85,6 +85,7 @@ import com.f33d3r.app.compose.VideoAttachment
 import com.f33d3r.app.compose.WorkDraft
 import com.f33d3r.app.core.Fragment
 import com.f33d3r.app.core.Wire
+import com.f33d3r.app.malkuth.WorkText
 import com.f33d3r.app.net.Session
 import com.f33d3r.app.ui.Overlay
 import com.f33d3r.app.ui.ShellModel
@@ -147,8 +148,10 @@ fun Composer(model: ShellModel, session: Session, state: ShellState, overlay: Ov
     // Every post in order: the body first, then the thread's continuations.
     val posts = listOf(bodyField.text) + draft.segments
     val focusedText = posts.getOrElse(focused) { bodyField.text }
-    val overLimit = posts.any { it.length > WorkDraft.BODY_LIMIT }
-    val remaining = WorkDraft.BODY_LIMIT - focusedText.length
+    // The server's measure: weighted length of the text as it will be signed (CJK and
+    // emoji count two, a link twenty-three), not a count of characters.
+    val overLimit = posts.any { WorkText.remaining(it) < 0 }
+    val remaining = WorkText.remaining(focusedText)
     val canPost = !overlay.posting && uploading == 0 && !overLimit && draft.hasContent
 
     fun cancel() {
@@ -197,7 +200,12 @@ fun Composer(model: ShellModel, session: Session, state: ShellState, overlay: Ov
                 val picked = PickedFile.from(context, uri) ?: continue
                 uploading++
                 when (val result = model.uploadImage(picked)) {
-                    is UploadState.Stored -> draft = draft.copy(images = draft.images + result.url)
+                    is UploadState.Stored -> {
+                        draft = draft.copy(images = draft.images + result.url)
+                        if (result.creditedTo.isNotEmpty()) {
+                            note = "This photo is already on F33D3R, by @${result.creditedTo}. Your post will credit them."
+                        }
+                    }
                     is UploadState.Refused -> note = result.message
                     else -> Unit
                 }
@@ -227,15 +235,23 @@ fun Composer(model: ShellModel, session: Session, state: ShellState, overlay: Ov
                         durationSecs = result.durationSecs,
                         width = result.width,
                         height = result.height,
-                        tusUploadId = result.tusUploadId,
                     ),
                 )
 
                 is UploadState.Duplicate -> {
                     val who = if (result.creatorHandle.isNotEmpty()) ", by @${result.creatorHandle}" else ""
                     if (result.masterUrl.isNotEmpty()) {
-                        draft = draft.copy(video = VideoAttachment(masterUrl = result.masterUrl, posterUrl = result.posterUrl))
-                        note = "This clip is already on F33D3R$who. The work will cite the original."
+                        draft = draft.copy(
+                            video = VideoAttachment(
+                                masterUrl = result.masterUrl,
+                                posterUrl = result.posterUrl,
+                                durationSecs = result.durationSecs,
+                                width = result.width,
+                                height = result.height,
+                                creditedTo = result.creatorHandle,
+                            ),
+                        )
+                        note = "This clip is already on F33D3R$who. Your post will credit the original."
                     } else {
                         note = "This clip is already on F33D3R$who."
                     }
@@ -275,7 +291,7 @@ fun Composer(model: ShellModel, session: Session, state: ShellState, overlay: Ov
     }
 
     fun splitBody() {
-        val parts = splitIntoPosts(bodyField.text, WorkDraft.BODY_LIMIT)
+        val parts = splitIntoPosts(bodyField.text)
         draft = draft.copy(body = parts[0], segments = parts.drop(1) + draft.segments)
         bodyField = TextFieldValue(parts[0], TextRange(parts[0].length))
     }
@@ -439,12 +455,12 @@ fun Composer(model: ShellModel, session: Session, state: ShellState, overlay: Ov
                         Spacer(Modifier.height(8.dp))
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                             Text(
-                                "Over the ${WorkDraft.BODY_LIMIT} character limit",
+                                "Over the limit by ${-posts.minOf { WorkText.remaining(it) }}",
                                 style = MaterialTheme.typography.bodyMedium,
                                 fontSize = 14.sp,
                                 color = Ink.Refused,
                             )
-                            if (bodyField.text.length > WorkDraft.BODY_LIMIT) {
+                            if (WorkText.remaining(bodyField.text) < 0) {
                                 Chip(label = "Split into thread", filled = true, onClick = ::splitBody)
                             }
                         }

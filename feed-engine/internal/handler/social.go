@@ -256,38 +256,3 @@ func (h *Handler) mentionSearchAPI(w http.ResponseWriter, r *http.Request) {
 // saved surface is GetWorksSaves over work_reactions. The only markup that ever
 // pointed at that route was the markup the handler printed back to itself, so no
 // page could reach it — it was a loop with no entrance.
-
-func (h *Handler) feedbackAPI(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "405", 405)
-		return
-	}
-	var req model.AethyrFeedbackRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
-		return
-	}
-	// Who the signal is about is the session's account, never a value the
-	// client names. The page used to send its PIAL here; it no longer has one,
-	// and the readers of feedback_events (GetNotWanted) key on the account id.
-	req.UserID = "anon"
-	if viewer := h.userFromRequest(w, r); viewer != nil && viewer.ID != "" && viewer.ID != "demo_user" {
-		req.UserID = viewer.ID
-	}
-	// Persist the audit trail asynchronously — it feeds velocity scoring and
-	// offline analysis.
-	//
-	// This used to also bump post_metrics.impressions per event. That counter had
-	// no reader: the impression number a work card shows is works.view_count, and
-	// that column already has exactly one writer (the view_time event). Reviving
-	// the increment against works here would have given it a second one, which is
-	// how counters start disagreeing. The signal AethyrRank consumes is the
-	// feedback_events row, which is still written.
-	go func() {
-		if err := dbpkg.InsertFeedbackEvents(h.db, req.UserID, req.SessionID, req.Surface, req.Events); err != nil {
-			log.Printf("[feedback] DB insert error: %v", err)
-		}
-	}()
-	h.aethyr.SendFeedback(&req)
-	w.WriteHeader(http.StatusAccepted)
-}

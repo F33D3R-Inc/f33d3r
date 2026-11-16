@@ -11,7 +11,7 @@
 //!
 //! ```json
 //! { "event_id": "uuid", "seq": 42,
-//!   "type": "verdict" | "ownership" | "banned_match" | "review_decided",
+//!   "type": "verdict" | "ownership" | "banned_match" | "review_opened" | "review_decided",
 //!   "subject": {"kind": "work"|"vision"|"asset"|"stream"|"account", "id": "..."},
 //!   "asset_id": "uuid"?, "pial": "uuid"?,
 //!   "verdict": "approve"|"age_gate"|"human_review"|"block"|"pending",
@@ -20,9 +20,15 @@
 //!                 "offset_seconds", "state", "match_id"}?,
 //!   "banned_match": {"category", "layer", "sha256", "match": "exact"|"near",
 //!                    "banned_id", "score"}?,
-//!   "review": {"id", "item_kind", "stage", "decision", "decided_by"}?,
+//!   "review": {"id", "item_kind", "stage", "decision"?, "decided_by"?}?,
 //!   "occurred_at": "RFC3339" }
 //! ```
+//!
+//! `review_opened` announces that a review_queue item now waits for a person:
+//! it was created at admin_review (report escalation, ownership claim, media no
+//! machine could judge) or promoted there from ml_review. It carries `review`
+//! {id, item_kind, stage: "admin_review"} and the item's subject, and nothing a
+//! consumer applies to content — feed-engine tells its admins, once per event.
 //!
 //! Records are keyed by subject ("<kind>:<id>"), so every event about one
 //! subject lands on one partition, in the order it was decided. `seq` is
@@ -53,6 +59,7 @@ pub enum EventType {
     Verdict,
     Ownership,
     BannedMatch,
+    ReviewOpened,
     ReviewDecided,
 }
 
@@ -62,6 +69,7 @@ impl EventType {
             EventType::Verdict => "verdict",
             EventType::Ownership => "ownership",
             EventType::BannedMatch => "banned_match",
+            EventType::ReviewOpened => "review_opened",
             EventType::ReviewDecided => "review_decided",
         }
     }

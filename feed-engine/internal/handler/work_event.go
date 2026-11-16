@@ -25,10 +25,12 @@ import (
 	"crypto/ecdsa"
 	"crypto/sha256"
 	"crypto/x509"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"math/big"
 	"net/http"
@@ -158,11 +160,13 @@ func gifProviderHost(host string) bool {
 // SetEscapeHTML(false) is required so & < > in body text produce identical bytes
 // to JavaScript's JSON.stringify, which never escapes those characters.
 func verifyCID(claimed string, p workCanonicalPayload) (bool, error) {
-	if p.MediaURLs == nil {
-		p.MediaURLs = []string{}
-	}
-	p.MediaURLs = append([]string(nil), p.MediaURLs...)
-	sort.Strings(p.MediaURLs)
+	// A sorted copy, so the caller's slice is not reordered. It must be a
+	// non-nil slice even when empty: clients hash "media_urls":[], and a nil
+	// slice would encode as null and fail every media-less work's CID check.
+	media := make([]string, len(p.MediaURLs))
+	copy(media, p.MediaURLs)
+	sort.Strings(media)
+	p.MediaURLs = media
 	if p.Tags == nil {
 		p.Tags = []string{}
 	}
@@ -883,10 +887,12 @@ func (h *Handler) resolveWorkMedia(ctx context.Context, user *model.User, kind s
 	return m, nil
 }
 
-// ziorAnalyzeVoiceWork is the zior_voice obligation: it sends a voice work's
-// audio to Zior and overwrites the work's psych_vector with Zior's — the audio is
-// the work, so Zior is authoritative over the text mapping. A brain with Zior
-// switched off owes nothing.
+// ziorAnalyzeVoiceWork is the zior_voice obligation: it sends an audio work
+// (a voice work or a track) to Zior and stores the whole answer on the work —
+// the psych_vector, which replaces the text mapping because the audio is the
+// work, and the mood, descriptor, listening contexts, tempo and key (migration
+// 0043). Zior keeps nothing, so this stored copy is the only one. A brain with
+// Zior switched off owes nothing; a work deleted meanwhile is owed nothing.
 func (h *Handler) ziorAnalyzeVoiceWork(ctx context.Context, workID, creatorID, voiceURL string) error {
 	client := h.zior()
 	if !client.Enabled() {
@@ -905,12 +911,26 @@ func (h *Handler) ziorAnalyzeVoiceWork(ctx context.Context, workID, creatorID, v
 	defer f.Close()
 	ctx, cancel := context.WithTimeout(ctx, zior.UploadTimeout)
 	defer cancel()
-	a, err := client.Analyze(ctx, workID, creatorID, filepath.Base(path), f)
+	a, err := client.Analyze(ctx, h.cfg.InternalAPIKey, filepath.Base(path), f)
+	if errors.Is(err, zior.ErrUnprocessable) || errors.Is(err, zior.ErrTooLarge) {
+		// A property of the file, not a fault: the text mapping stays, and
+		// retrying would only hear the same file again.
+		log.Printf("[zior] work %s by %s keeps its text mapping: %v", workID, creatorID, err)
+		return nil
+	}
 	if err != nil {
 		return fmt.Errorf("zior: analysing work %s: %w", workID, err)
 	}
-	if err := dbpkg.SetWorkPsychVector(h.db, workID, a.Vector.Slice()); err != nil {
-		return fmt.Errorf("zior: storing vector of work %s: %w", workID, err)
+	err = dbpkg.SetWorkAudioAnalysis(h.db, workID, dbpkg.WorkAudioAnalysis{
+		Vector:      a.Vector.Slice(),
+		Mood:        a.Mood,
+		Descriptor:  a.Descriptor,
+		ContextTags: a.ContextTags,
+		BPM:         a.BPM,
+		Key:         a.Key,
+	})
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil // deleted while Zior listened
 	}
-	return nil
+	return err
 }

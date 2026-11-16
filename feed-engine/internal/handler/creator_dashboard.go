@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -100,7 +99,6 @@ func (h *Handler) creatorPanelOverview(w http.ResponseWriter, r *http.Request) {
 
 	var artistStats dbpkg.ArtistStats
 	var subCount int
-	var rawPlans []dbpkg.CreatorPlan
 	var recentTracks []*model.Track
 	if h.db != nil {
 		tracks, stats, err := h.artistTracks(r.Context(), user, 5)
@@ -111,14 +109,9 @@ func (h *Handler) creatorPanelOverview(w http.ResponseWriter, r *http.Request) {
 		}
 		recentTracks, artistStats = tracks, stats
 		subCount = dbpkg.GetSubscriberCount(h.db, user.ID)
-		rawPlans, _ = dbpkg.GetCreatorPlans(h.db, user.ID)
 	}
 
-	totalAET := 0
-	for _, p := range rawPlans {
-		totalAET += p.PriceAet * subCount
-	}
-	earningsDisplay := fmt.Sprintf("%.2f AET", float64(totalAET)/100.0)
+	earningsDisplay := h.creatorEarningsDisplay(r.Context(), user)
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	h.renderPartial(w, "creator_overview", map[string]interface{}{
@@ -126,7 +119,6 @@ func (h *Handler) creatorPanelOverview(w http.ResponseWriter, r *http.Request) {
 		"SubCount":        subCount,
 		"EarningsDisplay": earningsDisplay,
 		"RecentTracks":    recentTracks,
-		"Plans":           rawPlans,
 		"User":            user,
 		"ActiveSection":   "overview",
 	})
@@ -167,23 +159,16 @@ func (h *Handler) creatorPanelMemberships(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	var rawPlans []dbpkg.CreatorPlan
 	var subCount int
+	plans := []model.ShopPlan{}
 	if h.db != nil {
-		rawPlans, _ = dbpkg.GetCreatorPlans(h.db, user.ID)
+		var err error
+		if plans, err = h.shopPlans(r.Context(), user.ID); err != nil {
+			log.Printf("[creator] plans of %s: %v", user.ID, err)
+			http.Error(w, "your plans are unavailable right now", http.StatusInternalServerError)
+			return
+		}
 		subCount = dbpkg.GetSubscriberCount(h.db, user.ID)
-	}
-
-	plans := make([]model.ShopPlan, 0, len(rawPlans))
-	for _, p := range rawPlans {
-		plans = append(plans, model.ShopPlan{
-			ID:           p.ID,
-			Name:         p.Name,
-			Description:  p.Description,
-			PriceAET:     p.PriceAet,
-			PriceDisplay: fmt.Sprintf("%.2f", float64(p.PriceAet)/100.0),
-			IsActive:     true,
-		})
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -203,146 +188,29 @@ func (h *Handler) creatorPanelEarnings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var rawPlans []dbpkg.CreatorPlan
 	var subCount int
+	plans := []model.ShopPlan{}
 	if h.db != nil {
-		rawPlans, _ = dbpkg.GetCreatorPlans(h.db, user.ID)
+		var err error
+		if plans, err = h.shopPlans(r.Context(), user.ID); err != nil {
+			log.Printf("[creator] plans of %s: %v", user.ID, err)
+			http.Error(w, "your plans are unavailable right now", http.StatusInternalServerError)
+			return
+		}
 		subCount = dbpkg.GetSubscriberCount(h.db, user.ID)
 	}
 
-	plans := make([]model.ShopPlan, 0, len(rawPlans))
-	totalAET := 0
-	for _, p := range rawPlans {
-		plans = append(plans, model.ShopPlan{
-			ID:           p.ID,
-			Name:         p.Name,
-			Description:  p.Description,
-			PriceAET:     p.PriceAet,
-			PriceDisplay: fmt.Sprintf("%.2f", float64(p.PriceAet)/100.0),
-			IsActive:     true,
-		})
-		totalAET += p.PriceAet * subCount
-	}
-
 	subsDisplay := fmt.Sprintf("%d active subscriber(s)", subCount)
-	earningsDisplay := fmt.Sprintf("%.2f AET", float64(totalAET)/100.0)
+	earningsDisplay := h.creatorEarningsDisplay(r.Context(), user)
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	h.renderPartial(w, "creator_earnings", map[string]interface{}{
 		"SubCount":        subCount,
-		"TotalAET":        totalAET,
 		"EarningsDisplay": earningsDisplay,
 		"SubsDisplay":     subsDisplay,
 		"Plans":           plans,
 		"User":            user,
 		"ActiveSection":   "earnings",
-	})
-}
-
-// creatorPanelAnalytics serves GET /create/partials/analytics
-// Uses the same Astraon fetch logic as analyticsPage, scoped to the creator's PIAL.
-func (h *Handler) creatorPanelAnalytics(w http.ResponseWriter, r *http.Request) {
-	user := h.userFromRequest(w, r)
-	if h.denyCreatorPanel(w, user) {
-		return
-	}
-
-	days := 30
-	pialID := user.PIALID
-	daysStr := fmt.Sprintf("%d", days)
-	sortBy := "impressions"
-
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-	defer cancel()
-
-	var summary *AstraonSummary
-	var posts *AstraonCreatorPosts
-	var timeline *AstraonTimeline
-	var audience *AstraonAudience
-	var breakdown *AstraonBreakdown
-
-	var astrErr error
-
-	// Summary
-	var s AstraonSummary
-	astrErr = h.astraonGet(ctx, fmt.Sprintf("/v1/analytics/creator/%s/summary?days=%s", pialID, daysStr), &s)
-	if astrErr == nil {
-		summary = &s
-	} else {
-		if dbSum, err := dbpkg.GetCreatorAnalyticsSummary(h.db, pialID); err == nil && dbSum != nil {
-			summary = &AstraonSummary{
-				PialID:         pialID,
-				PeriodDays:     days,
-				TotalPosts:     int64(dbSum.TotalPosts),
-				Impressions:    dbSum.TotalImpressions,
-				Likes:          dbSum.TotalLikes,
-				Reposts:        dbSum.TotalReposts,
-				Replies:        dbSum.TotalComments,
-				Saves:          dbSum.TotalSaves,
-				EngagementRate: dbSum.EngagementRate,
-				ViewTimeSecs:   dbSum.TotalViewSeconds,
-			}
-		}
-	}
-
-	// Posts table
-	var cp AstraonCreatorPosts
-	astrErr = h.astraonGet(ctx, fmt.Sprintf("/v1/analytics/creator/%s/posts?days=%s&sort_by=%s&limit=20", pialID, daysStr, sortBy), &cp)
-	if astrErr == nil {
-		posts = &cp
-	} else {
-		if dbPosts, err := dbpkg.GetCreatorTopPosts(h.db, pialID, 20); err == nil {
-			rows := make([]AstraonPostRow, 0, len(dbPosts))
-			for _, p := range dbPosts {
-				rows = append(rows, AstraonPostRow{
-					PostID:        p.PostID,
-					BodyPreview:   p.Body,
-					ContentType:   "text",
-					CreatedAt:     p.CreatedAt,
-					TimeAgo:       TimeAgo(p.CreatedAt),
-					Impressions:   p.Impressions,
-					Likes:         p.Likes,
-					Reposts:       p.Reposts,
-					Replies:       p.Comments,
-					Saves:         p.Saves,
-					EngagementPct: p.EngagementPct,
-					BarPct:        p.MaxPct,
-				})
-			}
-			posts = &AstraonCreatorPosts{Posts: rows, SortBy: sortBy, Period: days}
-		}
-	}
-
-	// Timeline
-	var tl AstraonTimeline
-	if err := h.astraonGet(ctx, fmt.Sprintf("/v1/analytics/creator/%s/timeline?days=%s", pialID, daysStr), &tl); err == nil {
-		timeline = &tl
-	}
-
-	// Audience
-	var aud AstraonAudience
-	if err := h.astraonGet(ctx, fmt.Sprintf("/v1/analytics/creator/%s/audience?days=%s", pialID, daysStr), &aud); err == nil {
-		audience = &aud
-	}
-
-	// Content breakdown
-	var bd AstraonBreakdown
-	if err := h.astraonGet(ctx, fmt.Sprintf("/v1/analytics/creator/%s/breakdown?days=%s", pialID, daysStr), &bd); err == nil {
-		breakdown = &bd
-	}
-
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	h.renderPartial(w, "creator_analytics", map[string]interface{}{
-		"Summary":       summary,
-		"Posts":         posts,
-		"Timeline":      timeline,
-		"Audience":      audience,
-		"Breakdown":     breakdown,
-		"AstraonOnline": astrErr == nil,
-		"Period":        days,
-		"SortBy":        sortBy,
-		"User":          user,
-		"ActiveSection": "analytics",
 	})
 }
 
@@ -413,136 +281,145 @@ func (h *Handler) creatorPanelSettings(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// ── D-070 creator plan mutation events ───────────────────────────────────────
-// All three forward to POST /thessalon/v1/plans (→ Themis) with PIAL auth.
+// ── Creator plan mutation events ─────────────────────────────────────────────
+// Themis owns plans: each event below is a call to Themis made for the session's
+// identity (X-Pial-Identity), with the price a person typed as decimal AET
+// turned into AET units with the ledger's own unit. The memberships panel is
+// redrawn from the projection, which commerce.events keeps current.
 
-// creatorPlanCreateEvent handles event_type=creator.plan.create (Lane 1).
-// Forwards to POST /v1/plans on Themis with {creator_pial_id, name, price_aet, description}.
-// On success: re-renders the memberships panel so the new plan appears instantly.
+// creatorEarningsDisplay is what Themis records the creator as having earned,
+// or a dash when Themis cannot say.
+func (h *Handler) creatorEarningsDisplay(ctx context.Context, user *model.User) string {
+	if user == nil || user.PIALID == "" {
+		return "—"
+	}
+	status, body, err := h.themisGet(ctx, "/v1/creator/"+user.PIALID+"/earnings", user)
+	if err != nil || status != http.StatusOK {
+		log.Printf("[creator] earnings of %s: status=%d err=%v", user.ID, status, err)
+		return "—"
+	}
+	var e struct {
+		TotalDisplay string `json:"total_display"`
+	}
+	if err := json.Unmarshal(body, &e); err != nil || e.TotalDisplay == "" {
+		log.Printf("[creator] earnings of %s unreadable: %v", user.ID, err)
+		return "—"
+	}
+	return e.TotalDisplay
+}
+
+// planFormValue reads one plan form field from either the form or a JSON body.
+func planFormValue(r *http.Request, raw map[string]json.RawMessage, key string) string {
+	v := r.FormValue(key)
+	if v == "" && raw != nil {
+		_ = json.Unmarshal(raw[key], &v)
+	}
+	return strings.TrimSpace(v)
+}
+
+// planPriceUnits reads the plan form's decimal AET price into AET units.
+func (h *Handler) planPriceUnits(r *http.Request, raw map[string]json.RawMessage) (int64, string) {
+	unit, err := h.aetUnit(r.Context())
+	if err != nil {
+		log.Printf("[creator] plan price: %v", err)
+		return 0, "Plans are unavailable right now — please try again"
+	}
+	units, err := parseAETAmount(planFormValue(r, raw, "price"), unit)
+	if err != nil || units <= 0 {
+		return 0, "Enter a monthly price above zero, like 5 or 5.50"
+	}
+	return units, ""
+}
+
+// creatorPlanCreateEvent handles event_type=creator.plan.create.
 func (h *Handler) creatorPlanCreateEvent(w http.ResponseWriter, r *http.Request, raw map[string]json.RawMessage) {
 	user := h.userFromRequest(w, r)
-	if user == nil || (!user.IsCreator && !user.IsAdmin()) {
+	if user == nil || (!user.IsCreator && !user.IsAdmin()) || user.PIALID == "" {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-
-	name := r.FormValue("name")
-	priceStr := r.FormValue("price_aet")
-	description := r.FormValue("description")
-	if raw != nil {
-		if name == "" {
-			json.Unmarshal(raw["name"], &name)
-		}
-		if priceStr == "" {
-			json.Unmarshal(raw["price_aet"], &priceStr)
-		}
-		if description == "" {
-			json.Unmarshal(raw["description"], &description)
-		}
-	}
-	if strings.TrimSpace(name) == "" {
+	name := planFormValue(r, raw, "name")
+	if name == "" {
 		htmxError(w, r, "Plan name is required", http.StatusBadRequest)
 		return
 	}
-
-	var priceAet int
-	fmt.Sscanf(priceStr, "%d", &priceAet)
-	if priceAet < 0 {
-		htmxError(w, r, "Price cannot be negative", http.StatusBadRequest)
+	units, problem := h.planPriceUnits(r, raw)
+	if problem != "" {
+		htmxError(w, r, problem, http.StatusBadRequest)
 		return
 	}
-
-	if h.themisURL != "" && user.PIALID != "" {
-		payload := map[string]interface{}{
-			"creator_pial_id": user.PIALID,
-			"name":            name,
-			"price_aet":       priceAet,
-			"description":     description,
-		}
-		body, _ := json.Marshal(payload)
-		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-		defer cancel()
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, h.themisURL+"/v1/plans", bytes.NewReader(body))
-		if err == nil {
-			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("X-Pial-Identity", user.PIALID)
-			req.Header.Set("X-Pial-Handle", user.Handle)
-			resp, respErr := h.httpClient.Do(req)
-			if respErr != nil || resp.StatusCode >= 400 {
-				htmxError(w, r, "Could not create plan — please try again", http.StatusBadGateway)
-				return
-			}
-			resp.Body.Close()
-		}
+	status, body, err := h.themisCall(r.Context(), http.MethodPost, "/v1/plans", user, map[string]interface{}{
+		"creator_account": user.ID,
+		"name":            name,
+		"price_units":     units,
+		"description":     planFormValue(r, raw, "description"),
+	})
+	if err != nil || status != http.StatusOK {
+		log.Printf("[creator] plan create for %s: status=%d err=%v", user.ID, status, err)
+		htmxError(w, r, themisRefusal(body, "Could not create plan — please try again"), http.StatusBadGateway)
+		return
 	}
-
-	// Re-render the memberships panel with the updated plan list.
+	var plan struct {
+		ID string `json:"id"`
+	}
+	if json.Unmarshal(body, &plan) == nil && plan.ID != "" {
+		h.awaitPlanProjection(r.Context(), plan.ID)
+	}
 	h.creatorPanelMemberships(w, r)
 }
 
-// creatorPlanUpdateEvent handles event_type=creator.plan.update (Lane 1).
-// Forwards to PUT /v1/plans/{id} on Themis.
+// creatorPlanUpdateEvent handles event_type=creator.plan.update.
 func (h *Handler) creatorPlanUpdateEvent(w http.ResponseWriter, r *http.Request, raw map[string]json.RawMessage) {
 	user := h.userFromRequest(w, r)
-	if user == nil || (!user.IsCreator && !user.IsAdmin()) {
+	if user == nil || (!user.IsCreator && !user.IsAdmin()) || user.PIALID == "" {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-
-	planID := r.FormValue("plan_id")
-	name := r.FormValue("name")
-	priceStr := r.FormValue("price_aet")
-	description := r.FormValue("description")
-	if raw != nil {
-		if planID == "" {
-			json.Unmarshal(raw["plan_id"], &planID)
-		}
-		if name == "" {
-			json.Unmarshal(raw["name"], &name)
-		}
-		if priceStr == "" {
-			json.Unmarshal(raw["price_aet"], &priceStr)
-		}
-		if description == "" {
-			json.Unmarshal(raw["description"], &description)
-		}
-	}
-	if planID == "" {
+	planID := planFormValue(r, raw, "plan_id")
+	if _, err := uuid.Parse(planID); err != nil {
 		http.Error(w, "plan_id required", http.StatusBadRequest)
 		return
 	}
-
-	var priceAet int
-	fmt.Sscanf(priceStr, "%d", &priceAet)
-
-	if h.themisURL != "" && user.PIALID != "" {
-		payload := map[string]interface{}{
-			"name":        name,
-			"price_aet":   priceAet,
-			"description": description,
-		}
-		body, _ := json.Marshal(payload)
-		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-		defer cancel()
-		req, err := http.NewRequestWithContext(ctx, http.MethodPut, h.themisURL+"/v1/plans/"+planID, bytes.NewReader(body))
-		if err == nil {
-			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("X-Pial-Identity", user.PIALID)
-			req.Header.Set("X-Pial-Handle", user.Handle)
-			resp, respErr := h.httpClient.Do(req)
-			if respErr != nil || resp.StatusCode >= 400 {
-				htmxError(w, r, "Could not update plan — please try again", http.StatusBadGateway)
-				return
-			}
-			resp.Body.Close()
-		}
+	units, problem := h.planPriceUnits(r, raw)
+	if problem != "" {
+		htmxError(w, r, problem, http.StatusBadRequest)
+		return
 	}
-
+	status, body, err := h.themisCall(r.Context(), http.MethodPut, "/v1/plans/"+planID, user, map[string]interface{}{
+		"name":        planFormValue(r, raw, "name"),
+		"price_units": units,
+		"description": planFormValue(r, raw, "description"),
+	})
+	if err != nil || status != http.StatusOK {
+		log.Printf("[creator] plan update %s for %s: status=%d err=%v", planID, user.ID, status, err)
+		htmxError(w, r, themisRefusal(body, "Could not update plan — please try again"), http.StatusBadGateway)
+		return
+	}
+	h.awaitPlanProjection(r.Context(), planID)
 	h.creatorPanelMemberships(w, r)
 }
 
-// creatorPlanDeleteEvent handles event_type=creator.plan.delete (Lane 1).
-// Forwards to DELETE /v1/plans/{id} on Themis.
+// awaitPlanProjection waits briefly until the projection holds the plan as
+// Themis just answered, so the redrawn panel reads its own write.
+func (h *Handler) awaitPlanProjection(ctx context.Context, planID string) {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	for {
+		seen, err := dbpkg.PlanProjectedSince(ctx, h.db, planID, time.Now().Add(-5*time.Second))
+		if err == nil && seen {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			log.Printf("[creator] projection of plan %s did not catch up within 3s", planID)
+			return
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+}
+
+// creatorPlanDeleteEvent handles event_type=creator.plan.delete: the plan is
+// retired in Themis. Its subscribers run to the end of their paid period.
 func (h *Handler) creatorPlanDeleteEvent(w http.ResponseWriter, r *http.Request, raw map[string]json.RawMessage) {
 	user := h.userFromRequest(w, r)
 	if user == nil || (!user.IsCreator && !user.IsAdmin()) {
@@ -559,21 +436,12 @@ func (h *Handler) creatorPlanDeleteEvent(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	if h.themisURL != "" && user.PIALID != "" {
-		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-		defer cancel()
-		req, err := http.NewRequestWithContext(ctx, http.MethodDelete, h.themisURL+"/v1/plans/"+planID, nil)
-		if err == nil {
-			req.Header.Set("X-Pial-Identity", user.PIALID)
-			req.Header.Set("X-Pial-Handle", user.Handle)
-			resp, respErr := h.httpClient.Do(req)
-			if respErr != nil || resp.StatusCode >= 400 {
-				htmxError(w, r, "Could not delete plan — please try again", http.StatusBadGateway)
-				return
-			}
-			resp.Body.Close()
-		}
+	status, body, err := h.themisCall(r.Context(), http.MethodDelete, "/v1/plans/"+planID, user, nil)
+	if err != nil || status != http.StatusOK {
+		log.Printf("[creator] plan retire %s for %s: status=%d err=%v", planID, user.ID, status, err)
+		htmxError(w, r, themisRefusal(body, "Could not delete plan — please try again"), http.StatusBadGateway)
+		return
 	}
-
+	h.awaitPlanProjection(r.Context(), planID)
 	h.creatorPanelMemberships(w, r)
 }

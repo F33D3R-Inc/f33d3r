@@ -185,8 +185,6 @@ type Handler struct {
 	httpClient *http.Client
 	// Themis — unified commerce + Bitcoin marketplace brain
 	themisURL string
-	// Alexandria hypermedia library brain URL (content catalog + dual-write)
-	alexandriaURL string
 	// NEXUS multi-persona identity client (proxies to Verity)
 	nexusClient *nexus.Client
 	// RSS right-rail cache — polled every 5 min in background
@@ -233,7 +231,6 @@ func New(cfg *config.Config, aethyrClient *aethyr.Client, database *sql.DB) *Han
 		caeor:           caeor.New(cfg.CaeorURL, cfg.InternalAPIKey),
 		abraxas:         abraxas.New(cfg.AbraxasURL, cfg.InternalAPIKey),
 		themisURL:       cfg.ThemisURL,
-		alexandriaURL:   cfg.AlexandriaURL,
 		httpClient:      &http.Client{Timeout: 30 * time.Second},
 		nexusClient:     nexus.NewClient(cfg.VerityURL, cfg.InternalAPIKey),
 		rssCache:        rss.NewCache(),
@@ -550,12 +547,6 @@ func (h *Handler) loadTemplates() {
 			}
 			return fmt.Sprintf("%d", n)
 		},
-		"absFloat": func(f float64) float64 {
-			if f < 0 {
-				return -f
-			}
-			return f
-		},
 		"pct64": func(val, max int64) int {
 			if max <= 0 {
 				return 0
@@ -568,14 +559,6 @@ func (h *Handler) loadTemplates() {
 				return 0
 			}
 			return p
-		},
-		"fmtDuration64": func(secs int64) string {
-			if secs == 0 {
-				return "0:00"
-			}
-			m := secs / 60
-			s := secs % 60
-			return fmt.Sprintf("%d:%02d", m, s)
 		},
 		"div64": func(a, b float64) int {
 			if b == 0 {
@@ -590,13 +573,6 @@ func (h *Handler) loadTemplates() {
 			}
 			return p
 		},
-		"derefF64": func(p *float64) float64 {
-			if p == nil {
-				return 0
-			}
-			return *p
-		},
-		"notNil": func(p *float64) bool { return p != nil },
 		"bioHTML": func(bio string) template.HTML {
 			// Make URLs clickable in profile bios. Escapes everything else.
 			urlRe := regexp.MustCompile(`https?://[^\s<>"']+`)
@@ -1043,6 +1019,7 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /facets/share_sheet", h.rlRead.Limit(h.requireHandle(h.facetShareSheet)))
 	mux.HandleFunc("GET /facets/overlay/close", h.rlRead.Limit(h.facetOverlayClose))
 	mux.HandleFunc("GET /facets/tip_modal", h.rlRead.Limit(h.requireHandle(h.facetTipModal)))
+	mux.HandleFunc("GET /facets/subscribe_modal", h.rlRead.Limit(h.requireHandle(h.facetSubscribeModal)))
 	mux.HandleFunc("GET /facets/report_sheet", h.rlRead.Limit(h.requireHandle(h.facetReportSheet)))
 	mux.HandleFunc("GET /facets/work/{id}/translate_slot", h.rlRead.Limit(h.requireHandle(h.facetTranslateSlot)))
 	mux.HandleFunc("GET /facets/explore/canvas", h.rlRead.Limit(h.requireHandle(h.facetExploreCanvas)))
@@ -1066,7 +1043,6 @@ func (h *Handler) Routes() http.Handler {
 	mux.Handle("GET /api/internal/pial/{id}/primary-account", middleware.InternalOnly(http.HandlerFunc(h.primaryAccountForPIAL)))
 	mux.Handle("POST /api/internal/balance-update", middleware.InternalOnly(http.HandlerFunc(h.balanceUpdateWebhook)))
 	mux.Handle("GET /api/internal/pial/{pial_id}/ecdh-pubkey", middleware.InternalOnly(http.HandlerFunc(h.pialEcdhPubkeyInternal)))
-	mux.Handle("POST /api/internal/themis/purchase-delivered", middleware.InternalOnly(http.HandlerFunc(h.themisPurchaseDeliveredWebhook)))
 
 	// HTMX partials (write rate limit)
 	mux.HandleFunc("/feed", h.rlRead.Limit(h.feedPartial))
@@ -1117,14 +1093,12 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("/api/creator/enable", h.rlWrite.Limit(h.requireHandle(h.enableCreatorAPI)))
 	mux.HandleFunc("/api/subscribe", h.rlWrite.Limit(h.requireHandle(h.subscribeToCreator)))
 	mux.HandleFunc("/api/unsubscribe", h.rlWrite.Limit(h.requireHandle(h.unsubscribeFromCreator)))
-	mux.HandleFunc("/api/creator/plans", h.rlRead.Limit(h.requireHandle(h.getCreatorPlans)))
 	// Tracks are works (music.go): likes and plays are a signed-in listener's,
 	// counted by the server and pushed back as Fragments.
 	mux.HandleFunc("POST /api/track/like", h.rlWrite.Limit(h.requireHandle(h.trackLikeAction)))
 	mux.HandleFunc("POST /api/track/play", h.rlWrite.Limit(h.requireHandle(h.trackPlayAction)))
 	mux.HandleFunc("POST /api/track/delete", h.rlWrite.Limit(h.requireHandle(h.deleteTrackAPI)))
 	mux.HandleFunc("/api/follow", h.rlWrite.Limit(h.followAPI))
-	mux.HandleFunc("/api/feedback", h.rlWrite.Limit(h.feedbackAPI))
 	mux.HandleFunc("POST /api/notifications/read-all", h.rlWrite.Limit(h.requireHandle(h.markNotificationsRead)))
 	mux.HandleFunc("/api/notifications/count", h.rlRead.Limit(h.requireHandle(h.notificationsCount)))
 	// SSE — real-time push for notifications + wallet balance (no polling, no JSON)
@@ -1812,11 +1786,11 @@ func (h *Handler) eventsPost(w http.ResponseWriter, r *http.Request) {
 
 	case "not_interested":
 		// The reader's "show me less of this". It is a ranking signal and
-		// nothing else: written to feedback_events as the negative_feedback
-		// event AethyrRank's taxonomy defines, and sent to the ranker, which
-		// lowers what it resembles. The author never hears about it.
+		// nothing else: written to feedback_events as negative_feedback (which
+		// GetNotWanted reads), and queued for AethyrRank on ranking.events,
+		// which lowers what it resembles. The author never hears about it.
 		user := h.userFromRequest(w, r)
-		if user == nil || user.ID == "" {
+		if viewerAccountID(user) == "" {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -1830,25 +1804,26 @@ func (h *Handler) eventsPost(w http.ResponseWriter, r *http.Request) {
 		if surface == "" {
 			surface = "feed"
 		}
-		feedback := model.AethyrFeedbackRequest{
-			UserID:    user.ID,
-			SessionID: eventField(r, rawBodyMap, "session_id"),
-			Surface:   surface,
-			Events: []model.AethyrFeedbackEvent{{
-				ContentID: contentID,
-				EventType: "negative_feedback",
-				Timestamp: time.Now().UTC(),
-			}},
+		if h.db == nil {
+			http.Error(w, "database unavailable", http.StatusServiceUnavailable)
+			return
 		}
-		if h.db != nil {
-			if err := dbpkg.InsertFeedbackEvents(h.db, feedback.UserID, feedback.SessionID, feedback.Surface, feedback.Events); err != nil {
-				log.Printf("[feedback] not_interested by %s on %s not recorded: %v", user.Handle, contentID, err)
-				http.Error(w, "could not record", http.StatusInternalServerError)
-				return
-			}
+		events := []model.AethyrFeedbackEvent{{
+			ContentID: contentID,
+			EventType: "negative_feedback",
+			Timestamp: time.Now().UTC(),
+		}}
+		if err := dbpkg.InsertFeedbackEvents(h.db, user.ID, eventField(r, rawBodyMap, "session_id"), surface, events); err != nil {
+			log.Printf("[feedback] not_interested by %s on %s not recorded: %v", user.Handle, contentID, err)
+			http.Error(w, "could not record", http.StatusInternalServerError)
+			return
 		}
-		if h.aethyr != nil {
-			h.aethyr.SendFeedback(&feedback)
+		if err := dbpkg.EnqueueRankingSignal(h.db, dbpkg.RankingSignal{
+			Action: dbpkg.RankNotInterested, Viewer: user.ID, WorkID: contentID,
+		}); err != nil {
+			log.Printf("[feedback] not_interested by %s on %s not queued for ranking: %v", user.Handle, contentID, err)
+			http.Error(w, "could not record", http.StatusInternalServerError)
+			return
 		}
 		// Recorded, so it can be confirmed: the card leaves any feed it is in. A post
 		// opened on its own page stays, since that is what the person is reading.
@@ -1955,35 +1930,59 @@ func (h *Handler) eventsPost(w http.ResponseWriter, r *http.Request) {
 		// Gap 1: view_time_seconds instrumentation.
 		// JS sends this when a post card leaves the viewport after being watched.
 		// Stored in feedback_events.dwell_ms; queried in buildRankRequest to patch
-		// ViewTimeSeconds on AethyrContent so the quality signal is live.
+		// ViewTimeSeconds on AethyrContent so the quality signal is live, and
+		// queued on ranking.events as a view.
 		user := h.userFromRequest(w, r)
-		if user == nil || user.ID == "" {
+		if viewerAccountID(user) == "" {
+			// Nobody signed in: there is no account to measure or learn about.
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		contentID := r.FormValue("post_id") // JS sends data-content-id as post_id
-		secsStr := r.FormValue("seconds")
-		if contentID == "" || secsStr == "" {
-			w.WriteHeader(http.StatusNoContent)
+		parsedID, perr := uuid.Parse(r.FormValue("post_id")) // JS sends data-content-id as post_id
+		if perr != nil {
+			http.Error(w, "post_id required", http.StatusBadRequest)
 			return
 		}
+		contentID := parsedID.String()
 		var secs float64
-		fmt.Sscanf(secsStr, "%f", &secs)
-		if secs <= 0 || secs > 7200 {
-			w.WriteHeader(http.StatusNoContent)
+		if _, err := fmt.Sscanf(r.FormValue("seconds"), "%f", &secs); err != nil || secs <= 0 || secs > 7200 {
+			http.Error(w, "seconds must be a number of seconds up to 7200", http.StatusBadRequest)
 			return
 		}
-		if h.db != nil {
-			dwellMs := int64(secs * 1000)
-			h.db.Exec(`
-				INSERT INTO feedback_events (user_id, session_id, surface, content_id, event_type, position, dwell_ms, is_explore)
-				VALUES ($1, $2, $3, $4, 'view_time', 0, $5, false)
-			`, user.ID, r.FormValue("session_id"), r.FormValue("surface"), contentID, dwellMs)
-			h.db.Exec(`UPDATE works SET view_count = view_count + 1 WHERE id = $1::uuid`, contentID)
+		if h.db == nil {
+			http.Error(w, "database unavailable", http.StatusServiceUnavailable)
+			return
 		}
-		// Sitra Achra: publish view ranking event (fire-and-forget).
-		if user.PIALID != "" && contentID != "" {
-			go h.publishRankingEvent("view", contentID, user.PIALID)
+		// The dwell row, the view count and the ranking signal are one write:
+		// a view is counted, measured and learned from together, or not at all.
+		err := dbpkg.WithTx(h.db, func(tx *sql.Tx) error {
+			if _, err := tx.Exec(`
+				INSERT INTO feedback_events (user_id, session_id, surface, content_id, event_type, position, dwell_ms, is_explore)
+				VALUES ($1, $2, $3, $4, 'view_time', 0, $5, false)`,
+				user.ID, r.FormValue("session_id"), r.FormValue("surface"), contentID, int64(secs*1000)); err != nil {
+				return fmt.Errorf("recording dwell: %w", err)
+			}
+			res, err := tx.Exec(`UPDATE works SET view_count = view_count + 1 WHERE id = $1::uuid AND deleted_at IS NULL`, contentID)
+			if err != nil {
+				return fmt.Errorf("counting the view: %w", err)
+			}
+			if n, err := res.RowsAffected(); err != nil {
+				return fmt.Errorf("counting the view: %w", err)
+			} else if n == 0 {
+				return sql.ErrNoRows
+			}
+			return dbpkg.EnqueueRankingSignal(tx, dbpkg.RankingSignal{
+				Action: dbpkg.RankView, Viewer: user.ID, WorkID: contentID,
+			})
+		})
+		if errors.Is(err, sql.ErrNoRows) {
+			http.Error(w, "no such work", http.StatusNotFound)
+			return
+		}
+		if err != nil {
+			log.Printf("[view_time] %s on %s: %v", user.ID, contentID, err)
+			http.Error(w, "could not record the view", http.StatusInternalServerError)
+			return
 		}
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -2824,9 +2823,18 @@ func (h *Handler) vapidPublicKey(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"public_key": "not-configured"})
 		return
 	}
-	// Proxy the request to Herald.
-	resp, err := http.Get(heraldURL + "/v1/vapid-public-key")
+	// Proxy the request to Herald, bounded like every call to another brain.
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, heraldURL+"/v1/vapid-public-key", nil)
 	if err != nil {
+		log.Printf("[herald] vapid key request: %v", err)
+		http.Error(w, "herald request could not be built", http.StatusInternalServerError)
+		return
+	}
+	resp, err := h.httpClient.Do(req)
+	if err != nil {
+		log.Printf("[herald] vapid key: %v", err)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
 		json.NewEncoder(w).Encode(map[string]string{"error": "herald_unavailable"})
@@ -2876,10 +2884,14 @@ func (h *Handler) heraldSubscribeJSON(pialID string, subRaw json.RawMessage, dev
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, h.cfg.HeraldURL+"/v1/subscriptions", bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, h.cfg.HeraldURL+"/v1/subscriptions", bytes.NewReader(payload))
+	if err != nil {
+		log.Printf("[herald] subscribe request: %v", err)
+		return
+	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Internal-Key", h.cfg.InternalAPIKey)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := h.httpClient.Do(req)
 	if err != nil {
 		log.Printf("[herald] subscribe: %v", err)
 		return
@@ -2892,10 +2904,14 @@ func (h *Handler) heraldSubscribeJSON(pialID string, subRaw json.RawMessage, dev
 func (h *Handler) heraldUnsubscribe(pialID, deviceID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	req, _ := http.NewRequestWithContext(ctx, http.MethodDelete,
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete,
 		h.cfg.HeraldURL+"/v1/subscriptions/"+url.PathEscape(deviceID)+"?pial="+url.QueryEscape(pialID), nil)
+	if err != nil {
+		log.Printf("[herald] unsubscribe request: %v", err)
+		return
+	}
 	req.Header.Set("X-Internal-Key", h.cfg.InternalAPIKey)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := h.httpClient.Do(req)
 	if err != nil {
 		log.Printf("[herald] unsubscribe: %v", err)
 		return

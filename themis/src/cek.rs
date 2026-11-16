@@ -12,7 +12,7 @@ use p256::{
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 const HKDF_INFO: &[u8] = b"themis-cek-wrap-v1";
 
@@ -25,8 +25,10 @@ pub struct WrappedCek {
     pub ciphertext: String,    // base64 of AES-256-GCM ciphertext (CEK + 16-byte tag)
 }
 
-/// Unwrap a CEK encrypted for `recipient_priv`.
-pub fn unwrap_cek(recipient_priv: &SecretKey, wrapped_json: &[u8]) -> Result<Vec<u8>> {
+/// Unwrap a CEK encrypted for `recipient_priv`. The plaintext key is returned
+/// in a buffer that overwrites itself when dropped, so it never outlives the
+/// re-wrap it exists for.
+pub fn unwrap_cek(recipient_priv: &SecretKey, wrapped_json: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
     let w: WrappedCek = serde_json::from_slice(wrapped_json)?;
     let ephemeral_pub_bytes = B64.decode(&w.ephemeral_pub)?;
     let ephemeral_pub = PublicKey::from_sec1_bytes(&ephemeral_pub_bytes)?;
@@ -38,21 +40,20 @@ pub fn unwrap_cek(recipient_priv: &SecretKey, wrapped_json: &[u8]) -> Result<Vec
         ephemeral_pub.as_affine(),
     );
     let mut wrapping_key = [0u8; 32];
-    let hk = Hkdf::<Sha256>::new(None, shared.raw_secret_bytes().as_slice());
+    let hk = Hkdf::<Sha256>::new(None, &shared.raw_secret_bytes()[..]);
     hk.expand(HKDF_INFO, &mut wrapping_key)
         .map_err(|_| anyhow!("HKDF expand failed"))?;
 
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&wrapping_key));
-    if iv_bytes.len() != 12 {
-        return Err(anyhow!("invalid IV length"));
-    }
-    let nonce = Nonce::from_slice(&iv_bytes);
-    let cek = cipher
-        .decrypt(nonce, ciphertext_bytes.as_ref())
-        .map_err(|_| anyhow!("CEK decryption failed"))?;
-
+    let cipher = Aes256Gcm::new(&Key::<Aes256Gcm>::from(wrapping_key));
+    let iv: [u8; 12] = iv_bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| anyhow!("invalid IV length"))?;
+    let nonce = Nonce::from(iv);
+    let decrypted = cipher.decrypt(&nonce, ciphertext_bytes.as_ref());
     wrapping_key.zeroize();
-    Ok(cek)
+    let cek = decrypted.map_err(|_| anyhow!("CEK decryption failed"))?;
+    Ok(Zeroizing::new(cek))
 }
 
 /// Wrap a CEK for `recipient_pub` using a fresh ephemeral keypair.
@@ -65,20 +66,18 @@ pub fn wrap_cek_for(recipient_pub: &PublicKey, cek: &[u8]) -> Result<Vec<u8>> {
         recipient_pub.as_affine(),
     );
     let mut wrapping_key = [0u8; 32];
-    let hk = Hkdf::<Sha256>::new(None, shared.raw_secret_bytes().as_slice());
+    let hk = Hkdf::<Sha256>::new(None, &shared.raw_secret_bytes()[..]);
     hk.expand(HKDF_INFO, &mut wrapping_key)
         .map_err(|_| anyhow!("HKDF expand failed"))?;
 
     let mut iv = [0u8; 12];
     rand::thread_rng().fill_bytes(&mut iv);
 
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&wrapping_key));
-    let nonce = Nonce::from_slice(&iv);
-    let ciphertext = cipher
-        .encrypt(nonce, cek)
-        .map_err(|_| anyhow!("CEK encryption failed"))?;
-
+    let cipher = Aes256Gcm::new(&Key::<Aes256Gcm>::from(wrapping_key));
+    let nonce = Nonce::from(iv);
+    let encrypted = cipher.encrypt(&nonce, cek);
     wrapping_key.zeroize();
+    let ciphertext = encrypted.map_err(|_| anyhow!("CEK encryption failed"))?;
 
     let pub_bytes = ephemeral_pub.to_encoded_point(false);
     let w = WrappedCek {
@@ -89,16 +88,85 @@ pub fn wrap_cek_for(recipient_pub: &PublicKey, cek: &[u8]) -> Result<Vec<u8>> {
     Ok(serde_json::to_vec(&w)?)
 }
 
-/// Load Themis's ECDH private key from a base64-encoded PKCS8 DER string.
-/// Returns the SecretKey.
-pub fn load_privkey(b64: &str) -> Result<SecretKey> {
-    if b64.is_empty() {
-        // Generate ephemeral key for dev — log a warning
-        tracing::warn!("THEMIS_ECDH_PRIVKEY_B64 not set — using ephemeral key (dev only)");
-        return Ok(SecretKey::random(&mut rand::thread_rng()));
+/// Parse Themis's ECDH private key from base64 PKCS8 DER.
+fn parse_privkey(b64: &str) -> Result<SecretKey> {
+    let der = Zeroizing::new(B64.decode(b64.trim())?);
+    SecretKey::from_pkcs8_der(&der).map_err(|e| anyhow!("invalid PKCS8 key: {e}"))
+}
+
+const KEY_FILE: &str = "themis-ecdh.key";
+/// Serialises first-boot key generation across replicas sharing one volume.
+const KEYGEN_LOCK: i64 = 7331_0100;
+
+/// Themis's ECDH private key. There is no ephemeral fallback: every listing's
+/// content key is wrapped for this key, so a key that changed on restart would
+/// strand every listing ever made.
+///
+/// `THEMIS_ECDH_PRIVKEY_B64` wins when set. Otherwise the key lives in
+/// `THEMIS_ECDH_KEY_DIR/themis-ecdh.key` on its own volume: read when present,
+/// generated once on first boot under a Postgres advisory lock (temp file 0600
+/// → fsync → rename → fsync dir) so concurrent replicas never make two.
+pub async fn load_privkey(pool: &sqlx::PgPool, env_b64: &str, key_dir: &str) -> Result<SecretKey> {
+    if !env_b64.trim().is_empty() {
+        return parse_privkey(env_b64);
     }
-    let der = B64.decode(b64)?;
-    let key = SecretKey::from_pkcs8_der(&der).map_err(|e| anyhow!("invalid PKCS8 key: {e}"))?;
+    if key_dir.trim().is_empty() {
+        return Err(anyhow!("THEMIS_ECDH_PRIVKEY_B64 or THEMIS_ECDH_KEY_DIR is required"));
+    }
+    let dir = std::path::PathBuf::from(key_dir);
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&dir)
+            .map_err(|e| anyhow!("creating key dir {}: {e}", dir.display()))?;
+    }
+    let mut conn = pool.acquire().await?;
+    sqlx::query("SELECT pg_advisory_lock($1)")
+        .bind(KEYGEN_LOCK)
+        .execute(&mut *conn)
+        .await?;
+    let out = load_or_create(&dir);
+    sqlx::query("SELECT pg_advisory_unlock($1)")
+        .bind(KEYGEN_LOCK)
+        .execute(&mut *conn)
+        .await?;
+    out
+}
+
+fn load_or_create(dir: &std::path::Path) -> Result<SecretKey> {
+    use p256::pkcs8::EncodePrivateKey;
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let path = dir.join(KEY_FILE);
+    if path.exists() {
+        let raw = Zeroizing::new(
+            std::fs::read_to_string(&path).map_err(|e| anyhow!("reading {}: {e}", path.display()))?,
+        );
+        return parse_privkey(&raw);
+    }
+    let key = SecretKey::random(&mut rand::rngs::OsRng);
+    let der = key
+        .to_pkcs8_der()
+        .map_err(|e| anyhow!("encoding the new ECDH key: {e}"))?;
+    let encoded = Zeroizing::new(format!("{}\n", B64.encode(der.as_bytes())));
+    let tmp = dir.join(format!(".{KEY_FILE}.tmp"));
+    let _ = std::fs::remove_file(&tmp);
+    {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&tmp)
+            .map_err(|e| anyhow!("creating {}: {e}", tmp.display()))?;
+        f.write_all(encoded.as_bytes())?;
+        f.sync_all()?;
+    }
+    std::fs::rename(&tmp, &path).map_err(|e| anyhow!("installing {}: {e}", path.display()))?;
+    std::fs::File::open(dir)?.sync_all()?;
+    tracing::info!("generated Themis's ECDH key at {}", path.display());
     Ok(key)
 }
 

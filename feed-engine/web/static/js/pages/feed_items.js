@@ -39,10 +39,6 @@ F33D3R.page('feed_items', function () {
   }
 
   function goToPost(id, cid, sid, surface, rank) {
-    fetch('/api/feedback', {method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({user_id:'', session_id:sid, surface:surface,
-        events:[{content_id:cid, event_type:'click', position_at_display:rank+1,
-          timestamp:new Date().toISOString(), exploration_slot:false}]})});
     if (id && _uuidRe.test(id)) F33D3R.visit('/post/' + id);
   }
 

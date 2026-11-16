@@ -127,7 +127,6 @@ class FacetHost(
      * the projected facets are dressed exactly as the browser would dress them.
      */
     fun load(
-        pial: String,
         account: String,
         handle: String,
         density: String = "",
@@ -148,7 +147,6 @@ class FacetHost(
             .replace("__FA_UIMODE__", uiMode.escapeAttribute())
             .replace("__FA_THEME__", theme.ifEmpty { "void" }.escapeAttribute())
             .replace("__FA_DENSITY__", density.escapeAttribute())
-            .replace("__PIAL__", pial.escapeAttribute())
             .replace("__ACCOUNT__", account.escapeAttribute())
             .replace("__HANDLE__", handle.escapeAttribute())
 

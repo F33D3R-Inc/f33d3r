@@ -147,6 +147,17 @@ public actor APIClient {
         return (data, http.statusCode)
     }
 
+    /// ``sendRaw(_:body:contentType:)`` with the whole response, for a caller
+    /// that reads a header — the create path names its outcome in
+    /// `X-Work-Create-State`.
+    func sendRawResponse(
+        _ endpoint: Endpoint,
+        body: Data?,
+        contentType: String?
+    ) async throws -> (data: Data, response: HTTPURLResponse) {
+        try await perform(endpoint, body: body, contentType: contentType)
+    }
+
     /// Sends `endpoint` with a body read from a file, and returns the response
     /// whatever its status.
     ///

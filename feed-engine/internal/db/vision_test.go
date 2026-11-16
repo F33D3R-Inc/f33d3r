@@ -54,7 +54,7 @@ func TestApplyVisionDefaults(t *testing.T) {
 	}{
 		{
 			name: "empty text Vision gets the artboard defaults",
-			in:   VisionInput{AuthorPIAL: "p"},
+			in:   VisionInput{AuthorAccount: "a", AuthorPIAL: "p"},
 			check: func(t *testing.T, in VisionInput) {
 				if in.ContentType != "text" {
 					t.Fatalf("content_type = %q, want text", in.ContentType)
@@ -74,24 +74,24 @@ func TestApplyVisionDefaults(t *testing.T) {
 			},
 		},
 		{name: "missing author_pial", in: VisionInput{}, wantErr: true},
-		{name: "unknown content_type", in: VisionInput{AuthorPIAL: "p", ContentType: "hologram"}, wantErr: true},
-		{name: "unknown type scale", in: VisionInput{AuthorPIAL: "p", ArtboardTypeScale: "huge"}, wantErr: true},
-		{name: "unknown align", in: VisionInput{AuthorPIAL: "p", ArtboardAlign: "justify"}, wantErr: true},
+		{name: "unknown content_type", in: VisionInput{AuthorAccount: "a", AuthorPIAL: "p", ContentType: "hologram"}, wantErr: true},
+		{name: "unknown type scale", in: VisionInput{AuthorAccount: "a", AuthorPIAL: "p", ArtboardTypeScale: "huge"}, wantErr: true},
+		{name: "unknown align", in: VisionInput{AuthorAccount: "a", AuthorPIAL: "p", ArtboardAlign: "justify"}, wantErr: true},
 		{
 			name:    "media without object key",
-			in:      VisionInput{AuthorPIAL: "p", Media: []VisionMediaInput{{}}},
+			in:      VisionInput{AuthorAccount: "a", AuthorPIAL: "p", Media: []VisionMediaInput{{}}},
 			wantErr: true,
 		},
 		{
 			name: "media kind defaults to image",
-			in:   VisionInput{AuthorPIAL: "p", Media: []VisionMediaInput{{ObjectKey: "k"}}},
+			in:   VisionInput{AuthorAccount: "a", AuthorPIAL: "p", Media: []VisionMediaInput{{ObjectKey: "k"}}},
 			check: func(t *testing.T, in VisionInput) {
 				if in.Media[0].MediaKind != "image" {
 					t.Fatalf("media_kind = %q, want image", in.Media[0].MediaKind)
 				}
 			},
 		},
-		{name: "unknown media kind", in: VisionInput{AuthorPIAL: "p", Media: []VisionMediaInput{{ObjectKey: "k", MediaKind: "hologram"}}}, wantErr: true},
+		{name: "unknown media kind", in: VisionInput{AuthorAccount: "a", AuthorPIAL: "p", Media: []VisionMediaInput{{ObjectKey: "k", MediaKind: "hologram"}}}, wantErr: true},
 	}
 
 	for _, tc := range cases {
@@ -247,13 +247,33 @@ func expireVision(t *testing.T, database *sql.DB, ref VisionRef) {
 	}
 }
 
+// mustInsertVision posts a Vision and lands a clean verdict on it, the way
+// safety.events would: a Vision still pending its scan is readable only by its
+// author, and these tests are about everything after that.
 func mustInsertVision(t *testing.T, database *sql.DB, in VisionInput) VisionRef {
 	t.Helper()
-	ref, err := InsertVision(database, in)
+	ref, _, err := InsertVision(database, in)
 	if err != nil {
 		t.Fatalf("InsertVision: %v", err)
 	}
+	if _, err := database.Exec(
+		`UPDATE visions SET scan_state = 'clean' WHERE author_pial = $1::uuid AND seq = $2`,
+		ref.AuthorPIAL, ref.Seq); err != nil {
+		t.Fatalf("landing a clean verdict: %v", err)
+	}
 	return ref
+}
+
+// wireAddress is the address a client holds for ref.
+func wireAddress(t *testing.T, database *sql.DB, ref VisionRef) string {
+	t.Helper()
+	var a VisionAddress
+	if err := database.QueryRow(
+		`SELECT author_account::text, account_seq FROM visions WHERE author_pial = $1::uuid AND seq = $2`,
+		ref.AuthorPIAL, ref.Seq).Scan(&a.AuthorAccount, &a.Seq); err != nil {
+		t.Fatalf("reading wire address: %v", err)
+	}
+	return a.String()
 }
 
 // TestVisionExpiryEnforcedOnDirectFetch is the test the Work lane did not
@@ -261,14 +281,15 @@ func mustInsertVision(t *testing.T, database *sql.DB, in VisionInput) VisionRef 
 // absent from feeds.
 func TestVisionExpiryEnforcedOnDirectFetch(t *testing.T) {
 	database := visionTestDB(t)
-	_, authorPIAL := seedVisionUser(t, database)
+	authorID, authorPIAL := seedVisionUser(t, database)
 
 	ref := mustInsertVision(t, database, VisionInput{
-		AuthorPIAL: authorPIAL,
+		AuthorAccount: authorID,
+		AuthorPIAL:    authorPIAL,
 		Body:       "text artboard",
 	})
 
-	v, err := GetVisionByRef(database, ref, authorPIAL)
+	v, err := GetVisionByRef(database, ref, authorID)
 	if err != nil {
 		t.Fatalf("GetVisionByRef while live: %v", err)
 	}
@@ -278,30 +299,30 @@ func TestVisionExpiryEnforcedOnDirectFetch(t *testing.T) {
 
 	expireVision(t, database, ref)
 
-	if _, err := GetVisionByRef(database, ref, authorPIAL); !errors.Is(err, ErrVisionNotLive) {
+	if _, err := GetVisionByRef(database, ref, authorID); !errors.Is(err, ErrVisionNotLive) {
 		t.Fatalf("GetVisionByRef after expiry = %v, want ErrVisionNotLive", err)
 	}
-	visions, err := GetActiveVisionsForAuthor(database, authorPIAL, authorPIAL, 10)
+	visions, err := GetActiveVisionsForAuthor(database, authorID, authorID, 10)
 	if err != nil {
 		t.Fatalf("GetActiveVisionsForAuthor: %v", err)
 	}
 	if len(visions) != 0 {
 		t.Fatalf("expired Vision still listed: %d rows", len(visions))
 	}
-	if err := MarkVisionViewed(database, ref, authorPIAL); !errors.Is(err, ErrVisionNotLive) {
+	if err := MarkVisionViewed(database, ref, authorID); !errors.Is(err, ErrVisionNotLive) {
 		t.Fatalf("MarkVisionViewed on expired Vision = %v, want ErrVisionNotLive", err)
 	}
 }
 
 func TestMarkVisionViewedIsIdempotent(t *testing.T) {
 	database := visionTestDB(t)
-	_, authorPIAL := seedVisionUser(t, database)
-	_, viewerPIAL := seedVisionUser(t, database)
+	authorID, authorPIAL := seedVisionUser(t, database)
+	viewerID, _ := seedVisionUser(t, database)
 
-	ref := mustInsertVision(t, database, VisionInput{AuthorPIAL: authorPIAL, Body: "once"})
+	ref := mustInsertVision(t, database, VisionInput{AuthorAccount: authorID, AuthorPIAL: authorPIAL, Body: "once"})
 
 	for i := 0; i < 3; i++ {
-		if err := MarkVisionViewed(database, ref, viewerPIAL); err != nil {
+		if err := MarkVisionViewed(database, ref, viewerID); err != nil {
 			t.Fatalf("MarkVisionViewed call %d: %v", i+1, err)
 		}
 	}
@@ -319,12 +340,12 @@ func TestMarkVisionViewedIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetVisionViewers: %v", err)
 	}
-	if len(viewers) != 1 || viewers[0].ViewerPIAL != viewerPIAL {
-		t.Fatalf("viewers = %+v, want the one viewer %s", viewers, viewerPIAL)
+	if len(viewers) != 1 || viewers[0].ViewerAccountID != viewerID {
+		t.Fatalf("viewers = %+v, want the one viewer %s", viewers, viewerID)
 	}
 
 	if err := MarkVisionViewed(database, ref, ""); err == nil {
-		t.Fatal("MarkVisionViewed with no viewer PIAL should fail, got nil")
+		t.Fatal("MarkVisionViewed with no viewer account should fail, got nil")
 	}
 }
 
@@ -332,16 +353,16 @@ func TestMarkVisionViewedIsIdempotent(t *testing.T) {
 // it is resolved by one query on the server.
 func TestVisionRingStates(t *testing.T) {
 	database := visionTestDB(t)
-	viewerID, viewerPIAL := seedVisionUser(t, database)
+	viewerID, _ := seedVisionUser(t, database)
 
-	ringFor := func(t *testing.T, authorPIAL string) *model.VisionRing {
+	ringFor := func(t *testing.T, authorID string) *model.VisionRing {
 		t.Helper()
-		rings, err := GetVisionRingsForViewer(database, viewerID, viewerPIAL, 50)
+		rings, err := GetVisionRingsForViewer(database, viewerID, 50)
 		if err != nil {
 			t.Fatalf("GetVisionRingsForViewer: %v", err)
 		}
 		for _, r := range rings {
-			if r.AuthorPIAL == authorPIAL {
+			if r.AuthorAccountID == authorID {
 				return r
 			}
 		}
@@ -349,9 +370,9 @@ func TestVisionRingStates(t *testing.T) {
 	}
 
 	t.Run("followed author with no Visions has no ring", func(t *testing.T) {
-		authorID, authorPIAL := seedVisionUser(t, database)
+		authorID, _ := seedVisionUser(t, database)
 		seedFollow(t, database, viewerID, authorID)
-		if r := ringFor(t, authorPIAL); r != nil {
+		if r := ringFor(t, authorID); r != nil {
 			t.Fatalf("expected no ring, got %+v", r)
 		}
 	})
@@ -359,44 +380,44 @@ func TestVisionRingStates(t *testing.T) {
 	t.Run("unseen", func(t *testing.T) {
 		authorID, authorPIAL := seedVisionUser(t, database)
 		seedFollow(t, database, viewerID, authorID)
-		ref := mustInsertVision(t, database, VisionInput{AuthorPIAL: authorPIAL, Body: "unseen"})
-		r := ringFor(t, authorPIAL)
+		ref := mustInsertVision(t, database, VisionInput{AuthorAccount: authorID, AuthorPIAL: authorPIAL, Body: "unseen"})
+		r := ringFor(t, authorID)
 		if r == nil {
 			t.Fatal("expected a ring, got none")
 		}
 		if r.State != "unseen" || r.Count != 1 || r.UnseenCount != 1 {
 			t.Fatalf("ring = %+v, want state unseen, count 1, unseen 1", r)
 		}
-		if r.NextVisionRef != ref.String() {
-			t.Fatalf("NextVisionRef = %q, want %q", r.NextVisionRef, ref.String())
+		if r.NextVisionRef != wireAddress(t, database, ref) {
+			t.Fatalf("NextVisionRef = %q, want %q", r.NextVisionRef, wireAddress(t, database, ref))
 		}
 	})
 
 	t.Run("seen", func(t *testing.T) {
 		authorID, authorPIAL := seedVisionUser(t, database)
 		seedFollow(t, database, viewerID, authorID)
-		ref := mustInsertVision(t, database, VisionInput{AuthorPIAL: authorPIAL, Body: "seen"})
-		if err := MarkVisionViewed(database, ref, viewerPIAL); err != nil {
+		ref := mustInsertVision(t, database, VisionInput{AuthorAccount: authorID, AuthorPIAL: authorPIAL, Body: "seen"})
+		if err := MarkVisionViewed(database, ref, viewerID); err != nil {
 			t.Fatalf("MarkVisionViewed: %v", err)
 		}
-		r := ringFor(t, authorPIAL)
+		r := ringFor(t, authorID)
 		if r == nil {
 			t.Fatal("expected a ring, got none")
 		}
 		if r.State != "seen" || r.UnseenCount != 0 {
 			t.Fatalf("ring = %+v, want state seen with 0 unseen", r)
 		}
-		if r.NextVisionRef != ref.String() {
-			t.Fatalf("NextVisionRef = %q, want the replay start %q", r.NextVisionRef, ref.String())
+		if r.NextVisionRef != wireAddress(t, database, ref) {
+			t.Fatalf("NextVisionRef = %q, want the replay start %q", r.NextVisionRef, wireAddress(t, database, ref))
 		}
 	})
 
 	t.Run("expired Visions drop the ring", func(t *testing.T) {
 		authorID, authorPIAL := seedVisionUser(t, database)
 		seedFollow(t, database, viewerID, authorID)
-		ref := mustInsertVision(t, database, VisionInput{AuthorPIAL: authorPIAL, Body: "gone"})
+		ref := mustInsertVision(t, database, VisionInput{AuthorAccount: authorID, AuthorPIAL: authorPIAL, Body: "gone"})
 		expireVision(t, database, ref)
-		if r := ringFor(t, authorPIAL); r != nil {
+		if r := ringFor(t, authorID); r != nil {
 			t.Fatalf("expected no ring after expiry, got %+v", r)
 		}
 	})
@@ -405,36 +426,36 @@ func TestVisionRingStates(t *testing.T) {
 		authorID, authorPIAL := seedVisionUser(t, database)
 		seedFollow(t, database, viewerID, authorID)
 
-		first := mustInsertVision(t, database, VisionInput{AuthorPIAL: authorPIAL, Body: "first"})
-		second := mustInsertVision(t, database, VisionInput{AuthorPIAL: authorPIAL, Body: "second"})
-		third := mustInsertVision(t, database, VisionInput{AuthorPIAL: authorPIAL, Body: "third"})
+		first := mustInsertVision(t, database, VisionInput{AuthorAccount: authorID, AuthorPIAL: authorPIAL, Body: "first"})
+		second := mustInsertVision(t, database, VisionInput{AuthorAccount: authorID, AuthorPIAL: authorPIAL, Body: "second"})
+		third := mustInsertVision(t, database, VisionInput{AuthorAccount: authorID, AuthorPIAL: authorPIAL, Body: "third"})
 		// created_at defaults to NOW() for all three; order them explicitly so
 		// "oldest unseen" is a fact and not a tie-break.
 		orderVisions(t, database, first, second, third)
 
-		r := ringFor(t, authorPIAL)
+		r := ringFor(t, authorID)
 		if r == nil {
 			t.Fatal("expected a ring, got none")
 		}
-		if r.Count != 3 || r.UnseenCount != 3 || r.NextVisionRef != first.String() {
+		if r.Count != 3 || r.UnseenCount != 3 || r.NextVisionRef != wireAddress(t, database, first) {
 			t.Fatalf("ring = %+v, want count 3, unseen 3, next %s", r, first)
 		}
 
-		if err := MarkVisionViewed(database, first, viewerPIAL); err != nil {
+		if err := MarkVisionViewed(database, first, viewerID); err != nil {
 			t.Fatalf("MarkVisionViewed: %v", err)
 		}
-		r = ringFor(t, authorPIAL)
-		if r.State != "unseen" || r.UnseenCount != 2 || r.NextVisionRef != second.String() {
+		r = ringFor(t, authorID)
+		if r.State != "unseen" || r.UnseenCount != 2 || r.NextVisionRef != wireAddress(t, database, second) {
 			t.Fatalf("ring = %+v, want state unseen, unseen 2, next %s", r, second)
 		}
 
 		for _, ref := range []VisionRef{second, third} {
-			if err := MarkVisionViewed(database, ref, viewerPIAL); err != nil {
+			if err := MarkVisionViewed(database, ref, viewerID); err != nil {
 				t.Fatalf("MarkVisionViewed: %v", err)
 			}
 		}
-		r = ringFor(t, authorPIAL)
-		if r.State != "seen" || r.UnseenCount != 0 || r.NextVisionRef != first.String() {
+		r = ringFor(t, authorID)
+		if r.State != "seen" || r.UnseenCount != 0 || r.NextVisionRef != wireAddress(t, database, first) {
 			t.Fatalf("ring = %+v, want state seen, unseen 0, replay from %s", r, first)
 		}
 	})
@@ -457,34 +478,34 @@ func orderVisions(t *testing.T, database *sql.DB, refs ...VisionRef) {
 func TestSoftDeleteVisionHidesFromEveryRead(t *testing.T) {
 	database := visionTestDB(t)
 	authorID, authorPIAL := seedVisionUser(t, database)
-	viewerID, viewerPIAL := seedVisionUser(t, database)
+	viewerID, _ := seedVisionUser(t, database)
 	seedFollow(t, database, viewerID, authorID)
 
-	ref := mustInsertVision(t, database, VisionInput{AuthorPIAL: authorPIAL, Body: "deleted soon"})
-	if err := MarkVisionViewed(database, ref, viewerPIAL); err != nil {
+	ref := mustInsertVision(t, database, VisionInput{AuthorAccount: authorID, AuthorPIAL: authorPIAL, Body: "deleted soon"})
+	if err := MarkVisionViewed(database, ref, viewerID); err != nil {
 		t.Fatalf("MarkVisionViewed: %v", err)
 	}
 
-	if err := SoftDeleteVision(database, ref, authorPIAL); err != nil {
+	if err := SoftDeleteVision(database, ref, authorID); err != nil {
 		t.Fatalf("SoftDeleteVision: %v", err)
 	}
 
-	if _, err := GetVisionByRef(database, ref, viewerPIAL); !errors.Is(err, ErrVisionNotLive) {
+	if _, err := GetVisionByRef(database, ref, viewerID); !errors.Is(err, ErrVisionNotLive) {
 		t.Fatalf("GetVisionByRef after delete = %v, want ErrVisionNotLive", err)
 	}
-	visions, err := GetActiveVisionsForAuthor(database, authorPIAL, viewerPIAL, 10)
+	visions, err := GetActiveVisionsForAuthor(database, authorID, viewerID, 10)
 	if err != nil {
 		t.Fatalf("GetActiveVisionsForAuthor: %v", err)
 	}
 	if len(visions) != 0 {
 		t.Fatalf("deleted Vision still listed: %d rows", len(visions))
 	}
-	rings, err := GetVisionRingsForViewer(database, viewerID, viewerPIAL, 50)
+	rings, err := GetVisionRingsForViewer(database, viewerID, 50)
 	if err != nil {
 		t.Fatalf("GetVisionRingsForViewer: %v", err)
 	}
 	for _, r := range rings {
-		if r.AuthorPIAL == authorPIAL {
+		if r.AuthorAccountID == authorID {
 			t.Fatalf("deleted Vision still rings: %+v", r)
 		}
 	}
@@ -495,27 +516,28 @@ func TestSoftDeleteVisionHidesFromEveryRead(t *testing.T) {
 	if len(viewers) != 0 {
 		t.Fatalf("viewer list readable after delete: %d rows", len(viewers))
 	}
-	if err := MarkVisionViewed(database, ref, viewerPIAL); !errors.Is(err, ErrVisionNotLive) {
+	if err := MarkVisionViewed(database, ref, viewerID); !errors.Is(err, ErrVisionNotLive) {
 		t.Fatalf("MarkVisionViewed after delete = %v, want ErrVisionNotLive", err)
 	}
 
 	// A delete that matched nothing must say so rather than report success.
-	if err := SoftDeleteVision(database, ref, authorPIAL); !errors.Is(err, ErrVisionNotLive) {
+	if err := SoftDeleteVision(database, ref, authorID); !errors.Is(err, ErrVisionNotLive) {
 		t.Fatalf("second SoftDeleteVision = %v, want ErrVisionNotLive", err)
 	}
-	_, otherPIAL := seedVisionUser(t, database)
-	live := mustInsertVision(t, database, VisionInput{AuthorPIAL: authorPIAL, Body: "not yours"})
-	if err := SoftDeleteVision(database, live, otherPIAL); !errors.Is(err, ErrVisionNotLive) {
+	otherID, _ := seedVisionUser(t, database)
+	live := mustInsertVision(t, database, VisionInput{AuthorAccount: authorID, AuthorPIAL: authorPIAL, Body: "not yours"})
+	if err := SoftDeleteVision(database, live, otherID); !errors.Is(err, ErrVisionNotLive) {
 		t.Fatalf("deleting another author's Vision = %v, want ErrVisionNotLive", err)
 	}
 }
 
 func TestVisionMediaPurgeSweep(t *testing.T) {
 	database := visionTestDB(t)
-	_, authorPIAL := seedVisionUser(t, database)
+	authorID, authorPIAL := seedVisionUser(t, database)
 
 	ref := mustInsertVision(t, database, VisionInput{
-		AuthorPIAL:  authorPIAL,
+		AuthorAccount: authorID,
+		AuthorPIAL:    authorPIAL,
 		ContentType: "image",
 		MediaURLs:   []string{"https://cdn.example/v.webp"},
 		Media: []VisionMediaInput{{

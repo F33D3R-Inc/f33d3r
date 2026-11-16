@@ -723,20 +723,33 @@ pub async fn get_ecdh_pubkey(
 /// Mint a contact address. Manhattan owns `address`/`addr` to this brain, so
 /// mints must originate here rather than from Nantar.
 /// Auth: X-Internal-Key
+///
+/// The address is recorded against the minting ACCOUNT, so it leads to that
+/// persona's key bundle and is listed to that persona alone.
 pub async fn mint_address(
     State(state): State<AppState>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    let identity_node_id = body["identity_node_id"].as_str().unwrap_or_default();
-    if identity_node_id.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error":"identity_node_id required"})),
-        )
-            .into_response();
-    }
-    match state.manhattan.mint_address(identity_node_id).await {
-        Ok(addr) => Json(json!({"address": addr.address, "status": addr.status})).into_response(),
+    let (account, pial) = match acting_account(&state, body["account_id"].as_str(), "mint_address").await {
+        Ok(a) => a,
+        Err(resp) => return resp,
+    };
+    let identity_node_id = match identity_node_for(&state, pial).await {
+        Ok(id) => id,
+        Err(e) => return naming_plane_error("mint_address: identity node", e),
+    };
+    match state.manhattan.mint_address(&identity_node_id).await {
+        Ok(addr) => {
+            if let Err(e) = contact::record_address(&state.pool, &addr.address, account).await {
+                // An address no account answers for would lead to the person's
+                // primary persona. Retire it rather than hand it out.
+                if let Err(re) = state.manhattan.revoke_address(&addr.address).await {
+                    tracing::error!("mint_address: could not retire an unrecorded address: {re}");
+                }
+                return db_error("mint_address: recording the account", e);
+            }
+            Json(json!({"address": addr.address, "status": addr.status})).into_response()
+        }
         Err(e) => {
             tracing::error!("mint_address for identity {identity_node_id}: {e}");
             (
@@ -750,20 +763,20 @@ pub async fn mint_address(
 
 // ── POST /v1/addresses/revoke ────────────────────────────────────────────────
 /// Retire a contact address. Only future channel establishment is refused.
-/// Ownership is re-checked here, not trusted from the caller.
+/// Ownership is re-checked here, not trusted from the caller: the address must
+/// be the acting account's own, not merely its identity's.
 /// Auth: X-Internal-Key
 pub async fn revoke_address(
     State(state): State<AppState>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
+    let (account, pial) = match acting_account(&state, body["account_id"].as_str(), "revoke_address").await {
+        Ok(a) => a,
+        Err(resp) => return resp,
+    };
     let address = body["address"].as_str().unwrap_or_default();
-    let identity_node_id = body["identity_node_id"].as_str().unwrap_or_default();
-    if address.is_empty() || identity_node_id.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error":"address and identity_node_id required"})),
-        )
-            .into_response();
+    if address.is_empty() {
+        return bad("address required");
     }
 
     let target = match state.manhattan.resolve_address(address).await {
@@ -773,8 +786,18 @@ pub async fn revoke_address(
             return (StatusCode::NOT_FOUND, Json(json!({"error":"not_found"}))).into_response();
         }
     };
-    if target.identity_node_id.as_deref() != Some(identity_node_id) {
-        return (StatusCode::FORBIDDEN, Json(json!({"error":"forbidden"}))).into_response();
+    let Some(target_node) = target.identity_node_id.as_deref() else {
+        return (StatusCode::NOT_FOUND, Json(json!({"error":"not_found"}))).into_response();
+    };
+    match pial_for_identity_node(&state, target_node).await {
+        Ok(owner) if owner == pial => {}
+        Ok(_) => return forbidden(),
+        Err(e) => return naming_plane_error("revoke_address: owner", e),
+    }
+    match contact::address_account(&state.pool, address, pial).await {
+        Ok(Some(holder)) if holder == account => {}
+        Ok(_) => return forbidden(),
+        Err(e) => return db_error("revoke_address: holder", e),
     }
 
     match state.manhattan.revoke_address(address).await {
@@ -925,15 +948,62 @@ async fn pial_for_identity_node(state: &AppState, node_id: &str) -> Result<Uuid,
         .ok_or(ManhattanError::NotFound)
 }
 
+fn db_error(context: &str, e: impl std::fmt::Display) -> axum::response::Response {
+    tracing::error!("{context}: {e}");
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(json!({"error":"db_error"})),
+    )
+        .into_response()
+}
+
+/// The account a contact-plane call acts as, and the identity it is bound to.
+///
+/// Every action on the contact plane is attributed to the ACCOUNT that took it
+/// (migration 0004): the PIAL is derived here, from this brain's own accounts
+/// table, and never accepted from the caller beside the account — two claims
+/// about one actor are one too many. A missing id is a bad request; an account
+/// that does not exist, is deactivated or is purged takes no contact action.
+async fn acting_account(
+    state: &AppState,
+    raw: Option<&str>,
+    context: &str,
+) -> Result<(Uuid, Uuid), axum::response::Response> {
+    let Some(account) = raw.and_then(parse_uuid) else {
+        return Err(bad("account_id required"));
+    };
+    match contact::account_pial(&state.pool, account).await {
+        Ok(Some(pial)) => Ok((account, pial)),
+        Ok(None) => Err(forbidden()),
+        Err(e) => Err(db_error(context, e)),
+    }
+}
+
+/// The account that holds a Number: its policy row's, or — for a Number minted
+/// before this brain recorded accounts — the identity's primary account.
+async fn number_holder(
+    state: &AppState,
+    number_node: Uuid,
+    owner_pial: Uuid,
+) -> anyhow::Result<Option<Uuid>> {
+    match contact::get_number_policy(&state.pool, number_node).await? {
+        Some((account, _, _)) => Ok(Some(account)),
+        None => contact::primary_account(&state.pool, owner_pial).await,
+    }
+}
+
 // ── POST /v1/numbers/mint ────────────────────────────────────────────────────
-/// Allocate a Number for an identity and attach its policy.
+/// Allocate a Number for an account and attach its policy. The Number lives
+/// under the account's identity in Manhattan; the account that holds it is
+/// recorded here, so it reaches that persona and no other.
 /// Auth: X-Internal-Key
 pub async fn mint_number(
     State(state): State<AppState>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    let Some(pial) = body["pial_id"].as_str().and_then(parse_uuid) else {
-        return bad("pial_id required");
+    let (account, pial) = match acting_account(&state, body["account_id"].as_str(), "mint_number").await {
+        Ok(a) => a,
+        Err(resp) => return resp,
     };
     let policy = body["policy"]
         .as_str()
@@ -1013,6 +1083,7 @@ pub async fn mint_number(
         &state.pool,
         number_node_id,
         pial,
+        account,
         policy,
         &label,
         expires_in_seconds,
@@ -1056,8 +1127,9 @@ pub async fn revoke_number(
     State(state): State<AppState>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    let Some(pial) = body["pial_id"].as_str().and_then(parse_uuid) else {
-        return bad("pial_id required");
+    let (account, pial) = match acting_account(&state, body["account_id"].as_str(), "revoke_number").await {
+        Ok(a) => a,
+        Err(resp) => return resp,
     };
     let number = body["number"].as_str().unwrap_or_default();
     if number.is_empty() {
@@ -1082,33 +1154,38 @@ pub async fn revoke_number(
         Ok(_) => return forbidden(),
         Err(e) => return naming_plane_error("revoke_number: owner", e),
     }
+    let Some(node) = parse_uuid(number_node) else {
+        return naming_plane_error("revoke_number", "Manhattan returned a malformed number_node_id");
+    };
+    // The identity holding it is not enough: the Number must be this account's,
+    // never another persona's of the same person.
+    match number_holder(&state, node, pial).await {
+        Ok(Some(holder)) if holder == account => {}
+        Ok(_) => return forbidden(),
+        Err(e) => return db_error("revoke_number: holder", e),
+    }
 
     if let Err(e) = state.manhattan.revoke_number(number).await {
         return naming_plane_error("revoke_number", e);
     }
-    if let Some(node) = parse_uuid(number_node) {
-        if let Err(e) = contact::drop_number_policy(&state.pool, node, pial).await {
-            tracing::error!("revoke_number: dropping policy: {e}");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error":"db_error"})),
-            )
-                .into_response();
-        }
+    if let Err(e) = contact::drop_number_policy(&state.pool, node, account).await {
+        return db_error("revoke_number: dropping policy", e);
     }
     Json(json!({"ok": true})).into_response()
 }
 
-// ── GET /v1/numbers/:pial_id ─────────────────────────────────────────────────
-/// The identity's own Numbers, live and retired, each with its policy.
+// ── GET /v1/numbers/:account_id ──────────────────────────────────────────────
+/// One account's own Numbers, live and retired, each with its policy. Manhattan
+/// lists every Number under the identity; only the ones this account holds are
+/// answered, so one persona's listing never shows another's Numbers.
 /// Auth: X-Internal-Key
 pub async fn list_numbers(
     State(state): State<AppState>,
-    Path(pial_ref): Path<String>,
+    Path(account_ref): Path<String>,
 ) -> impl IntoResponse {
-    let pial = match resolve_pial_ref(&state, &pial_ref).await {
-        Ok(id) => id,
-        Err((status, body)) => return (status, body).into_response(),
+    let (account, pial) = match acting_account(&state, Some(account_ref.as_str()), "list_numbers").await {
+        Ok(a) => a,
+        Err(resp) => return resp,
     };
     let node_id = match identity_node_for(&state, pial).await {
         Ok(id) => id,
@@ -1118,7 +1195,21 @@ pub async fn list_numbers(
         Ok(e) => e,
         Err(e) => return naming_plane_error("list_numbers", e),
     };
-    let policies = match contact::number_policies_for(&state.pool, pial).await {
+    let holders: HashMap<String, Uuid> = match contact::number_holders(&state.pool, pial).await {
+        Ok(rows) => rows.into_iter().map(|(node, holder)| (node.to_string(), holder)).collect(),
+        Err(e) => return db_error("list_numbers: holders", e),
+    };
+    // A Number with no policy row predates accounts on this plane and is the
+    // identity's primary account's.
+    let primary = match contact::primary_account(&state.pool, pial).await {
+        Ok(p) => p,
+        Err(e) => return db_error("list_numbers: primary account", e),
+    };
+    let entries: Vec<_> = entries
+        .into_iter()
+        .filter(|e| holders.get(&e.number_node_id).copied().or(primary) == Some(account))
+        .collect();
+    let policies = match contact::number_policies_for(&state.pool, account).await {
         Ok(p) => p,
         Err(e) => {
             tracing::error!("list_numbers: policies: {e}");
@@ -1130,9 +1221,9 @@ pub async fn list_numbers(
         }
     };
     // The lease beside the policy. Both are owner-private: this route is keyed
-    // by the owner's own PIAL behind the internal key, and nothing here is ever
-    // reachable from a resolve.
-    let leases = match number_lease::leases_for(&state.pool, pial).await {
+    // by the owner's own account behind the internal key, and nothing here is
+    // ever reachable from a resolve.
+    let leases = match number_lease::leases_for(&state.pool, account).await {
         Ok(l) => l,
         Err(e) => {
             tracing::error!("list_numbers: leases: {e}");
@@ -1195,8 +1286,9 @@ pub async fn set_number_policy(
     State(state): State<AppState>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    let Some(pial) = body["pial_id"].as_str().and_then(parse_uuid) else {
-        return bad("pial_id required");
+    let (account, pial) = match acting_account(&state, body["account_id"].as_str(), "set_number_policy").await {
+        Ok(a) => a,
+        Err(resp) => return resp,
     };
     let number = body["number"].as_str().unwrap_or_default();
     let policy = body["policy"].as_str().unwrap_or_default();
@@ -1224,10 +1316,16 @@ pub async fn set_number_policy(
         Ok(_) => return forbidden(),
         Err(e) => return naming_plane_error("set_number_policy: owner", e),
     }
+    match number_holder(&state, number_node, pial).await {
+        Ok(Some(holder)) if holder == account => {}
+        Ok(_) => return forbidden(),
+        Err(e) => return db_error("set_number_policy: holder", e),
+    }
     match number_lease::attach(
         &state.pool,
         number_node,
         pial,
+        account,
         policy,
         &label,
         expires_in_seconds,
@@ -1247,17 +1345,19 @@ pub async fn set_number_policy(
     }
 }
 
-// ── GET /v1/contact/policy/:pial_id ──────────────────────────────────────────
+// ── GET /v1/contact/policy/:account_id ───────────────────────────────────────
+/// One account's contact settings. Each persona has its own @handle, so who may
+/// reach it is its own choice.
 /// Auth: X-Internal-Key
 pub async fn get_contact_policy(
     State(state): State<AppState>,
-    Path(pial_ref): Path<String>,
+    Path(account_ref): Path<String>,
 ) -> impl IntoResponse {
-    let pial = match resolve_pial_ref(&state, &pial_ref).await {
-        Ok(id) => id,
-        Err((status, body)) => return (status, body).into_response(),
+    let (account, _) = match acting_account(&state, Some(account_ref.as_str()), "get_contact_policy").await {
+        Ok(a) => a,
+        Err(resp) => return resp,
     };
-    match contact::get_contact_policy(&state.pool, pial).await {
+    match contact::get_contact_policy(&state.pool, account).await {
         Ok((handle_policy, default_number_policy)) => Json(json!({
             "handle_policy": handle_policy,
             "default_number_policy": default_number_policy,
@@ -1281,11 +1381,12 @@ pub async fn set_contact_policy(
     State(state): State<AppState>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    let Some(pial) = body["pial_id"].as_str().and_then(parse_uuid) else {
-        return bad("pial_id required");
+    let (account, _) = match acting_account(&state, body["account_id"].as_str(), "set_contact_policy").await {
+        Ok(a) => a,
+        Err(resp) => return resp,
     };
     let (existing_handle, existing_number) =
-        match contact::get_contact_policy(&state.pool, pial).await {
+        match contact::get_contact_policy(&state.pool, account).await {
             Ok(p) => p,
             Err(e) => {
                 tracing::error!("set_contact_policy: read: {e}");
@@ -1303,7 +1404,7 @@ pub async fn set_contact_policy(
     if !contact::is_policy(handle_policy) || !contact::is_policy(number_policy) {
         return bad("unknown policy");
     }
-    match contact::set_contact_policy(&state.pool, pial, handle_policy, number_policy).await {
+    match contact::set_contact_policy(&state.pool, account, handle_policy, number_policy).await {
         Ok(()) => Json(json!({
             "handle_policy": handle_policy,
             "default_number_policy": number_policy,
@@ -1321,20 +1422,28 @@ pub async fn set_contact_policy(
 }
 
 // ── POST /v1/contact/evaluate ────────────────────────────────────────────────
-/// The decision. Given a Number (or a target PIAL, for the @handle path) and the
-/// follow-graph facts asserted by the brain that owns the follow graph, decide
-/// whether contact may proceed.
+/// The decision. Given a Number (or a target account, for the @handle path),
+/// decide whether the initiating account may contact the account it reaches.
 ///
-/// `target_pial` is returned ONLY on allow. Every other outcome carries the same
-/// coarse reason, so this endpoint cannot be used to test whether a Number exists.
+/// Both ends are ACCOUNTS. A Number reaches the account that holds it, never
+/// the holder's primary persona; a grant, a link and an admission are each
+/// between two accounts. The PIALs are derived here for what the identity still
+/// owns — the follow graph Manhattan publishes and the owner's decision log —
+/// and never cross the wire.
+///
+/// `target_account` is returned ONLY on allow. Every other outcome carries the
+/// same coarse reason, so this endpoint cannot be used to test whether a Number
+/// exists.
 /// Auth: X-Internal-Key
 pub async fn evaluate_contact(
     State(state): State<AppState>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    let Some(initiator) = body["initiator_pial"].as_str().and_then(parse_uuid) else {
-        return bad("initiator_pial required");
-    };
+    let (initiator_account, initiator) =
+        match acting_account(&state, body["initiator_account"].as_str(), "evaluate_contact").await {
+            Ok(a) => a,
+            Err(resp) => return resp,
+        };
     let number = body["number"]
         .as_str()
         .unwrap_or_default()
@@ -1347,7 +1456,6 @@ pub async fn evaluate_contact(
     // association plane below, by the brain that is taking the decision.
     let presented_capability = body["capability"].as_str().unwrap_or_default().to_string();
     let note = body["note"].as_str().unwrap_or_default();
-    let initiator_account = body["initiator_account"].as_str().map(str::to_string);
 
     let deny = |reason: &'static str| {
         Json(json!({
@@ -1357,8 +1465,10 @@ pub async fn evaluate_contact(
         }))
     };
 
-    // Resolve the target: by Number, or by PIAL on the @handle path.
-    let (owner, number_node): (Uuid, Option<Uuid>) = if via_number {
+    // Resolve the target: by Number, or by account on the @handle path. The
+    // target is an account and its identity; a Number reaches the account that
+    // holds it.
+    let (owner_account, owner, number_node): (Uuid, Uuid, Option<Uuid>) = if via_number {
         let resolution = match state.manhattan.resolve_number(&number).await {
             Ok(r) => r,
             Err(e) => return naming_plane_error("evaluate_contact: resolve", e),
@@ -1374,17 +1484,28 @@ pub async fn evaluate_contact(
             Err(ManhattanError::NotFound) => return deny("unresolved").into_response(),
             Err(e) => return naming_plane_error("evaluate_contact: owner", e),
         };
-        (
-            owner,
-            resolution.number_node_id.as_deref().and_then(parse_uuid),
-        )
-    } else {
-        let Some(target) = body["target_pial"].as_str().and_then(parse_uuid) else {
-            return bad("number or target_pial required");
+        let Some(node) = resolution.number_node_id.as_deref().and_then(parse_uuid) else {
+            return deny("unresolved").into_response();
         };
-        (target, None)
+        let holder = match number_holder(&state, node, owner).await {
+            Ok(Some(h)) => h,
+            Ok(None) => return deny("unresolved").into_response(),
+            Err(e) => return db_error("evaluate_contact: holder", e),
+        };
+        (holder, owner, Some(node))
+    } else {
+        let Some(target_account) = body["target_account"].as_str().and_then(parse_uuid) else {
+            return bad("number or target_account required");
+        };
+        match contact::account_pial(&state.pool, target_account).await {
+            Ok(Some(target_pial)) => (target_account, target_pial, None),
+            Ok(None) => return deny("unresolved").into_response(),
+            Err(e) => return db_error("evaluate_contact: target", e),
+        }
     };
 
+    // The caller is the only one told this, and the caller is the person: two
+    // of one person's accounts never need permission to reach each other.
     if owner == initiator {
         return bad("an identity does not need permission to reach itself");
     }
@@ -1417,9 +1538,9 @@ pub async fn evaluate_contact(
         number_has_budget = gate.has_budget;
     }
 
-    // Policy: the Number's own, else the identity's default for that channel.
+    // Policy: the Number's own, else the owning account's default for that channel.
     let (handle_policy, default_number_policy) =
-        match contact::get_contact_policy(&state.pool, owner).await {
+        match contact::get_contact_policy(&state.pool, owner_account).await {
             Ok(p) => p,
             Err(e) => {
                 tracing::error!("evaluate_contact: policy: {e}");
@@ -1450,7 +1571,7 @@ pub async fn evaluate_contact(
         handle_policy.clone()
     };
 
-    let granted = match contact::has_grant(&state.pool, owner, initiator).await {
+    let granted = match contact::has_grant(&state.pool, owner_account, initiator_account).await {
         Ok(g) => g,
         Err(e) => {
             tracing::error!("evaluate_contact: grant: {e}");
@@ -1467,7 +1588,7 @@ pub async fn evaluate_contact(
     let capability_ok = if presented_capability.is_empty() || granted {
         false
     } else {
-        match contact::redeem_capability(&state.pool, owner, &presented_capability, number_node)
+        match contact::redeem_capability(&state.pool, owner_account, &presented_capability, number_node)
             .await
         {
             Ok(Some(_)) => true,
@@ -1560,8 +1681,10 @@ pub async fn evaluate_contact(
         // via_number is true here, so Manhattan resolved a Number node; the
         // match is exhaustive rather than assuming it.
         if let Some(node) = number_node {
-            match number_lease::record_admission(&state.pool, node, initiator, owner).await {
-                // Spent, already spent by this same identity, or a Number
+            match number_lease::record_admission(&state.pool, node, initiator_account, owner_account, owner)
+                .await
+            {
+                // Spent, already spent by this same account, or a Number
                 // carrying no budget at all. All three proceed.
                 Ok(Admission::Recorded(alert)) => budget_alert = alert,
                 Ok(Admission::AlreadyAdmitted) | Ok(Admission::NoLease) => {}
@@ -1590,7 +1713,8 @@ pub async fn evaluate_contact(
     // the contact survives the Number being rotated away.
     if capability_ok {
         if let Err(e) =
-            contact::grant_contact(&state.pool, owner, initiator, "capability", number_node).await
+            contact::grant_contact(&state.pool, owner_account, owner, initiator_account, "capability", number_node)
+                .await
         {
             tracing::error!("evaluate_contact: recording grant: {e}");
             return (
@@ -1603,7 +1727,7 @@ pub async fn evaluate_contact(
 
     let mut request_id: Option<Uuid> = None;
     if decision == "request" {
-        match contact::open_request(&state.pool, owner, initiator, number_node, note, initiator_account.clone()).await {
+        match contact::open_request(&state.pool, owner_account, owner, initiator_account, number_node, note).await {
             Ok(id) => request_id = id,
             Err(e) => {
                 tracing::error!("evaluate_contact: opening request: {e}");
@@ -1638,11 +1762,11 @@ pub async fn evaluate_contact(
         "reason": public_reason(decision),
     });
     if decision == "allow" {
-        out["target_pial"] = json!(owner.to_string());
+        out["target_account"] = json!(owner_account.to_string());
         // A Number that quietly stopped working is the worst failure this
         // feature has, so the moment it stops is the moment its owner hears
-        // about it — through the one notification pipeline feed-engine already
-        // has, addressed to the identity named here.
+        // about it — through the one notification pipeline, addressed to the
+        // account that holds the Number (record_admission queues it).
         //
         // It rides on an ALLOW and nowhere else. An allow has already disclosed
         // the target to the calling brain, so nothing new crosses; a refusal
@@ -1650,7 +1774,7 @@ pub async fn evaluate_contact(
         // would hand over the single fact the refusal exists to withhold.
         if let Some(alert) = budget_alert.as_str() {
             out["budget_alert"] = json!(alert);
-            out["budget_owner_pial"] = json!(owner.to_string());
+            out["budget_owner_account"] = json!(owner_account.to_string());
         }
     }
     if let Some(id) = request_id {
@@ -1661,27 +1785,61 @@ pub async fn evaluate_contact(
         // only alongside a request that was actually opened — which already
         // implies the Number resolved — and it is disclosed to the caller
         // brain, which decides what a person sees, never to the requester.
-        out["request_owner_pial"] = json!(owner.to_string());
+        out["request_owner_account"] = json!(owner_account.to_string());
     }
     Json(out).into_response()
 }
 
 // ── POST /v1/contact/keybundle ───────────────────────────────────────────────
-/// Assemble and sign the identity's messaging key bundle.
+/// Assemble and sign one ACCOUNT's messaging key bundle.
 ///
-/// `signed` is false when no service signing key is configured; the response never
-/// implies a signature it does not carry. The signature covers transport
-/// tampering only — it is this service's key, not the identity's.
+/// The account is named directly (`account_id`, after a Number's allow named
+/// it) or by a live contact address (`address`), which resolves to the account
+/// that minted it. An unknown or retired address is a flat 404 — a rotated
+/// address must not confirm that it was ever real.
+///
+/// The bundle carries the account id, the time and that account's per-device
+/// keys — no PIAL and no identity-wide key, because whoever holds a Number or an
+/// address receives it, and anything one person's personas share would link
+/// them. What is signed is exactly the `bundle` object this response carries,
+/// as serialised here; a verifier checks the signature over those bytes.
+///
+/// `signed` is false when no service signing key is configured; the response
+/// never implies a signature it does not carry. The signature covers transport
+/// tampering only — it is this service's key, not the account's.
 /// Auth: X-Internal-Key
 pub async fn contact_key_bundle(
     State(state): State<AppState>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    let Some(pial) = body["pial_id"].as_str().and_then(parse_uuid) else {
-        return bad("pial_id required");
+    let not_found = || (StatusCode::NOT_FOUND, Json(json!({"error":"not_found"}))).into_response();
+    let account = if let Some(address) = body["address"].as_str().map(str::trim).filter(|a| !a.is_empty()) {
+        let target = match state.manhattan.resolve_address(address).await {
+            Ok(t) => t,
+            Err(ManhattanError::NotFound) => return not_found(),
+            Err(e) => return naming_plane_error("contact_key_bundle: resolve address", e),
+        };
+        let Some(identity_node) = target.identity_node_id.as_deref() else {
+            return not_found();
+        };
+        let pial = match pial_for_identity_node(&state, identity_node).await {
+            Ok(p) => p,
+            Err(ManhattanError::NotFound) => return not_found(),
+            Err(e) => return naming_plane_error("contact_key_bundle: address owner", e),
+        };
+        match contact::address_account(&state.pool, address, pial).await {
+            Ok(Some(a)) => a,
+            Ok(None) => return not_found(),
+            Err(e) => return db_error("contact_key_bundle: address account", e),
+        }
+    } else {
+        match acting_account(&state, body["account_id"].as_str(), "contact_key_bundle").await {
+            Ok((a, _)) => a,
+            Err(resp) => return resp,
+        }
     };
 
-    let devices = match contact::messaging_keys(&state.pool, pial).await {
+    let devices = match contact::messaging_keys(&state.pool, account).await {
         Ok(d) => d,
         Err(e) => {
             tracing::error!("contact_key_bundle: messaging keys: {e}");
@@ -1693,7 +1851,7 @@ pub async fn contact_key_bundle(
         }
     };
     if devices.is_empty() {
-        // No key material exists for this identity, so no channel can be opened.
+        // No key material exists for this account, so no channel can be opened.
         return (
             StatusCode::CONFLICT,
             Json(json!({"error":"no_key_material"})),
@@ -1701,31 +1859,16 @@ pub async fn contact_key_bundle(
             .into_response();
     }
 
-    let signing_pubkey_b64 = match db::get_signing_key(&state.pool, pial).await {
-        Ok(k) => k,
-        Err(e) => {
-            tracing::error!("contact_key_bundle: signing key: {e}");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error":"db_error"})),
-            )
-                .into_response();
-        }
-    };
-
     let bundle = contact::KeyBundle {
-        pial_id: pial.to_string(),
+        account_id: account.to_string(),
         issued_at: Utc::now().to_rfc3339(),
-        signing_algorithm: signing_pubkey_b64
-            .as_ref()
-            .map(|_| "ECDSA-P256".to_string()),
-        signing_pubkey_b64,
         devices,
     };
 
-    // Sign the Value, not the struct: the response ships the bundle through
-    // json!, which reorders keys via Value's BTreeMap. Signing to_vec(&bundle)
-    // would cover declaration-order bytes the client never receives.
+    // Sign the Value, not the struct: the response ships the bundle as this
+    // Value, and serialising the same Value again yields the same bytes, so
+    // what is signed is byte for byte the `bundle` the response carries.
+    // Signing to_vec(&bundle) would cover struct-order bytes nobody receives.
     let bundle_value = match serde_json::to_value(&bundle) {
         Ok(v) => v,
         Err(e) => {
@@ -1761,15 +1904,20 @@ pub async fn contact_key_bundle(
 }
 
 // ── POST /v1/pial/messaging-key/register ─────────────────────────────────────
-/// Register the X25519 public key Gnosis seals to. Public halves only.
+/// Register the X25519 public key Gnosis seals to, for one device of one
+/// account. Public halves only. Each account keeps its own keys: a key shared by
+/// every persona of one person would put the same bytes in each persona's
+/// bundle.
 /// Auth: X-Internal-Key
 pub async fn register_messaging_key(
     State(state): State<AppState>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    let Some(pial) = body["pial_id"].as_str().and_then(parse_uuid) else {
-        return bad("pial_id required");
-    };
+    let (account, pial) =
+        match acting_account(&state, body["account_id"].as_str(), "register_messaging_key").await {
+            Ok(a) => a,
+            Err(resp) => return resp,
+        };
     let public_key_b64 = body["public_key_b64"].as_str().unwrap_or_default();
     if public_key_b64.is_empty() || public_key_b64.len() > 512 {
         return bad("public_key_b64 required");
@@ -1778,7 +1926,7 @@ pub async fn register_messaging_key(
     if device_id.len() > 128 {
         return bad("device_id too long");
     }
-    match contact::upsert_messaging_key(&state.pool, pial, device_id, public_key_b64).await {
+    match contact::upsert_messaging_key(&state.pool, account, pial, device_id, public_key_b64).await {
         Ok(()) => Json(json!({"ok": true})).into_response(),
         Err(e) => {
             tracing::error!("register_messaging_key: {e}");
@@ -1799,9 +1947,11 @@ pub async fn mint_contact_capability(
     State(state): State<AppState>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    let Some(pial) = body["pial_id"].as_str().and_then(parse_uuid) else {
-        return bad("pial_id required");
-    };
+    let (account, pial) =
+        match acting_account(&state, body["account_id"].as_str(), "mint_contact_capability").await {
+            Ok(a) => a,
+            Err(resp) => return resp,
+        };
     let label = body["label"].as_str().unwrap_or_default();
     let max_uses = body["max_uses"].as_i64().map(|v| v as i32);
 
@@ -1822,12 +1972,21 @@ pub async fn mint_contact_capability(
                 },
                 None => return forbidden(),
             }
-            resolution.number_node_id.as_deref().and_then(parse_uuid)
+            let Some(node) = resolution.number_node_id.as_deref().and_then(parse_uuid) else {
+                return naming_plane_error("mint_contact_capability", "Manhattan returned no number_node_id");
+            };
+            // A link scoped to a Number is the Number holder's to mint.
+            match number_holder(&state, node, pial).await {
+                Ok(Some(holder)) if holder == account => {}
+                Ok(_) => return forbidden(),
+                Err(e) => return db_error("mint_contact_capability: holder", e),
+            }
+            Some(node)
         }
         _ => None,
     };
 
-    match contact::mint_capability(&state.pool, pial, number_node, label, max_uses).await {
+    match contact::mint_capability(&state.pool, account, pial, number_node, label, max_uses).await {
         Ok(secret) => Json(json!({ "capability": secret, "label": label })).into_response(),
         Err(e) => {
             tracing::error!("mint_contact_capability: {e}");
@@ -1846,13 +2005,15 @@ pub async fn revoke_contact_capability(
     State(state): State<AppState>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    let Some(pial) = body["pial_id"].as_str().and_then(parse_uuid) else {
-        return bad("pial_id required");
-    };
+    let (account, _) =
+        match acting_account(&state, body["account_id"].as_str(), "revoke_contact_capability").await {
+            Ok(a) => a,
+            Err(resp) => return resp,
+        };
     let Some(capability_id) = body["capability_id"].as_str().and_then(parse_uuid) else {
         return bad("capability_id required");
     };
-    match contact::revoke_capability(&state.pool, pial, capability_id).await {
+    match contact::revoke_capability(&state.pool, account, capability_id).await {
         Ok(0) => (StatusCode::NOT_FOUND, Json(json!({"error":"not_found"}))).into_response(),
         Ok(_) => Json(json!({"ok": true})).into_response(),
         Err(e) => {
@@ -1866,17 +2027,19 @@ pub async fn revoke_contact_capability(
     }
 }
 
-// ── GET /v1/contact/capabilities/:pial_id ────────────────────────────────────
+// ── GET /v1/contact/capabilities/:account_id ─────────────────────────────────
+/// The contact links one account minted.
 /// Auth: X-Internal-Key
 pub async fn list_contact_capabilities(
     State(state): State<AppState>,
-    Path(pial_ref): Path<String>,
+    Path(account_ref): Path<String>,
 ) -> impl IntoResponse {
-    let pial = match resolve_pial_ref(&state, &pial_ref).await {
-        Ok(id) => id,
-        Err((status, body)) => return (status, body).into_response(),
-    };
-    match contact::list_capabilities(&state.pool, pial).await {
+    let (account, _) =
+        match acting_account(&state, Some(account_ref.as_str()), "list_contact_capabilities").await {
+            Ok(a) => a,
+            Err(resp) => return resp,
+        };
+    match contact::list_capabilities(&state.pool, account).await {
         Ok(rows) => Json(json!({
             "capabilities": rows.into_iter().map(|(id, label, number_node, uses, max_uses, revoked)| json!({
                 "id": id.to_string(),
@@ -1899,22 +2062,24 @@ pub async fn list_contact_capabilities(
     }
 }
 
-// ── GET /v1/contact/requests/:pial_id ────────────────────────────────────────
-/// The identity's own pending contact requests.
+// ── GET /v1/contact/requests/:account_id ─────────────────────────────────────
+/// The pending contact requests addressed to one account, each naming the
+/// account that asked — the persona that asked, never its person's primary.
 /// Auth: X-Internal-Key
 pub async fn list_contact_requests(
     State(state): State<AppState>,
-    Path(pial_ref): Path<String>,
+    Path(account_ref): Path<String>,
 ) -> impl IntoResponse {
-    let pial = match resolve_pial_ref(&state, &pial_ref).await {
-        Ok(id) => id,
-        Err((status, body)) => return (status, body).into_response(),
-    };
-    match contact::list_requests(&state.pool, pial).await {
+    let (account, _) =
+        match acting_account(&state, Some(account_ref.as_str()), "list_contact_requests").await {
+            Ok(a) => a,
+            Err(resp) => return resp,
+        };
+    match contact::list_requests(&state.pool, account).await {
         Ok(rows) => Json(json!({
             "requests": rows.into_iter().map(|(id, requester, note, status, created_at)| json!({
                 "id": id.to_string(),
-                "requester_pial": requester.to_string(),
+                "requester_account": requester.to_string(),
                 "note": note,
                 "status": status,
                 "created_at": created_at.to_rfc3339(),
@@ -1941,19 +2106,20 @@ pub async fn decide_contact_request(
     State(state): State<AppState>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    let Some(pial) = body["pial_id"].as_str().and_then(parse_uuid) else {
-        return bad("pial_id required");
-    };
+    let (account, _) =
+        match acting_account(&state, body["account_id"].as_str(), "decide_contact_request").await {
+            Ok(a) => a,
+            Err(resp) => return resp,
+        };
     let Some(request_id) = body["request_id"].as_str().and_then(parse_uuid) else {
         return bad("request_id required");
     };
     let accept = body["accept"].as_bool().unwrap_or(false);
-    let owner_account = body["owner_account"].as_str().map(str::to_string);
-    match contact::decide_request(&state.pool, pial, request_id, accept, owner_account).await {
+    match contact::decide_request(&state.pool, account, request_id, accept).await {
         Ok(Some(requester)) => Json(json!({
             "ok": true,
             "accepted": accept,
-            "requester_pial": requester.to_string(),
+            "requester_account": requester.to_string(),
         }))
         .into_response(),
         Ok(None) => (StatusCode::NOT_FOUND, Json(json!({"error":"not_found"}))).into_response(),
@@ -1968,36 +2134,35 @@ pub async fn decide_contact_request(
     }
 }
 
-/// List an identity's contact addresses. Manhattan gates this read to the owning
-/// brain, so it cannot be called from Nantar directly.
+/// List one account's contact addresses. Manhattan lists every address under
+/// the identity and gates that read to this brain; only the addresses the
+/// acting account minted are answered, so one persona never sees another's.
 /// Auth: X-Internal-Key
 pub async fn list_addresses(
     State(state): State<AppState>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    let identity_node_id = body["identity_node_id"].as_str().unwrap_or_default();
-    if identity_node_id.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error":"identity_node_id required"})),
-        )
-            .into_response();
-    }
-    match state.manhattan.list_addresses(identity_node_id).await {
-        Ok(list) => {
-            let out: Vec<serde_json::Value> = list
-                .into_iter()
-                .map(|a| json!({"address": a.address, "status": a.status}))
-                .collect();
-            Json(json!({ "addresses": out })).into_response()
-        }
-        Err(e) => {
-            tracing::error!("list_addresses for {identity_node_id}: {e}");
-            (
-                StatusCode::BAD_GATEWAY,
-                Json(json!({"error":"naming_plane_error"})),
-            )
-                .into_response()
+    let (account, pial) = match acting_account(&state, body["account_id"].as_str(), "list_addresses").await {
+        Ok(a) => a,
+        Err(resp) => return resp,
+    };
+    let identity_node_id = match identity_node_for(&state, pial).await {
+        Ok(id) => id,
+        Err(e) => return naming_plane_error("list_addresses: identity node", e),
+    };
+    let list = match state.manhattan.list_addresses(&identity_node_id).await {
+        Ok(list) => list,
+        Err(e) => return naming_plane_error("list_addresses", e),
+    };
+    let mut out: Vec<serde_json::Value> = Vec::with_capacity(list.len());
+    for a in list {
+        match contact::address_account(&state.pool, &a.address, pial).await {
+            Ok(Some(holder)) if holder == account => {
+                out.push(json!({"address": a.address, "status": a.status}));
+            }
+            Ok(_) => {}
+            Err(e) => return db_error("list_addresses: holder", e),
         }
     }
+    Json(json!({ "addresses": out })).into_response()
 }

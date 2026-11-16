@@ -1,13 +1,11 @@
 package handler
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -16,6 +14,65 @@ import (
 	dbpkg "github.com/f33d3r/feed-engine/internal/db"
 	"github.com/f33d3r/feed-engine/internal/model"
 )
+
+// shopPlans renders a creator's projected plans with the ledger's unit.
+func (h *Handler) shopPlans(ctx context.Context, creatorID string) ([]model.ShopPlan, error) {
+	raw, err := dbpkg.GetCreatorPlans(h.db, creatorID)
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) == 0 {
+		return []model.ShopPlan{}, nil
+	}
+	unit, err := h.aetUnit(ctx)
+	if err != nil {
+		return nil, err
+	}
+	plans := make([]model.ShopPlan, 0, len(raw))
+	for _, p := range raw {
+		plans = append(plans, model.ShopPlan{
+			ID:           p.ID,
+			Name:         p.Name,
+			Description:  p.Description,
+			PriceUnits:   p.PriceUnits,
+			PriceDisplay: formatAETUnits(p.PriceUnits, unit),
+			IsActive:     true,
+		})
+	}
+	return plans, nil
+}
+
+// subscriptionState is what the viewer's subscription controls render from.
+type subscriptionState struct {
+	CreatorID     string
+	CreatorHandle string
+	IsSubscribed  bool
+	// CancelledUntil is set when the subscription was cancelled and runs to the
+	// end of its paid period.
+	CancelledUntil string
+	// Unavailable means the state could not be read; the controls fail closed.
+	Unavailable bool
+}
+
+func (h *Handler) subscriptionStateFor(viewer, creator *model.User) subscriptionState {
+	st := subscriptionState{CreatorID: creator.ID, CreatorHandle: creator.Handle}
+	if viewer == nil || h.db == nil {
+		return st
+	}
+	sub, err := dbpkg.SubscriptionFor(h.db, viewer.ID, creator.ID)
+	if err != nil {
+		log.Printf("[subscriptions] state for %s → %s: %v", viewer.ID, creator.ID, err)
+		st.Unavailable = true
+		return st
+	}
+	if sub != nil {
+		st.IsSubscribed = true
+		if sub.CancelledAt != nil {
+			st.CancelledUntil = sub.ExpiresAt.Format("Jan 2")
+		}
+	}
+	return st
+}
 
 func (h *Handler) shopPage(w http.ResponseWriter, r *http.Request) {
 	user := h.userFromRequest(w, r)
@@ -30,64 +87,42 @@ func (h *Handler) shopPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	isOwner := user != nil && user.Handle == shopUser.Handle
+	isOwner := user != nil && user.ID == shopUser.ID
 
-	// Fetch Themis listings for this creator's shop
+	// Themis listings for this creator's shop; the viewer's identity decides
+	// which subscriber-only listings Themis includes.
 	var themisListings []PublicListing
-	if h.themisURL != "" && shopUser.PIALID != "" {
-		// Build the Themis request — include viewer PIAL for subscription visibility
-		tReq, terr := http.NewRequestWithContext(r.Context(), "GET",
-			h.themisURL+"/v1/shop/"+shopUser.PIALID, nil)
-		if terr == nil {
-			if user != nil && user.PIALID != "" {
-				tReq.Header.Set("X-Pial-Identity", user.PIALID)
+	if shopUser.PIALID != "" {
+		status, body, terr := h.themisGet(r.Context(), "/v1/shop/"+shopUser.PIALID, user)
+		if terr == nil && status == http.StatusOK {
+			var tResult struct {
+				Listings []PublicListing `json:"listings"`
 			}
-			tResp, terr2 := h.httpClient.Do(tReq)
-			if terr2 == nil && tResp.StatusCode == http.StatusOK {
-				var tResult struct {
-					Listings []PublicListing `json:"listings"`
-				}
-				if json.NewDecoder(tResp.Body).Decode(&tResult) == nil {
-					for _, l := range tResult.Listings {
-						if l.IsActive || isOwner {
-							themisListings = append(themisListings, l)
-						}
+			if json.Unmarshal(body, &tResult) == nil {
+				for _, l := range tResult.Listings {
+					if l.IsActive || isOwner {
+						themisListings = append(themisListings, l)
 					}
 				}
-				tResp.Body.Close()
 			}
+		} else if terr != nil && terr != errThemisUnconfigured {
+			log.Printf("[shop] listings for %s: status=%d err=%v", shopUser.ID, status, terr)
 		}
 	}
 
-	rawPlans, _ := dbpkg.GetCreatorPlans(h.db, shopUser.ID)
-	plans := make([]model.ShopPlan, 0, len(rawPlans))
-	for _, p := range rawPlans {
-		plans = append(plans, model.ShopPlan{
-			ID:           p.ID,
-			Name:         p.Name,
-			Description:  p.Description,
-			PriceAET:     p.PriceAet,
-			PriceDisplay: fmt.Sprintf("%.2f", float64(p.PriceAet)/100.0),
-			IsActive:     true,
-		})
+	plans, perr := h.shopPlans(r.Context(), shopUser.ID)
+	plansError := ""
+	if perr != nil {
+		log.Printf("[shop] plans for %s: %v", shopUser.ID, perr)
+		plansError = "Plans could not be loaded right now."
 	}
 
 	isEnabled := shopUser.IsCreator || len(plans) > 0
-	isSubscribed := user != nil && h.db != nil && dbpkg.IsSubscribed(h.db, user.ID, shopUser.ID)
+	sub := h.subscriptionStateFor(user, shopUser)
 
 	var earnings *model.ShopEarnings
-	if isOwner && h.db != nil {
-		subCount := dbpkg.GetSubscriberCount(h.db, shopUser.ID)
-		totalAet := 0
-		for _, p := range rawPlans {
-			totalAet += p.PriceAet * subCount
-		}
-		earnings = &model.ShopEarnings{
-			TotalDisplay: fmt.Sprintf("%.2f", float64(totalAet)/100.0),
-			TxCount:      subCount,
-			SubsDisplay:  fmt.Sprintf("%d active", subCount),
-			TipsDisplay:  "–",
-		}
+	if isOwner && shopUser.PIALID != "" {
+		earnings = h.shopEarnings(r.Context(), user)
 	}
 
 	h.render(w, r, "shop.html", h.withRail(map[string]interface{}{
@@ -96,8 +131,10 @@ func (h *Handler) shopPage(w http.ResponseWriter, r *http.Request) {
 		"IsOwner":        isOwner,
 		"IsEnabled":      isEnabled,
 		"Plans":          plans,
+		"PlansError":     plansError,
 		"Earnings":       earnings,
-		"IsSubscribed":   isSubscribed,
+		"IsSubscribed":   sub.IsSubscribed,
+		"Subscription":   sub,
 		"PPVItems":       []model.PPVItem{},
 		"ThemisListings": themisListings,
 		"Title":          "@" + shopUser.Handle + " · Shop · F33D3R",
@@ -105,6 +142,32 @@ func (h *Handler) shopPage(w http.ResponseWriter, r *http.Request) {
 		"ShowScores":     h.cfg.ShowScores,
 		"Themes":         ThemesWithActive(user.ThemeID),
 	}, user, "default"))
+}
+
+// shopEarnings is the owner's earnings as Themis, the commerce authority,
+// records them. nil when Themis cannot answer; the panel is then not drawn.
+func (h *Handler) shopEarnings(ctx context.Context, owner *model.User) *model.ShopEarnings {
+	status, body, err := h.themisGet(ctx, "/v1/creator/"+owner.PIALID+"/earnings", owner)
+	if err != nil || status != http.StatusOK {
+		log.Printf("[shop] earnings for %s: status=%d err=%v", owner.ID, status, err)
+		return nil
+	}
+	var e struct {
+		TotalDisplay      string `json:"total_display"`
+		TipsDisplay       string `json:"tips_display"`
+		TxCount           int    `json:"tx_count"`
+		ActiveSubscribers int    `json:"active_subscribers"`
+	}
+	if err := json.Unmarshal(body, &e); err != nil {
+		log.Printf("[shop] earnings decode for %s: %v", owner.ID, err)
+		return nil
+	}
+	return &model.ShopEarnings{
+		TotalDisplay: e.TotalDisplay,
+		TxCount:      e.TxCount,
+		SubsDisplay:  fmt.Sprintf("%d active", e.ActiveSubscribers),
+		TipsDisplay:  e.TipsDisplay,
+	}
 }
 
 func (h *Handler) enableCreatorAPI(w http.ResponseWriter, r *http.Request) {
@@ -137,9 +200,6 @@ func (h *Handler) enableCreatorAPI(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if hx {
-			// The creator dashboard the caller is on no longer applies: the
-			// Shell re-requests the Playground and the server draws what a
-			// non-creator sees there.
 			hxRefreshPlayground(w, r)
 		}
 		w.Write([]byte(`{"ok":true}`))
@@ -151,6 +211,23 @@ func (h *Handler) enableCreatorAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		w.WriteHeader(http.StatusForbidden)
 		w.Write([]byte(`{"error":"identity_verification_required","message":"Creator monetisation requires identity verification. Complete verification at /kyc."}`))
+		return
+	}
+	// Themis first: an account is a creator only once the commerce authority
+	// will pay it. If Themis refuses, nothing local changes.
+	if user.PIALID == "" {
+		w.WriteHeader(http.StatusForbidden)
+		w.Write([]byte(`{"error":"no_identity"}`))
+		return
+	}
+	status, body, err := h.themisCall(r.Context(), http.MethodPost, "/v1/creator/enable", user, nil)
+	if err != nil || status != http.StatusOK {
+		log.Printf("[creator/enable] themis: status=%d err=%v body=%s", status, err, body)
+		if hx {
+			w.Header().Set("HX-Trigger", `{"f33Toast":"Could not enable creator mode — try again."}`)
+		}
+		w.WriteHeader(http.StatusBadGateway)
+		w.Write([]byte(`{"error":"commerce_unavailable"}`))
 		return
 	}
 	if h.db != nil {
@@ -169,154 +246,198 @@ func (h *Handler) enableCreatorAPI(w http.ResponseWriter, r *http.Request) {
 		// nav gains its Create item: the Shell re-requests the Playground.
 		hxRefreshPlayground(w, r)
 	}
-	// Fire-and-forget: notify Themis commerce so creator_eligibility stays in sync
-	if h.cfg.ThemisURL != "" && user.PIALID != "" {
-		go func() {
-			body, _ := json.Marshal(map[string]string{"pial_id": user.PIALID})
-			req, _ := http.NewRequest(http.MethodPost, h.cfg.ThemisURL+"/v1/creator/enable", bytes.NewReader(body))
-			if req != nil {
-				req.Header.Set("Content-Type", "application/json")
-				// Themis now requires proof that the caller IS the identity it is
-				// acting for — a body-supplied PIAL is a claim, not an authority.
-				// This call is made server-side for the authenticated viewer, so
-				// it carries their session-derived PIAL exactly as the /themis
-				// proxy does.
-				req.Header.Set("X-Pial-Identity", user.PIALID)
-				req.Header.Set("X-Pial-Handle", user.Handle)
-				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-				defer cancel()
-				h.httpClient.Do(req.WithContext(ctx))
-			}
-		}()
-	}
 	w.Write([]byte(`{"ok":true}`))
 }
 
-func (h *Handler) getCreatorPlans(w http.ResponseWriter, r *http.Request) {
-	creatorHandle := r.URL.Query().Get("handle")
-	if creatorHandle == "" {
-		http.Error(w, "handle required", 400)
+// facetSubscribeModal — GET /facets/subscribe_modal?handle=<creator>
+// The plan picker for one creator, opened into #overlay-slot by btn_subscribe.
+func (h *Handler) facetSubscribeModal(w http.ResponseWriter, r *http.Request) {
+	viewer := h.userFromRequest(w, r)
+	if viewer == nil || viewer.PIALID == "" {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	creator, _ := dbpkg.GetUserByHandle(h.db, creatorHandle)
-	if creator == nil {
-		http.Error(w, "not found", 404)
+	handle := strings.TrimPrefix(strings.TrimSpace(r.URL.Query().Get("handle")), "@")
+	creator, err := dbpkg.GetUserByHandle(h.db, handle)
+	if err != nil || creator == nil || creator.ID == viewer.ID {
+		http.NotFound(w, r)
 		return
 	}
-	plans, err := dbpkg.GetCreatorPlans(h.db, creator.ID)
-	if err != nil {
-		http.Error(w, "error", 500)
-		return
+	plans, perr := h.shopPlans(r.Context(), creator.ID)
+	notice := ""
+	if perr != nil {
+		log.Printf("[subscribe] plans for %s: %v", creator.ID, perr)
+		notice = "Plans could not be loaded right now."
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(plans)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	h.renderPartial(w, "subscribe_modal", map[string]interface{}{
+		"CreatorID":     creator.ID,
+		"CreatorHandle": creator.Handle,
+		"Plans":         plans,
+		"Notice":        notice,
+	})
 }
 
+// subscribeToCreator — POST /api/subscribe {creator_id, plan_id}
+//
+//	triggering event  a plan's Subscribe control
+//	server handler    this: Themis charges the plan's own price, read from the
+//	                  plan server-side, to the session's identity
+//	Facet renderer    subscribe_result on refusal; on success the overlay is
+//	                  cleared and the Shell re-requests the Playground
+//	stream mutation   commerce.events projects the subscription; this answer
+//	                  waits for the projection so the redrawn page shows it
 func (h *Handler) subscribeToCreator(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "405", 405)
+		http.Error(w, "405", http.StatusMethodNotAllowed)
 		return
 	}
-	_ = r.ParseMultipartForm(32 << 20)
 	user := h.userFromRequest(w, r)
-	creatorID := r.FormValue("creator_id")
-	planID := r.FormValue("plan_id")
-	priceStr := r.FormValue("price_aet")
-	if creatorID == "" {
-		http.Error(w, "creator_id required", 400)
+	creatorID := strings.TrimSpace(r.FormValue("creator_id"))
+	planID := strings.TrimSpace(r.FormValue("plan_id"))
+	if _, err := uuid.Parse(planID); err != nil {
+		h.subscribeRefused(w, r, "Choose a plan.", http.StatusBadRequest)
 		return
 	}
-	if user.ID == creatorID {
-		http.Error(w, "cannot subscribe to yourself", 400)
+	if creatorID == "" || user.ID == creatorID {
+		h.subscribeRefused(w, r, "You cannot subscribe to yourself.", http.StatusBadRequest)
+		return
+	}
+	if user.PIALID == "" {
+		h.subscribeRefused(w, r, "Your account has no identity to subscribe with.", http.StatusForbidden)
 		return
 	}
 
 	// The creator on the receiving end must be identity-verified before a
-	// subscription can credit them. The gate belongs here and not on the
-	// subscriber: the subscriber is paying, and the person the platform has to
-	// be able to name is the one being paid. Resolved from PIAL, the system of
-	// record, so it cannot be stale on a projection column.
-	if h.db != nil {
-		creator, _ := dbpkg.GetUserByID(h.db, creatorID)
-		if creator == nil {
-			http.Error(w, `{"error":"not_found"}`, http.StatusNotFound)
-			return
-		}
-		ps := dbpkg.LoadPIALState(h.db, creator.PIALID)
-		if ps == nil || !(model.KYCTierIsIdentity(ps.KYCTier) || ps.Role == model.RoleAdmin || ps.Role == model.RoleFounder) {
-			http.Error(w, `{"error":"creator_not_verified","message":"This creator has not completed identity verification and cannot accept subscriptions yet."}`, http.StatusForbidden)
-			return
-		}
+	// subscription can credit them. Resolved from PIAL, the system of record.
+	creator, err := dbpkg.GetUserByID(h.db, creatorID)
+	if err != nil || creator == nil {
+		h.subscribeRefused(w, r, "That creator was not found.", http.StatusNotFound)
+		return
 	}
-
-	priceAet := 100 // default 1 AET
-	if priceStr != "" {
-		if v, err := strconv.Atoi(priceStr); err == nil {
-			priceAet = v
-		}
-	}
-
-	// Deduct from wallet via ain-soph
-	if h.cfg.AinSophURL != "" && user.PIALID != "" {
-		creator, _ := dbpkg.GetUserByID(h.db, creatorID)
-		var creatorPIAL string
-		if creator != nil {
-			creatorPIAL = creator.PIALID
-		}
-		if creatorPIAL != "" {
-			body := fmt.Sprintf(`{"from_pial_id":%q,"to_pial_id":%q,"amount_aet":%s,"idempotency_key":%q}`,
-				user.PIALID, creatorPIAL,
-				fmt.Sprintf("%.2f", float64(priceAet)/100.0),
-				fmt.Sprintf("sub_%s_%s", user.ID, creatorID),
-			)
-			ctx2, cancel2 := context.WithTimeout(r.Context(), 5*time.Second)
-			defer cancel2()
-			req2, _ := http.NewRequestWithContext(ctx2, http.MethodPost, h.cfg.AinSophURL+"/v1/tip",
-				strings.NewReader(body))
-			if req2 != nil {
-				req2.Header.Set("Content-Type", "application/json")
-				// The subscriber is the payer. Ain Soph takes the payer from this
-				// header, never from from_pial_id in the body.
-				req2.Header.Set("X-Pial-Identity", user.PIALID)
-				resp2, err2 := http.DefaultClient.Do(req2)
-				if err2 != nil || resp2.StatusCode == 422 {
-					http.Error(w, `{"error":"insufficient_balance","message":"Not enough AET to subscribe."}`, 422)
-					return
-				}
-				if resp2 != nil {
-					resp2.Body.Close()
-				}
-			}
-		}
-	}
-
-	if err := dbpkg.CreateSubscription(h.db, user.ID, creatorID, planID, priceAet, 30); err != nil {
-		log.Printf("subscribe: %v", err)
-		http.Error(w, "subscription failed", 500)
+	ps := dbpkg.LoadPIALState(h.db, creator.PIALID)
+	if ps == nil || !(model.KYCTierIsIdentity(ps.KYCTier) || ps.Role == model.RoleAdmin || ps.Role == model.RoleFounder) {
+		h.subscribeRefused(w, r, "This creator has not completed identity verification and cannot accept subscriptions yet.", http.StatusForbidden)
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(201)
-	fmt.Fprintf(w, `{"status":"subscribed","expires_in_days":30}`)
+	status, body, err := h.themisCall(r.Context(), http.MethodPost, "/v1/subscribe", user, map[string]interface{}{
+		"plan_id":            planID,
+		"subscriber_account": user.ID,
+	})
+	if err != nil {
+		log.Printf("[subscribe] themis: %v", err)
+		h.subscribeRefused(w, r, "Subscriptions are unavailable right now. Nothing was charged.", http.StatusBadGateway)
+		return
+	}
+	if status != http.StatusOK {
+		// Every non-success answer means no subscription: a decline, a
+		// refusal, or a payment still settling (which the reconciler finishes
+		// and the projection then shows).
+		h.subscribeRefused(w, r, themisRefusal(body, "The subscription did not go through."), status)
+		return
+	}
+	var sub struct {
+		SubscriptionID string `json:"subscription_id"`
+		Status         string `json:"status"`
+	}
+	if err := json.Unmarshal(body, &sub); err != nil || sub.SubscriptionID == "" {
+		log.Printf("[subscribe] themis answer unreadable: %v", err)
+		h.subscribeRefused(w, r, "The subscription went through but could not be shown. Reload the page.", http.StatusBadGateway)
+		return
+	}
+	h.awaitProjection(r.Context(), sub.SubscriptionID, sub.Status == "active", false)
+	h.subscriptionChanged(w, r)
 }
 
+// unsubscribeFromCreator — POST /api/unsubscribe {creator_id}
+// The subscription runs to the end of the period it paid for and is not
+// renewed.
 func (h *Handler) unsubscribeFromCreator(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "405", 405)
+		http.Error(w, "405", http.StatusMethodNotAllowed)
 		return
 	}
-	_ = r.ParseMultipartForm(32 << 20)
 	user := h.userFromRequest(w, r)
-	creatorID := r.FormValue("creator_id")
-	if creatorID == "" {
-		http.Error(w, "creator_id required", 400)
+	creator, err := dbpkg.GetUserByID(h.db, strings.TrimSpace(r.FormValue("creator_id")))
+	if err != nil || creator == nil || creator.PIALID == "" {
+		h.subscribeRefused(w, r, "That creator was not found.", http.StatusNotFound)
 		return
 	}
-	if err := dbpkg.CancelSubscription(h.db, user.ID, creatorID); err != nil {
-		http.Error(w, "unsubscribe failed", 500)
+	status, body, err := h.themisCall(r.Context(), http.MethodDelete, "/v1/subscribe", user, map[string]interface{}{
+		"creator_pial_id": creator.PIALID,
+	})
+	if err != nil {
+		log.Printf("[unsubscribe] themis: %v", err)
+		h.subscribeRefused(w, r, "Subscriptions are unavailable right now.", http.StatusBadGateway)
 		return
 	}
-	w.WriteHeader(200)
-	fmt.Fprint(w, `{"status":"cancelled"}`)
+	if status != http.StatusOK {
+		h.subscribeRefused(w, r, themisRefusal(body, "The subscription could not be cancelled."), status)
+		return
+	}
+	var sub struct {
+		SubscriptionID string `json:"subscription_id"`
+	}
+	if json.Unmarshal(body, &sub) == nil && sub.SubscriptionID != "" {
+		h.awaitProjection(r.Context(), sub.SubscriptionID, true, true)
+	}
+	h.subscriptionChanged(w, r)
+}
+
+// awaitProjection waits, briefly, until this brain's projection shows the
+// subscription as Themis just answered, so the page redrawn next reads its own
+// write. The projection follows commerce.events within moments; if it has not
+// caught up in time the page is redrawn anyway and the next render shows it.
+func (h *Handler) awaitProjection(ctx context.Context, subscriptionID string, active, cancelled bool) {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	tick := time.NewTicker(100 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		ok, err := dbpkg.SubscriptionProjected(ctx, h.db, subscriptionID, active, cancelled)
+		if err == nil && ok {
+			return
+		}
+		if err != nil {
+			log.Printf("[subscribe] projection check for %s: %v", subscriptionID, err)
+		}
+		select {
+		case <-ctx.Done():
+			log.Printf("[subscribe] projection of %s did not catch up within 3s", subscriptionID)
+			return
+		case <-tick.C:
+		}
+	}
+}
+
+// subscriptionChanged answers a subscription change: the overlay is cleared and
+// the Shell re-requests the Playground, whose gates and controls the server
+// redraws from the projection.
+func (h *Handler) subscriptionChanged(w http.ResponseWriter, r *http.Request) {
+	if facetRequest(r) {
+		hxRefreshPlayground(w, r)
+		w.Header().Set("HX-Retarget", "#overlay-slot")
+		w.Header().Set("HX-Reswap", "innerHTML")
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(`{"ok":true}`))
+}
+
+// subscribeRefused renders the subscribe_result Fragment with Themis's (or
+// this server's) reason.
+func (h *Handler) subscribeRefused(w http.ResponseWriter, r *http.Request, msg string, code int) {
+	if facetRequest(r) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		h.renderPartial(w, "subscribe_result", map[string]interface{}{"Message": msg})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(map[string]string{"error": msg})
 }

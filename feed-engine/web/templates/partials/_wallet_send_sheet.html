@@ -30,7 +30,8 @@ FACET wallet_send_sheet
     </div>
 
     <form class="wss-body" hx-post="/events" hx-vals='{"event_type":"tip"}'
-          hx-target="#wss-result" hx-swap="innerHTML">
+          hx-target="#wss-result" hx-swap="innerHTML" hx-sync="this:drop" hx-disabled-elt="find button">
+      <input type="hidden" name="tip_key" value="{{.TipKey}}">
       <div class="wss-field">
         <label class="wallet-field-label" for="wss-recipient">Recipient</label>
         <div class="wss-input-wrap" style="position:relative">
@@ -49,7 +50,7 @@ FACET wallet_send_sheet
                  step="0.01" min="0.01" placeholder="0.00">
           <span class="wss-unit">AET</span>
         </div>
-        <p class="wss-fee-note">Network fee: 0.001 AET · Transfers are final</p>
+        <p class="wss-fee-note">A tip fee is taken by the ledger · Tips are final</p>
       </div>
 
       <div class="wss-result" id="wss-result"></div>

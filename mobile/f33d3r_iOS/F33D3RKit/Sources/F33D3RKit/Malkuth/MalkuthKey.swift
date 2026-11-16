@@ -42,14 +42,15 @@ import Security
 /// knowing. What must not change with it is the wire format, which is why that
 /// lives in ``WorkEnvelope`` and not here.
 ///
-/// ## One key per PIAL, not per device
+/// ## One key per identity at the authority, one per account on the device
 ///
-/// `fetchSigningPubkey` returns a single `public_key_b64` for a PIAL, so the key
-/// authority stores one signing key per identity. A second device registering
-/// its own key replaces the first, and works signed by the first stop verifying.
-/// This is a property of the server's key model, not of this client; the client
-/// mirrors `malkuth.js` and re-registers on every launch so that the key in the
-/// authority is the key of the device actually posting.
+/// The key authority stores one signing key per identity, and verifies every
+/// work against the key registered for the session's identity. A second device
+/// registering its own key replaces the first. This is a property of the
+/// server's key model, not of this client; the client mirrors `malkuth.js`,
+/// keeps one key per signed-in account (``KeychainMalkuthKeyStore``), and
+/// re-registers on every sign-in so that the key in the authority is the key
+/// of the device actually posting.
 public struct MalkuthKey: Sendable {
 
     /// The private key. Never leaves this struct; there is no accessor.
@@ -60,8 +61,8 @@ public struct MalkuthKey: Sendable {
     }
 
     /// Creates a fresh key. Nothing about it is derived from the user, the
-    /// device, or the PIAL — it is random, and its binding to an identity is the
-    /// registration, not the key material.
+    /// device, or the account — it is random, and its binding to an identity is
+    /// the registration, not the key material.
     public static func generate() -> MalkuthKey {
         MalkuthKey(privateKey: P256.Signing.PrivateKey())
     }
@@ -152,31 +153,41 @@ public extension MalkuthKeyStore {
     }
 }
 
-/// Keychain-backed key storage, following `KeychainStore`'s attributes exactly.
+/// Keychain-backed key storage for one account, following `KeychainStore`'s
+/// attributes exactly.
 ///
 /// `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` for the same two reasons
 /// the session token uses it: the app may need to act before the user has
 /// unlocked the device this boot, and `ThisDeviceOnly` keeps the key out of
 /// iCloud Keychain — a signing key restored onto a second device would be a
-/// second device able to sign as this identity, which is exactly what the
-/// identity spine exists to prevent.
+/// second device able to sign as this identity.
 ///
-/// The item is stored under its own account name, so it is independent of the
-/// session token: signing out clears the token and leaves the key, which is
-/// correct — the key is the device's, not the session's.
+/// The item is named by the account it signs for (`malkuth-signing-key.<id>`),
+/// as `malkuth.js` names its IndexedDB key `signing_account_<id>`, and is
+/// independent of the session token: signing out clears the token and leaves
+/// the key.
+///
+/// ## The device-wide key of earlier builds
+///
+/// Earlier builds kept one device-wide item, `malkuth-signing-key`. The first
+/// account to load its key on this device adopts that item: it is written
+/// under the account's name and the old item is deleted, so it is adopted
+/// exactly once. Adoption only has to keep the device working — the key is
+/// re-registered with the authority on every sign-in, so whichever key an
+/// account holds is the one its works verify against.
 public struct KeychainMalkuthKeyStore: MalkuthKeyStore {
+    /// The name of the device-wide item earlier builds wrote.
+    public static let legacyAccount = "malkuth-signing-key"
+
     private let service: String
     private let account: String
 
-    public init(
-        service: String = "com.f33d3r.ios",
-        account: String = "malkuth-signing-key"
-    ) {
+    public init(accountID: String, service: String = "com.f33d3r.ios") {
         self.service = service
-        self.account = account
+        self.account = Self.legacyAccount + "." + accountID
     }
 
-    private var baseQuery: [String: Any] {
+    private func query(for account: String) -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -184,35 +195,52 @@ public struct KeychainMalkuthKeyStore: MalkuthKeyStore {
         ]
     }
 
-    public func load() throws -> MalkuthKey? {
-        var query = baseQuery
-        query[kSecReturnData as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
+    private func read(_ account: String) throws -> Data? {
+        var q = query(for: account)
+        q[kSecReturnData as String] = true
+        q[kSecMatchLimit as String] = kSecMatchLimitOne
 
         var item: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        let status = SecItemCopyMatching(q as CFDictionary, &item)
         if status == errSecItemNotFound { return nil }
         guard status == errSecSuccess else { throw MalkuthError.keychain(status) }
         guard let data = item as? Data else { throw MalkuthError.keyMaterialCorrupt }
-        return try MalkuthKey(rawPrivateKey: data)
+        return data
+    }
+
+    public func load() throws -> MalkuthKey? {
+        if let data = try read(account) {
+            return try MalkuthKey(rawPrivateKey: data)
+        }
+        guard let legacy = try read(Self.legacyAccount) else { return nil }
+        let key = try MalkuthKey(rawPrivateKey: legacy)
+        try save(key)
+        let status = SecItemDelete(query(for: Self.legacyAccount) as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw MalkuthError.keychain(status)
+        }
+        return key
     }
 
     public func save(_ key: MalkuthKey) throws {
         // Delete-then-add, as KeychainStore does: one path for "first key" and
         // "key replaced", and the accessibility attribute is reapplied rather
         // than inherited from whatever wrote the previous item.
-        SecItemDelete(baseQuery as CFDictionary)
+        let removed = SecItemDelete(query(for: account) as CFDictionary)
+        guard removed == errSecSuccess || removed == errSecItemNotFound else {
+            throw MalkuthError.keychain(removed)
+        }
 
-        var query = baseQuery
-        query[kSecValueData as String] = key.rawPrivateKey
-        query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        var q = query(for: account)
+        q[kSecValueData as String] = key.rawPrivateKey
+        q[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
 
-        let status = SecItemAdd(query as CFDictionary, nil)
+        let status = SecItemAdd(q as CFDictionary, nil)
         guard status == errSecSuccess else { throw MalkuthError.keychain(status) }
     }
 
     public func delete() throws {
-        let status = SecItemDelete(baseQuery as CFDictionary)
+        let status = SecItemDelete(query(for: account) as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw MalkuthError.keychain(status)
         }

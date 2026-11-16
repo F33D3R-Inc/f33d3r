@@ -27,12 +27,13 @@ config             = "0.14"
 dashmap            = "5"
 chrono             = { version = "0.4", features = ["serde"] }
 anyhow             = "1"
-async-trait         = "0.1"
-reqwest            = { version = "0.12", features = ["json"] }
-thiserror          = "1"
 rand               = "0.8"
-sqlx               = { version = "0.7", features = ["runtime-tokio-rustls", "postgres", "json", "chrono"] }
-tower              = { version = "0.5", features = ["util"] }
+sqlx               = { version = "0.7", features = ["runtime-tokio-rustls", "postgres", "json", "chrono", "uuid"] }
+# Sitra Achra: ranking.events intake. Same crate and build as abraxas-shield, herald, frequencies.
+rdkafka            = { version = "0.39", features = ["cmake-build"] }
+# Migration checksums (src/migrate.rs), as in caeor.
+sha2               = "0.10"
+hex                = "0.4"
 tower-http         = { version = "0.6", features = ["trace", "cors"] }
 
 [dev-dependencies]

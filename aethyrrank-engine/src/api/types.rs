@@ -34,6 +34,11 @@ pub struct UserState {
     /// Absent for single-account users.
     #[serde(default)]
     pub nexus_shard_id: Option<String>,
+    /// The viewer's PIAL. Server-to-server only. A payment signal from Ain Soph
+    /// names the payer by PIAL, so this is how AethyrRank finds the features of
+    /// the payer's most recently ranked work by that creator.
+    #[serde(default)]
+    pub viewer_pial: Option<String>,
 }
 
 fn default_realm() -> u8 {
@@ -93,6 +98,11 @@ pub struct ContentItem {
     /// In-network content receives a score boost to prioritise the social graph.
     #[serde(default)]
     pub is_in_network: bool,
+
+    /// The creator's PIAL. Server-to-server only. Payment signals name the
+    /// creator who was paid by PIAL, and this is how they are matched.
+    #[serde(default)]
+    pub creator_pial: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -135,6 +145,9 @@ pub struct RankedItem {
     pub score_breakdown: ScoreBreakdown,
     pub explanation: String,
     pub exploration_slot: bool,
+    /// Always false. feed-engine's barrier is the one authority over what a
+    /// viewer may be shown; a request that carries a refused item is rejected
+    /// whole (see safety::barrier). Kept on the wire because feed-engine reads it.
     pub safety_blocked: bool,
 }
 
@@ -157,35 +170,12 @@ pub struct ScoreBreakdown {
     pub velocity_boost: f64,
     // Stage 5: revenue layer
     pub revenue_adj: f64,
+    // Stage 5c: the viewer's learned LinUCB preference
+    pub learned_adj: f64,
     // Final
     pub final_score: f64,
 }
 
-// ── /feedback request ─────────────────────────────────────────────────────────
-
-#[derive(Debug, Deserialize)]
-pub struct FeedbackRequest {
-    pub user_id: String,
-    /// NEXUS blinded shard. When present, model updates key on this shard rather
-    /// than user_id so multi-persona users share one behavioral model.
-    #[serde(default)]
-    pub nexus_shard_id: Option<String>,
-    pub session_id: String,
-    pub surface: String,
-    pub events: Vec<FeedbackEvent>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct FeedbackEvent {
-    pub content_id: String,
-    pub event_type: EventType,
-    pub position_at_display: usize,
-    pub timestamp: DateTime<Utc>,
-    pub dwell_ms: Option<u64>,
-    pub exploration_slot: bool,
-}
-
 // EventType is defined once in contracts::event_taxonomy and re-exported here.
-// All brain regions import EventType from this path.
 // DO NOT redefine EventType anywhere else — the compiler will catch it.
 pub use crate::contracts::event_taxonomy::EventType;

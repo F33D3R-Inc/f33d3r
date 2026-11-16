@@ -379,7 +379,7 @@ func TestAccountSurface(t *testing.T) {
 	h.do("POST", "/api/pial/signing-key/register", devToken, map[string]string{"public_key_b64": dev.spkiB64()}, "")
 	var me map[string]any
 	json.Unmarshal(body, &me)
-	p := workCanonicalPayload{AuthorPIAL: me["pial_id"].(string), Body: "typo hear", CommentGating: "everyone", Kind: "post", MediaURLs: []string{}, Tags: []string{}, TimestampMS: time.Now().UnixMilli()}
+	p := workCanonicalPayload{AuthorAccount: me["account_id"].(string), Body: "typo hear", CommentGating: "everyone", Kind: "post", MediaURLs: []string{}, Tags: []string{}, TimestampMS: time.Now().UnixMilli()}
 	_, body = h.do("POST", "/events", devToken, envelope(t, dev, p, nil), "application/json")
 	var acc workAccepted
 	json.Unmarshal(body, &acc)
@@ -469,7 +469,7 @@ func TestAccountSurface(t *testing.T) {
 	_, body = h.do("GET", "/api/v1/me", tbToken, nil, "")
 	var tbMe map[string]any
 	json.Unmarshal(body, &tbMe)
-	tp := workCanonicalPayload{AuthorPIAL: tbMe["pial_id"].(string), Body: "fresh", CommentGating: "everyone", Kind: "post", MediaURLs: []string{}, Tags: []string{}, TimestampMS: time.Now().UnixMilli()}
+	tp := workCanonicalPayload{AuthorAccount: tbMe["account_id"].(string), Body: "fresh", CommentGating: "everyone", Kind: "post", MediaURLs: []string{}, Tags: []string{}, TimestampMS: time.Now().UnixMilli()}
 	h.do("POST", "/events", tbToken, envelope(t, tb, tp, nil), "application/json")
 	if np := next("new_post"); !strings.Contains(np, `"author_handle":"tehanibentley"`) {
 		t.Errorf("new_post = %s", np)

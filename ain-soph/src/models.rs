@@ -5,14 +5,21 @@ use uuid::Uuid;
 // ── AET token constants ───────────────────────────────────────────────────────
 pub const TOKEN_NAME: &str = "ETHRA";
 pub const TOKEN_TICKER: &str = "AET";
-/// 1 AET = 100 micro-AET (storage unit). Display: balance / 100.
-pub const AET_DECIMALS: i64 = 100;
+/// THE AET unit. Every amount that crosses a service boundary is an integer
+/// number of these units, named `*_units` on the wire, and nothing else in the
+/// estate hard-codes the ratio: Themis and feed-engine read it from
+/// `GET /v1/unit`. One AET is this many units.
+pub const UNITS_PER_AET: i64 = 100;
+
+/// The native clients carry micro-AET (a millionth of an AET). That is their
+/// presentation unit, derived here from [`UNITS_PER_AET`] so the ratio has one
+/// owner.
+pub const UAET_PER_UNIT: i64 = 1_000_000 / UNITS_PER_AET;
 
 // ── Fee schedule (basis points: 1 bps = 0.01%) ────────────────────────────────
 pub const FEE_DEPOSIT_BPS: i64 = 250; // 2.50%
 pub const FEE_TRANSFER_BPS: i64 = 300; // 3.00%
 pub const FEE_TIP_BPS: i64 = 100; // 1.00% (lower fee for tips, encourages tipping)
-pub const FEE_WITHDRAWAL_BPS: i64 = 200; // 2.00%
 
 /// Compute fee in storage units (floor).
 pub fn compute_fee(amount: i64, bps: i64) -> i64 {
@@ -21,9 +28,10 @@ pub fn compute_fee(amount: i64, bps: i64) -> i64 {
 
 /// Format a storage amount as AET string (e.g. "12.50 AET").
 pub fn format_aet(units: i64) -> String {
-    let whole = units / AET_DECIMALS;
-    let frac = units.abs() % AET_DECIMALS;
-    format!("{}.{:02} AET", whole, frac)
+    let sign = if units < 0 { "-" } else { "" };
+    let whole = units.abs() / UNITS_PER_AET;
+    let frac = units.abs() % UNITS_PER_AET;
+    format!("{sign}{whole}.{frac:02} AET")
 }
 
 // ── Request types ─────────────────────────────────────────────────────────────
@@ -40,7 +48,8 @@ pub struct DepositRequest {
     /// Advisory only — see the note above. Required from a service caller.
     #[serde(default)]
     pub user_id: Option<String>,
-    pub amount_cents: i64,
+    /// AET units (see [`UNITS_PER_AET`]).
+    pub amount_units: i64,
     pub idempotency_key: String,
 }
 
@@ -50,7 +59,8 @@ pub struct TransferRequest {
     #[serde(default)]
     pub from_user_id: Option<String>,
     pub to_user_id: String,
-    pub amount_cents: i64,
+    /// AET units (see [`UNITS_PER_AET`]).
+    pub amount_units: i64,
     pub idempotency_key: String,
     /// Optional metadata — "tip" or "subscription" signals AethyrRank feedback.
     #[serde(default)]
@@ -63,33 +73,10 @@ pub struct TipRequest {
     #[serde(default)]
     pub from_pial_id: Option<String>,
     pub to_pial_id: String,
-    /// Amount in AET (whole units). Internally converted to storage units.
-    pub amount_aet: f64,
-    /// Optional message shown alongside the tip notification.
-    #[serde(default)]
-    pub message: String,
-    /// Auto-generated if omitted.
-    #[serde(default)]
-    pub idempotency_key: String,
-    /// Set by a caller that wants the ledger to announce this tip to the recipient.
-    #[serde(default)]
-    pub from_handle: String,
-    #[serde(default)]
-    pub from_account: Option<String>,
-    #[serde(default)]
-    pub to_account: Option<String>,
-    #[serde(default)]
-    pub target_id: String,
-    #[serde(default)]
-    pub target_type: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct WithdrawRequest {
-    /// The account debited. Advisory only — see the note above.
-    #[serde(default)]
-    pub user_id: Option<String>,
-    pub amount_cents: i64,
+    /// Amount in AET units (see [`UNITS_PER_AET`]).
+    pub amount_units: i64,
+    /// Required: the caller's own key for this payment, so a retry is the same
+    /// payment and never a second one.
     pub idempotency_key: String,
 }
 
@@ -125,17 +112,15 @@ pub struct VoteRequest {
     pub option: String,
 }
 
-/// Checkpoint payload sent by Aethyr Ledger after sealing a block.
+/// Moves the whole balance of an account keyed on something that is not an
+/// identity (a "shadow" account, keyed on another brain's row id) to the
+/// identity that owns it. Service-only and fee-free: the shadow was this
+/// platform's mistake, so its owner is not charged to undo it.
 #[derive(Debug, Deserialize)]
-pub struct LedgerCheckpointRequest {
-    /// The ledger's block_number (incrementing integer).
-    pub block_id: i64,
-    /// SHA-256 Merkle root of all event IDs in this block (lowercase hex, 64 chars).
-    pub events_root: String,
-    /// Number of ledger events in this block.
-    pub tx_count: i64,
-    /// When the ledger sealed this block (ISO-8601 / RFC-3339).
-    pub sealed_at: DateTime<Utc>,
+pub struct ReattributeRequest {
+    pub shadow_account: String,
+    pub owner_pial: String,
+    pub idempotency_key: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -235,6 +220,13 @@ pub struct VoteResponse {
 }
 
 #[derive(Debug, Serialize)]
+pub struct UnitResponse {
+    pub ticker: &'static str,
+    pub units_per_aet: i64,
+    pub uaet_per_unit: i64,
+}
+
+#[derive(Debug, Serialize)]
 pub struct SupplyResponse {
     pub token: &'static str,
     pub ticker: &'static str,
@@ -249,20 +241,12 @@ pub struct SupplyResponse {
 // ── DB row types ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, sqlx::FromRow)]
-pub struct AccountRow {
-    pub user_id: String,
-    pub balance: i64,
-    pub updated_at: DateTime<Utc>,
-}
-
-#[derive(Debug, sqlx::FromRow)]
 pub struct TxRow {
     pub id: Uuid,
     pub tx_type: String,
     pub from_user_id: Option<String>,
     pub to_user_id: Option<String>,
     pub amount: i64,
-    pub fee: i64,
     pub net_amount: i64,
     pub status: String,
     pub created_at: DateTime<Utc>,
@@ -297,14 +281,4 @@ pub struct VoteResultRow {
     pub option: String,
     pub vote_count: i64,
     pub total_weight: i64,
-}
-
-#[derive(Debug, sqlx::FromRow)]
-pub struct VoteRow {
-    pub id: Uuid,
-    pub proposal_id: Uuid,
-    pub voter_id: String,
-    pub option: String,
-    pub weight: i64,
-    pub created_at: DateTime<Utc>,
 }

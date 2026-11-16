@@ -873,8 +873,10 @@ pub async fn inbox_finish_push(pool: &PgPool, event_id: &str, ok: bool, result: 
 
 pub async fn inbox_missing(pool: &PgPool, event_ids: &[String]) -> Result<Vec<String>> {
     let ids = sqlx::query_scalar(
-        "SELECT id FROM unnest($1::text[]) AS id
-          WHERE NOT EXISTS (SELECT 1 FROM inbox_notifications n WHERE n.event_id = id)",
+        // The asked-for ids get their own column name: a bare `id` inside the
+        // subquery would resolve to inbox_notifications.id (a UUID) instead.
+        "SELECT asked.event_id FROM unnest($1::text[]) AS asked(event_id)
+          WHERE NOT EXISTS (SELECT 1 FROM inbox_notifications n WHERE n.event_id = asked.event_id)",
     )
     .bind(event_ids)
     .fetch_all(pool)

@@ -13,29 +13,39 @@ public enum MalkuthError: Error, Equatable, Sendable {
 
     // MARK: Identity
 
-    /// The signed payload carries `author_pial` and this device does not know
-    /// its own PIAL yet.
-    ///
-    /// Signing with an empty string would produce a valid signature over a
-    /// payload naming nobody: `verifyCID` would pass, `verifyMalkuthSig` would
-    /// fetch the key for the *session's* PIAL and pass too, and the Work would
-    /// be stored with an author field that disagrees with its own signature.
-    /// Refusing is the only correct answer.
-    case pialUnknown
+    /// The signed payload carries `author_account` and this device does not
+    /// know which account it is signed in as yet (`/api/v1/me` has not
+    /// answered `account_id`). The server refuses a payload whose
+    /// `author_account` is not the session's account, so signing without it
+    /// cannot succeed.
+    case accountUnknown
+
+    /// The server still found `timestamp_ms` outside its window (signed more
+    /// than an hour ago, or more than five minutes ahead) after the work was
+    /// signed again at send time: this device's clock is wrong.
+    case signedOutsideWindow
 
     // MARK: Payload
 
     /// `kind == .reply` with no `parent_cid`. Server: `400 reply requires parent_cid`.
     case replyMissingParentCID
-    /// `is_repost` with no `repost_source_id`. Server: `400 repost requires repost_source_id`.
-    case repostMissingSourceID
+    /// Text that is not already normalised (``WorkText/normalize(_:)``). The
+    /// server cannot rewrite signed text, so it refuses it.
+    case textNotNormalized(field: String)
+    /// The body is over the server's limit by `over` weighted units.
+    case textTooLong(over: Int)
+    /// A poll the server would refuse, with the reason to show.
+    case pollInvalid(String)
+    /// A client tag that is empty, not normalised, too long or has a space.
+    case invalidTag(String)
+    /// More client tags than the server takes.
+    case tooManyTags
     /// A CID that is not `sha256:` followed by 64 lower-case hex digits. The
     /// server checks this prefix on the envelope's own CID and nothing else, so
     /// a malformed `parent_cid` becomes a reply whose parent lookup silently
     /// finds nothing and which is stored as a top-level Work.
     case malformedCID(field: String, value: String)
-    /// A `repost_source_id` that is not a UUID. The insert casts it with
-    /// `$15::uuid`, so a non-UUID is a Postgres error surfaced as `500`.
+    /// An `author_account` that is not an account id (a UUID).
     case malformedUUID(field: String, value: String)
     /// A timestamp that `time.Parse(time.RFC3339, …)` would reject.
     ///
@@ -48,8 +58,7 @@ public enum MalkuthError: Error, Equatable, Sendable {
     /// so they are re-marshalled from `float64`: past 2^53 the value the server
     /// hashes is not the value the client hashed.
     case durationOutOfRange(field: String, value: Int)
-    /// A NUL byte in text bound for a Postgres `TEXT` column. Postgres rejects
-    /// these outright, and the insert failure surfaces as an opaque `500`.
+    /// A NUL byte in a media URL bound for a Postgres `TEXT` column.
     case nulByteInText(field: String)
     /// An empty string in `media_urls`, which would be stored as an empty array
     /// element and render as a broken attachment.
@@ -67,6 +76,11 @@ public enum MalkuthError: Error, Equatable, Sendable {
     case keyMaterialCorrupt
 
     // MARK: Server
+
+    /// `POST /events` refused a signed work. `state` is the server's
+    /// `X-Work-Create-State`; `message` is its plain-text reason, written for
+    /// the poster to read.
+    case workRefused(state: WorkCreateState, message: String)
 
     /// `POST /events` or the key registration answered non-2xx. `reason` is the
     /// server's own line of text, kept verbatim because those strings are the
@@ -92,12 +106,22 @@ public enum MalkuthError: Error, Equatable, Sendable {
 extension MalkuthError: CustomStringConvertible {
     public var description: String {
         switch self {
-        case .pialUnknown:
-            return "This device does not know its own PIAL yet, and author_pial is a signed field."
+        case .accountUnknown:
+            return "This device does not know which account it is signed in as yet. Sign in again."
+        case .signedOutsideWindow:
+            return "This device's clock is wrong, so the post cannot be signed. Set the date and time automatically and try again."
         case .replyMissingParentCID:
             return "A reply must carry the CID of the work it replies to."
-        case .repostMissingSourceID:
-            return "A repost must carry the id of the work it reposts."
+        case .textNotNormalized(let field):
+            return "\(field) is not normalised text."
+        case .textTooLong(let over):
+            return "Your post is \(over) over the limit."
+        case .pollInvalid(let reason):
+            return reason
+        case .invalidTag(let tag):
+            return "The tag \"\(tag)\" is not allowed: tags are 1 to 64 characters with no spaces."
+        case .tooManyTags:
+            return "A post carries at most \(WorkPayload.maxClientTags) tags."
         case .malformedCID(let field, let value):
             return "\(field) is not a content id: \(value)"
         case .malformedUUID(let field, let value):
@@ -130,10 +154,43 @@ extension MalkuthError: CustomStringConvertible {
             return "Keychain error \(status)."
         case .keyMaterialCorrupt:
             return "The stored signing key is not usable."
+        case .workRefused(_, let message):
+            return message
         case .rejected(let status, let reason):
             return "Server rejected the work (\(status)): \(reason)"
         case .keyAuthorityUnavailable:
             return "The key authority is unreachable, so this device's signing key is not registered."
+        }
+    }
+}
+
+/// The closed vocabulary of create outcomes, as `X-Work-Create-State` names
+/// them (`WorkCreateState` in `feed-engine/internal/handler/work_create.go`).
+public enum WorkCreateState: String, Sendable, Equatable {
+    case ok
+    case duplicate
+    case textTooLong = "text_too_long"
+    case textBlank = "text_blank"
+    case invalidField = "invalid_field"
+    case citedNotFound = "cited_not_found"
+    case repliesRestricted = "replies_restricted"
+    case postingRestricted = "posting_restricted"
+    case rateLimited = "rate_limited"
+    case serverError = "server_error"
+
+    /// The state of an answer: the header when the server sent one, else the
+    /// state its status stands for (each state has exactly one status).
+    public static func of(header: String?, status: Int) -> WorkCreateState {
+        if let header, let state = WorkCreateState(rawValue: header) { return state }
+        switch status {
+        case 200, 201: return .ok
+        case 409: return .duplicate
+        case 422: return .textTooLong
+        case 400: return .invalidField
+        case 404: return .citedNotFound
+        case 403: return .postingRestricted
+        case 429: return .rateLimited
+        default: return .serverError
         }
     }
 }

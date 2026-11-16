@@ -787,11 +787,16 @@ type AethyrUserState struct {
 	SafetyEpsilon      float64            `json:"safety_epsilon"`
 	UserTier           string             `json:"user_tier"`
 	RealmLevel         int                `json:"realm_level"` // 1–5; used as trust weight in bandit
+	// ViewerPIAL lets AethyrRank match a payment signal (named by PIAL) to what
+	// this viewer was ranked. Server-to-server only.
+	ViewerPIAL string `json:"viewer_pial,omitempty"`
 }
 
 type AethyrContent struct {
 	ContentID             string           `json:"content_id"`
 	CreatorID             string           `json:"creator_id"`
+	// CreatorPIAL: see AethyrUserState.ViewerPIAL. Server-to-server only.
+	CreatorPIAL           string           `json:"creator_pial,omitempty"`
 	TopicVector           []float32        `json:"topic_vector"`
 	PublishedAt           time.Time        `json:"published_at"`
 	Engagement            AethyrEngagement `json:"engagement"`
@@ -857,14 +862,9 @@ type AethyrBreakdown struct {
 	FinalScore    float64 `json:"final_score"`
 }
 
-// AethyrFeedbackRequest mirrors FeedbackRequest in the engine.
-type AethyrFeedbackRequest struct {
-	UserID    string                `json:"user_id"`
-	SessionID string                `json:"session_id"`
-	Surface   string                `json:"surface"`
-	Events    []AethyrFeedbackEvent `json:"events"`
-}
-
+// AethyrFeedbackEvent is one feedback_events row: feed-engine's own record of
+// "not interested" and dwell, read by GetNotWanted and the dwell batch. What
+// AethyrRank learns from goes to ranking.events (db.EnqueueRankingSignal).
 type AethyrFeedbackEvent struct {
 	ContentID         string    `json:"content_id"`
 	EventType         string    `json:"event_type"`
@@ -872,18 +872,6 @@ type AethyrFeedbackEvent struct {
 	Timestamp         time.Time `json:"timestamp"`
 	DwellMs           *int64    `json:"dwell_ms,omitempty"`
 	ExplorationSlot   bool      `json:"exploration_slot"`
-}
-
-// BrainStatus is the response from AethyrRank GET /brain/status.
-type BrainStatus struct {
-	Brains []BrainEntry `json:"brains"`
-}
-
-type BrainEntry struct {
-	BrainID     string `json:"brain_id"`
-	Status      string `json:"status"`
-	Port        int    `json:"port"`
-	Description string `json:"description"`
 }
 
 // LeaderboardEntry is one row in the daily XP leaderboard.
@@ -912,11 +900,13 @@ type Achievement struct {
 
 // ── Shop page data ────────────────────────────────────────────────────────────
 
+// ShopPlan is a plan as a page shows it. PriceUnits is in AET units (the
+// ledger's unit); PriceDisplay is the decimal AET amount.
 type ShopPlan struct {
 	ID           string
 	Name         string
 	Description  string
-	PriceAET     int
+	PriceUnits   int64
 	PriceDisplay string
 	IsActive     bool
 }
@@ -931,7 +921,7 @@ type ShopEarnings struct {
 type PPVItem struct {
 	ID           string
 	Title        string
-	PriceAET     int
+	PriceUnits   int64
 	PriceDisplay string
 	IsActive     bool
 }
@@ -1230,13 +1220,16 @@ type ReplyStreamItem struct {
 // Vision is a 24-hour object. It is not a Work and carries no Work lifecycle:
 // no catalog entry, no edition, no content receipt, no naming-plane edge. It
 // has no id of its own: it is a position in its author's PIAL-owned lane,
-// addressed inside the server as (AuthorPIAL, Seq) — see db.VisionRef. On the
-// wire it is addressed as (AuthorAccountID, Seq) — see db.VisionAddress —
-// because a PIAL is never handed to a client.
+// addressed inside the server as (AuthorPIAL, Seq) — see db.VisionRef — the
+// content-safety subject. On the wire it is addressed as (AuthorAccountID,
+// AccountSeq) — see db.VisionAddress — the persona that posted it and that
+// persona's own ordinal, because a PIAL is never handed to a client and nothing
+// may link two of one person's accounts.
 type Vision struct {
 	AuthorPIAL      string // server-only; never rendered or encoded
-	AuthorAccountID string // the account the row was joined through; the wire address
-	Seq             int64
+	AuthorAccountID string // the posting account; ownership, rings and the wire address
+	Seq             int64  // server-only; the PIAL lane's ordinal
+	AccountSeq      int64  // the posting account's own ordinal; the wire address
 	ContentType     string // text | image | video | share
 	Body            string
 
@@ -1285,7 +1278,6 @@ const (
 
 // VisionRing is one author's live Vision set as the viewer sees it.
 type VisionRing struct {
-	AuthorPIAL      string // server-only; never rendered or encoded
 	AuthorAccountID string // the ring's Facet entity and the wire address's author
 	AuthorHandle    string
 	AuthorName      string
@@ -1299,11 +1291,11 @@ type VisionRing struct {
 
 // VisionViewer is one entry in a Vision's viewer list.
 type VisionViewer struct {
-	ViewerPIAL string
-	Handle     string
-	Name       string
-	AvatarURL  string
-	ViewedAt   time.Time
+	ViewerAccountID string
+	Handle          string
+	Name            string
+	AvatarURL       string
+	ViewedAt        time.Time
 }
 
 // ── Live lane ────────────────────────────────────────────────────────────────

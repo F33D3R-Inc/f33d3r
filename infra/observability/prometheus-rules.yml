@@ -9,7 +9,7 @@ groups:
     rules:
 
       - alert: BrainDown
-        expr: up{job=~"herald|nantar|aethyrrank|zior|caeor|ain-soph|aethyr-ledger|verity|elohim-veni|abraxas-shield|schema-registry|registrar|ekyc|auralis"} == 0
+        expr: up{job=~"herald|nantar|aethyrrank|zior|caeor|ain-soph|verity|elohim-veni|abraxas-shield|ekyc|auralis|themis"} == 0
         for: 2m
         labels: { severity: critical }
         annotations:
@@ -68,14 +68,6 @@ groups:
   - name: storage_health
     interval: 60s
     rules:
-
-      - alert: MinioDown
-        expr: up{component="minio"} == 0
-        for: 2m
-        labels: { severity: critical }
-        annotations:
-          summary: "MinIO is down"
-          description: "Media uploads + backups are failing."
 
       - alert: DiskUsageHigh
         expr: (node_filesystem_size_bytes - node_filesystem_avail_bytes) / node_filesystem_size_bytes > 0.85

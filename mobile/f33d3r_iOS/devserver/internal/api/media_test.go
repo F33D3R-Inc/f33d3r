@@ -96,7 +96,7 @@ func TestProbeMP4(t *testing.T) {
 func TestVoiceLane(t *testing.T) {
 	h := newHarness(t)
 	token, me := h.login("dev")
-	pial := me["pial_id"].(string)
+	account := me["account_id"].(string)
 
 	body, ct := multipartBody(t, "audio", "voice.m4a", "audio/mp4", syntheticM4A())
 	status, resp := h.do("POST", "/api/v1/media/voice", token, body, ct)
@@ -105,7 +105,7 @@ func TestVoiceLane(t *testing.T) {
 	}
 	var uploaded VoiceUploadDTO
 	json.Unmarshal(resp, &uploaded)
-	if !strings.HasPrefix(uploaded.URL, "/media/voice/") || !strings.HasSuffix(uploaded.URL, ".m4a") {
+	if !strings.HasPrefix(uploaded.URL, assetPathPrefix) || !strings.HasSuffix(uploaded.URL, "/audio.m4a") {
 		t.Fatalf("url = %q; the bytes name the file, and they are M4A", uploaded.URL)
 	}
 	if _, ok := resp2map(resp)["duration_secs"]; ok {
@@ -130,7 +130,7 @@ func TestVoiceLane(t *testing.T) {
 	dev := newSigner(t)
 	h.do("POST", "/api/pial/signing-key/register", token, map[string]string{"public_key_b64": dev.spkiB64()}, "")
 	payload := workCanonicalPayload{
-		AuthorPIAL: pial, Body: "said out loud", CommentGating: "everyone", Kind: "voice",
+		AuthorAccount: account, Body: "said out loud", CommentGating: "everyone", Kind: "voice",
 		MediaURLs: []string{}, Tags: []string{}, TimestampMS: time.Now().UnixMilli(),
 		VoiceURL: uploaded.URL, VoiceDurationSecs: float64(7),
 	}
@@ -149,8 +149,8 @@ func TestVoiceLane(t *testing.T) {
 }
 
 // TestVideoLane: upload, poll to ready with the probe's numbers, post, and
-// see the video on the work; the same bytes again are a duplicate naming the
-// original's author; another account cannot see the job.
+// see the video on the work; the same bytes from another account settle as a
+// duplicate naming the original's uploader; another account cannot see the job.
 func TestVideoLane(t *testing.T) {
 	h := newHarness(t)
 	devToken, devMe := h.login("dev")
@@ -185,7 +185,7 @@ func TestVideoLane(t *testing.T) {
 	if job.Status != videoJobReady {
 		t.Fatalf("never ready: %+v", job)
 	}
-	if !strings.HasPrefix(job.MasterURL, "/media/video/") || !strings.HasSuffix(job.MasterURL, ".mp4") || job.WatermarkedURL != job.MasterURL {
+	if !strings.HasPrefix(job.MasterURL, assetPathPrefix) || !strings.HasSuffix(job.MasterURL, "/master.mp4") {
 		t.Fatalf("renditions = %+v", job)
 	}
 	if job.DurationSecs == nil || *job.DurationSecs != 42 || job.Width == nil || *job.Width != 1280 || job.Height == nil || *job.Height != 720 {
@@ -198,11 +198,11 @@ func TestVideoLane(t *testing.T) {
 	dev := newSigner(t)
 	h.do("POST", "/api/pial/signing-key/register", devToken, map[string]string{"public_key_b64": dev.spkiB64()}, "")
 	payload := workCanonicalPayload{
-		AuthorPIAL: devMe["pial_id"].(string), Body: "a clip", CommentGating: "everyone", Kind: "video",
+		AuthorAccount: devMe["account_id"].(string), Body: "a clip", CommentGating: "everyone", Kind: "video",
 		MediaURLs: []string{}, Tags: []string{}, TimestampMS: time.Now().UnixMilli(),
 		VideoMasterURL: job.MasterURL, VideoDurationSecs: float64(42),
 	}
-	extra := map[string]any{"video_watermarked_url": job.WatermarkedURL, "video_width": 1280, "video_height": 720}
+	extra := map[string]any{"video_width": 1280, "video_height": 720}
 	status, resp = h.do("POST", "/events", devToken, envelope(t, dev, payload, extra), "application/json")
 	if status != 201 {
 		t.Fatalf("post video: %d %s", status, resp)
@@ -217,17 +217,41 @@ func TestVideoLane(t *testing.T) {
 		t.Fatalf("served video work = kind %q video %+v", thread.Work.Kind, thread.Work.Video)
 	}
 
-	// Mii uploads the same bytes: a duplicate, credited to dev, with dev's
-	// renditions to reference.
+	// Mii uploads the same bytes: the job settles as a duplicate, credited to
+	// dev, with dev's renditions to reference.
 	body, ct = multipartBody(t, "file", "copy.mp4", "video/mp4", clip)
 	status, resp = h.do("POST", "/api/v1/media/video", miiToken, body, ct)
-	if status != 200 {
+	if status != 202 {
 		t.Fatalf("duplicate upload: %d %s", status, resp)
 	}
 	var dup VideoJobDTO
 	json.Unmarshal(resp, &dup)
-	if dup.Status != videoJobDuplicate || dup.DuplicateOfHandle != "dev" || dup.DuplicateOfWorkID != accepted.WorkID || dup.MasterURL != job.MasterURL || dup.UploadID != "" {
+	deadline = time.Now().Add(5 * time.Second)
+	for dup.Status != videoJobDuplicate && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+		_, resp = h.do("GET", "/api/v1/media/video/"+dup.UploadID, miiToken, nil, "")
+		json.Unmarshal(resp, &dup)
+	}
+	if dup.Status != videoJobDuplicate || dup.DuplicateOfHandle != "dev" || dup.MasterURL != job.MasterURL {
 		t.Fatalf("duplicate = %+v", dup)
+	}
+
+	// A held asset is refused at upload, in the media lane's words; so is a
+	// banned one.
+	assetID := assetIDFromPath(job.MasterURL)
+	for status, code := range map[string]string{store.AssetHeld: "held_for_review", store.AssetBanned: "content_refused"} {
+		if _, err := h.store.DB().Exec(`UPDATE media_assets SET status = ? WHERE asset_id = ?`, status, assetID); err != nil {
+			t.Fatal(err)
+		}
+		body, ct = multipartBody(t, "file", "again.mp4", "video/mp4", clip)
+		st, resp := h.do("POST", "/api/v1/media/video", miiToken, body, ct)
+		want := 409
+		if status == store.AssetBanned {
+			want = 422
+		}
+		if st != want || !strings.Contains(string(resp), code) {
+			t.Fatalf("%s asset: %d %s", status, st, resp)
+		}
 	}
 
 	// Not a video at all.

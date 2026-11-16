@@ -6,6 +6,7 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.input.OffsetMapping
 import androidx.compose.ui.text.input.TransformedText
 import androidx.compose.ui.text.input.VisualTransformation
+import com.f33d3r.app.malkuth.WorkText
 
 /** An @handle, a #tag or a link, as the server will read them out of the body. */
 private val TOKEN = Regex("""(?<![\p{L}\p{N}_@#])[@#][\p{L}\p{N}_]{1,64}|https?://[^\s<>"']+""")
@@ -48,11 +49,13 @@ fun completeMention(text: String, cursor: Int, handle: String): Pair<String, Int
 fun linkCount(text: String): Int = LINK.findAll(text).count()
 
 /**
- * Splits a body that runs past [limit] into posts that each fit, at paragraph
- * breaks first and at the last space before the limit when a paragraph alone is
- * too long. Nothing is dropped: the join of the parts is the body.
+ * Splits a body that runs past the server's limit into posts that each fit, at
+ * paragraph breaks first and at the last space that fits when a paragraph alone is
+ * too long. Fitting is the server's measure ([WorkText.remaining]): weighted length of
+ * the normalised text. Nothing is dropped: the join of the parts is the body.
  */
-fun splitIntoPosts(body: String, limit: Int): List<String> {
+fun splitIntoPosts(body: String): List<String> {
+    fun fits(text: String) = WorkText.remaining(text) >= 0
     val out = mutableListOf<String>()
     var current = StringBuilder()
     fun flush() {
@@ -62,10 +65,10 @@ fun splitIntoPosts(body: String, limit: Int): List<String> {
     for (paragraph in body.split("\n\n")) {
         var piece = paragraph.trim()
         if (piece.isEmpty()) continue
-        if (current.isNotEmpty() && current.length + 2 + piece.length > limit) flush()
-        while (piece.length > limit) {
+        if (current.isNotEmpty() && !fits(current.toString() + "\n\n" + piece)) flush()
+        while (!fits(piece)) {
             if (current.isNotEmpty()) flush()
-            val cut = piece.lastIndexOf(' ', limit - 1).takeIf { it > limit / 2 } ?: (limit - 1)
+            val cut = longestFittingPrefix(piece)
             out += piece.substring(0, cut).trim()
             piece = piece.substring(cut).trim()
         }
@@ -74,4 +77,21 @@ fun splitIntoPosts(body: String, limit: Int): List<String> {
     }
     flush()
     return out.ifEmpty { listOf(body.trim()) }
+}
+
+/**
+ * The length of the longest prefix of [text] that fits, preferring to end at a space
+ * in its second half, and never cutting a surrogate pair in two.
+ */
+private fun longestFittingPrefix(text: String): Int {
+    var lo = 1
+    var hi = text.length
+    while (lo < hi) {
+        val mid = (lo + hi + 1) / 2
+        if (WorkText.remaining(text.substring(0, mid)) >= 0) lo = mid else hi = mid - 1
+    }
+    var end = lo
+    if (end < text.length && Character.isLowSurrogate(text[end])) end--
+    val space = text.lastIndexOf(' ', end - 1)
+    return if (space > end / 2) space else end.coerceAtLeast(1)
 }

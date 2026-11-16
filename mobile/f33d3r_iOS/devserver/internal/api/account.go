@@ -122,8 +122,8 @@ func (s *Server) profileUpdateEvent(w http.ResponseWriter, r *http.Request, u *s
 		*f.into = &m
 	}
 	for _, p := range []*string{upd.AvatarURL, upd.HeaderURL} {
-		if p != nil && *p != "" && !strings.HasPrefix(*p, "/media/") {
-			plainError(w, http.StatusBadRequest, "media paths must be uploads (/media/…)")
+		if p != nil && *p != "" && assetIDFromPath(*p) == "" && !strings.HasPrefix(*p, "/media/") {
+			plainError(w, http.StatusBadRequest, "media paths must be uploads ("+assetPathPrefix+"…)")
 			return
 		}
 	}

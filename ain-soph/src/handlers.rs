@@ -3,8 +3,10 @@
 /// All write endpoints require an idempotency key. If the same key is submitted
 /// twice, the original response is returned without re-executing the operation.
 ///
-/// Storage unit: 1 AET = 100 micro-AET.
-/// Fee schedule: deposit 2.5%, transfer 3.0%, tip 1.0%, withdrawal 2.0%.
+/// Unit: every amount is an integer of AET units (models::UNITS_PER_AET).
+/// Fee schedule: deposit 2.5%, transfer 3.0%, tip 1.0%. A move out of the fee
+/// float itself carries no fee. AET is non-redeemable platform credit: there is
+/// no withdrawal, and only an authenticated service may mint (deposit).
 /// Fees credited to platform float account "ain_soph_fees".
 use axum::{
     extract::{FromRef, Path, Query, State},
@@ -139,8 +141,20 @@ pub async fn get_supply(State(pool): State<PgPool>) -> Result<Json<SupplyRespons
         fee_pool_units: fee_pool.0,
         fee_pool_aet: format_aet(fee_pool.0),
         account_count: count.0,
-        decimals: AET_DECIMALS,
+        decimals: UNITS_PER_AET,
     }))
+}
+
+// ── GET /v1/unit ──────────────────────────────────────────────────────────────
+
+/// The one AET unit, as every other brain learns it. Nothing outside this
+/// brain hard-codes the ratio.
+pub async fn get_unit() -> Json<UnitResponse> {
+    Json(UnitResponse {
+        ticker: TOKEN_TICKER,
+        units_per_aet: UNITS_PER_AET,
+        uaet_per_unit: UAET_PER_UNIT,
+    })
 }
 
 // ── GET /v1/balance/:user_id ──────────────────────────────────────────────────
@@ -149,12 +163,12 @@ pub async fn get_supply(State(pool): State<PgPool>) -> Result<Json<SupplyRespons
 pub async fn get_balance(
     State(pool): State<PgPool>,
     State(mh): State<Manhattan>,
+    caller: Caller,
     Path(user_id): Path<String>,
 ) -> Result<Json<BalanceResponse>, WalletError> {
-    // Resolve before the auto-create below. This lookup opens an account on
-    // first sight, so an unresolved path segment here is how a wallet keyed on
-    // a handle or on another brain's row id gets minted in the first place.
-    let user_id = identity::resolve_owner(&mh, &user_id).await?;
+    // A balance is read by its owner or by a service; an identity may not read
+    // somebody else's.
+    let user_id = caller.reading(&mh, &user_id).await?;
 
     // A read does not write. This used to auto-create the account on first
     // lookup, which is how wallets keyed on the wrong identifier came into
@@ -190,18 +204,20 @@ pub async fn get_balance(
 pub async fn list_transactions(
     State(pool): State<PgPool>,
     State(mh): State<Manhattan>,
+    caller: Caller,
     Path(user_id): Path<String>,
     Query(q): Query<TxHistoryQuery>,
 ) -> Result<Json<TxHistoryResponse>, WalletError> {
     // History is keyed the same way the ledger is, so it has to be asked for
     // the same way — otherwise a lookup by handle silently reports no history.
-    let user_id = identity::resolve_owner(&mh, &user_id).await?;
+    // Like a balance, it is read by its owner or by a service.
+    let user_id = caller.reading(&mh, &user_id).await?;
 
     let limit = q.limit.clamp(1, 100);
 
     let rows: Vec<TxRow> = if let Some(before) = q.before {
         sqlx::query_as(
-            r#"SELECT id, tx_type, from_user_id, to_user_id, amount, fee, net_amount, status, created_at
+            r#"SELECT id, tx_type, from_user_id, to_user_id, amount, net_amount, status, created_at
                FROM transactions
                WHERE (from_user_id = $1 OR to_user_id = $1) AND created_at < $2
                ORDER BY created_at DESC LIMIT $3"#,
@@ -210,7 +226,7 @@ pub async fn list_transactions(
         .fetch_all(&pool).await?
     } else {
         sqlx::query_as(
-            r#"SELECT id, tx_type, from_user_id, to_user_id, amount, fee, net_amount, status, created_at
+            r#"SELECT id, tx_type, from_user_id, to_user_id, amount, net_amount, status, created_at
                FROM transactions
                WHERE from_user_id = $1 OR to_user_id = $1
                ORDER BY created_at DESC LIMIT $2"#,
@@ -252,7 +268,7 @@ pub async fn list_transactions(
     }))
 }
 
-// ── POST /deposit ─────────────────────────────────────────────────────────────
+// ── POST /v1/deposit ──────────────────────────────────────────────────────────
 
 #[instrument(skip(pool, mh))]
 pub async fn deposit(
@@ -261,16 +277,19 @@ pub async fn deposit(
     caller: Caller,
     Json(req): Json<DepositRequest>,
 ) -> Result<Json<TxResponse>, WalletError> {
-    if req.amount_cents <= 0 {
+    if req.amount_units <= 0 {
         return Err(WalletError::InvalidAmount);
     }
 
-    // Whose balance grows is decided by the authenticated caller, not by the
-    // body. A service caller crediting somebody else must hold the shared key.
+    // A deposit brings AET into existence. AET is platform credit with no
+    // redemption, and no payment rail feeds it, so the only thing that may mint
+    // is an authenticated service (Themis's founder-gated admin credit). An end
+    // user can never mint, for themselves or anyone.
+    caller.require_service()?;
     let user_id = caller.acting_as(&mh, req.user_id.as_deref()).await?;
 
-    let fee = compute_fee(req.amount_cents, FEE_DEPOSIT_BPS);
-    let net = req.amount_cents - fee;
+    let fee = compute_fee(req.amount_units, FEE_DEPOSIT_BPS);
+    let net = req.amount_units - fee;
     let tx_id = Uuid::new_v4();
 
     let mut tx = pool.begin().await?;
@@ -281,7 +300,7 @@ pub async fn deposit(
            ON CONFLICT (idempotency_key) DO NOTHING RETURNING id"#,
     )
     .bind(tx_id).bind(&req.idempotency_key)
-    .bind(&user_id).bind(req.amount_cents).bind(fee).bind(net)
+    .bind(&user_id).bind(req.amount_units).bind(fee).bind(net)
     .fetch_optional(&mut *tx).await?;
 
     if inserted.is_none() {
@@ -317,7 +336,7 @@ pub async fn deposit(
     .await?;
 
     tx.commit().await?;
-    info!(user_id = %user_id, amount = req.amount_cents, fee, net, "AET deposit completed");
+    info!(user_id = %user_id, amount = req.amount_units, fee, net, "AET deposit completed");
 
     // FA Live: push the updated balance immediately.
     notify_feed_engine_balance_spawn(pool.clone(), user_id.clone());
@@ -325,8 +344,8 @@ pub async fn deposit(
     Ok(Json(TxResponse {
         transaction_id: tx_id,
         tx_type: "deposit".into(),
-        amount_units: req.amount_cents,
-        amount_aet: format_aet(req.amount_cents),
+        amount_units: req.amount_units,
+        amount_aet: format_aet(req.amount_units),
         fee_units: fee,
         net_units: net,
         net_aet: format_aet(net),
@@ -345,7 +364,7 @@ pub async fn transfer(
     caller: Caller,
     Json(req): Json<TransferRequest>,
 ) -> Result<Json<TxResponse>, WalletError> {
-    if req.amount_cents <= 0 {
+    if req.amount_units <= 0 {
         return Err(WalletError::InvalidAmount);
     }
 
@@ -361,8 +380,14 @@ pub async fn transfer(
         return Err(WalletError::SelfTransfer);
     }
 
-    let fee = compute_fee(req.amount_cents, FEE_TRANSFER_BPS);
-    let net = req.amount_cents - fee;
+    // The fee float paying out is the platform moving its own fees; charging a
+    // fee on that would only pay the float back into itself.
+    let fee = if from_user_id == FEE_ACCOUNT {
+        0
+    } else {
+        compute_fee(req.amount_units, FEE_TRANSFER_BPS)
+    };
+    let net = req.amount_units - fee;
     let tx_id = Uuid::new_v4();
 
     let mut tx = pool.begin().await?;
@@ -374,7 +399,7 @@ pub async fn transfer(
     )
     .bind(tx_id).bind(&req.idempotency_key)
     .bind(&from_user_id).bind(&to_user_id)
-    .bind(req.amount_cents).bind(fee).bind(net)
+    .bind(req.amount_units).bind(fee).bind(net)
     .fetch_optional(&mut *tx).await?;
 
     if inserted.is_none() {
@@ -387,15 +412,15 @@ pub async fn transfer(
     db::ensure_account(&mut tx, FEE_ACCOUNT).await?;
 
     let sender_balance = db::locked_balance(&mut tx, &from_user_id).await?;
-    if sender_balance < req.amount_cents {
+    if sender_balance < req.amount_units {
         tx.rollback().await?;
         return Err(WalletError::InsufficientBalance);
     }
 
-    db::debit_account(&mut tx, &from_user_id, req.amount_cents).await?;
+    db::debit_account(&mut tx, &from_user_id, req.amount_units).await?;
     db::credit_account(&mut tx, &to_user_id, net).await?;
     db::credit_account(&mut tx, FEE_ACCOUNT, fee).await?;
-    db::append_ledger(&mut tx, tx_id, &from_user_id, "debit", req.amount_cents).await?;
+    db::append_ledger(&mut tx, tx_id, &from_user_id, "debit", req.amount_units).await?;
     db::append_ledger(&mut tx, tx_id, &to_user_id, "credit", net).await?;
     if fee > 0 {
         db::append_ledger(&mut tx, tx_id, FEE_ACCOUNT, "credit", fee).await?;
@@ -422,10 +447,12 @@ pub async fn transfer(
         .await?;
     }
 
-    tx.commit().await?;
-    info!(from = %from_user_id, to = %to_user_id, amount = req.amount_cents, "AET transfer completed");
+    // The ranking signal is part of the payment: same transaction.
+    crate::ranking_outbox::enqueue(&mut tx, &from_user_id, &to_user_id, &req.tx_meta).await?;
 
-    emit_payment_signal_if_needed(&from_user_id, &to_user_id, &req.tx_meta);
+    tx.commit().await?;
+    info!(from = %from_user_id, to = %to_user_id, amount = req.amount_units, "AET transfer completed");
+
     // FA Live: push updated balance to both parties immediately.
     notify_feed_engine_balance_spawn(pool.clone(), from_user_id.clone());
     notify_feed_engine_balance_spawn(pool.clone(), to_user_id.clone());
@@ -433,8 +460,8 @@ pub async fn transfer(
     Ok(Json(TxResponse {
         transaction_id: tx_id,
         tx_type: "transfer".into(),
-        amount_units: req.amount_cents,
-        amount_aet: format_aet(req.amount_cents),
+        amount_units: req.amount_units,
+        amount_aet: format_aet(req.amount_units),
         fee_units: fee,
         net_units: net,
         net_aet: format_aet(net),
@@ -445,8 +472,8 @@ pub async fn transfer(
 }
 
 // ── POST /v1/tip ──────────────────────────────────────────────────────────────
-// Simplified tip endpoint — lower fee, AET units, optional message.
-// Can be called from messaging UI (send AET alongside a message).
+// A tip: lower fee than a transfer. The brain that sold it (Themis) announces
+// it to the recipient; the ledger only moves the value.
 
 #[instrument(skip(pool, mh))]
 pub async fn tip(
@@ -455,8 +482,11 @@ pub async fn tip(
     caller: Caller,
     Json(req): Json<TipRequest>,
 ) -> Result<Json<TxResponse>, WalletError> {
-    if req.amount_aet <= 0.0 {
+    if req.amount_units <= 0 {
         return Err(WalletError::InvalidAmount);
+    }
+    if req.idempotency_key.trim().is_empty() {
+        return Err(WalletError::BadRequest("idempotency_key is required".into()));
     }
 
     // The field is named for a PIAL but was never checked to hold one. It is
@@ -467,20 +497,10 @@ pub async fn tip(
         return Err(WalletError::SelfTransfer);
     }
 
-    // Convert AET → storage units
-    let amount_units = (req.amount_aet * AET_DECIMALS as f64).round() as i64;
-    if amount_units <= 0 {
-        return Err(WalletError::InvalidAmount);
-    }
-
+    let amount_units = req.amount_units;
     let fee = compute_fee(amount_units, FEE_TIP_BPS);
     let net = amount_units - fee;
     let tx_id = Uuid::new_v4();
-    let idem = if req.idempotency_key.is_empty() {
-        tx_id.to_string()
-    } else {
-        req.idempotency_key.clone()
-    };
 
     let mut tx = pool.begin().await?;
 
@@ -489,14 +509,14 @@ pub async fn tip(
            VALUES ($1, $2, 'tip', $3, $4, $5, $6, $7)
            ON CONFLICT (idempotency_key) DO NOTHING RETURNING id"#,
     )
-    .bind(tx_id).bind(&idem)
+    .bind(tx_id).bind(&req.idempotency_key)
     .bind(&from_pial_id).bind(&to_pial_id)
     .bind(amount_units).bind(fee).bind(net)
     .fetch_optional(&mut *tx).await?;
 
     if inserted.is_none() {
         tx.rollback().await?;
-        return existing_tx(&pool, &idem, true).await;
+        return existing_tx(&pool, &req.idempotency_key, true).await;
     }
 
     db::ensure_account(&mut tx, &from_pial_id).await?;
@@ -518,30 +538,12 @@ pub async fn tip(
         db::append_ledger(&mut tx, tx_id, FEE_ACCOUNT, "credit", fee).await?;
     }
 
-    if !req.from_handle.is_empty() {
-        crate::notifications::enqueue(
-            &mut *tx,
-            &crate::notifications::Event {
-                actor_account: req.from_account.clone(),
-                recipient_account: req.to_account.clone(),
-                event_id: format!("ain-soph:tip:{tx_id}"),
-                recipient_pial: to_pial_id.clone(),
-                kind: "tip".into(),
-                target_id: req.target_id.clone(),
-                target_type: req.target_type.clone(),
-                payload: serde_json::json!({ "amount_uaet": amount_units * 10_000 }),
-                push_title: format!("@{} sent you a tip", req.from_handle),
-                push_body: format_aet(amount_units),
-                push_url: "/wallet".into(),
-            },
-        )
-        .await?;
-    }
+    // The ranking signal is part of the payment: same transaction.
+    crate::ranking_outbox::enqueue(&mut tx, &from_pial_id, &to_pial_id, "tip").await?;
 
     tx.commit().await?;
-    info!(from = %from_pial_id, to = %to_pial_id, aet = req.amount_aet, "AET tip sent");
+    info!(from = %from_pial_id, to = %to_pial_id, units = amount_units, "AET tip sent");
 
-    emit_payment_signal_if_needed(&from_pial_id, &to_pial_id, "tip");
     // FA Live: push updated balance to both parties immediately.
     notify_feed_engine_balance_spawn(pool.clone(), from_pial_id.clone());
     notify_feed_engine_balance_spawn(pool.clone(), to_pial_id.clone());
@@ -560,91 +562,83 @@ pub async fn tip(
     }))
 }
 
-// ── POST /withdraw ────────────────────────────────────────────────────────────
+// ── POST /v1/accounts/reattribute ─────────────────────────────────────────────
 
+/// Moves the whole balance of a shadow account — one keyed on another brain's
+/// row id rather than on an identity — to the identity that owns it.
+///
+/// Service-only, fee-free, idempotent on the caller's key. The shadow key is
+/// refused if it names a registered identity: this route moves a mistake back
+/// to its owner, never one person's wallet to another.
 #[instrument(skip(pool, mh))]
-pub async fn withdraw(
+pub async fn reattribute(
     State(pool): State<PgPool>,
     State(mh): State<Manhattan>,
     caller: Caller,
-    Json(req): Json<WithdrawRequest>,
+    Json(req): Json<ReattributeRequest>,
 ) -> Result<Json<TxResponse>, WalletError> {
-    if req.amount_cents <= 0 {
-        return Err(WalletError::InvalidAmount);
+    caller.require_service()?;
+    if req.idempotency_key.trim().is_empty() {
+        return Err(WalletError::BadRequest("idempotency_key is required".into()));
+    }
+    let shadow = uuid::Uuid::parse_str(req.shadow_account.trim())
+        .map(|u| u.hyphenated().to_string())
+        .map_err(|_| WalletError::BadRequest("shadow_account must be an account key".into()))?;
+    match identity::resolve_owner(&mh, &shadow).await {
+        Err(WalletError::UnresolvedIdentity(_)) => {}
+        Ok(_) => {
+            return Err(WalletError::BadRequest(
+                "shadow_account is a registered identity, not a shadow".into(),
+            ))
+        }
+        Err(e) => return Err(e),
+    }
+    let owner = identity::resolve_owner(&mh, &req.owner_pial).await?;
+    if owner == shadow {
+        return Err(WalletError::SelfTransfer);
     }
 
-    // The account that is debited and paid out. This is the route the defect was
-    // reported against: it took `req.user_id` and cashed out whoever was named.
-    let user_id = caller.acting_as(&mh, req.user_id.as_deref()).await?;
-
-    let fee = compute_fee(req.amount_cents, FEE_WITHDRAWAL_BPS);
-    let net = req.amount_cents - fee;
     let tx_id = Uuid::new_v4();
-
     let mut tx = pool.begin().await?;
-
+    let balance: Option<(i64,)> =
+        sqlx::query_as("SELECT balance FROM accounts WHERE user_id = $1 FOR UPDATE")
+            .bind(&shadow)
+            .fetch_optional(&mut *tx)
+            .await?;
+    let amount = balance.map(|b| b.0).unwrap_or(0);
+    if amount <= 0 {
+        tx.rollback().await?;
+        return Err(WalletError::InvalidAmount);
+    }
     let inserted: Option<(Uuid,)> = sqlx::query_as(
-        r#"INSERT INTO transactions (id, idempotency_key, tx_type, from_user_id, amount, fee, net_amount)
-           VALUES ($1, $2, 'withdrawal', $3, $4, $5, $6)
+        r#"INSERT INTO transactions (id, idempotency_key, tx_type, from_user_id, to_user_id, amount, fee, net_amount)
+           VALUES ($1, $2, 'reattribution', $3, $4, $5, 0, $5)
            ON CONFLICT (idempotency_key) DO NOTHING RETURNING id"#,
     )
     .bind(tx_id).bind(&req.idempotency_key)
-    .bind(&user_id).bind(req.amount_cents).bind(fee).bind(net)
+    .bind(&shadow).bind(&owner).bind(amount)
     .fetch_optional(&mut *tx).await?;
-
     if inserted.is_none() {
         tx.rollback().await?;
         return existing_tx(&pool, &req.idempotency_key, true).await;
     }
-
-    db::ensure_account(&mut tx, &user_id).await?;
-    db::ensure_account(&mut tx, FEE_ACCOUNT).await?;
-
-    let balance = db::locked_balance(&mut tx, &user_id).await?;
-    if balance < req.amount_cents {
-        tx.rollback().await?;
-        return Err(WalletError::InsufficientBalance);
-    }
-
-    db::debit_account(&mut tx, &user_id, req.amount_cents).await?;
-    db::credit_account(&mut tx, FEE_ACCOUNT, fee).await?;
-    db::append_ledger(&mut tx, tx_id, &user_id, "debit", req.amount_cents).await?;
-    if fee > 0 {
-        db::append_ledger(&mut tx, tx_id, FEE_ACCOUNT, "credit", fee).await?;
-    }
-
-    crate::notifications::enqueue(
-        &mut *tx,
-        &crate::notifications::Event {
-            actor_account: None,
-            recipient_account: None,
-            event_id: format!("ain-soph:withdrawal:{tx_id}"),
-            recipient_pial: user_id.clone(),
-            kind: "withdrawal".into(),
-            target_id: tx_id.to_string(),
-            target_type: "wallet".into(),
-            payload: serde_json::json!({ "amount_aet": format_aet(net) }),
-            push_title: "Withdrawal completed".into(),
-            push_body: format!("{} sent from your wallet", format_aet(net)),
-            push_url: "/wallet".into(),
-        },
-    )
-    .await?;
-
+    db::ensure_account(&mut tx, &owner).await?;
+    db::debit_account(&mut tx, &shadow, amount).await?;
+    db::credit_account(&mut tx, &owner, amount).await?;
+    db::append_ledger(&mut tx, tx_id, &shadow, "debit", amount).await?;
+    db::append_ledger(&mut tx, tx_id, &owner, "credit", amount).await?;
     tx.commit().await?;
-    info!(user_id = %user_id, amount = req.amount_cents, fee, net, "AET withdrawal completed");
-
-    // FA Live: push the updated balance immediately.
-    notify_feed_engine_balance_spawn(pool.clone(), user_id.clone());
+    info!(shadow = %shadow, owner = %owner, units = amount, "shadow balance reattributed");
+    notify_feed_engine_balance_spawn(pool.clone(), owner.clone());
 
     Ok(Json(TxResponse {
         transaction_id: tx_id,
-        tx_type: "withdrawal".into(),
-        amount_units: req.amount_cents,
-        amount_aet: format_aet(req.amount_cents),
-        fee_units: fee,
-        net_units: net,
-        net_aet: format_aet(net),
+        tx_type: "reattribution".into(),
+        amount_units: amount,
+        amount_aet: format_aet(amount),
+        fee_units: 0,
+        net_units: amount,
+        net_aet: format_aet(amount),
         status: "completed".into(),
         created_at: chrono::Utc::now(),
         idempotent_hit: false,
@@ -902,59 +896,6 @@ pub async fn cast_vote(
     }))
 }
 
-// ── POST /v1/ledger/checkpoint ────────────────────────────────────────────────
-// Called by Aethyr Ledger after each block is sealed. Stores the Merkle root of
-// that block so Ain Soph can cross-verify settlement without querying the ledger brain.
-
-#[instrument(skip(pool))]
-pub async fn ledger_checkpoint(
-    State(pool): State<PgPool>,
-    caller: Caller,
-    Json(req): Json<LedgerCheckpointRequest>,
-) -> Result<Json<serde_json::Value>, WalletError> {
-    // A checkpoint is the platform attesting to its own sealed block. No end
-    // user acts here, so an end-user session is not authority for it.
-    caller.require_service()?;
-
-    if req.events_root.is_empty() {
-        return Err(WalletError::BadRequest("events_root is required".into()));
-    }
-    if req.tx_count < 0 {
-        return Err(WalletError::BadRequest(
-            "tx_count must be non-negative".into(),
-        ));
-    }
-
-    sqlx::query(
-        r#"INSERT INTO ledger_checkpoints (block_id, events_root, tx_count, sealed_at)
-           VALUES ($1, $2, $3, $4)
-           ON CONFLICT (block_id) DO UPDATE
-             SET events_root = EXCLUDED.events_root,
-                 tx_count    = EXCLUDED.tx_count,
-                 sealed_at   = EXCLUDED.sealed_at,
-                 received_at = NOW()"#,
-    )
-    .bind(req.block_id)
-    .bind(&req.events_root)
-    .bind(req.tx_count)
-    .bind(req.sealed_at)
-    .execute(&pool)
-    .await?;
-
-    info!(
-        block_id = req.block_id,
-        tx_count = req.tx_count,
-        root = %&req.events_root[..16.min(req.events_root.len())],
-        "ledger checkpoint stored"
-    );
-
-    Ok(Json(serde_json::json!({
-        "ok": true,
-        "block_id": req.block_id,
-        "events_root": req.events_root,
-    })))
-}
-
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 async fn existing_tx(pool: &PgPool, key: &str, hit: bool) -> Result<Json<TxResponse>, WalletError> {
@@ -978,46 +919,6 @@ async fn existing_tx(pool: &PgPool, key: &str, hit: bool) -> Result<Json<TxRespo
         created_at: row.created_at,
         idempotent_hit: hit,
     }))
-}
-
-fn emit_payment_signal_if_needed(from_user: &str, to_user: &str, meta: &str) {
-    let (event_type, reward) = match meta.to_lowercase().as_str() {
-        "subscription" | "subscribe" => ("subscription", 2.0_f64),
-        "tip" => ("tip", 0.8_f64),
-        _ => return,
-    };
-    let from = from_user.to_string();
-    let to = to_user.to_string();
-    let aethyrrank_url = std::env::var("AETHYRRANK_URL")
-        .unwrap_or_else(|_| "http://aethyrrank-engine:8080".to_string());
-    tokio::spawn(async move {
-        emit_payment_signal(&aethyrrank_url, &from, &to, event_type, reward).await;
-    });
-}
-
-async fn emit_payment_signal(url: &str, from: &str, creator: &str, event_type: &str, reward: f64) {
-    let payload = serde_json::json!({
-        "user_id":    from,
-        "session_id": uuid::Uuid::new_v4().to_string(),
-        "surface":    "wallet",
-        "events": [{
-            "content_id":          creator,
-            "event_type":          event_type,
-            "position_at_display": 0,
-            "timestamp":           chrono::Utc::now(),
-            "exploration_slot":    false,
-            "reward_override":     reward,
-        }]
-    });
-    let endpoint = format!("{}/feedback", url);
-    if let Ok(client) = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(3))
-        .build()
-    {
-        if let Err(e) = client.post(&endpoint).json(&payload).send().await {
-            warn!("AethyrRank payment signal failed: {e}");
-        }
-    }
 }
 
 // ── FA Live: push balance update to feed-engine after any transaction ─────────
@@ -1053,7 +954,11 @@ async fn notify_feed_engine_balance(pool: &PgPool, pial_id: &str) {
     let _ = client
         .post(format!("{}/api/internal/balance-update", feed_engine_url))
         .header("X-Internal-Key", api_key)
-        .json(&serde_json::json!({ "pial_id": pial_id, "balance_aet": balance_aet }))
+        .json(&serde_json::json!({
+            "pial_id": pial_id,
+            "balance_units": balance_units,
+            "balance_aet": balance_aet,
+        }))
         .send()
         .await;
 }

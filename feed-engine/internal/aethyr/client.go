@@ -18,11 +18,6 @@ type Client struct {
 	http    *http.Client
 }
 
-// FeedbackRequest and FeedbackEvent are defined in model package.
-// Type aliases here keep the aethyr package API stable.
-type FeedbackRequest = model.AethyrFeedbackRequest
-type FeedbackEvent = model.AethyrFeedbackEvent
-
 func NewClient(baseURL string, timeout time.Duration) *Client {
 	return &Client{
 		baseURL: baseURL,
@@ -39,7 +34,13 @@ func NewClient(baseURL string, timeout time.Duration) *Client {
 
 type RankRequest = model.AethyrRankRequest
 
-func (c *Client) Rank(ctx context.Context, req *RankRequest) (*model.AethyrRankResponse, error) {
+// InternalKeyHeader authenticates every call but /health to AethyrRank.
+const InternalKeyHeader = "X-Internal-Key"
+
+// Rank asks AethyrRank to order one candidate window. internalKey is the
+// shared INTERNAL_API_KEY; AethyrRank refuses /rank without it. Ranking
+// signals do not go through this client: they are ranking.events (relay.go).
+func (c *Client) Rank(ctx context.Context, internalKey string, req *RankRequest) (*model.AethyrRankResponse, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("aethyr rank marshal: %w", err)
@@ -49,6 +50,7 @@ func (c *Client) Rank(ctx context.Context, req *RankRequest) (*model.AethyrRankR
 		return nil, fmt.Errorf("aethyr rank request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set(InternalKeyHeader, internalKey)
 
 	start := time.Now()
 	resp, err := c.http.Do(httpReq)
@@ -71,28 +73,6 @@ func (c *Client) Rank(ctx context.Context, req *RankRequest) (*model.AethyrRankR
 	log.Printf("[aethyr] rank ok: %d items, engine=%dms, roundtrip=%dms",
 		len(result.RankedItems), result.LatencyMs, time.Since(start).Milliseconds())
 	return &result, nil
-}
-
-func (c *Client) SendFeedback(req *FeedbackRequest) {
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		body, err := json.Marshal(req)
-		if err != nil {
-			return
-		}
-		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/feedback", bytes.NewReader(body))
-		if err != nil {
-			return
-		}
-		httpReq.Header.Set("Content-Type", "application/json")
-		resp, err := c.http.Do(httpReq)
-		if err != nil {
-			log.Printf("[aethyr] feedback error: %v", err)
-			return
-		}
-		resp.Body.Close()
-	}()
 }
 
 func (c *Client) Health(ctx context.Context) bool {

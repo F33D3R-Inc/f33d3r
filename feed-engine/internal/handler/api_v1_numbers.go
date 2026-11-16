@@ -162,9 +162,9 @@ func (h *Handler) apiV1Numbers(w http.ResponseWriter, r *http.Request, u *model.
 		apiIdentityUnavailable(w)
 		return
 	}
-	entries, err := h.listNumbers(r.Context(), u.PIALID)
+	entries, err := h.listNumbers(r.Context(), u.ID)
 	if err != nil {
-		log.Printf("[api/v1] numbers for pial %s: %v", u.PIALID, err)
+		log.Printf("[api/v1] numbers for account %s: %v", u.ID, err)
 		apiError(w, http.StatusServiceUnavailable, "numbers_unavailable",
 			"F33D3R Numbers are unavailable right now. Try again in a moment.")
 		return
@@ -174,9 +174,9 @@ func (h *Handler) apiV1Numbers(w http.ResponseWriter, r *http.Request, u *model.
 	// reads. So a listing that succeeded while the policy could not be read is
 	// answered as unavailable rather than as an identity with no policy: an
 	// empty string here would be drawn as a choice nobody made.
-	policy, err := h.contactPolicyFor(r.Context(), u.PIALID)
+	policy, err := h.contactPolicyFor(r.Context(), u.ID)
 	if err != nil {
-		log.Printf("[api/v1] contact policy for pial %s: %v", u.PIALID, err)
+		log.Printf("[api/v1] contact policy for account %s: %v", u.ID, err)
 		apiError(w, http.StatusServiceUnavailable, "numbers_unavailable",
 			"F33D3R Numbers are unavailable right now. Try again in a moment.")
 		return
@@ -204,9 +204,9 @@ func (h *Handler) apiV1ContactRequests(w http.ResponseWriter, r *http.Request, u
 	}
 	// The one reader, shared with both Facet surfaces. It is what names the
 	// requesters this brain knows.
-	rows, err := h.pendingContactRequests(r.Context(), u.PIALID)
+	rows, err := h.pendingContactRequests(r.Context(), u.ID)
 	if err != nil {
-		log.Printf("[api/v1] contact requests for pial %s: %v", u.PIALID, err)
+		log.Printf("[api/v1] contact requests for account %s: %v", u.ID, err)
 		apiError(w, http.StatusServiceUnavailable, "requests_unavailable",
 			"Contact requests are unavailable right now. Try again in a moment.")
 		return
@@ -317,7 +317,7 @@ func (h *Handler) apiNumberMintEvent(w http.ResponseWriter, r *http.Request, use
 	// No label and no lease cross this lane, so the authority applies its own
 	// default budget and no expiry — exactly what the mint form produces when
 	// the owner chooses neither.
-	body := map[string]interface{}{"pial_id": user.PIALID, "policy": policy}
+	body := map[string]interface{}{"account_id": user.ID, "policy": policy}
 	var out struct {
 		Number string `json:"number"`
 	}
@@ -332,7 +332,7 @@ func (h *Handler) apiNumberMintEvent(w http.ResponseWriter, r *http.Request, use
 		apiError(w, http.StatusServiceUnavailable, "mint_unavailable", mintRefusalNotice(""))
 		return
 	}
-	apiJSON(w, http.StatusCreated, h.mintedNumberDTO(r.Context(), user.PIALID, out.Number, policy))
+	apiJSON(w, http.StatusCreated, h.mintedNumberDTO(r.Context(), user.ID, out.Number, policy))
 }
 
 // mintRefusalStatus and mintRefusalCode carry the authority's stated reason
@@ -370,10 +370,10 @@ func mintRefusalCode(code string) string {
 // never reissues, so it would be burned for good. So the answer is assembled
 // from what is certainly true: the Number, the policy just asked for, and the
 // fact that it is live as of now.
-func (h *Handler) mintedNumberDTO(ctx context.Context, pialID, number, policy string) NumberDTO {
-	entries, err := h.listNumbers(ctx, pialID)
+func (h *Handler) mintedNumberDTO(ctx context.Context, accountID, number, policy string) NumberDTO {
+	entries, err := h.listNumbers(ctx, accountID)
 	if err != nil {
-		log.Printf("[api/v1] reading back a minted Number for pial %s: %v", pialID, err)
+		log.Printf("[api/v1] reading back a minted Number for account %s: %v", accountID, err)
 	}
 	for _, n := range entries {
 		if strings.EqualFold(n.Number, number) {
@@ -408,7 +408,7 @@ func (h *Handler) apiNumberRevokeEvent(w http.ResponseWriter, r *http.Request, u
 		h.answerNumberUnchanged(w, "retire")
 		return
 	}
-	body := map[string]interface{}{"pial_id": user.PIALID, "number": number}
+	body := map[string]interface{}{"account_id": user.ID, "number": number}
 	if err := h.callElohim(r.Context(), http.MethodPost, "/v1/numbers/revoke", body, nil); err != nil {
 		log.Printf("[api/v1] retiring a Number for pial %s: %v", user.PIALID, err)
 		h.answerNumberUnchanged(w, "retire")
@@ -438,7 +438,7 @@ func (h *Handler) apiNumberPolicyEvent(w http.ResponseWriter, r *http.Request, u
 		h.answerNumberUnchanged(w, "policy")
 		return
 	}
-	entries, err := h.listNumbers(r.Context(), user.PIALID)
+	entries, err := h.listNumbers(r.Context(), user.ID)
 	if err != nil {
 		log.Printf("[api/v1] reading Numbers before a policy change for pial %s: %v", user.PIALID, err)
 		h.answerNumberUnchanged(w, "policy")
@@ -460,10 +460,10 @@ func (h *Handler) apiNumberPolicyEvent(w http.ResponseWriter, r *http.Request, u
 	// budget exactly as they are. Changing who may reach you through a Number
 	// must not silently discard when it stops working.
 	body := map[string]interface{}{
-		"pial_id": user.PIALID,
-		"number":  number,
-		"policy":  policy,
-		"label":   label,
+		"account_id": user.ID,
+		"number":     number,
+		"policy":     policy,
+		"label":      label,
 	}
 	if err := h.callElohim(r.Context(), http.MethodPost, "/v1/numbers/policy", body, nil); err != nil {
 		log.Printf("[api/v1] policy change for pial %s: %v", user.PIALID, err)
@@ -497,7 +497,7 @@ func (h *Handler) apiContactPolicyEvent(w http.ResponseWriter, r *http.Request, 
 		apiError(w, http.StatusBadRequest, "unknown_policy", "That is not a contact policy.")
 		return
 	}
-	body := map[string]interface{}{"pial_id": user.PIALID, "handle_policy": policy}
+	body := map[string]interface{}{"account_id": user.ID, "handle_policy": policy}
 	if err := h.callElohim(r.Context(), http.MethodPost, "/v1/contact/policy", body, nil); err != nil {
 		log.Printf("[api/v1] contact policy for pial %s: %v", user.PIALID, err)
 		apiError(w, http.StatusServiceUnavailable, "policy_unchanged",
@@ -532,13 +532,12 @@ func (h *Handler) apiContactDecideEvent(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	body := map[string]interface{}{
-		"pial_id":    user.PIALID,
+		"account_id": user.ID,
 		"request_id": id,
 		"accept":     accept,
-		"owner_account": user.ID,
 	}
 	var out struct {
-		RequesterPIAL string `json:"requester_pial"`
+		RequesterAccount string `json:"requester_account"`
 	}
 	if err := h.callElohim(r.Context(), http.MethodPost, "/v1/contact/requests/decide", body, &out); err != nil {
 		log.Printf("[api/v1] deciding request %s: %v", id, err)
@@ -546,10 +545,10 @@ func (h *Handler) apiContactDecideEvent(w http.ResponseWriter, r *http.Request, 
 			"Could not answer that request right now.")
 		return
 	}
-	if accept && out.RequesterPIAL != "" {
-		if requester := dbpkg.AccountForPIAL(h.db, out.RequesterPIAL); requester != "" {
-			h.deliverHeldOnAccept(requester, user)
-		}
+	// The request names the persona that asked, so the held message goes back
+	// to that persona and not to its person's primary account.
+	if accept && out.RequesterAccount != "" {
+		h.deliverHeldOnAccept(out.RequesterAccount, user)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -692,8 +691,11 @@ func (h *Handler) startByNumber(w http.ResponseWriter, r *http.Request, user *mo
 	// An allow, and only now does the identity behind the Number surface at
 	// all — as an account to open a conversation with, never as a name sent
 	// back on its own.
-	account := dbpkg.AccountForPIAL(h.db, outcome.TargetPIAL)
-	if outcome.TargetPIAL == "" || account == "" || account == user.ID {
+	// The Number reaches the account that holds it — that persona, never its
+	// person's primary.
+	account := outcome.TargetAccount
+	targetPIAL := dbpkg.ResolvePIAL(h.db, account)
+	if account == "" || targetPIAL == "" || account == user.ID {
 		refuse(StartNotDelivered, "")
 		return
 	}
@@ -706,7 +708,7 @@ func (h *Handler) startByNumber(w http.ResponseWriter, r *http.Request, user *mo
 			return
 		}
 	}
-	convoID, err := h.ensureDirectConversation(user, account, outcome.TargetPIAL)
+	convoID, err := h.ensureDirectConversation(user, account, targetPIAL)
 	if err != nil {
 		log.Printf("[gnosis] opening a conversation by Number for pial %s: %v", user.PIALID, err)
 		refuse(StartNotDelivered, "")
@@ -812,14 +814,15 @@ func (h *Handler) releaseHeldByNumber(w http.ResponseWriter, r *http.Request, us
 		gate(state)
 		return
 	}
-	account := dbpkg.AccountForPIAL(h.db, outcome.TargetPIAL)
-	if outcome.TargetPIAL == "" || account == "" || account != pending.TargetAccount {
+	account := outcome.TargetAccount
+	targetPIAL := dbpkg.ResolvePIAL(h.db, account)
+	if account == "" || targetPIAL == "" || account != pending.TargetAccount {
 		// The fifth cause, collapsed: a Number that works but is not this
 		// person's delivers nothing and says nothing about whose it is.
 		gate(gnosis.PendingDeny)
 		return
 	}
-	convoID, err := h.ensureDirectConversation(user, account, outcome.TargetPIAL)
+	convoID, err := h.ensureDirectConversation(user, account, targetPIAL)
 	if err != nil {
 		log.Printf("[gnosis] opening a conversation by Number for pial %s: %v", user.PIALID, err)
 		gate(gnosis.PendingUnavailable)
@@ -888,7 +891,7 @@ func (h *Handler) chargeContactInitiation(w http.ResponseWriter, r *http.Request
 // it was would be the one lie this lane could tell that costs somebody a
 // sentence they thought was waiting.
 func (h *Handler) holdForContactRequest(user *model.User, body string, o contactOutcome) (string, string) {
-	if o.RequestOwnerPIAL == "" {
+	if o.RequestOwnerAccount == "" {
 		// A knock the authority did not open, because one from this identity is
 		// already waiting on that person. The recipient HAS been asked and the
 		// message they will see is the one held from the first attempt, so
@@ -896,8 +899,8 @@ func (h *Handler) holdForContactRequest(user *model.User, body string, o contact
 		// and asking for one would be a reverse lookup.
 		return StartHeld, ""
 	}
-	owner := dbpkg.AccountForPIAL(h.db, o.RequestOwnerPIAL)
-	if owner == "" || owner == user.ID {
+	owner := o.RequestOwnerAccount
+	if owner == user.ID {
 		return StartNotDelivered, ""
 	}
 	pending, err := gnosis.UpsertPending(h.db, user.ID, owner, body)

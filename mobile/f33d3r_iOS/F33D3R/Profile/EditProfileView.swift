@@ -483,12 +483,18 @@ struct EditProfileView: View {
             var avatarURL: String?
             var headerURL: String?
             if let avatarData {
-                let kind = ImageSniff.type(of: avatarData)
-                avatarURL = try await model.uploadImage(avatarData, filename: "avatar.\(kind.ext)", mimeType: kind.mime)
+                guard let upload = ImageSniff.uploadable(avatarData) else {
+                    error = ImageSniff.notAPicture
+                    return
+                }
+                avatarURL = try await model.uploadImage(upload.data, filename: "avatar.\(upload.ext)", mimeType: upload.mime)
             }
             if let headerData {
-                let kind = ImageSniff.type(of: headerData)
-                headerURL = try await model.uploadImage(headerData, filename: "header.\(kind.ext)", mimeType: kind.mime)
+                guard let upload = ImageSniff.uploadable(headerData) else {
+                    error = ImageSniff.notAPicture
+                    return
+                }
+                headerURL = try await model.uploadImage(upload.data, filename: "header.\(upload.ext)", mimeType: upload.mime)
             }
             var update = ProfileUpdate.diff(
                 from: user,
@@ -509,7 +515,8 @@ struct EditProfileView: View {
             await onSaved()
             dismiss()
         } catch let error as APIError {
-            self.error = error.userMessage
+            // An upload's refusal (held, refused, too large) or the profile's.
+            self.error = error.uploadMessage
         } catch {
             self.error = error.localizedDescription
         }

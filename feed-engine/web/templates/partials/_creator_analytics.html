@@ -3,16 +3,15 @@ FACET creator_analytics
   version: 1.0 | status: stable | layer: 2
 
   inputs:
-    Summary      *AstraonSummary      — nil = analytics unavailable; has Impressions, Likes, Reposts,
-                                        Replies, Saves, EngagementRate, CurrentFollowers, FollowersGained
-    Posts        *AstraonCreatorPosts — nil = no post data; has Posts []AstraonPostRow
-    AstraonOnline bool                — shows "analytics unavailable" banner when false
+    Summary      *db.CreatorSummary   — Impressions, Likes, Reposts, Replies, Saves,
+                                        EngagementRate, CurrentFollowers, FollowersGained
+    Posts        *analyticsWorks      — Posts []analyticsWorkRow
     Period       int                  — days (7|30|90|0=all)
     SortBy       string               — "impressions"|"engagement"|"likes"
     User         *model.User          — .Handle
 
   states:
-    default | unavailable (AstraonOnline false)
+    default | empty (no works in the period)
 
   children:
     analytics_stat_card, analytics_post_row
@@ -26,7 +25,7 @@ FACET creator_analytics
 */}}
 {{define "creator_analytics"}}
 
-<div class="crt-analytics">
+<div class="crt-analytics" data-facet-id="facet:f33d3r:analytics:{{.User.ID}}:creator_panel">
 
   {{/* ── Period sort bar ── */}}
   <div class="crt-anl-bar">
@@ -49,7 +48,7 @@ FACET creator_analytics
   </div>
 
   {{/* ── Summary grid ── */}}
-  {{if .Summary}}
+  {{if gt .Summary.TotalPosts 0}}
   {{$s := .Summary}}
   <div class="crt-section">
     <div class="crt-section-head">

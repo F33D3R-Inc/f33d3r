@@ -217,7 +217,7 @@ public struct Work: Codable, Hashable, Sendable, Identifiable {
         isSensitive = try c.decodeIfPresent(Bool.self, forKey: .isSensitive) ?? false
         subscriberOnly = try c.decodeIfPresent(Bool.self, forKey: .subscriberOnly) ?? false
         isPinned = try c.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
-        commentGating = try c.decodeIfPresent(String.self, forKey: .commentGating) ?? "open"
+        commentGating = try c.decodeIfPresent(String.self, forKey: .commentGating) ?? CommentGating.default.rawValue
         scanState = try c.decodeIfPresent(String.self, forKey: .scanState) ?? "clean"
         scoreBand = try c.decodeIfPresent(String.self, forKey: .scoreBand)
 
@@ -273,10 +273,14 @@ public extension Work {
     /// Whether the viewer may reply. `commentGating` is enforced server-side —
     /// this only decides whether the control is drawn disabled.
     func viewerMayReply(currentUser: CurrentUser?) -> Bool {
+        // The author may always answer their own work (`replyAllowed`).
+        if author.handle == currentUser?.user.handle { return true }
         switch commentGating {
         case "none": return false
         case "verified": return currentUser?.user.isVerified ?? false
-        case "followers": return viewerFollowsAuthor || author.handle == currentUser?.user.handle
+        // Circle also needs the author to follow back, which only the server
+        // knows; following the author is the part this side can see.
+        case "followers", "circle": return viewerFollowsAuthor
         default: return true
         }
     }

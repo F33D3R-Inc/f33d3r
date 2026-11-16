@@ -6,10 +6,11 @@ package handler
 // record here, and commits past it only once this returns nil:
 //
 //  1. Triggering event: Abraxas publishes a verdict, an ownership finding, a
-//     banned match or a review decision.
+//     banned match, a review opening or a review decision.
 //  2. Server-side handler: ApplySafetyEvent applies it — scan_state on works
-//     and Visions (db/safety.go), the "Media by" credit, or the CSAM report
-//     and account action (csam_report.go) — inside the subject's seq ledger.
+//     and Visions (db/safety.go), the "Media by" credit, the admins' notice that
+//     an item waits in the review queue, or the CSAM report and account action
+//     (csam_report.go) — inside the subject's seq ledger.
 //  3. Facet renderer: the affected work card Facets are re-rendered.
 //  4. Produced fragment: facet:f33d3r:work:<id>:card (the card, or its removed
 //     state) and facet:f33d3r:work:<id>:media_credit (the credit chip).
@@ -23,7 +24,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"strings"
 
 	"github.com/f33d3r/feed-engine/internal/caeor"
 	dbpkg "github.com/f33d3r/feed-engine/internal/db"
@@ -40,16 +40,19 @@ func (h *Handler) ApplySafetyEvent(ctx context.Context, ev sitra.SafetyEvent) er
 		return h.applyBannedMatch(ctx, ev)
 	}
 
+	// Admins are told when Abraxas says an item now waits for a person
+	// (review_opened: created at admin_review, or promoted there from the ML
+	// stage) — once per event, never on the verdict that may still be settled
+	// by the ML stage without anyone.
 	apply := dbpkg.SafetyApply{
-		EventID:     ev.EventID,
-		Seq:         ev.Seq,
-		Type:        ev.Type,
-		SubjectKind: ev.Subject.Kind,
-		SubjectID:   ev.Subject.ID,
-		AssetID:     ev.AssetID,
-		Verdict:     ev.Verdict,
-		NotifyAdmins: ev.Type == sitra.SafetyTypeVerdict &&
-			(ev.Verdict == "human_review" || opensOwnershipReview(ev.Signals)),
+		EventID:      ev.EventID,
+		Seq:          ev.Seq,
+		Type:         ev.Type,
+		SubjectKind:  ev.Subject.Kind,
+		SubjectID:    ev.Subject.ID,
+		AssetID:      ev.AssetID,
+		Verdict:      ev.Verdict,
+		NotifyAdmins: ev.Type == sitra.SafetyTypeReviewOpened,
 	}
 	// A credit: a standalone ownership event (automatic, at check time) or a
 	// review_decided carrying ownership (an ML or admin credit). A rejected
@@ -95,17 +98,6 @@ func (h *Handler) ApplySafetyEvent(ctx context.Context, ev sitra.SafetyEvent) er
 		h.redrawSafetyChange(c)
 	}
 	return nil
-}
-
-// opensOwnershipReview reports whether a verdict's signals say an ownership
-// finding went to review (Abraxas signals "ownership_ml_review:<kind>").
-func opensOwnershipReview(signals []string) bool {
-	for _, s := range signals {
-		if strings.HasPrefix(s, "ownership_ml_review:") {
-			return true
-		}
-	}
-	return false
 }
 
 // streamStates maps a person's decision on a live stream to its scan_state.

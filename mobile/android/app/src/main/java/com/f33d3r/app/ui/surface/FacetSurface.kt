@@ -56,7 +56,7 @@ fun FacetSurface(
     }
 
     DisposableEffect(host) {
-        host.load(identity.pial, identity.account, identity.handle, density, identity.theme, uiMode)
+        host.load(identity.account, identity.handle, density, identity.theme, uiMode)
         onDispose { host.destroy() }
     }
 
@@ -139,7 +139,7 @@ fun OverlaySurface(
 
     DisposableEffect(host) {
         host.load(
-            identity.pial, identity.account, identity.handle,
+            identity.account, identity.handle,
             theme = identity.theme, uiMode = session.mode,
         )
         onDispose { host.destroy() }
@@ -208,7 +208,7 @@ fun FragmentPane(
 
     DisposableEffect(host) {
         host.load(
-            identity.pial, identity.account, identity.handle,
+            identity.account, identity.handle,
             theme = identity.theme, uiMode = session.mode,
         )
         onDispose { host.destroy() }

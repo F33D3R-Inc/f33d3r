@@ -64,7 +64,6 @@ CREATE TABLE IF NOT EXISTS creator_eligibility (
     enabled_at           TIMESTAMPTZ,
     disabled_at          TIMESTAMPTZ,
     disabled_reason      TEXT,
-    stripe_customer_id   TEXT,
     created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -88,7 +87,6 @@ CREATE TABLE IF NOT EXISTS subscriptions (
     status                  TEXT NOT NULL DEFAULT 'active',
     current_period_start    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     current_period_end      TIMESTAMPTZ NOT NULL,
-    stripe_subscription_id  TEXT,
     cancelled_at            TIMESTAMPTZ,
     created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -112,7 +110,6 @@ CREATE TABLE IF NOT EXISTS ppv_purchases (
     ppv_item_id      UUID NOT NULL REFERENCES ppv_items(id),
     amount_aet       BIGINT NOT NULL,
     ain_soph_tx_id   TEXT,
-    stripe_session_id TEXT,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE(buyer_pial_id, ppv_item_id)
 );
@@ -125,7 +122,6 @@ CREATE TABLE IF NOT EXISTS tips (
     message           TEXT NOT NULL DEFAULT '',
     content_id        TEXT,
     ain_soph_tx_id    TEXT,
-    stripe_session_id TEXT,
     created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -138,7 +134,6 @@ CREATE TABLE IF NOT EXISTS commerce_transactions (
     gross_aet       BIGINT NOT NULL,
     ain_soph_tx_id  TEXT,
     idempotency_key TEXT,
-    stripe_session_id TEXT,
     status          TEXT NOT NULL DEFAULT 'completed',
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -201,15 +196,15 @@ ALTER TABLE subscriptions DROP CONSTRAINT IF EXISTS ck_subscriptions_status;
 ALTER TABLE subscriptions ADD  CONSTRAINT ck_subscriptions_status
     CHECK (status IN ('pending', 'active', 'cancelled', 'failed'));
 
-CREATE TABLE IF NOT EXISTS stripe_idempotency_keys (
-    key               TEXT PRIMARY KEY,
-    stripe_session_id TEXT,
-    result_json       TEXT NOT NULL DEFAULT '{}',
-    fulfilled         BOOLEAN NOT NULL DEFAULT false,
-    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_stripe_idem_session ON stripe_idempotency_keys(stripe_session_id);
+-- ── Stripe is gone ───────────────────────────────────────────────────────────
+-- No fiat rail exists and nothing reads these. Dropped forward, so a database
+-- created before this line converges on the same shape as a new one.
+DROP TABLE IF EXISTS stripe_idempotency_keys;
+ALTER TABLE creator_eligibility   DROP COLUMN IF EXISTS stripe_customer_id;
+ALTER TABLE subscriptions         DROP COLUMN IF EXISTS stripe_subscription_id;
+ALTER TABLE ppv_purchases         DROP COLUMN IF EXISTS stripe_session_id;
+ALTER TABLE tips                  DROP COLUMN IF EXISTS stripe_session_id;
+ALTER TABLE commerce_transactions DROP COLUMN IF EXISTS stripe_session_id;
 
 ALTER TABLE shops ADD COLUMN IF NOT EXISTS xrp_address TEXT NOT NULL DEFAULT '';
 CREATE UNIQUE INDEX IF NOT EXISTS idx_shops_xrp_active ON shops(xrp_address) WHERE xrp_address != '' AND is_active = TRUE;
@@ -237,6 +232,149 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_purchases_xrp_tag
 -- One on-chain transaction pays for one purchase.
 CREATE UNIQUE INDEX IF NOT EXISTS uq_purchases_settlement_tx
     ON purchases (currency, settlement_tx) WHERE settlement_tx IS NOT NULL;
+
+-- ── One-time data changes ────────────────────────────────────────────────────
+-- This schema is replayed on every boot, so a change to existing data is
+-- guarded by a mark written in the same transaction as the change.
+CREATE TABLE IF NOT EXISTS themis_marks (
+    mark       TEXT        PRIMARY KEY,
+    applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- ── The AET unit ─────────────────────────────────────────────────────────────
+-- Every amount column below (price_aet, amount_aet, gross_aet) holds AET units:
+-- Ain Soph's unit, published at its GET /v1/unit. The names are historical.
+--
+-- They used to hold a millionth of an AET, while Ain Soph counts a hundredth.
+-- Tips reached the ledger as a decimal AET and were charged correctly; plans
+-- and pay-per-view items passed the millionths straight to /v1/transfer as
+-- units, so every completed subscription and pay-per-view sale was charged ten
+-- thousand times its price. Those rows are snapshotted into
+-- aet_unit_reconciliation before the conversion: each one is money owed back
+-- to the payer (charged_units - intended_units, in units).
+CREATE TABLE IF NOT EXISTS aet_unit_reconciliation (
+    reference_id    UUID        PRIMARY KEY,
+    tx_type         TEXT        NOT NULL,
+    payer_pial_id   TEXT        NOT NULL,
+    creator_pial_id TEXT        NOT NULL,
+    charged_units   BIGINT      NOT NULL,
+    intended_units  BIGINT      NOT NULL,
+    ain_soph_tx_id  TEXT,
+    charged_at      TIMESTAMPTZ NOT NULL,
+    refunded_at     TIMESTAMPTZ,
+    recorded_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM themis_marks WHERE mark = 'aet_units_are_ain_soph_units') THEN
+    INSERT INTO aet_unit_reconciliation
+        (reference_id, tx_type, payer_pial_id, creator_pial_id, charged_units,
+         intended_units, ain_soph_tx_id, charged_at)
+    SELECT reference_id, tx_type, payer_pial_id, creator_pial_id, gross_aet,
+           ROUND(gross_aet / 10000.0)::BIGINT, ain_soph_tx_id, created_at
+      FROM commerce_transactions
+     WHERE tx_type IN ('subscription', 'ppv') AND status = 'completed'
+    ON CONFLICT (reference_id) DO NOTHING;
+
+    UPDATE subscription_plans    SET price_aet  = ROUND(price_aet  / 10000.0)::BIGINT;
+    UPDATE ppv_items             SET price_aet  = ROUND(price_aet  / 10000.0)::BIGINT;
+    UPDATE ppv_purchases         SET amount_aet = ROUND(amount_aet / 10000.0)::BIGINT;
+    UPDATE tips                  SET amount_aet = ROUND(amount_aet / 10000.0)::BIGINT;
+    UPDATE commerce_transactions SET gross_aet  = ROUND(gross_aet  / 10000.0)::BIGINT;
+    -- A price below one unit has no meaning in the ledger's unit.
+    UPDATE subscription_plans SET is_active = FALSE WHERE price_aet <= 0;
+    UPDATE ppv_items          SET is_active = FALSE WHERE price_aet <= 0;
+
+    INSERT INTO themis_marks (mark) VALUES ('aet_units_are_ain_soph_units');
+  END IF;
+END $$;
+
+-- ── The accounts feed-engine keys its projection on ──────────────────────────
+-- Themis keys money on PIALs. feed-engine's read projection of plans and
+-- subscriptions is keyed on accounts (a person may hold several), so each row
+-- carries the accounts it was made for. Rows made before this are filled in by
+-- the maintenance loop from feed-engine's primary account for the PIAL.
+ALTER TABLE subscription_plans ADD COLUMN IF NOT EXISTS creator_account    UUID;
+ALTER TABLE subscriptions      ADD COLUMN IF NOT EXISTS subscriber_account UUID;
+ALTER TABLE subscriptions      ADD COLUMN IF NOT EXISTS creator_account    UUID;
+
+-- ── Subscription periods ─────────────────────────────────────────────────────
+-- period_index counts paid periods: 0 is the first. Each period's charge has
+-- its own idempotency key, themis:subscription:<id>:period:<n>, so a period is
+-- charged exactly once however often its renewal is retried.
+ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS period_index   INT  NOT NULL DEFAULT 0;
+ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS ain_soph_tx_id TEXT;
+-- Where an imported row came from (feed-engine's own subscriptions table).
+ALTER TABLE subscriptions      ADD COLUMN IF NOT EXISTS imported_from TEXT;
+ALTER TABLE subscription_plans ADD COLUMN IF NOT EXISTS imported_from TEXT;
+-- A subscription ends 'cancelled' (its holder stopped it) or 'expired' (a
+-- renewal was declined, or its plan was retired). A cancelled_at on an
+-- 'active' row means it runs to the end of its paid period and then ends.
+ALTER TABLE subscriptions DROP CONSTRAINT IF EXISTS ck_subscriptions_status;
+ALTER TABLE subscriptions ADD  CONSTRAINT ck_subscriptions_status
+    CHECK (status IN ('pending', 'active', 'cancelled', 'expired', 'failed'));
+CREATE INDEX IF NOT EXISTS idx_subs_due
+    ON subscriptions (current_period_end) WHERE status = 'active';
+
+-- ── Charges ──────────────────────────────────────────────────────────────────
+-- commerce_transactions is the charge: written 'pending' before the money
+-- moves, carrying the idempotency key Ain Soph dedupes on, and settled after.
+-- A charge whose outcome is unknown (a timeout, a 5xx) stays pending and the
+-- reconciler re-drives it with the same key, so it moves money at most once.
+-- notice is the notification its completion sends, fixed at intent time.
+ALTER TABLE commerce_transactions ADD COLUMN IF NOT EXISTS notice       JSONB;
+ALTER TABLE commerce_transactions ADD COLUMN IF NOT EXISTS period_index INT;
+ALTER TABLE commerce_transactions ADD COLUMN IF NOT EXISTS settled_at   TIMESTAMPTZ;
+UPDATE commerce_transactions SET idempotency_key = 'themis:legacy:' || id::text
+ WHERE idempotency_key IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_ctx_idempotency ON commerce_transactions (idempotency_key);
+
+-- ── Value the platform moved by hand ─────────────────────────────────────────
+-- Founder credits, fee sweeps and shadow-balance reattributions: who asked,
+-- for whom, how much, and what the ledger said.
+CREATE TABLE IF NOT EXISTS admin_value_moves (
+    id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    kind            TEXT        NOT NULL CHECK (kind IN ('credit', 'fee_sweep', 'reattribution')),
+    actor_pial      TEXT        NOT NULL,
+    target          TEXT        NOT NULL,
+    amount_units    BIGINT      NOT NULL,
+    reason          TEXT        NOT NULL DEFAULT '',
+    idempotency_key TEXT        NOT NULL UNIQUE,
+    status          TEXT        NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending', 'completed', 'failed')),
+    ain_soph_tx_id  TEXT,
+    failure_reason  TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- ── Listing bodies are Caeor assets ──────────────────────────────────────────
+-- content_asset_id is the seller's own encrypted Caeor asset the listing sells.
+-- A deleted listing that never sold has that asset withdrawn through Caeor; a
+-- sold one keeps it, because its buyers hold a key to it.
+ALTER TABLE listings ADD COLUMN IF NOT EXISTS content_asset_id   UUID;
+ALTER TABLE listings ADD COLUMN IF NOT EXISTS deleted_at         TIMESTAMPTZ;
+ALTER TABLE listings ADD COLUMN IF NOT EXISTS asset_withdrawn_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS idx_listings_withdraw_due
+    ON listings (deleted_at) WHERE deleted_at IS NOT NULL AND asset_withdrawn_at IS NULL;
+
+-- ── commerce.events outbox ───────────────────────────────────────────────────
+-- seq is the record's sequence number on the wire. The relay publishes in seq
+-- order and marks a row only after the broker has acknowledged it.
+CREATE TABLE IF NOT EXISTS commerce_outbox (
+    seq            BIGSERIAL   PRIMARY KEY,
+    event_id       UUID        NOT NULL UNIQUE DEFAULT gen_random_uuid(),
+    partition_key  TEXT        NOT NULL,
+    payload        JSONB       NOT NULL,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    attempts       INT         NOT NULL DEFAULT 0,
+    last_error     TEXT,
+    published_at   TIMESTAMPTZ,
+    blocked_at     TIMESTAMPTZ,
+    blocked_reason TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_commerce_outbox_pending ON commerce_outbox (seq)
+    WHERE published_at IS NULL AND blocked_at IS NULL;
 "#;
 
 // Themis's durable handoff to the Manhattan naming plane.
@@ -655,17 +793,6 @@ fn row_to_purchase(row: &sqlx::postgres::PgRow) -> Result<Purchase> {
     })
 }
 
-fn row_to_marketplace_subscription(row: &sqlx::postgres::PgRow) -> Result<MarketplaceSubscription> {
-    Ok(MarketplaceSubscription {
-        id: row.try_get("id")?,
-        buyer_pial: row.try_get("buyer_pial")?,
-        seller_pial: row.try_get("seller_pial")?,
-        status: row.try_get("status")?,
-        period_end: row.try_get("period_end")?,
-        created_at: row.try_get("created_at")?,
-    })
-}
-
 pub async fn shop_open(
     pool: &PgPool,
     seller_pial: PialRef,
@@ -725,13 +852,14 @@ pub async fn listing_create(
     shop_pial: PialRef,
     req: &ListingCreateReq,
     cek_bytes: Vec<u8>,
+    content_asset_id: Uuid,
 ) -> Result<Listing> {
     let vis = req.visibility.as_deref().unwrap_or("public");
     let drops = req.price_xrp_drops.unwrap_or(0);
     let currency = req.payment_currency.as_deref().unwrap_or("btc");
     let row = sqlx::query(
-        r#"INSERT INTO listings (shop_pial, title, description, price_sats, price_xrp_drops, payment_currency, content_url, content_hash, cek_encrypted, phash, visibility)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+        r#"INSERT INTO listings (shop_pial, title, description, price_sats, price_xrp_drops, payment_currency, content_url, content_hash, cek_encrypted, phash, visibility, content_asset_id)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
            RETURNING id, shop_pial, title, description, price_sats, price_xrp_drops, payment_currency, content_url, content_hash, cek_encrypted, phash, visibility, is_active, created_at"#
     )
     .bind(shop_pial.uuid())
@@ -745,6 +873,7 @@ pub async fn listing_create(
     .bind(&cek_bytes)
     .bind(&req.phash)
     .bind(vis)
+    .bind(content_asset_id)
     .fetch_one(pool).await?;
     row_to_listing(&row)
 }
@@ -956,6 +1085,8 @@ pub async fn purchase_settle(pool: &PgPool, id: Uuid, tx: &str) -> Result<bool> 
 pub async fn purchase_mark_delivered(
     pool: &PgPool,
     id: Uuid,
+    buyer_pial: &PialRef,
+    listing_id: Uuid,
     cek_for_buyer: &[u8],
     notices: &[crate::notifications::Event],
 ) -> Result<bool> {
@@ -976,6 +1107,7 @@ pub async fn purchase_mark_delivered(
     for notice in notices {
         crate::notifications::enqueue(&mut *tx, notice).await?;
     }
+    crate::commerce_events::purchase_delivered(&mut tx, id, &buyer_pial.text(), listing_id).await?;
     tx.commit().await?;
     Ok(true)
 }
@@ -1021,25 +1153,6 @@ pub async fn purchase_get_by_buyer_and_listing(
     .bind(listing_id)
     .fetch_optional(pool).await?;
     row.map(|r| row_to_purchase(&r)).transpose()
-}
-
-pub async fn marketplace_subscription_create(
-    pool: &PgPool,
-    buyer_pial: PialRef,
-    seller_pial: PialRef,
-) -> Result<MarketplaceSubscription> {
-    let period_end: DateTime<Utc> = Utc::now() + chrono::Duration::days(30);
-    let row = sqlx::query(
-        r#"INSERT INTO marketplace_subscriptions (buyer_pial, seller_pial, period_end)
-           VALUES ($1,$2,$3)
-           ON CONFLICT (buyer_pial, seller_pial) DO UPDATE SET status = 'active', period_end = EXCLUDED.period_end
-           RETURNING id, buyer_pial, seller_pial, status, period_end, created_at"#
-    )
-    .bind(buyer_pial.uuid())
-    .bind(seller_pial.uuid())
-    .bind(period_end)
-    .fetch_one(pool).await?;
-    row_to_marketplace_subscription(&row)
 }
 
 pub async fn marketplace_subscription_cancel(
@@ -1102,8 +1215,19 @@ pub async fn listing_update_description(pool: &PgPool, id: Uuid, description: &s
     Ok(())
 }
 
+/// Deletes a listing: it leaves every surface at once, and its encrypted asset
+/// is withdrawn once no buyer holds it (caeor::withdraw_delisted).
+pub async fn listing_delete(pool: &PgPool, id: Uuid) -> Result<()> {
+    sqlx::query("UPDATE listings SET is_active = FALSE, deleted_at = COALESCE(deleted_at, NOW()) WHERE id = $1")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 pub async fn listing_set_active(pool: &PgPool, id: Uuid, active: bool) -> Result<()> {
-    sqlx::query("UPDATE listings SET is_active = $1 WHERE id = $2")
+    // A deleted listing stays deleted.
+    sqlx::query("UPDATE listings SET is_active = $1 WHERE id = $2 AND deleted_at IS NULL")
         .bind(active)
         .bind(id)
         .execute(pool)

@@ -34,6 +34,8 @@ FACET admin_panel_devtools
     <p class="admin-devtool-desc">Credit AET tokens to any user's wallet via Ain Soph.</p>
     <form class="admin-devtool-row"
           hx-post="/api/admin/inject-aet"
+          hx-sync="this:drop"
+          hx-disabled-elt="find button"
           hx-target="#devtool-aet-result"
           hx-swap="innerHTML">
       <input type="text" name="target_handle" class="form-input admin-input-sm" placeholder="@handle" autocomplete="off">

@@ -1,8 +1,6 @@
 package handler
 
 import (
-	"context"
-	"encoding/json"
 	"log"
 	"net/http"
 	"regexp"
@@ -14,7 +12,6 @@ import (
 
 	dbpkg "github.com/f33d3r/feed-engine/internal/db"
 	"github.com/f33d3r/feed-engine/internal/model"
-	"github.com/f33d3r/feed-engine/internal/sitra"
 )
 
 var mentionExtractRe = regexp.MustCompile(`@([A-Za-z0-9_]{1,50})`)
@@ -232,26 +229,4 @@ func pollSurface(s string) string {
 // threadChainAPI: TODO_WORKS — superseded by works-based conversation endpoint.
 func (h *Handler) threadChainAPI(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "not found", http.StatusNotFound)
-}
-
-// ── Sitra Achra helpers ───────────────────────────────────────────────────────
-
-// publishRankingEvent fires a ranking.events message to Redpanda after a
-// user interaction (like, unlike, repost, view). Always runs in a goroutine.
-func (h *Handler) publishRankingEvent(eventType, postID, actorPIAL string) {
-	if h.sitra == nil {
-		return
-	}
-	payload, err := json.Marshal(map[string]interface{}{
-		"event":      "post.interaction",
-		"event_type": eventType,
-		"post_id":    postID,
-		"actor_pial": actorPIAL,
-		"created_at": time.Now().UTC().Format(time.RFC3339),
-	})
-	if err != nil {
-		log.Printf("[sitra] marshal ranking event: %v", err)
-		return
-	}
-	h.sitra.Publish(context.Background(), sitra.TopicRanking, []byte(actorPIAL), payload)
 }

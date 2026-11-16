@@ -90,6 +90,20 @@ services:
         # find no topic. Kept 7 days, longer than any outage Abraxas rides out.
         rpk topic describe content.events -X brokers=$$B >/dev/null 2>&1 || \
           rpk topic create content.events -p 12 -r 1 -c retention.ms=604800000 -X brokers=$$B
+        # ranking.events: what people do that says what they want to see,
+        # keyed by the viewer's PIAL, relayed from feed-engine's ranking_outbox
+        # and produced by Ain Soph for payments. AethyrRank is its one consumer.
+        # Kept 7 days. Its dead topic holds what can never be applied, 30 days.
+        rpk topic describe ranking.events -X brokers=$$B >/dev/null 2>&1 || \
+          rpk topic create ranking.events -p 12 -r 1 -c retention.ms=604800000 -X brokers=$$B
+        rpk topic describe ranking.events.dead -X brokers=$$B >/dev/null 2>&1 || \
+          rpk topic create ranking.events.dead -p 12 -r 1 -c retention.ms=2592000000 -X brokers=$$B
+        # commerce.events: Themis's commerce decisions (plans, subscriptions,
+        # delivered purchases), keyed by subject, relayed from its transactional
+        # outbox. feed-engine's subscription projection is its consumer. Kept
+        # 30 days.
+        rpk topic describe commerce.events -X brokers=$$B >/dev/null 2>&1 || \
+          rpk topic create commerce.events -p 12 -r 1 -c retention.ms=2592000000 -X brokers=$$B
         echo "[sitra-init] topics ready"
     depends_on:
       sitra-achra:
@@ -120,26 +134,6 @@ services:
       timeout: 3s
       retries: 5
 
-  aethyr-schema-registry:
-    build:
-      context: ./aethyr-schema-registry
-      dockerfile: docker/Dockerfile
-    ports:
-      - "127.0.0.1:8079:8079"
-    environment:
-      RUST_LOG: "${RUST_LOG:-info}"
-      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:?set this in .env.local}@postgres:5432/f33d3r_registry?sslmode=disable"
-      PORT: "8079"
-    depends_on:
-      postgres:
-        condition: service_healthy
-    healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:8079/health" ]
-      interval: 10s
-      timeout: 3s
-      retries: 5
-      start_period: 15s
-
   aethyrrank-engine:
     build:
       context: ./aethyrrank-engine
@@ -150,11 +144,19 @@ services:
       RUST_LOG: "${RUST_LOG:-info}"
       APP__SERVER__PORT: "8080"
       APP__SERVER__HOST: "0.0.0.0"
-      SCHEMA_REGISTRY_URL: "http://aethyr-schema-registry:8079"
-      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:?set this in .env.local}@postgres:5432/f33d3r_feed?sslmode=disable"
+      # Its own database: LinUCB models and the ranking.events offsets they
+      # account for. Created at boot when missing.
+      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:?set this in .env.local}@postgres:5432/f33d3r_rank?sslmode=disable"
+      # Ranking signals arrive on ranking.events; there is no HTTP intake.
+      KAFKA_BROKERS: "sitra-achra:9092"
+      # Every route but /health and /metrics requires it as X-Internal-Key.
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY:?set this in .env.local}"
+    # One instance: it owns ranking.events (advisory lock 7331_0041).
     depends_on:
-      aethyr-schema-registry:
+      postgres:
         condition: service_healthy
+      sitra-init:
+        condition: service_completed_successfully
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:8080/health" ]
       interval: 10s
@@ -171,11 +173,9 @@ services:
     environment:
       RUST_LOG: "${RUST_LOG:-info}"
       ZIOR__SERVER__PORT: "8082"
-      ZIOR__AETHYR__CONTENT_STORE_URL: "http://aethyrrank-engine:8080"
-      SCHEMA_REGISTRY_URL: "http://aethyr-schema-registry:8079"
-    depends_on:
-      aethyrrank-engine:
-        condition: service_healthy
+      # Every route but /health and /metrics requires it as X-Internal-Key.
+      # Zior is stateless audio analysis; it calls nothing and stores nothing.
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY:?set this in .env.local}"
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:8082/health" ]
       interval: 10s
@@ -237,7 +237,6 @@ services:
       # by being in .env.local, no matter how compose was invoked.
       VERITY_URL: "http://verity:8095"
       EKYC_URL: "http://ekyc:8099"
-      LEDGER_URL: "http://aethyr-ledger:8096"
       CAEOR_URL: "http://caeor:8086"
       HERALD_URL: "http://herald:8105"
       MANHATTAN_URL: "http://manhattan:8107"
@@ -245,8 +244,6 @@ services:
       REDIS_URL: "redis://redis:6379"
       KAFKA_BROKERS: "sitra-achra:9092"
       TRANSLATION_API_URL: "http://libretranslate:5000"
-      ASTRAON_URL: "http://astraon:8088"
-      ALEXANDRIA_URL: "http://alexandria:8098"
       INTERNAL_API_KEY: "${INTERNAL_API_KEY:?set this in .env.local}"
       SESSION_SECRET: "${SESSION_SECRET:?set this in .env.local}"
       MEDIA_TOKEN_SECRET: "${MEDIA_TOKEN_SECRET:?set this in .env.local}"
@@ -301,8 +298,6 @@ services:
         condition: service_healthy
       themis:
         condition: service_healthy
-      astraon:
-        condition: service_healthy
       sitra-achra:
         condition: service_healthy
       # The identity authority: every session resolves there, and sessions
@@ -315,29 +310,6 @@ services:
       timeout: 3s
       retries: 3
       start_period: 15s
-
-  astraon:
-    build:
-      context: .
-      dockerfile: astraon/docker/Dockerfile
-    ports:
-      - "127.0.0.1:8088:8088"
-    environment:
-      MANHATTAN_URL: "http://manhattan:8107"
-      # Authenticates every call to Manhattan; the brain refuses to boot without it.
-      INTERNAL_API_KEY: "${INTERNAL_API_KEY:?set this in .env.local}"
-      RUST_LOG: "${RUST_LOG:-info}"
-      PORT: "8088"
-      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:?set this in .env.local}@postgres:5432/f33d3r_feed?sslmode=disable"
-    depends_on:
-      postgres:
-        condition: service_healthy
-    healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:8088/health" ]
-      interval: 10s
-      timeout: 3s
-      retries: 5
-      start_period: 60s
 
   ain-soph:
     build:
@@ -356,8 +328,10 @@ services:
       RUST_LOG: "${RUST_LOG:-info}"
       PORT: "8089"
       DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:?set this in .env.local}@postgres:5432/f33d3r_wallet?sslmode=disable"
-      AETHYRRANK_URL: "http://aethyrrank-engine:8080"
       FEED_ENGINE_URL: "http://feed-engine:8081"
+      # Payment signals for AethyrRank are relayed from its ranking_outbox to
+      # ranking.events through the Sitra Achra HTTP proxy. Required.
+      SITRA_PROXY_URL: "http://sitra-achra:8082"
       INTERNAL_API_KEY: "${INTERNAL_API_KEY:?set this in .env.local}"
     depends_on:
       postgres:
@@ -441,33 +415,6 @@ services:
       retries: 5
       start_period: 30s
 
-  lore:
-    build:
-      context: .
-      dockerfile: lore/docker/Dockerfile
-    ports:
-      - "127.0.0.1:8106:8106"
-    environment:
-      MANHATTAN_URL: "http://manhattan:8107"
-      # Authenticates every call to Manhattan; the brain refuses to boot without it.
-      INTERNAL_API_KEY: "${INTERNAL_API_KEY:?set this in .env.local}"
-      RUST_LOG: "${RUST_LOG:-info}"
-      PORT: "8106"
-      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:?set this in .env.local}@postgres:5432/f33d3r_lore?sslmode=disable"
-      HERALD_URL: "http://herald:8105"
-    mem_limit: 512m
-    depends_on:
-      postgres:
-        condition: service_healthy
-      herald:
-        condition: service_healthy
-    healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:8106/health" ]
-      interval: 10s
-      timeout: 3s
-      retries: 5
-      start_period: 30s
-
   # ── LiveKit — carries Frequency audio. Auralis decides who may speak ─────────
   # Browsers reach signaling through Caddy at /rtc on the site's own origin. Media
   # arrives on 7882/udp, or 7881/tcp on a network that blocks UDP. Its server API
@@ -511,8 +458,10 @@ services:
     network_mode: "service:livekit"
     environment:
       EGRESS_CONFIG_FILE: /etc/egress.yaml
-      LIVEKIT_API_${LIVEKIT_API_KEY:?set this in .env.local}: "${LIVEKIT_API_KEY:?set this in .env.local}"
-      LIVEKIT_API_${LIVEKIT_API_SECRET:?set this in .env.local}: "${LIVEKIT_API_SECRET:?set this in .env.local}"
+      # Egress reads its LiveKit credentials from these two names; the key
+      # names are literal, only the values interpolate.
+      LIVEKIT_API_KEY: "${LIVEKIT_API_KEY:?set this in .env.local}"
+      LIVEKIT_API_SECRET: "${LIVEKIT_API_SECRET:?set this in .env.local}"
     volumes:
       - ./infra/egress.yaml:/etc/egress.yaml:ro
       - frequency_replays:/home/egress/replays
@@ -570,7 +519,6 @@ services:
       retries: 5
       start_period: 30s
 
-
   manhattan:
     build:
       context: ./manhattan
@@ -621,53 +569,6 @@ services:
         condition: service_healthy
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:8095/health" ]
-      interval: 10s
-      timeout: 3s
-      retries: 5
-      start_period: 30s
-
-  aethyr-ledger:
-    build:
-      context: .
-      dockerfile: aethyr-ledger/docker/Dockerfile
-    ports:
-      - "127.0.0.1:8096:8096"
-    environment:
-      MANHATTAN_URL: "http://manhattan:8107"
-      RUST_LOG: "${RUST_LOG:-info}"
-      PORT: "8096"
-      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:?set this in .env.local}@postgres:5432/f33d3r_ledger?sslmode=disable"
-      # Ain Soph authenticates the block checkpoint this brain posts after each
-      # seal. Without the shared secret that call is refused.
-      INTERNAL_API_KEY: "${INTERNAL_API_KEY:?set this in .env.local}"
-    depends_on:
-      postgres:
-        condition: service_healthy
-    healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:8096/health" ]
-      interval: 10s
-      timeout: 3s
-      retries: 5
-      start_period: 30s
-
-  alexandria:
-    build:
-      context: .
-      dockerfile: alexandria/docker/Dockerfile
-    ports:
-      - "127.0.0.1:8098:8098"
-    environment:
-      MANHATTAN_URL: "http://manhattan:8107"
-      # Authenticates every call to Manhattan; the brain refuses to boot without it.
-      INTERNAL_API_KEY: "${INTERNAL_API_KEY:?set this in .env.local}"
-      RUST_LOG: "${RUST_LOG:-info}"
-      PORT: "8098"
-      DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:?set this in .env.local}@postgres:5432/f33d3r_library?sslmode=disable"
-    depends_on:
-      postgres:
-        condition: service_healthy
-    healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:8098/health" ]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -744,6 +645,12 @@ services:
         condition: service_healthy
       elohim-veni:
         condition: service_healthy
+      ain-soph:
+        condition: service_healthy
+      caeor:
+        condition: service_healthy
+      sitra-init:
+        condition: service_completed_successfully
     ports:
       - "127.0.0.1:8100:8100"
     environment:
@@ -756,14 +663,22 @@ services:
       INTERNAL_API_KEY: "${INTERNAL_API_KEY:?set this in .env.local}"
       MEMPOOL_API_URL: "https://mempool.space/api"
       XRP_WS_URL: "${XRP_WS_URL:-wss://xrpl.ws}"
+      # Themis's ECDH key: every listing's content key is wrapped for it, so it
+      # must never change. THEMIS_ECDH_PRIVKEY_B64 (base64 PKCS8) wins when set;
+      # otherwise the key is generated once, under a lock, into its own volume
+      # and kept there (backed up by the backup service).
       THEMIS_ECDH_PRIVKEY_B64: "${THEMIS_ECDH_PRIVKEY_B64:-}"
+      THEMIS_ECDH_KEY_DIR: "/var/lib/themis/keys"
+      # Listing bodies are verified against, and withdrawn through, Caeor.
+      CAEOR_URL: "http://caeor:8086"
+      # commerce.events relay (Themis's transactional outbox).
+      KAFKA_BROKERS: "sitra-achra:9092"
       CONF_THRESHOLD_LOW: "1"
       CONF_THRESHOLD_HIGH: "3"
       AIN_SOPH_URL: "http://ain-soph:8089"
       VERITY_URL: "http://verity:8095"
-      STRIPE_SECRET_KEY: "${STRIPE_SECRET_KEY:-}"
-      STRIPE_WEBHOOK_SECRET: "${STRIPE_WEBHOOK_SECRET:-}"
-      STRIPE_PUBLISHABLE_KEY: "${STRIPE_PUBLISHABLE_KEY:-}"
+    volumes:
+      - themis_keys:/var/lib/themis/keys
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:8100/health" ]
       interval: 10s
@@ -787,9 +702,6 @@ services:
       timeout: 5s
       retries: 3
       start_period: 60s
-
-  # STUB BRAINS — not yet built:
-  # nantar-engine (8083), loxion (8087), astraon (8088)
 
   # ═══════════════════════════════════════════════════════════════════════════
   # SPRINT 0 — FOUNDATION LAYER
@@ -824,59 +736,6 @@ services:
       timeout: 3s
       retries: 5
       start_period: 10s
-
-  # ── MinIO — S3-compatible object storage ─────────────────────────────────
-  # Buckets created by minio-init on first boot:
-  #   media-raw       — original uploads
-  #   media-derived   — transcoded variants (HLS segments, WebP renditions)
-  #   backups         — pg_dump nightly backups
-  minio:
-    build:
-      context: ./infra/minio
-      dockerfile: Dockerfile
-    image: f33d3r-minio:local
-    command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: "${MINIO_ROOT_USER:-f33d3r_minio}"
-      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:?set this in .env.local}"
-      MINIO_BROWSER_REDIRECT_URL: "http://localhost:9001"
-      MINIO_PROMETHEUS_AUTH_TYPE: "public"
-    ports:
-      - "127.0.0.1:9000:9000"   # S3 API
-      - "127.0.0.1:9001:9001"   # web console
-    volumes:
-      - minio_data:/data
-    healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:9000/minio/health/live" ]
-      interval: 10s
-      timeout: 3s
-      retries: 5
-      start_period: 15s
-
-  minio-init:
-    build:
-      context: ./infra/minio
-      dockerfile: Dockerfile
-    image: f33d3r-minio:local
-    depends_on:
-      minio:
-        condition: service_healthy
-    entrypoint: /bin/sh
-    command:
-      - -c
-      - |
-        set -e
-        mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"
-        mc mb -p local/media-raw     || true
-        mc mb -p local/media-derived || true
-        mc mb -p local/backups       || true
-        # Public read on media-derived only (CDN will front this in T2+)
-        mc anonymous set download local/media-derived || true
-        echo "[minio-init] buckets ready"
-    environment:
-      MINIO_ROOT_USER: "${MINIO_ROOT_USER:-f33d3r_minio}"
-      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:?set this in .env.local}"
-    restart: "no"
 
   # ── MediaMTX — live ingest ───────────────────────────────────────────────
   # Accepts video and nothing else. It does not decide who may publish (the
@@ -1061,30 +920,32 @@ services:
       retries: 3
       start_period: 15s
 
-  # ── Backup — nightly pg_dump to MinIO (S0.4) ─────────────────────────────
-  # Runs once on container start then exits (restart: "no").
-  # To trigger manually: docker compose run --rm backup
-  # To run restore-test: docker compose run --rm backup restore-test.sh
+  # ── Backup — the same mechanism as prod (infra/backup/backup.sh) ─────────
+  # One-shot here, behind a profile; prod runs it nightly. Writes to the
+  # f33d3r_backups volume.
+  #   docker compose -f docker-compose.local.yml --env-file .env.local run --rm backup
+  #   docker compose -f docker-compose.local.yml --env-file .env.local run --rm \
+  #     --entrypoint /bin/sh backup /backup/restore-test.sh
   backup:
-    build:
-      context: ./infra/backup
-      dockerfile: Dockerfile
+    image: postgres:18-alpine
+    entrypoint: [ "/bin/sh", "/backup/backup.sh", "scheduled" ]
     environment:
-      POSTGRES_HOST: "postgres"
-      POSTGRES_USER: "${POSTGRES_USER:-f33d3r}"
-      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set this in .env.local}"
-      MINIO_ENDPOINT: "minio:9000"
-      MINIO_ACCESS_KEY: "${MINIO_ROOT_USER:-f33d3r_minio}"
-      MINIO_SECRET_KEY: "${MINIO_ROOT_PASSWORD:?set this in .env.local}"
-      MINIO_BUCKET: "backups"
-      BACKUP_RETENTION_DAYS: "7"
+      PGHOST: postgres
+      PGUSER: "${POSTGRES_USER:-f33d3r}"
+      PGPASSWORD: "${POSTGRES_PASSWORD:?set this in .env.local}"
+      BACKUP_KEEP: "7"
+    volumes:
+      - ./infra/backup:/backup:ro
+      - backups:/backups
+      - f33d3r_media:/src/media:ro
+      - f33d3r_media_private:/src/media-private:ro
+      - elohim_veni_keys:/src/keys/elohim-veni:ro
+      - themis_keys:/src/keys/themis:ro
     depends_on:
       postgres:
         condition: service_healthy
-      minio:
-        condition: service_healthy
     restart: "no"
-    profiles: ["backup"]   # only starts with: docker compose --profile backup up
+    profiles: ["backup"]   # only runs when asked for
 
   # ── node-exporter — host-level CPU/RAM/disk/network metrics ─────────────
   node-exporter:
@@ -1296,6 +1157,7 @@ services:
 
 volumes:
   elohim_veni_keys:
+  themis_keys:
   frequency_replays:
   redis_state:
   postgres_data:
@@ -1305,7 +1167,7 @@ volumes:
   # Caeor's private store: clean sources and download files. Never served.
   f33d3r_media_private:
   f33d3r_live_scan:
-  minio_data:
+  backups:
   prometheus_data:
   loki_data:
   alertmanager_data:

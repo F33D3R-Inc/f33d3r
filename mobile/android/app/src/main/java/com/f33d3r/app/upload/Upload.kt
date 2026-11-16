@@ -25,8 +25,8 @@ data class Upload(
 /**
  * Where an upload has got to.
  *
- * The states are the server's, not invented here: `Duplicate` and `SelfDuplicate` are
- * distinct because the server distinguishes them, and `Processing` exists because a
+ * The states are the server's, not invented here: `Duplicate` exists because the server
+ * resolves a copy of somebody else's file to their original, and `Processing` exists because a
  * video is not finished when its bytes arrive — it is finished when the transcoder
  * says so.
  */
@@ -44,8 +44,12 @@ sealed interface UploadState {
     /** Bytes are in; the transcoder is still working. */
     data object Processing : UploadState
 
-    /** An image or voice note is stored and addressable. */
-    data class Stored(val url: String) : UploadState
+    /**
+     * An image or voice note is stored and addressable. [creditedTo] is set when the
+     * bytes were already on F33D3R as somebody else's: [url] is then their original,
+     * and a work that uses it credits them.
+     */
+    data class Stored(val url: String, val creditedTo: String = "") : UploadState
 
     /** A video is transcoded and addressable. */
     data class Transcoded(
@@ -54,8 +58,6 @@ sealed interface UploadState {
         val durationSecs: Long,
         val width: Int,
         val height: Int,
-        /** Carried into the work envelope, outside the signature. */
-        val tusUploadId: String,
     ) : UploadState
 
     /**
@@ -68,10 +70,11 @@ sealed interface UploadState {
     data class Duplicate(
         val masterUrl: String,
         val posterUrl: String,
-        val workId: String,
+        val durationSecs: Long,
+        val width: Int,
+        val height: Int,
         val creatorHandle: String,
         val creatorName: String,
-        val bySelf: Boolean,
     ) : UploadState
 
     /** The server refused, in its own words. */

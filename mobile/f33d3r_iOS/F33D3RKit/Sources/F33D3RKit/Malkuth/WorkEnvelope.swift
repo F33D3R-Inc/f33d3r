@@ -7,12 +7,15 @@ import Foundation
 ///
 /// - **Signed** (inside `payload`, covered by `cid`): everything in
 ///   ``WorkPayload``. Content and the author's intent about it.
-/// - **Unsigned** (beside `payload`): `is_nsfw`, `video_watermarked_url`,
-///   `video_width`, `video_height`, `quoted_work_id`, `react_layout`, and
-///   `tus_upload_id` — which sits *inside* the payload object but outside
-///   `workCanonicalPayload`, so `verifyCID` never sees it. These are derived by
-///   the transcoder or resolved by the server, and putting them under the
-///   signature would mean the author signing values they never chose.
+/// - **Unsigned** (beside `payload`): `is_nsfw`, `video_width`,
+///   `video_height`, `quoted_work_id`, `react_layout` and `downloads_allowed`
+///   — the outer fields `parseWorkEnvelope` reads. They are derived by the
+///   transcoder, resolved by the server, or a switch about the work rather
+///   than its content.
+///
+/// Nothing else is sent. The downloadable file and the upload binding are the
+/// media registry's, never the client's, so there is no watermarked URL and no
+/// upload id here.
 ///
 /// ## The bytes are built once
 ///
@@ -38,7 +41,6 @@ public struct WorkEnvelope: Sendable, Equatable {
 
     // Unsigned outer fields.
     public var isNSFW: Bool
-    public var videoWatermarkedURL: String?
     public var videoWidth: Int?
     public var videoHeight: Int?
     /// The UUID of a quoted work. The server resolves it to a CID for
@@ -46,9 +48,9 @@ public struct WorkEnvelope: Sendable, Equatable {
     /// naming a row, and the row's CID is the server's to look up.
     public var quotedWorkID: String?
     public var reactLayout: String?
-    /// Ties a resumable upload to this work so the orphan sweep does not delete
-    /// the video. Carried inside the `payload` object, outside the signature.
-    public var tusUploadID: String?
+    /// The author's download switch for the work; nil sends nothing, which the
+    /// server reads as its default, allowed.
+    public var downloadsAllowed: Bool?
 
     /// Validates, canonicalises, hashes and signs — in that order, because each
     /// step's input is the previous step's output and skipping the first is how
@@ -58,12 +60,11 @@ public struct WorkEnvelope: Sendable, Equatable {
         key: MalkuthKey,
         eventType: String? = nil,
         isNSFW: Bool = false,
-        videoWatermarkedURL: String? = nil,
         videoWidth: Int? = nil,
         videoHeight: Int? = nil,
         quotedWorkID: String? = nil,
         reactLayout: String? = nil,
-        tusUploadID: String? = nil
+        downloadsAllowed: Bool? = nil
     ) throws {
         try payload.validate()
 
@@ -76,12 +77,11 @@ public struct WorkEnvelope: Sendable, Equatable {
         self.signature = try key.signature(forContentID: cid)
         self.eventType = eventType ?? payload.kind.rawValue
         self.isNSFW = isNSFW
-        self.videoWatermarkedURL = videoWatermarkedURL
         self.videoWidth = videoWidth
         self.videoHeight = videoHeight
         self.quotedWorkID = quotedWorkID
         self.reactLayout = reactLayout
-        self.tusUploadID = tusUploadID
+        self.downloadsAllowed = downloadsAllowed
     }
 
     /// The request body for `POST /events`.
@@ -99,39 +99,17 @@ public struct WorkEnvelope: Sendable, Equatable {
             ("signature", .string(signature)),
             ("is_nsfw", .bool(isNSFW)),
         ]
-        if let videoWatermarkedURL { fields.append(("video_watermarked_url", .string(videoWatermarkedURL))) }
         if let videoWidth { fields.append(("video_width", .int(Int64(videoWidth)))) }
         if let videoHeight { fields.append(("video_height", .int(Int64(videoHeight)))) }
         if let quotedWorkID { fields.append(("quoted_work_id", .string(quotedWorkID))) }
         if let reactLayout { fields.append(("react_layout", .string(reactLayout))) }
+        if let downloadsAllowed { fields.append(("downloads_allowed", .bool(downloadsAllowed))) }
 
         var out = CanonicalJSON.object(fields)
         // Drop the closing brace, append `,"payload":<bytes>}`.
         out.removeLast()
         out.append(contentsOf: Array(",\"payload\":".utf8))
-        out.append(payloadObject)
-        out.append(UInt8(ascii: "}"))
-        return out
-    }
-
-    /// The payload object as sent: the canonical bytes, with `tus_upload_id`
-    /// appended when there is one.
-    ///
-    /// Appending a key the canonical struct does not declare is safe by
-    /// construction — `verifyCID` unmarshals into `workCanonicalPayload`, which
-    /// ignores unknown keys, and re-marshals only its own nineteen fields. The
-    /// upload id is then read out by a second, separate unmarshal on the server.
-    /// This is the mechanism the Go comment describes; it is used here rather
-    /// than worked around.
-    private var payloadObject: Data {
-        guard let tusUploadID, !tusUploadID.isEmpty else { return canonicalPayload }
-        var out = canonicalPayload
-        out.removeLast()
-        out.append(UInt8(ascii: ","))
-        // Splice the single field out of its own object braces so it is escaped
-        // by the same writer as everything else.
-        let field = CanonicalJSON.object([("tus_upload_id", .string(tusUploadID))])
-        out.append(contentsOf: field.dropFirst().dropLast())
+        out.append(canonicalPayload)
         out.append(UInt8(ascii: "}"))
         return out
     }

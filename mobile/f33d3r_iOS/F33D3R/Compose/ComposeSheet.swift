@@ -254,13 +254,13 @@ struct ComposeSheet: View {
             composer.debugStageVideo(.init(
                 fileURL: nil, filename: "studio.mov", mimeType: "video/quicktime",
                 state: .ready(.init(masterURL: "/media/sample/clip/master.m3u8", posterURL: "/media/sample/clip/poster.webp",
-                                    watermarkedURL: "/media/sample/clip/watermarked.mp4", durationSecs: 42, width: 1280, height: 720, uploadID: "upl-staged"))
+                                    durationSecs: 42, width: 1280, height: 720, uploadID: "upl-staged"))
             ))
         case "video-duplicate":
             composer.body = "A clip from the studio."
             composer.debugStageVideo(.init(
                 fileURL: nil, filename: "studio.mov", mimeType: "video/quicktime",
-                state: .duplicate(handle: "miiyazuko", workID: "w-1",
+                state: .duplicate(handle: "miiyazuko",
                                   renditions: .init(masterURL: "/media/sample/clip/master.m3u8", posterURL: "/media/sample/clip/poster.webp", durationSecs: 12))
             ))
         case "video-failed":
@@ -704,10 +704,9 @@ struct ComposeSheet: View {
             }
             Section("Who can reply") {
                 Picker("Who can reply", selection: $composer.commentGating) {
-                    Label("Everyone", systemImage: "globe").tag(CommentGating.everyone)
-                    Label("People you follow", systemImage: "person.2").tag(CommentGating.followers)
-                    Label("Your circle", systemImage: "person.3").tag(CommentGating.circle)
-                    Label("Nobody", systemImage: "bubble.left.and.exclamationmark.bubble.right").tag(CommentGating.none)
+                    ForEach(CommentGating.allCases, id: \.self) { gating in
+                        Label(gating.title, systemImage: gating.systemImage).tag(gating)
+                    }
                 }
             }
         } label: {
@@ -732,22 +731,12 @@ struct ComposeSheet: View {
 
     private func audienceIcon(_ composer: WorkComposer) -> String {
         if composer.subscriberOnly { return "lock" }
-        switch composer.commentGating {
-        case .everyone: return "globe"
-        case .followers: return "person.2"
-        case .circle: return "person.3"
-        case .none: return "bubble.left.and.exclamationmark.bubble.right"
-        }
+        return composer.commentGating.systemImage
     }
 
     private func audienceLabel(_ composer: WorkComposer) -> String {
         if composer.subscriberOnly { return "Subscribers only" }
-        switch composer.commentGating {
-        case .everyone: return "Everyone can reply"
-        case .followers: return "People you follow can reply"
-        case .circle: return "Your circle can reply"
-        case .none: return "Nobody can reply"
-        }
+        return composer.commentGating.replySummary
     }
 
     // MARK: - Bottom bar
@@ -967,8 +956,11 @@ struct ComposeSheet: View {
                             : "That's the most media one work can carry.")
                         continue
                     }
-                    let (mime, ext) = ImageSniff.type(of: data)
-                    await composer.attach(data, filename: "photo-\(UUID().uuidString.prefix(8)).\(ext)", mimeType: mime)
+                    guard let upload = ImageSniff.uploadable(data) else {
+                        refused.append(ImageSniff.notAPicture)
+                        continue
+                    }
+                    await composer.attach(upload.data, filename: "photo-\(UUID().uuidString.prefix(8)).\(upload.ext)", mimeType: upload.mime)
                 }
             } catch {
                 refused.append("Couldn't read that from Photos: \(error.localizedDescription)")
@@ -1327,6 +1319,16 @@ private struct PollBuilder: View {
                     .pickerStyle(.menu)
                     .tint(F33Color.ink2)
                 }
+
+                // Said once every option has words, so an empty row being
+                // filled in is not called a mistake.
+                if let problem = poll.problem,
+                   poll.options.allSatisfy({ !WorkText.isBlank(WorkText.normalize($0)) }) {
+                    Text(problem)
+                        .font(.footnote)
+                        .foregroundStyle(F33Color.danger)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
         }
         .padding(F33Spacing.md)
@@ -1338,7 +1340,10 @@ private struct PollBuilder: View {
             get: { composer.poll?.options[safe: index] ?? "" },
             set: { new in
                 guard var poll = composer.poll, poll.options.indices.contains(index) else { return }
-                poll.options[index] = String(new.prefix(40))
+                // The server's bound is code points, so the cut is too.
+                var view = String.UnicodeScalarView()
+                view.append(contentsOf: new.unicodeScalars.prefix(WorkText.pollOptionMaxScalars))
+                poll.options[index] = String(view)
                 composer.poll = poll
             }
         )
@@ -1364,16 +1369,34 @@ private extension Array {
     }
 }
 
-/// Reads an image's type off its first bytes, so the upload names what it is
-/// rather than what the picker guessed.
+/// Makes a picked image into one the server accepts, named by what its bytes
+/// are rather than what the picker guessed.
+///
+/// The server takes JPEG, PNG, GIF and WebP and judges by the bytes. Those pass
+/// through untouched; anything else UIKit can decode — HEIC, the camera roll's
+/// default — is re-encoded as JPEG. Bytes that are not a picture at all are nil.
 enum ImageSniff {
-    static func type(of data: Data) -> (mime: String, ext: String) {
-        let head = [UInt8](data.prefix(12))
-        if head.starts(with: [0xFF, 0xD8, 0xFF]) { return ("image/jpeg", "jpg") }
-        if head.starts(with: [0x89, 0x50, 0x4E, 0x47]) { return ("image/png", "png") }
-        if head.starts(with: [0x47, 0x49, 0x46]) { return ("image/gif", "gif") }
-        if head.count >= 12, Array(head[8..<12]) == Array("WEBP".utf8) { return ("image/webp", "webp") }
-        if head.count >= 12, Array(head[4..<8]) == Array("ftyp".utf8) { return ("image/heic", "heic") }
-        return ("image/jpeg", "jpg")
+    struct Upload {
+        let data: Data
+        let mime: String
+        let ext: String
     }
+
+    /// The quality a re-encoded photo is written at.
+    static let jpegQuality: CGFloat = 0.9
+
+    static func uploadable(_ data: Data) -> Upload? {
+        let head = [UInt8](data.prefix(12))
+        if head.starts(with: [0xFF, 0xD8, 0xFF]) { return Upload(data: data, mime: "image/jpeg", ext: "jpg") }
+        if head.starts(with: [0x89, 0x50, 0x4E, 0x47]) { return Upload(data: data, mime: "image/png", ext: "png") }
+        if head.starts(with: [0x47, 0x49, 0x46]) { return Upload(data: data, mime: "image/gif", ext: "gif") }
+        if head.count >= 12, Array(head[0..<4]) == Array("RIFF".utf8), Array(head[8..<12]) == Array("WEBP".utf8) {
+            return Upload(data: data, mime: "image/webp", ext: "webp")
+        }
+        guard let jpeg = UIImage(data: data)?.jpegData(compressionQuality: jpegQuality) else { return nil }
+        return Upload(data: jpeg, mime: "image/jpeg", ext: "jpg")
+    }
+
+    /// What to tell the author about a file that is not a picture.
+    static let notAPicture = "That file isn't a picture F33D3R can post."
 }

@@ -8,9 +8,9 @@ import com.f33d3r.app.compose.Mention
 import com.f33d3r.app.compose.PickedFile
 import com.f33d3r.app.compose.ReplyTarget
 import com.f33d3r.app.compose.WorkDraft
-import com.f33d3r.app.pial.Publication
-import com.f33d3r.app.pial.WorkAttachments
-import com.f33d3r.app.pial.WorkPayload
+import com.f33d3r.app.malkuth.Publication
+import com.f33d3r.app.malkuth.WorkAttachments
+import com.f33d3r.app.malkuth.WorkPayload
 import com.f33d3r.app.net.JsonAnswer
 import com.f33d3r.app.core.ContentSource
 import com.f33d3r.app.core.Endpoints
@@ -19,6 +19,7 @@ import com.f33d3r.app.core.Wire
 import com.f33d3r.app.net.Identity
 import com.f33d3r.app.net.LaneResult
 import com.f33d3r.app.net.Session
+import com.f33d3r.app.net.SignInResult
 import com.f33d3r.app.net.WhoAmI
 import com.f33d3r.app.ui.theme.Ink
 import com.f33d3r.app.net.live.FaLive
@@ -111,6 +112,8 @@ data class ShellState(
     val sealState: SealState = SealState.Locked,
     val loading: Boolean = false,
     val refusal: String = "",
+    /** Sign-in: the server asked for an authenticator code or a backup code. */
+    val needsCode: Boolean = false,
     /** Set when a wire is scoped to something: a handle, a conversation, a work. */
     val subject: String = "",
     /** On the thread wire: who the conversation is with, as the server's head names them. */
@@ -268,7 +271,7 @@ class ShellModel(private val runtime: Runtime) : ViewModel() {
         adoptIdentity(identity)
         _state.update { it.copy(sealState = runtime.gnosis.state(identity.account)) }
         runtime.live.connect()
-        viewModelScope.launch { runtime.malkuth.registerDevice() }
+        viewModelScope.launch { registerSigningKey(identity.account) }
         loadTabs()
         open(Wire.PLAYGROUND)
     }
@@ -280,10 +283,11 @@ class ShellModel(private val runtime: Runtime) : ViewModel() {
      * and it exists in this process for exactly this call. Deferring the unwrap to
      * later would mean either storing the password or asking for it twice.
      */
-    fun signIn(handle: String, password: String) = viewModelScope.launch {
+    fun signIn(handle: String, password: String, code: String) = viewModelScope.launch {
         _state.update { it.copy(loading = true, refusal = "") }
-        when (val result = runtime.client.signIn(handle, password)) {
-            is LaneResult.Accepted -> {
+        when (val result = runtime.client.signIn(handle, password, code)) {
+            is SignInResult.SignedIn -> {
+                _state.update { it.copy(needsCode = false) }
                 val identity = (runtime.client.whoAmI() as? WhoAmI.Known)?.identity
                 if (identity == null) {
                     _state.update { it.copy(loading = false, refusal = "Signed in, but the server did not say who as.") }
@@ -293,19 +297,31 @@ class ShellModel(private val runtime: Runtime) : ViewModel() {
                 val sealState = runtime.gnosis.establish(identity.account, identity.handle, password)
                 _state.update { it.copy(sealState = sealState, loading = false) }
                 runtime.live.connect()
-                runtime.malkuth.registerDevice()
+                registerSigningKey(identity.account)
                 loadTabs()
                 open(Wire.PLAYGROUND)
             }
 
-            is LaneResult.Refused ->
+            is SignInResult.NeedsCode ->
+                _state.update { it.copy(loading = false, needsCode = true, refusal = result.message) }
+
+            is SignInResult.Refused ->
                 _state.update { it.copy(loading = false, refusal = result.message) }
 
-            is LaneResult.Unreachable ->
+            is SignInResult.Unreachable ->
                 _state.update { it.copy(loading = false, refusal = "Could not reach the server.") }
-
-            else -> _state.update { it.copy(loading = false, refusal = "Sign-in was refused.") }
         }
+    }
+
+    /**
+     * Registers this account's public signing key with the key authority. Every
+     * sign-in and every launch does, so the key the server holds is the key this
+     * device signs with. A failure is said, not swallowed: until it succeeds, works
+     * signed here will not verify.
+     */
+    private suspend fun registerSigningKey(account: String) {
+        val problem = runtime.malkuth.registerDevice(account)
+        if (problem != null) notice(problem)
     }
 
     fun signOut() = viewModelScope.launch {
@@ -313,7 +329,7 @@ class ShellModel(private val runtime: Runtime) : ViewModel() {
         runtime.playback.stop()
         runtime.publisher.stop()
         runtime.live.disconnect()
-        runtime.deviceKey.forget()
+        runtime.malkuth.forget(_state.value.identity.account)
         runtime.client.signOut()
         runtime.drafts.clear()
         lastRender.clear()
@@ -910,13 +926,37 @@ class ShellModel(private val runtime: Runtime) : ViewModel() {
         picked.file.delete()
         return when (answer) {
             is JsonAnswer.Ok -> {
-                val url = (answer.body as? JsonObject)?.get("url")?.jsonPrimitive?.content.orEmpty()
-                if (url.isEmpty()) UploadState.Refused("The server stored nothing for that photo.") else UploadState.Stored(url)
+                val body = answer.body as? JsonObject
+                val url = body?.get("url")?.jsonPrimitive?.content.orEmpty()
+                // An exact copy of somebody else's image comes back as their original,
+                // and the credit stays theirs.
+                val credit = if (body?.get("status")?.jsonPrimitive?.content == "duplicate") {
+                    body["original_handle"]?.jsonPrimitive?.content.orEmpty()
+                } else {
+                    ""
+                }
+                if (url.isEmpty()) UploadState.Refused("The server stored nothing for that photo.") else UploadState.Stored(url, credit)
             }
             JsonAnswer.Unauthorized -> UploadState.Refused("Sign in again to attach a photo.")
-            is JsonAnswer.Refused -> UploadState.Refused(answer.message)
+            is JsonAnswer.Refused -> UploadState.Refused(uploadRefusal(answer))
             is JsonAnswer.Unreachable -> UploadState.Refused("The photo could not be uploaded.")
         }
+    }
+
+    /**
+     * What a refused upload means for the person who made it, by the media lane's
+     * answers: held for review and withdrawn media are 409, banned content is 422.
+     */
+    private fun uploadRefusal(answer: JsonAnswer.Refused): String = when {
+        answer.code == 409 && (answer.message.contains("held_for_review") || answer.message.contains("review")) ->
+            "This upload is being reviewed before it can be posted. Post it again once the review is done."
+        answer.code == 409 ->
+            "This media has been removed from F33D3R and can't be uploaded again."
+        answer.code == 422 && answer.message.contains("cannot be uploaded", ignoreCase = true) ->
+            "This content can't be uploaded to F33D3R."
+        answer.code == 422 -> "F33D3R couldn't process this file."
+        answer.code == 413 -> "This file is larger than F33D3R accepts."
+        else -> answer.message
     }
 
     /** A clip goes up resumably and through the transcoder; [onState] reports where that stands. */
@@ -951,17 +991,22 @@ class ShellModel(private val runtime: Runtime) : ViewModel() {
         var posted = 0
         var failure: Publication? = null
 
+        val thread = segments.size > 1 || draft.continuesCid.isNotEmpty()
         for ((index, body) in segments.withIndex()) {
             val first = index == 0 && draft.continuesCid.isEmpty()
+            // The order the web composer decides it: a thread is a thread first; then a
+            // video makes a video work, and only then does answering or quoting count.
             val kind = when {
+                thread -> "thread_post"
+                first && draft.video != null -> "video"
                 first && draft.replyTo != null -> "reply"
                 first && draft.quoteWorkId.isNotEmpty() -> "quote"
-                first && draft.video != null -> "video"
                 else -> "post"
             }
             val gated = draft.subscriberOnly && !(draft.previewFirst && index == 0 && draft.isThread)
+            // Each part is signed as it is sent (Malkuth.publish), never before.
             val payload = WorkPayload(
-                authorPial = identity.pial,
+                authorAccount = identity.account,
                 body = body,
                 commentGating = draft.replyRule,
                 kind = kind,
@@ -976,13 +1021,11 @@ class ShellModel(private val runtime: Runtime) : ViewModel() {
             )
             val attachments = WorkAttachments(
                 isNsfw = draft.nsfw,
-                videoWatermarkedUrl = if (first) draft.video?.watermarkedUrl?.takeIf { it.isNotEmpty() } else null,
                 videoWidth = if (first) draft.video?.width ?: 0 else 0,
                 videoHeight = if (first) draft.video?.height ?: 0 else 0,
                 quotedWorkId = if (first) draft.quoteWorkId.takeIf { it.isNotEmpty() } else null,
-                tusUploadId = if (first) draft.video?.tusUploadId?.takeIf { it.isNotEmpty() } else null,
             )
-            val eventType = if (segments.size > 1) "thread_post" else "work.created"
+            val eventType = kind
             when (val receipt = runtime.malkuth.publish(eventType, payload, attachments)) {
                 is Publication.Stored -> {
                     posted++
@@ -1014,7 +1057,9 @@ class ShellModel(private val runtime: Runtime) : ViewModel() {
         val words = when (val f = failure) {
             is Publication.Refused -> f.message
             Publication.Unauthorized -> "Sign in again to post."
-            else -> "The server could not be reached. Your draft is kept."
+            is Publication.Unconfirmed ->
+                "F33D3R didn't confirm the post (${f.message}). Your draft is kept; if it did go through, posting again is refused as a duplicate."
+            is Publication.Stored, null -> "The post was not sent."
         }
         if (posted > 0) {
             // Part of the thread is on the server. What remains is kept as a draft that

@@ -1,16 +1,15 @@
 package handler
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
-	"math"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -19,149 +18,221 @@ import (
 	"github.com/f33d3r/feed-engine/internal/model"
 )
 
-func (h *Handler) walletPage(w http.ResponseWriter, r *http.Request) {
-	user := h.userFromRequest(w, r)
+// ── The AET unit ──────────────────────────────────────────────────────────────
+//
+// Ain Soph owns the AET unit and publishes it at GET /v1/unit. Every amount
+// this server sends to or reads from Themis and Ain Soph is an integer of those
+// units (`*_units`), and this server never hard-codes the ratio: it learns it
+// once and keeps it, because the unit is a constant of the ledger. A person
+// types and reads decimal AET; the conversion happens here, on the server, with
+// the ledger's own unit.
 
-	type walletData struct {
-		Balance string
-		Amount  string // Balance without its unit, as wallet_hero shows it
-		Address string
-		Error   string
-		Online  bool
+type aetUnit struct {
+	UnitsPerAET int64 `json:"units_per_aet"`
+	UAETPerUnit int64 `json:"uaet_per_unit"`
+}
+
+var aetUnitCache struct {
+	sync.Mutex
+	unit aetUnit
+}
+
+var errAETUnitUnavailable = errors.New("the AET unit is not known yet: Ain Soph has not answered")
+
+// aetUnit returns the ledger's unit, asking Ain Soph the first time.
+func (h *Handler) aetUnit(ctx context.Context) (aetUnit, error) {
+	aetUnitCache.Lock()
+	defer aetUnitCache.Unlock()
+	if aetUnitCache.unit.UnitsPerAET > 0 {
+		return aetUnitCache.unit, nil
 	}
-	data := walletData{}
+	if h.cfg == nil || h.cfg.AinSophURL == "" {
+		return aetUnit{}, errAETUnitUnavailable
+	}
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	var u aetUnit
+	if err := h.ainSophGet(ctx, "/v1/unit", &u); err != nil {
+		return aetUnit{}, fmt.Errorf("%w: %v", errAETUnitUnavailable, err)
+	}
+	if u.UnitsPerAET <= 0 || u.UAETPerUnit <= 0 || aetDecimals(u.UnitsPerAET) < 0 {
+		return aetUnit{}, fmt.Errorf("ain-soph published an unusable unit %+v", u)
+	}
+	aetUnitCache.unit = u
+	return u, nil
+}
 
+// aetDecimals is the number of decimal places a unit has (100 → 2), or -1 when
+// the unit is not a power of ten.
+func aetDecimals(unitsPerAET int64) int {
+	d := 0
+	for n := unitsPerAET; n > 1; n /= 10 {
+		if n%10 != 0 {
+			return -1
+		}
+		d++
+	}
+	return d
+}
+
+// formatAETUnits writes units as a decimal AET amount ("12.50"), without the
+// ticker.
+func formatAETUnits(units int64, u aetUnit) string {
+	d := aetDecimals(u.UnitsPerAET)
+	sign := ""
+	if units < 0 {
+		sign = "-"
+		units = -units
+	}
+	whole, frac := units/u.UnitsPerAET, units%u.UnitsPerAET
+	if d <= 0 {
+		return fmt.Sprintf("%s%d", sign, whole)
+	}
+	return fmt.Sprintf("%s%d.%0*d", sign, whole, d, frac)
+}
+
+// parseAETAmount reads a decimal AET amount a person typed ("5", "5.5",
+// "5.50") into units, exactly: no floating point touches money. More decimals
+// than the unit has is refused rather than rounded.
+func parseAETAmount(s string, u aetUnit) (int64, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, errors.New("enter an amount")
+	}
+	whole, frac, hasFrac := strings.Cut(s, ".")
+	d := aetDecimals(u.UnitsPerAET)
+	if whole == "" {
+		whole = "0"
+	}
+	if hasFrac && len(frac) > d {
+		return 0, fmt.Errorf("an amount has at most %d decimal places", d)
+	}
+	for _, part := range []string{whole, frac} {
+		for _, c := range part {
+			if c < '0' || c > '9' {
+				return 0, errors.New("enter a number like 5 or 5.50")
+			}
+		}
+	}
+	w, err := strconv.ParseInt(whole, 10, 64)
+	if err != nil || w > 1_000_000_000 {
+		return 0, errors.New("that amount is too large")
+	}
+	frac += strings.Repeat("0", d-len(frac))
+	var f int64
+	if frac != "" {
+		if f, err = strconv.ParseInt(frac, 10, 64); err != nil {
+			return 0, errors.New("enter a number like 5 or 5.50")
+		}
+	}
+	return w*u.UnitsPerAET + f, nil
+}
+
+// ── Ain Soph reads ────────────────────────────────────────────────────────────
+
+// walletBalance reads the viewer's balance from Ain Soph. ok is false when
+// there is no identity or Ain Soph did not answer.
+func (h *Handler) walletBalance(ctx context.Context, walletID string) (units int64, display string, ok bool) {
+	if walletID == "" {
+		return 0, "", false
+	}
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	var acc struct {
+		BalanceUnits int64  `json:"balance_units"`
+		BalanceAet   string `json:"balance_aet"`
+	}
+	if err := h.ainSophGet(ctx, "/v1/balance/"+walletID, &acc); err != nil {
+		log.Printf("[wallet] balance: %v", err)
+		return 0, "", false
+	}
+	return acc.BalanceUnits, acc.BalanceAet, true
+}
+
+type walletData struct {
+	Balance string
+	Amount  string // Balance without its unit, as wallet_hero shows it
+	Address string
+	Error   string
+	Online  bool
+}
+
+func (h *Handler) walletDataFor(ctx context.Context, user *model.User) walletData {
+	data := walletData{}
 	// PIAL is the only thing a wallet may be keyed on. See walletIdentity.
 	walletID := h.walletIdentity(user)
 	if walletID == "" {
 		data.Error = "Wallet unavailable — no identity for this account."
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
-	defer cancel()
-	var req *http.Request
-	if walletID != "" {
-		req, _ = http.NewRequestWithContext(ctx, http.MethodGet,
-			h.cfg.AinSophURL+"/v1/balance/"+walletID, nil)
-	}
-	if resp, err := doIfSet(req); err == nil && resp != nil {
-		defer resp.Body.Close()
-		var acc struct {
-			BalanceUnits int64  `json:"balance_units"`
-			BalanceAet   string `json:"balance_aet"`
-		}
-		if json.NewDecoder(resp.Body).Decode(&acc) == nil && acc.BalanceAet != "" {
-			data.Balance = acc.BalanceAet
-			data.Online = true
-		}
-	}
-	if !data.Online {
-		data.Balance = "0.00 AET"
+	if _, display, ok := h.walletBalance(ctx, walletID); ok {
+		data.Balance = display
+		data.Online = true
+	} else {
+		data.Balance = "— AET"
 	}
 	data.Amount = strings.TrimSuffix(data.Balance, " AET")
+	return data
+}
 
+func (h *Handler) walletPage(w http.ResponseWriter, r *http.Request) {
+	user := h.userFromRequest(w, r)
 	h.render(w, r, "wallet.html", h.withRail(map[string]interface{}{
 		"User":       user,
 		"Title":      "Wallet · F33D3R",
 		"SessionID":  uuid.New().String(),
 		"ShowScores": h.cfg.ShowScores,
 		"Themes":     ThemesWithActive(user.ThemeID),
-		"Wallet":     data,
+		"Wallet":     h.walletDataFor(r.Context(), user),
+		"TipKey":     uuid.NewString(),
 	}, user, "default"))
 }
 
 // ── Wallet panel partial handlers ─────────────────────────────────────────────
-// Each handler fetches the same balance data as walletPage and renders
-// the appropriate panel partial into #wallet-panel via HTMX swap.
+// Each handler renders the appropriate panel partial into #wallet-panel.
 
-func (h *Handler) walletPanelData(w http.ResponseWriter, r *http.Request) (map[string]interface{}, bool) {
+func (h *Handler) walletPanelData(w http.ResponseWriter, r *http.Request) map[string]interface{} {
 	user := h.userFromRequest(w, r)
-
-	type walletData struct {
-		Balance string
-		Amount  string // Balance without its unit, as wallet_hero shows it
-		Address string
-		Error   string
-		Online  bool
-	}
-	data := walletData{}
-
-	walletID := h.walletIdentity(user)
-	if walletID == "" {
-		data.Error = "Wallet unavailable — no identity for this account."
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
-	defer cancel()
-	var req *http.Request
-	if walletID != "" {
-		req, _ = http.NewRequestWithContext(ctx, http.MethodGet,
-			h.cfg.AinSophURL+"/v1/balance/"+walletID, nil)
-	}
-	if resp, err := doIfSet(req); err == nil && resp != nil {
-		defer resp.Body.Close()
-		var acc struct {
-			BalanceUnits int64  `json:"balance_units"`
-			BalanceAet   string `json:"balance_aet"`
-		}
-		if json.NewDecoder(resp.Body).Decode(&acc) == nil && acc.BalanceAet != "" {
-			data.Balance = acc.BalanceAet
-			data.Online = true
-		}
-	}
-	if !data.Online {
-		data.Balance = "0.00 AET"
-	}
-	data.Amount = strings.TrimSuffix(data.Balance, " AET")
-
-	tplData := h.withRail(map[string]interface{}{
+	return h.withRail(map[string]interface{}{
 		"User":       user,
 		"Title":      "Wallet · F33D3R",
 		"SessionID":  uuid.New().String(),
 		"ShowScores": h.cfg.ShowScores,
 		"Themes":     ThemesWithActive(user.ThemeID),
-		"Wallet":     data,
+		"Wallet":     h.walletDataFor(r.Context(), user),
+		"TipKey":     uuid.NewString(),
 	}, user, "default")
-	return tplData, true
 }
 
 func (h *Handler) walletPanelOverview(w http.ResponseWriter, r *http.Request) {
-	tplData, ok := h.walletPanelData(w, r)
-	if !ok {
-		return
-	}
+	tplData := h.walletPanelData(w, r)
 	tplData["ActiveSection"] = "overview"
 	h.renderPartial(w, "wallet_panel_overview", tplData)
 }
 
 func (h *Handler) walletPanelHistory(w http.ResponseWriter, r *http.Request) {
-	tplData, ok := h.walletPanelData(w, r)
-	if !ok {
-		return
-	}
+	tplData := h.walletPanelData(w, r)
 	tplData["ActiveSection"] = "history"
 	h.renderPartial(w, "wallet_panel_history", tplData)
 }
 
 func (h *Handler) walletPanelGovernance(w http.ResponseWriter, r *http.Request) {
-	tplData, ok := h.walletPanelData(w, r)
-	if !ok {
-		return
-	}
+	tplData := h.walletPanelData(w, r)
 	tplData["ActiveSection"] = "governance"
 	h.renderPartial(w, "wallet_panel_governance", tplData)
 }
 
 func (h *Handler) walletPanelSend(w http.ResponseWriter, r *http.Request) {
-	tplData, ok := h.walletPanelData(w, r)
-	if !ok {
-		return
-	}
+	tplData := h.walletPanelData(w, r)
 	tplData["ActiveSection"] = "send"
 	h.renderPartial(w, "wallet_panel_send", tplData)
 }
 
-// tipEvent handles POST /events {event_type:tip, target_handle, amount_aet}.
-// amount_aet is in cents of AET (100 = 1.00 AET).
-// Resolves target_handle → target PIAL, then proxies to Thessalon /v1/tips.
+// ── Tips ──────────────────────────────────────────────────────────────────────
+
+// tipEvent handles POST /events {event_type:tip, target_handle | stream_id,
+// amount, tip_key}. amount is a decimal AET amount as the person typed it;
+// tip_key is the form's own idempotency key, rendered with the form, so a
+// double submit is one tip.
 func (h *Handler) tipEvent(w http.ResponseWriter, r *http.Request) {
 	user := h.userFromRequest(w, r)
 	if user == nil || user.PIALID == "" {
@@ -172,7 +243,11 @@ func (h *Handler) tipEvent(w http.ResponseWriter, r *http.Request) {
 	targetHandle := strings.TrimPrefix(strings.TrimSpace(r.FormValue("target_handle")), "@")
 	streamID := strings.TrimSpace(r.FormValue("stream_id"))
 	workID := strings.TrimSpace(r.FormValue("work_id"))
-	amountStr := r.FormValue("amount_aet")
+	tipKey := strings.TrimSpace(r.FormValue("tip_key"))
+	if _, err := uuid.Parse(tipKey); err != nil {
+		// A form rendered before tip keys existed still tips once per press.
+		tipKey = uuid.NewString()
+	}
 
 	// A tip names its target one of two ways: a handle, or the broadcast the
 	// tipper is watching, whose author is the target.
@@ -207,35 +282,21 @@ func (h *Handler) tipEvent(w http.ResponseWriter, r *http.Request) {
 		h.tipEventError(w, r, targetHandle, "target_handle required", http.StatusBadRequest)
 		return
 	}
-	var amountAet int
-	if amountStr != "" {
-		n, err := strconv.Atoi(amountStr)
-		if err != nil || n <= 0 {
-			h.tipEventError(w, r, targetHandle, "Enter a valid amount", http.StatusBadRequest)
-			return
-		}
-		amountAet = n
-	} else {
-		aet, err := strconv.ParseFloat(strings.TrimSpace(r.FormValue("amount")), 64)
-		if err != nil || aet <= 0 || aet > 10000 {
-			h.tipEventError(w, r, targetHandle, "Enter a valid amount", http.StatusBadRequest)
-			return
-		}
-		amountAet = int(math.Round(aet * 100))
+
+	unit, err := h.aetUnit(r.Context())
+	if err != nil {
+		log.Printf("tip: %v", err)
+		h.tipEventError(w, r, targetHandle, "The wallet is unavailable right now. Nothing was sent.", http.StatusServiceUnavailable)
+		return
 	}
-	if amountAet <= 0 {
+	units, err := parseAETAmount(r.FormValue("amount"), unit)
+	if err != nil || units <= 0 {
 		h.tipEventError(w, r, targetHandle, "Enter a valid amount", http.StatusBadRequest)
 		return
 	}
 
-	var targetPIAL, targetID string
-	if h.db != nil {
-		_ = h.db.QueryRow(
-			`SELECT COALESCE(pial_id::text, ''), id::text FROM users WHERE handle = $1`,
-			targetHandle,
-		).Scan(&targetPIAL, &targetID)
-	}
-	if targetPIAL == "" {
+	target, err := dbpkg.GetUserByHandle(h.db, targetHandle)
+	if err != nil || target == nil || target.PIALID == "" {
 		h.tipEventError(w, r, targetHandle, "User not found", http.StatusNotFound)
 		return
 	}
@@ -246,19 +307,19 @@ func (h *Handler) tipEvent(w http.ResponseWriter, r *http.Request) {
 	} else if stream != nil {
 		tipTargetID, tipTargetType = stream.ID, "live"
 	}
-	status, msg := h.settleTip(r.Context(), user, targetPIAL, targetID, tipTargetID, tipTargetType, amountAet)
+	status, msg := h.settleTip(r.Context(), user, target, tipTargetID, tipTargetType, units, tipKey)
 	if status != http.StatusOK {
 		h.tipEventError(w, r, targetHandle, msg, status)
 		return
 	}
 
-	// The ledger said yes and has told the recipient. A broadcast also keeps its
-	// own account of the tip.
+	// The ledger moved the tip and Themis has told the recipient. A broadcast
+	// also keeps its own account of the tip, in the native clients' µAET.
 	if stream != nil {
-		h.recordLiveTip(stream, user, int64(amountAet)*10_000)
+		h.recordLiveTip(stream, user, units*unit.UAETPerUnit)
 	}
 
-	aetAmount := float64(amountAet) / 100.0
+	amount := formatAETUnits(units, unit)
 	if facetRequest(r) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
@@ -267,7 +328,7 @@ func (h *Handler) tipEvent(w http.ResponseWriter, r *http.Request) {
 		h.renderPartial(w, "tip_result", map[string]interface{}{
 			"OK":      true,
 			"Handle":  targetHandle,
-			"Amount":  fmt.Sprintf("%.2f", aetAmount),
+			"Amount":  amount,
 			"Message": "",
 		})
 		return
@@ -277,67 +338,42 @@ func (h *Handler) tipEvent(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, `{"ok":true}`)
 }
 
-// settleTip moves amountAet (AET hundredths) from the tipper to targetPIAL
-// through Ain Soph, the ledger brain — F33D3R never holds the money. On
-// success it returns 200 and shows the toast on the recipient's web sessions;
-// the ledger writes their notification with the payment. Otherwise the status and message the ledger gave.
-func (h *Handler) settleTip(ctx context.Context, from *model.User, targetPIAL, targetAccount, tipTargetID, tipTargetType string, amountAet int) (int, string) {
-	if from == nil || from.PIALID == "" || targetPIAL == "" || amountAet <= 0 {
+// settleTip asks Themis — the only door through which AET moves — to move
+// units from the tipper to target. The tipper is the session's identity, sent
+// in X-Pial-Identity; the body never names who pays. On success it shows the
+// toast on the recipient's web sessions (Themis writes their notification with
+// the payment). Otherwise the status and message Themis gave.
+func (h *Handler) settleTip(ctx context.Context, from, target *model.User, tipTargetID, tipTargetType string, units int64, tipKey string) (int, string) {
+	if from == nil || from.PIALID == "" || target == nil || target.PIALID == "" || units <= 0 {
 		return http.StatusBadRequest, "tip failed"
 	}
-	aetAmount := float64(amountAet) / 100.0
-	payload := map[string]interface{}{
-		"from_pial_id":    from.PIALID,
-		"to_pial_id":      targetPIAL,
-		"amount_aet":      aetAmount,
-		"idempotency_key": "",
-		"from_account":    from.ID,
-		"from_handle":     from.Handle,
-		"to_account":      targetAccount,
-		"target_id":       tipTargetID,
-		"target_type":     tipTargetType,
-	}
-	body, _ := json.Marshal(payload)
-
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, h.cfg.AinSophURL+"/v1/tip", bytes.NewReader(body))
+	status, body, err := h.themisCall(ctx, http.MethodPost, "/v1/tips", from, map[string]interface{}{
+		"recipient_pial_id": target.PIALID,
+		"amount_units":      units,
+		"idempotency_key":   tipKey,
+		"from_account":      from.ID,
+		"from_handle":       from.Handle,
+		"to_account":        target.ID,
+		"target_id":         tipTargetID,
+		"target_type":       tipTargetType,
+	})
 	if err != nil {
+		log.Printf("tip: themis unavailable: %v", err)
 		return http.StatusBadGateway, "Tip service unavailable"
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Pial-Identity", from.PIALID)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		log.Printf("tip: ain-soph unavailable: %v", err)
-		return http.StatusBadGateway, "Tip service unavailable"
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusOK {
-		go PublishToUser(targetPIAL, SSEEvent{
+	if status == http.StatusOK {
+		var ok struct {
+			AmountDisplay string `json:"amount_display"`
+		}
+		_ = json.Unmarshal(body, &ok)
+		go PublishToUser(target.PIALID, SSEEvent{
 			Type: "tip_received",
-			Data: fmt.Sprintf(`<div class="toast toast--success" role="alert">@%s sent you %.2f AET</div>`,
-				from.Handle, aetAmount),
+			Data: fmt.Sprintf(`<div class="toast toast--success" role="alert">@%s sent you %s</div>`,
+				from.Handle, ok.AmountDisplay),
 		})
 		return http.StatusOK, ""
 	}
-
-	var errBody struct {
-		Error   string `json:"error"`
-		Message string `json:"message"`
-	}
-	json.NewDecoder(resp.Body).Decode(&errBody)
-	msg := errBody.Error
-	if msg == "" {
-		msg = errBody.Message
-	}
-	if msg == "" {
-		msg = "tip failed"
-	}
-	return resp.StatusCode, msg
+	return status, themisRefusal(body, "tip failed")
 }
 
 func (h *Handler) tipEventError(w http.ResponseWriter, r *http.Request, handle, msg string, code int) {
@@ -366,14 +402,4 @@ func (h *Handler) walletIdentity(user *model.User) string {
 		return ""
 	}
 	return user.PIALID
-}
-
-// doIfSet performs req, or returns (nil, nil) when there is no request to make.
-// Keeps the "no identity, no call" decision in one place rather than nesting the
-// whole balance lookup twice.
-func doIfSet(req *http.Request) (*http.Response, error) {
-	if req == nil {
-		return nil, nil
-	}
-	return http.DefaultClient.Do(req)
 }

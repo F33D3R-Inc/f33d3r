@@ -23,27 +23,21 @@ func isEBML(head []byte) bool {
 	return len(head) >= 4 && head[0] == 0x1A && head[1] == 0x45 && head[2] == 0xDF && head[3] == 0xA3
 }
 
-// imageExtensionFor names an image by its bytes, falling back to the name
-// only for HEIC, which net/http does not sniff. Empty when it is not an image
-// this server stores.
-func imageExtensionFor(contentType, filename string, data []byte) string {
-	sniffed := http.DetectContentType(data)
-	for _, ct := range []string{sniffed, contentType} {
-		switch ct {
-		case "image/jpeg":
-			return ".jpg"
-		case "image/png":
-			return ".png"
-		case "image/gif":
-			return ".gif"
-		case "image/webp":
-			return ".webp"
-		case "image/heic", "image/heif":
-			return ".heic"
-		}
-	}
-	if ext := strings.ToLower(filepath.Ext(filename)); ext == ".heic" || ext == ".heif" {
-		return ".heic"
+// imageExtensionFor names an image by its bytes. Empty when it is not an
+// image this server stores.
+//
+// The bytes alone decide, as feed-engine's imageExtensionFor does: JPEG, PNG,
+// GIF and WebP, and nothing a declared type or name claims.
+func imageExtensionFor(data []byte) string {
+	switch http.DetectContentType(data) {
+	case "image/jpeg":
+		return ".jpg"
+	case "image/png":
+		return ".png"
+	case "image/gif":
+		return ".gif"
+	case "image/webp":
+		return ".webp"
 	}
 	return ""
 }

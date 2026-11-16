@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -20,7 +21,8 @@ import (
 // Server holds the store and serves the routes.
 type Server struct {
 	store *store.Store
-	// mediaDir is where uploaded files land and are served from under /media.
+	// mediaDir is where uploaded files land: assets under a/<asset_id>/,
+	// served at /static/media/a/.
 	mediaDir string
 	// seedMediaDir holds the images the seeded works reference.
 	seedMediaDir string
@@ -88,6 +90,10 @@ func (s *Server) Handler() http.Handler {
 	// Served media: uploads from the data directory, and the checked-in seed
 	// images the seeded works point at.
 	mux.Handle("GET /media/seed/", http.StripPrefix("/media/seed/", http.FileServer(http.Dir(s.seedMediaDir))))
+	// Uploads are assets, served where Caeor serves them. Paths an older
+	// database holds under /media/ stay served, as feed-engine keeps imported
+	// legacy media at its path.
+	mux.Handle("GET "+assetPathPrefix, http.StripPrefix(assetPathPrefix, http.FileServer(http.Dir(filepath.Join(s.mediaDir, "a")))))
 	mux.Handle("GET /media/", http.StripPrefix("/media/", http.FileServer(http.Dir(s.mediaDir))))
 
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {

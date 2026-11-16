@@ -3,9 +3,12 @@ FACET admin_panel_treasury
   version: 1.0 | status: stable | layer: 2
 
   inputs:
-    FeeBalance      string   — formatted AET balance string
-    FeeBalanceUnits int64    — raw AET units
-    FeeTxs          []FeeTx  — recent platform fee transactions
+    FeeBalance      string        — formatted AET balance string
+    FeeBalanceUnits int64         — balance in AET units
+    FeeTxs          []adminFeeTx  — recent fee float movements (Direction, Kind, Amount, When); no party is named
+    FounderHandle   string        — the sweep's destination
+    SweepKey        string        — the sweep's idempotency key, so a double submit is one sweep
+    Notice          string        — set when Ain Soph could not be read
 
   states:
     default
@@ -13,7 +16,7 @@ FACET admin_panel_treasury
   children: none
 
   signals:
-    emits:    withdraw_fees (POST /events admin action)
+    emits:    POST /api/admin/sweep-fees (founder only, through Themis)
     receives: none
 
   context:
@@ -27,10 +30,11 @@ FACET admin_panel_treasury
       <span class="admin-section-head-title">Treasury</span>
     </div>
     <p style="font-size:12px;color:var(--text-muted);margin:0">
-      Platform fee vault — 1% collected on every tip and transfer. Sweep sends all fees to the founder{{if .FounderHandle}}, @{{.FounderHandle}}{{end}}.
+      Platform fee vault — the ledger's fees on deposits, transfers and tips. Sweep sends all fees to the founder{{if .FounderHandle}}, @{{.FounderHandle}}{{end}}.
     </p>
   </div>
 
+  {{if .Notice}}<p class="admin-devtool-desc" role="alert">{{.Notice}}</p>{{end}}
   <div class="admin-devtool-card" style="display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap">
     <div>
       <div class="admin-devtool-title" style="margin-bottom:4px">Fee vault balance</div>
@@ -41,7 +45,8 @@ FACET admin_panel_treasury
     <div style="font-size:12px;color:var(--text-muted)">No founder account to sweep to.</div>
     {{else if gt .FeeBalanceUnits 0}}
     <form hx-post="/api/admin/sweep-fees" hx-target="#treasury-sweep-result" hx-swap="innerHTML"
-          onsubmit="return confirm('Sweep all fees to @{{.FounderHandle}}?')">
+          hx-confirm="Sweep all fees to @{{.FounderHandle}}?" hx-sync="this:drop" hx-disabled-elt="find button">
+      <input type="hidden" name="sweep_key" value="{{.SweepKey}}">
       <button type="submit" class="btn-primary" style="padding:10px 24px;font-size:13px">
         Sweep all to @{{.FounderHandle}}
       </button>
@@ -54,25 +59,25 @@ FACET admin_panel_treasury
 
   <div class="admin-panel-section" style="margin-top:8px">
     <div class="admin-section-head">
-      <span class="admin-section-head-title">Recent fee collections</span>
+      <span class="admin-section-head-title">Recent fee movements</span>
     </div>
     {{if .FeeTxs}}
     <table style="width:100%;border-collapse:collapse;font-size:12px">
       <thead>
         <tr style="color:var(--text-muted);text-align:left;border-bottom:1px solid var(--border)">
-          <th style="padding:6px 8px">From</th>
+          <th style="padding:6px 8px">Kind</th>
           <th style="padding:6px 8px">Amount</th>
-          <th style="padding:6px 8px">Note</th>
+          <th style="padding:6px 8px">Direction</th>
           <th style="padding:6px 8px">When</th>
         </tr>
       </thead>
       <tbody>
         {{range .FeeTxs}}
         <tr style="border-bottom:1px solid var(--border)">
-          <td style="padding:6px 8px;color:var(--text-secondary);font-family:monospace;font-size:11px">{{.FromUserID}}</td>
-          <td style="padding:6px 8px;font-weight:600;color:var(--accent)">{{.AmountAet}}</td>
-          <td style="padding:6px 8px;color:var(--text-muted)">{{.TxMeta}}</td>
-          <td style="padding:6px 8px;color:var(--text-muted)">{{.CreatedAt}}</td>
+          <td style="padding:6px 8px;color:var(--text-secondary)">{{.Kind}}</td>
+          <td style="padding:6px 8px;font-weight:600;color:var(--accent)">{{.Amount}}</td>
+          <td style="padding:6px 8px;color:var(--text-muted)">{{if eq .Direction "in"}}in{{else}}out{{end}}</td>
+          <td style="padding:6px 8px;color:var(--text-muted)">{{.When}}</td>
         </tr>
         {{end}}
       </tbody>

@@ -54,7 +54,7 @@ func main() {
 		log.Fatal("-seconds is required with -voice: the server does not measure audio")
 	}
 
-	token, pial := login(*addr, *as, *password)
+	token, account := login(*addr, *as, *password)
 
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -66,7 +66,7 @@ func main() {
 		log.Fatalf("register key: %d %s", status, resp)
 	}
 
-	draft := api.WorkDraft{AuthorPIAL: pial, Kind: *kind, Body: *body, Tags: tagsIn(*body), ParentCID: *parent}
+	draft := api.WorkDraft{AuthorAccount: account, Kind: *kind, Body: *body, Tags: tagsIn(*body), ParentCID: *parent}
 	if *image != "" {
 		var uploaded struct {
 			URL string `json:"url"`
@@ -86,7 +86,6 @@ func main() {
 		job := waitForVideo(*addr, token, *video)
 		draft.VideoMasterURL = job.MasterURL
 		draft.VideoPosterURL = job.PosterURL
-		draft.VideoWatermarkedURL = job.WatermarkedURL
 		if job.DurationSecs != nil {
 			draft.VideoDurationSecs = int(*job.DurationSecs + 0.5)
 		}
@@ -101,7 +100,7 @@ func main() {
 		log.Fatal(err)
 	}
 	status, resp := call(*addr, "POST", "/events", token, envelope)
-	if status != 201 && status != 200 {
+	if status != http.StatusCreated {
 		log.Fatalf("post: %d %s", status, resp)
 	}
 	var accepted struct {
@@ -116,15 +115,7 @@ func main() {
 // posted as a reference to the original, the composer's "Use anyway".
 func waitForVideo(addr, token, path string) api.VideoJobDTO {
 	var job api.VideoJobDTO
-	status := uploadRaw(addr, "/api/v1/media/video", "file", path, token, &job)
-	switch status {
-	case http.StatusAccepted:
-	case http.StatusOK:
-		if job.Status == "duplicate" {
-			fmt.Printf("video already on F33D3R as @%s's; posting a reference\n", job.DuplicateOfHandle)
-			return job
-		}
-	default:
+	if status := uploadRaw(addr, "/api/v1/media/video", "file", path, token, &job); status != http.StatusAccepted {
 		log.Fatalf("upload video: %d %+v", status, job)
 	}
 	for i := 0; i < 120; i++ {
@@ -138,6 +129,9 @@ func waitForVideo(addr, token, path string) api.VideoJobDTO {
 		}
 		switch job.Status {
 		case "ready":
+			return job
+		case "duplicate":
+			fmt.Printf("video already on F33D3R as @%s's; posting a reference\n", job.DuplicateOfHandle)
 			return job
 		case "failed":
 			log.Fatalf("video failed: %s", job.Error)
@@ -204,7 +198,7 @@ func tagsIn(body string) []string {
 	return out
 }
 
-func login(addr, handle, password string) (token, pial string) {
+func login(addr, handle, password string) (token, account string) {
 	status, resp := call(addr, "POST", "/api/v1/auth/login", "",
 		mustJSON(map[string]string{"handle": handle, "password": password, "device_name": "postas"}))
 	if status != 200 {
@@ -221,13 +215,15 @@ func login(addr, handle, password string) (token, pial string) {
 		log.Fatalf("me: %d %s", status, resp)
 	}
 	var me struct {
-		PIAL string `json:"pial_id"`
+		AccountID string `json:"account_id"`
 	}
-	_ = json.Unmarshal(resp, &me)
-	if me.PIAL == "" {
-		log.Fatal("me: no pial_id")
+	if err := json.Unmarshal(resp, &me); err != nil {
+		log.Fatalf("me: %v", err)
 	}
-	return session.Token, me.PIAL
+	if me.AccountID == "" {
+		log.Fatal("me: no account_id")
+	}
+	return session.Token, me.AccountID
 }
 
 func call(addr, method, path, token string, body []byte) (int, []byte) {

@@ -1,95 +1,104 @@
 import Foundation
 
-/// Holds this device's signing key and turns a ``WorkPayload`` into a signed
-/// envelope.
+/// Holds this device's signing keys, one per signed-in account, and turns a
+/// ``WorkPayload`` into a signed envelope.
 ///
-/// An actor because the key is loaded lazily from the Keychain and two compose
+/// An actor because keys are loaded lazily from the Keychain and two compose
 /// screens signing at once must not each generate a key and each register it —
-/// the authority holds one key per PIAL, so a race there ends with works signed
-/// by a key that is no longer registered.
+/// the authority holds one key per identity, so a race there ends with works
+/// signed by a key that is no longer registered.
+///
+/// The key a payload is signed with is the key of its `author_account`, so a
+/// device holding two accounts never signs one account's work with the
+/// other's key.
 public actor MalkuthSigner {
 
-    private let store: any MalkuthKeyStore
-    private var cached: MalkuthKey?
-    /// Set once registration has succeeded this launch, so a compose that
-    /// happens after sign-in does not re-register on every post.
-    private var registered = false
+    private let storeFor: @Sendable (String) -> any MalkuthKeyStore
+    private var cached: [String: MalkuthKey] = [:]
+    /// Accounts whose key registration has succeeded this launch, so a compose
+    /// after sign-in does not re-register on every post.
+    private var registered: Set<String> = []
 
-    public init(store: any MalkuthKeyStore = KeychainMalkuthKeyStore()) {
-        self.store = store
+    /// `storeFor` names where an account's key lives; the default is the
+    /// Keychain item named by the account id.
+    public init(storeFor: @escaping @Sendable (String) -> any MalkuthKeyStore = {
+        KeychainMalkuthKeyStore(accountID: $0)
+    }) {
+        self.storeFor = storeFor
     }
 
-    /// This device's key, created on first use.
-    public func key() throws -> MalkuthKey {
-        if let cached { return cached }
-        let key = try store.loadOrCreate()
-        cached = key
+    /// One store for every account: for tests.
+    public init(store: any MalkuthKeyStore) {
+        self.storeFor = { _ in store }
+    }
+
+    /// The account's key on this device, created on first use.
+    public func key(for accountID: String) throws -> MalkuthKey {
+        if let key = cached[accountID] { return key }
+        let key = try storeFor(accountID).loadOrCreate()
+        cached[accountID] = key
         return key
     }
 
-    /// The SPKI base64 to register.
-    public func publicKeySPKIBase64() throws -> String {
-        try key().publicKeySPKIBase64
+    /// The SPKI base64 to register for the account.
+    public func publicKeySPKIBase64(for accountID: String) throws -> String {
+        try key(for: accountID).publicKeySPKIBase64
     }
 
-    /// Registers the public key with the authority unless it already succeeded
-    /// this launch.
+    /// Registers the account's public key with the authority unless it already
+    /// succeeded this launch.
     ///
-    /// `force` re-registers regardless, which is what a `403 signature invalid`
-    /// warrants: the most likely cause is that another device registered over
-    /// this one's key, and re-registering is the fix.
+    /// `force` re-registers regardless, which is what every sign-in does: the
+    /// most likely reason a signature stops verifying is that another device
+    /// registered over this one's key, and re-registering is the fix.
     ///
-    /// Throws ``MalkuthError/keyAuthorityUnavailable`` when Elohim Veni is not
-    /// reachable. That is expected in a local deployment and callers should
-    /// treat it as "signing will not verify yet", not as a bug — but it must
-    /// never be swallowed, because a client that quietly proceeds produces
-    /// works that are all rejected with the same opaque 403.
+    /// Throws ``MalkuthError/keyAuthorityUnavailable`` when the key authority is
+    /// not reachable. It must never be swallowed, because a client that quietly
+    /// proceeds produces works that are all refused.
     @discardableResult
-    public func registerIfNeeded(with client: APIClient, force: Bool = false) async throws -> Bool {
-        if registered && !force { return false }
-        try await client.registerSigningKey(publicKeySPKIBase64: try key().publicKeySPKIBase64)
-        registered = true
+    public func registerIfNeeded(with client: APIClient, accountID: String, force: Bool = false) async throws -> Bool {
+        if registered.contains(accountID) && !force { return false }
+        try await client.registerSigningKey(publicKeySPKIBase64: try key(for: accountID).publicKeySPKIBase64)
+        registered.insert(accountID)
         return true
     }
 
-    /// Signs `payload`.
+    /// Signs `payload` with its author account's key.
     ///
-    /// Validation happens inside ``WorkEnvelope/init(payload:key:eventType:isNSFW:videoWatermarkedURL:videoWidth:videoHeight:quotedWorkID:reactLayout:tusUploadID:)``
-    /// before anything is hashed, so a rejected payload costs no key access and
-    /// no request.
+    /// Validation happens inside ``WorkEnvelope/init(payload:key:eventType:isNSFW:videoWidth:videoHeight:quotedWorkID:reactLayout:downloadsAllowed:)``
+    /// before anything is hashed, so a rejected payload costs no request.
     public func sign(
         _ payload: WorkPayload,
         eventType: String? = nil,
         isNSFW: Bool = false,
-        videoWatermarkedURL: String? = nil,
         videoWidth: Int? = nil,
         videoHeight: Int? = nil,
         quotedWorkID: String? = nil,
         reactLayout: String? = nil,
-        tusUploadID: String? = nil
+        downloadsAllowed: Bool? = nil
     ) throws -> WorkEnvelope {
-        try WorkEnvelope(
+        guard !payload.authorAccount.isEmpty else { throw MalkuthError.accountUnknown }
+        return try WorkEnvelope(
             payload: payload,
-            key: try key(),
+            key: try key(for: payload.authorAccount),
             eventType: eventType,
             isNSFW: isNSFW,
-            videoWatermarkedURL: videoWatermarkedURL,
             videoWidth: videoWidth,
             videoHeight: videoHeight,
             quotedWorkID: quotedWorkID,
             reactLayout: reactLayout,
-            tusUploadID: tusUploadID
+            downloadsAllowed: downloadsAllowed
         )
     }
 
-    /// Forgets the key on this device.
+    /// Forgets the account's key on this device.
     ///
     /// Not called on sign-out: the key belongs to the device, and a user signing
     /// back in should keep signing with the key the authority already holds.
     /// This is for "reset this device's identity" and for tests.
-    public func destroyKey() throws {
-        try store.delete()
-        cached = nil
-        registered = false
+    public func destroyKey(for accountID: String) throws {
+        try storeFor(accountID).delete()
+        cached[accountID] = nil
+        registered.remove(accountID)
     }
 }

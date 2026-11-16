@@ -6,8 +6,8 @@ mod handlers;
 mod identity;
 mod manhattan_outbox;
 mod models;
-mod nexus_aml;
 mod observ;
+mod ranking_outbox;
 
 use axum::{
     routing::{get, post},
@@ -52,6 +52,15 @@ async fn main() -> anyhow::Result<()> {
         "Manhattan naming plane"
     );
 
+    // Payment signals for AethyrRank are rows written with the payment and
+    // relayed to ranking.events through the Sitra Achra proxy. Without the
+    // proxy they would pile up undelivered, so its address is required.
+    let sitra_proxy = std::env::var("SITRA_PROXY_URL").unwrap_or_default();
+    if sitra_proxy.trim().is_empty() {
+        anyhow::bail!("SITRA_PROXY_URL must be set for Ain Soph: payment signals are relayed through it");
+    }
+    ranking_outbox::spawn_relay(pool.clone(), sitra_proxy);
+
     // Registrations are queued transactionally by trigger; this delivers them.
     manhattan_outbox::start_drain(database_url.clone(), manhattan.clone());
     notification_outbox::spawn(database_url.clone());
@@ -62,29 +71,20 @@ async fn main() -> anyhow::Result<()> {
         internal_api_key,
     };
 
-    // Auth posture, route by route.
+    // Auth posture. Every route but /health and /metrics requires the internal
+    // service key (require_internal_key), reads included: Ain Soph is a private
+    // book that only Themis and feed-engine reach. Every handler that moves value,
+    // casts stake or reads an account also takes the `auth::Caller` extractor,
+    // which checks the key again and honours X-Pial-Identity only alongside it,
+    // so adding a route cannot silently inherit "no auth".
     //
-    // Every POST below moves value or casts stake, and every one of them now
-    // takes the `auth::Caller` extractor: no `X-Internal-Key` and no
-    // `X-Pial-Identity` means 401 before the handler body runs, and the identity
-    // acted upon is derived from that caller rather than from the request body.
-    // The layer beneath is still observability only — authentication is an
-    // extractor per route rather than a blanket middleware precisely so that
-    // adding a route cannot silently inherit "no auth".
-    //
-    // The GET routes are reads and are unchanged. They remain internal-only by
-    // deployment: prod publishes no port for this brain and local now binds to
-    // the loopback address rather than 0.0.0.0.
+    // There is no withdrawal and no legacy unversioned route: AET is
+    // non-redeemable platform credit, and the only mint is a service deposit.
+    let key_layer = state.internal_api_key.clone();
     let app = Router::new()
         .route("/metrics", get(observ::metrics_handler))
-        // Health
         .route("/health", get(handlers::health))
-        // Legacy routes (backward compat)
-        .route("/balance/:user_id", get(handlers::get_balance))
-        .route("/deposit", post(handlers::deposit))
-        .route("/transfer", post(handlers::transfer))
-        .route("/withdraw", post(handlers::withdraw))
-        // AET v1 API
+        .route("/v1/unit", get(handlers::get_unit))
         .route("/v1/supply", get(handlers::get_supply))
         .route("/v1/balance/:user_id", get(handlers::get_balance))
         .route(
@@ -94,9 +94,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/deposit", post(handlers::deposit))
         .route("/v1/transfer", post(handlers::transfer))
         .route("/v1/tip", post(handlers::tip))
-        .route("/v1/withdraw", post(handlers::withdraw))
-        // Ledger cross-brain checkpoint (called by Aethyr Ledger after each block seal)
-        .route("/v1/ledger/checkpoint", post(handlers::ledger_checkpoint))
+        .route("/v1/accounts/reattribute", post(handlers::reattribute))
         // Governance
         .route(
             "/v1/proposals",
@@ -105,6 +103,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/proposals/:id", get(handlers::get_proposal))
         .route("/v1/proposals/:id/vote", post(handlers::cast_vote))
         .with_state(state)
+        .layer(axum::middleware::from_fn_with_state(key_layer, auth::require_internal_key))
         .layer(axum::middleware::from_fn(observ::http_middleware));
 
     let addr = format!("0.0.0.0:{}", port);

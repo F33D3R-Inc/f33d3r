@@ -211,7 +211,8 @@ struct WorkDetailView: View {
     private func replyPrompt(for work: Work) -> String {
         switch work.commentGating {
         case "none": return "The author has turned off replies."
-        case "followers", "circle": return "Only people the author follows can reply."
+        case "followers": return "Only the author's followers can reply."
+        case "circle": return "Only people the author and they follow each other can reply."
         case "verified": return "Only verified accounts can reply."
         default: return "Be the first to reply."
         }

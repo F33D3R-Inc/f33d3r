@@ -168,7 +168,7 @@ func (s *Store) SeedIfEmpty(ctx context.Context) (bool, error) {
 		id, err := s.InsertWork(ctx, InsertWorkParams{
 			AuthorID: u.ID, AuthorPIAL: u.PIALID, CID: cid, Body: w.body, Kind: kind,
 			MediaURLs: w.media, ParentCID: parentCID, QuotedCID: quotedCID, Tags: w.tags,
-			PollOptions: w.poll, PollEndsAt: pollEnds, CommentGating: "open",
+			PollOptions: w.poll, PollEndsAt: pollEnds, CommentGating: "everyone",
 			VoiceURL: w.voice, VoiceDurationSecs: voiceSecs, PriceUAET: w.price, CreatedAt: created,
 		})
 		if err != nil {

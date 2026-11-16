@@ -292,6 +292,9 @@ func (h *Handler) ainSophPost(ctx context.Context, pialID, path string, body int
 		return 0, "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	// Ain Soph answers nothing without the service key; the identity rides
+	// alongside it and is honoured only with it.
+	req.Header.Set("X-Internal-Key", h.cfg.InternalAPIKey)
 	req.Header.Set("X-Pial-Identity", pialID)
 	resp, err := h.httpClient.Do(req)
 	if err != nil {

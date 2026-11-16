@@ -2,7 +2,6 @@ package handler
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -188,23 +187,8 @@ func (h *Handler) sseEvents(w http.ResponseWriter, r *http.Request) {
 		if h.cfg.AinSophURL == "" || user == nil || user.PIALID == "" {
 			return
 		}
-		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
-		defer cancel()
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-			h.cfg.AinSophURL+"/v1/balance/"+user.PIALID, nil)
-		if err != nil {
-			return
-		}
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil || resp == nil {
-			return
-		}
-		defer resp.Body.Close()
-		var acc struct {
-			BalanceAet string `json:"balance_aet"`
-		}
-		if json.NewDecoder(resp.Body).Decode(&acc) == nil && acc.BalanceAet != "" {
-			writeSSEFrame(w, "balance", acc.BalanceAet)
+		if _, display, ok := h.walletBalance(r.Context(), user.PIALID); ok {
+			writeSSEFrame(w, "balance", display)
 			flusher.Flush()
 		}
 	}

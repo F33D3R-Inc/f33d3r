@@ -56,16 +56,14 @@ struct MalkuthCanonicalTests {
     /// `mediaURLs` here is the *unsorted* input: sorting is part of what the
     /// client under test has to do.
     struct Input: Decodable {
-        let authorPIAL: String
+        let authorAccount: String
         let body: String
         let commentGating: String
-        let isRepost: Bool
         let kind: String
         let mediaURLs: [String]
         let parentCID: String?
         let pollEndsAt: String?
         let pollOptions: [String]?
-        let repostSourceID: String?
         let scheduledAt: String?
         let subscriberOnly: Bool
         let tags: [String]
@@ -77,16 +75,14 @@ struct MalkuthCanonicalTests {
         let voiceURL: String?
 
         enum CodingKeys: String, CodingKey {
-            case authorPIAL = "author_pial"
+            case authorAccount = "author_account"
             case body
             case commentGating = "comment_gating"
-            case isRepost = "is_repost"
             case kind
             case mediaURLs = "media_urls"
             case parentCID = "parent_cid"
             case pollEndsAt = "poll_ends_at"
             case pollOptions = "poll_options"
-            case repostSourceID = "repost_source_id"
             case scheduledAt = "scheduled_at"
             case subscriberOnly = "subscriber_only"
             case tags
@@ -108,16 +104,14 @@ struct MalkuthCanonicalTests {
                 "unknown comment_gating in fixture: \(commentGating)"
             )
             return WorkPayload(
-                authorPIAL: authorPIAL,
+                authorAccount: authorAccount,
                 body: body,
                 commentGating: gating,
-                isRepost: isRepost,
                 kind: kind,
                 mediaURLs: mediaURLs,
                 parentCID: parentCID,
                 pollEndsAt: pollEndsAt,
                 pollOptions: pollOptions,
-                repostSourceID: repostSourceID,
                 scheduledAt: scheduledAt,
                 subscriberOnly: subscriberOnly,
                 tags: tags,
@@ -180,10 +174,10 @@ struct MalkuthCanonicalTests {
             "control_chars_body", "backspace_and_formfeed_body", "line_separator_body",
             "no_media", "one_media", "several_media_unsorted", "media_sort_is_bytewise",
             "reply", "quote", "poll", "poll_empty_options_array",
-            "repost", "scheduled", "scheduled_with_offset",
+            "scheduled", "scheduled_with_offset",
             "voice", "voice_zero_duration", "video", "react_video", "thread_post",
             "empty_tags", "populated_tags",
-            "gating_followers", "gating_none", "gating_circle", "subscriber_only",
+            "gating_followers", "gating_none", "gating_circle", "gating_verified", "subscriber_only",
             "everything_at_once", "timestamp_boundaries", "solidus_and_quotes",
         ]
         for name in required {
@@ -206,7 +200,7 @@ struct MalkuthCanonicalTests {
 
     /// The declaration order of `workCanonicalPayload`, read off the Go struct.
     static let declaredOrder = [
-        "author_pial", "body", "comment_gating", "is_repost", "kind", "media_urls",
+        "author_account", "body", "comment_gating", "is_repost", "kind", "media_urls",
         "parent_cid", "poll_ends_at", "poll_options", "repost_source_id", "scheduled_at",
         "subscriber_only", "tags", "timestamp_ms", "video_duration_secs",
         "video_master_url", "video_poster_url", "voice_duration_secs", "voice_url",
@@ -214,7 +208,7 @@ struct MalkuthCanonicalTests {
 
     @Test("The encoder emits the Go struct's declaration order")
     func emitsDeclarationOrder() {
-        let payload = WorkPayload(authorPIAL: Self.pial, timestampMS: 0)
+        let payload = WorkPayload(authorAccount: Self.account, timestampMS: 0)
         #expect(payload.canonicalFields().map(\.0) == Self.declaredOrder)
     }
 
@@ -307,7 +301,7 @@ struct MalkuthCanonicalTests {
 
     @Test("Sorting media_urls does not reorder tags")
     func doesNotSortTags() {
-        var payload = WorkPayload(authorPIAL: Self.pial, timestampMS: 0)
+        var payload = WorkPayload(authorAccount: Self.account, timestampMS: 0)
         payload.tags = ["zeta", "alpha", "Mixed"]
         payload.mediaURLs = ["/z", "/a"]
         let text = String(decoding: payload.canonicalJSON(), as: UTF8.self)
@@ -317,7 +311,7 @@ struct MalkuthCanonicalTests {
 
     @Test("Empty collections are [] and absent optionals are null, never omitted")
     func distinguishesEmptyFromNull() {
-        var payload = WorkPayload(authorPIAL: Self.pial, timestampMS: 0)
+        var payload = WorkPayload(authorAccount: Self.account, timestampMS: 0)
         payload.pollOptions = []
         let withEmpty = String(decoding: payload.canonicalJSON(), as: UTF8.self)
         #expect(withEmpty.contains(#""media_urls":[]"#))
@@ -337,7 +331,7 @@ struct MalkuthCanonicalTests {
     @Test("Every field appears exactly once, even when nil")
     func emitsEveryFieldAlways() {
         let text = String(
-            decoding: WorkPayload(authorPIAL: Self.pial, timestampMS: 0).canonicalJSON(),
+            decoding: WorkPayload(authorAccount: Self.account, timestampMS: 0).canonicalJSON(),
             as: UTF8.self
         )
         for key in Self.declaredOrder {
@@ -348,7 +342,7 @@ struct MalkuthCanonicalTests {
 
     // MARK: Helpers
 
-    static let pial = "3f2504e0-4f89-11d3-9a0c-0305e82c3301"
+    static let account = "3f2504e0-4f89-11d3-9a0c-0305e82c3301"
 
     static func firstDifference(_ a: Data, _ b: Data) -> Int? {
         for index in 0..<Swift.min(a.count, b.count) where a[index] != b[index] { return index }

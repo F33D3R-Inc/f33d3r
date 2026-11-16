@@ -143,7 +143,12 @@ func (in *VisionInput) applyDefaults() error {
 	return nil
 }
 
-// InsertVision stores a vision and returns its id.
+// InsertVision stores a vision and returns its address.
+//
+// The address is feed-engine's wire form, `<author_account>.<seq>`: the posting
+// account and that account's own sequence number, 1 for its first vision. The
+// sequence is read and the row written in one transaction, so two visions
+// posted at once cannot take the same number.
 func (s *Store) InsertVision(ctx context.Context, in VisionInput) (string, error) {
 	if err := in.applyDefaults(); err != nil {
 		return "", err
@@ -152,16 +157,26 @@ func (s *Store) InsertVision(ctx context.Context, in VisionInput) (string, error
 	if created.IsZero() {
 		created = time.Now()
 	}
-	id := NewID()
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO visions (id, author_id, author_pial, content_type, body, artboard_background, artboard_typeface,
-		                    artboard_type_scale, artboard_align, media_urls, is_nsfw, audience, allow_replies, poll_options,
-		                    created_at, expires_at, metadata)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, in.AuthorID, in.AuthorPIAL, in.ContentType, in.Body, in.Background, in.Typeface,
-		in.TypeScale, in.Align, encodeStrings(in.MediaURLs), boolInt(in.IsNSFW), in.Audience, boolInt(in.AllowReplies),
-		pollOptionsColumn(in.PollOptions), FormatTime(created), FormatTime(created.Add(in.TTL)),
-		fmt.Sprintf(`{"source":%q}`, in.Source))
+	var id string
+	err := s.tx(ctx, func(tx *sql.Tx) error {
+		var last int64
+		if err := tx.QueryRowContext(ctx, `
+			SELECT COALESCE(MAX(CAST(substr(id, length(author_id) + 2) AS INTEGER)), 0)
+			FROM visions WHERE author_id = ? AND id LIKE author_id || '.%'`, in.AuthorID).Scan(&last); err != nil {
+			return err
+		}
+		id = fmt.Sprintf("%s.%d", in.AuthorID, last+1)
+		_, err := tx.ExecContext(ctx, `
+			INSERT INTO visions (id, author_id, author_pial, content_type, body, artboard_background, artboard_typeface,
+			                    artboard_type_scale, artboard_align, media_urls, is_nsfw, audience, allow_replies, poll_options,
+			                    created_at, expires_at, metadata)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			id, in.AuthorID, in.AuthorPIAL, in.ContentType, in.Body, in.Background, in.Typeface,
+			in.TypeScale, in.Align, encodeStrings(in.MediaURLs), boolInt(in.IsNSFW), in.Audience, boolInt(in.AllowReplies),
+			pollOptionsColumn(in.PollOptions), FormatTime(created), FormatTime(created.Add(in.TTL)),
+			fmt.Sprintf(`{"source":%q}`, in.Source))
+		return err
+	})
 	if err != nil {
 		return "", err
 	}

@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -62,14 +61,9 @@ func (h *Handler) mintContactAddress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	node, err := h.identityNode(r, user.PIALID)
-	if err != nil {
-		h.renderContactAddresses(w, r, user, addressErrorMessage(err))
-		return
-	}
-	if err := h.elohimMintAddress(r.Context(), node.NodeID); err != nil {
-		log.Printf("[contact-address] minting for pial %s: %v", user.PIALID, err)
-		h.renderContactAddresses(w, r, user, "Could not mint an address right now.")
+	if err := h.elohimMintAddress(r.Context(), user.ID); err != nil {
+		log.Printf("[contact-address] minting for account %s: %v", user.ID, err)
+		h.renderContactAddresses(w, r, user, h.addressErrorMessage("Could not mint an address right now."))
 		return
 	}
 	h.renderContactAddresses(w, r, user, "")
@@ -90,28 +84,25 @@ func (h *Handler) revokeContactAddress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Revoking is only the owner's to do, so the address must resolve to this
-	// viewer's own identity before it is touched.
-	node, err := h.identityNode(r, user.PIALID)
-	if err != nil {
-		h.renderContactAddresses(w, r, user, addressErrorMessage(err))
-		return
-	}
-	target, err := h.manhattan.ResolveAddress(r.Context(), addr)
-	if err != nil || target.IdentityNodeID != node.NodeID {
-		http.Error(w, "403 Forbidden", http.StatusForbidden)
-		return
-	}
-	if err := h.elohimRevokeAddress(r.Context(), addr, node.NodeID); err != nil {
+	// Revoking is only the owner's to do: elohim-veni, which records which
+	// account minted each address, refuses an address this account did not mint
+	// — another persona's of the same person included.
+	if err := h.elohimRevokeAddress(r.Context(), addr, user.ID); err != nil {
+		var refusal *elohimRefusal
+		if errors.As(err, &refusal) && (refusal.Status == http.StatusForbidden || refusal.Status == http.StatusNotFound) {
+			http.Error(w, "403 Forbidden", http.StatusForbidden)
+			return
+		}
 		log.Printf("[contact-address] revoking %s: %v", addr, err)
-		h.renderContactAddresses(w, r, user, "Could not revoke that address right now.")
+		h.renderContactAddresses(w, r, user, h.addressErrorMessage("Could not revoke that address right now."))
 		return
 	}
 	h.renderContactAddresses(w, r, user, "")
 }
 
 // contactKeyBundle — GET /api/contact/{address}
-// A live address is exchanged for the identity's current messaging public keys.
+// A live address is exchanged for the current messaging public keys of the
+// account that minted it.
 // A revoked or unknown address is a flat 404 — a rotated address must not confirm
 // that it was ever real.
 //
@@ -124,101 +115,73 @@ func (h *Handler) contactKeyBundle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "address required", http.StatusBadRequest)
 		return
 	}
-	if !h.manhattan.Configured() {
-		http.Error(w, "naming plane unavailable", http.StatusServiceUnavailable)
-		return
-	}
-
-	target, err := h.manhattan.ResolveAddress(r.Context(), addr)
+	// elohim-veni resolves the address to the account that minted it — the
+	// persona the address was handed out for, never its person's primary — and
+	// answers with that account's signed bundle.
+	bundle, err := h.contactBundleFor(r.Context(), map[string]string{"address": addr})
 	if err != nil {
-		http.NotFound(w, r)
+		var refusal *elohimRefusal
+		if errors.As(err, &refusal) && (refusal.Status == http.StatusNotFound || refusal.Status == http.StatusConflict) {
+			http.NotFound(w, r)
+			return
+		}
+		log.Printf("[contact-address] key bundle for an address: %v", err)
+		http.Error(w, "key directory unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	node, err := h.manhattan.GetNode(r.Context(), target.IdentityNodeID)
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	pial := node.PrimaryNameIn(manhattan.NamespacePIAL)
-	if pial == "" {
-		http.NotFound(w, r)
-		return
-	}
-
-	bundle, err := h.contactBundleFor(r.Context(), pial)
-	if err != nil {
-		log.Printf("[contact-address] key bundle for pial %s: %v", pial, err)
-		http.NotFound(w, r)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
-	_ = json.NewEncoder(w).Encode(bundle)
+	writeContactBundle(w, http.StatusOK, bundle)
 }
 
-// contactKeyDevice is one device's public messaging key.
-type contactKeyDevice struct {
-	DeviceID     string `json:"device_id"`
-	PublicKeyB64 string `json:"public_key_b64"`
-	Algorithm    string `json:"algorithm"`
-}
-
-// contactBundle is the messaging key bundle as a client receives it: public key
-// halves only, and no identity. elohim-veni assembles its bundle around the
-// target's pial_id and signs those bytes with its service key; handing that
-// bundle on would give anyone who holds a contact address or a Number the
-// person's root identity, which is exactly the harvesting the address and
-// Number layers exist to prevent. So the bundle is projected here, the pial_id
-// is left on the server, and elohim's signature — which covers the pial_id and
-// could no longer be checked — is not forwarded either: Signed is false until
-// elohim-veni signs a PIAL-free bundle.
+// contactBundle is the messaging key bundle as a client receives it, exactly as
+// elohim-veni signed it.
+//
+// Bundle is elohim-veni's signed object, carried as the raw bytes it sent: one
+// account's id, the time it was issued and that account's per-device public
+// keys — no PIAL and no identity-wide key, because whoever holds a Number or an
+// address receives it and anything one person's personas share would link
+// them. Signature covers exactly those bytes under SignatureKeyB64 (Ed25519),
+// so it is forwarded untouched rather than re-encoded: a bundle decoded and
+// re-marshalled here would no longer be the bytes that were signed.
 type contactBundle struct {
-	IssuedAt         string             `json:"issued_at"`
-	Devices          []contactKeyDevice `json:"devices"`
-	SigningPubkeyB64 *string            `json:"signing_pubkey_b64"`
-	SigningAlgorithm *string            `json:"signing_algorithm"`
-	Signed           bool               `json:"signed"`
+	Bundle             json.RawMessage `json:"bundle"`
+	Signed             bool            `json:"signed"`
+	Signature          *string         `json:"signature"`
+	SignatureAlgorithm *string         `json:"signature_algorithm"`
+	SignatureKeyB64    *string         `json:"signature_key_b64"`
 }
 
-// contactBundleFor fetches an identity's messaging key bundle from
-// elohim-veni, which owns key material, and projects it for a client.
-func (h *Handler) contactBundleFor(ctx context.Context, pialID string) (contactBundle, error) {
-	var out struct {
-		Bundle struct {
-			IssuedAt         string             `json:"issued_at"`
-			Devices          []contactKeyDevice `json:"devices"`
-			SigningPubkeyB64 *string            `json:"signing_pubkey_b64"`
-			SigningAlgorithm *string            `json:"signing_algorithm"`
-		} `json:"bundle"`
-	}
-	if err := h.callElohim(ctx, http.MethodPost, "/v1/contact/keybundle",
-		map[string]string{"pial_id": pialID}, &out); err != nil {
+// contactBundleFor fetches one account's signed messaging key bundle from
+// elohim-veni, which owns key material. target names the account directly
+// ({"account_id": ...}) or by a contact address ({"address": ...}).
+func (h *Handler) contactBundleFor(ctx context.Context, target map[string]string) (contactBundle, error) {
+	var out contactBundle
+	if err := h.callElohim(ctx, http.MethodPost, "/v1/contact/keybundle", target, &out); err != nil {
 		return contactBundle{}, err
 	}
-	if len(out.Bundle.Devices) == 0 {
-		return contactBundle{}, fmt.Errorf("key bundle for an identity carried no device keys")
+	var shape struct {
+		AccountID string            `json:"account_id"`
+		Devices   []json.RawMessage `json:"devices"`
 	}
-	return contactBundle{
-		IssuedAt:         out.Bundle.IssuedAt,
-		Devices:          out.Bundle.Devices,
-		SigningPubkeyB64: out.Bundle.SigningPubkeyB64,
-		SigningAlgorithm: out.Bundle.SigningAlgorithm,
-	}, nil
+	if err := json.Unmarshal(out.Bundle, &shape); err != nil {
+		return contactBundle{}, fmt.Errorf("key bundle is not an object: %w", err)
+	}
+	if shape.AccountID == "" || len(shape.Devices) == 0 {
+		return contactBundle{}, errors.New("key bundle names no account or carries no device keys")
+	}
+	return out, nil
 }
 
-// identityNode returns the Manhattan node for a PIAL, registering it if the
-// outbox has not delivered it yet. Registration here is idempotent and resolves
-// to the same node the drain would have created.
-func (h *Handler) identityNode(r *http.Request, pialID string) (*manhattan.Node, error) {
-	if !h.manhattan.Configured() {
-		return nil, manhattan.ErrNotConfigured
+// writeContactBundle answers with a bundle. HTML escaping is off so the signed
+// bytes pass through exactly as elohim-veni produced them.
+func writeContactBundle(w http.ResponseWriter, status int, bundle contactBundle) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(status)
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(bundle); err != nil {
+		log.Printf("[contact] writing a key bundle: %v", err)
 	}
-	return h.manhattan.EnsureNode(
-		r.Context(),
-		manhattan.KindIdentity,
-		manhattan.PIALName(pialID),
-		manhattan.NamespacePIAL,
-	)
 }
 
 // renderContactAddresses draws the contact_addresses Facet for one identity.
@@ -230,31 +193,21 @@ func (h *Handler) renderContactAddresses(w http.ResponseWriter, r *http.Request,
 
 // contactAddressesData hydrates the contact_addresses Facet. Shared by the
 // standalone facet endpoint and by the settings contact section, so both render
-// from one account of the address set. The PIAL resolves the identity node only;
-// the Facet is addressed by the account id, because a PIAL is never written into
-// a page.
+// from one account of the address set. The set is the viewing account's own:
+// elohim-veni answers only the addresses this account minted, never another
+// persona's of the same person.
 func (h *Handler) contactAddressesData(r *http.Request, user *model.User, notice string) map[string]interface{} {
-	pialID := user.PIALID
 	data := map[string]interface{}{
 		"AccountID": user.ID,
 		"Notice":    notice,
 	}
 
-	node, err := h.identityNode(r, pialID)
+	addresses, err := h.elohimListAddresses(r.Context(), user.ID)
 	if err != nil {
+		log.Printf("[contact-address] listing for account %s: %v", user.ID, err)
 		data["Unavailable"] = true
 		if notice == "" {
-			data["Notice"] = addressErrorMessage(err)
-		}
-		return data
-	}
-
-	addresses, err := h.elohimListAddresses(r.Context(), node.NodeID)
-	if err != nil {
-		log.Printf("[contact-address] listing for pial %s: %v", pialID, err)
-		data["Unavailable"] = true
-		if notice == "" {
-			data["Notice"] = "Could not load your addresses right now."
+			data["Notice"] = h.addressErrorMessage("Could not load your addresses right now.")
 		}
 		return data
 	}
@@ -271,95 +224,44 @@ func (h *Handler) contactAddressesData(r *http.Request, user *model.User, notice
 	return data
 }
 
-// addressErrorMessage turns a client error into something a person can act on,
-// without inventing a reason it does not know.
-func addressErrorMessage(err error) string {
-	if errors.Is(err, manhattan.ErrNotConfigured) {
+// addressErrorMessage turns a failure into something a person can act on,
+// without inventing a reason it does not know: a deployment with no identity
+// authority configured says so, and anything else is the caller's fallback.
+func (h *Handler) addressErrorMessage(fallback string) string {
+	if h.cfg.ElohimVeniURL == "" {
 		return "Contact addresses are not available on this deployment yet."
 	}
-	return "Could not reach the naming plane."
+	return fallback
 }
 
 // ── Address mutations, via the brain that owns them ──────────────────────────
+//
+// Every call names the acting ACCOUNT. elohim-veni derives the identity from it
+// and records which account minted each address, so an address belongs to one
+// persona and leads to that persona alone.
 
-// elohimMintAddress asks elohim-veni to mint a contact address for an identity.
-func (h *Handler) elohimMintAddress(ctx context.Context, identityNodeID string) error {
-	return h.postElohim(ctx, "/v1/addresses/mint", map[string]string{
-		"identity_node_id": identityNodeID,
-	})
+// elohimMintAddress asks elohim-veni to mint a contact address for an account.
+func (h *Handler) elohimMintAddress(ctx context.Context, accountID string) error {
+	return h.callElohim(ctx, http.MethodPost, "/v1/addresses/mint",
+		map[string]string{"account_id": accountID}, nil)
 }
 
-// elohimRevokeAddress retires a contact address. The identity is sent so elohim-veni
-// re-checks ownership itself.
-func (h *Handler) elohimRevokeAddress(ctx context.Context, addr, identityNodeID string) error {
-	return h.postElohim(ctx, "/v1/addresses/revoke", map[string]string{
-		"address":          addr,
-		"identity_node_id": identityNodeID,
-	})
+// elohimRevokeAddress retires one of an account's contact addresses. elohim-veni
+// re-checks that the account minted it.
+func (h *Handler) elohimRevokeAddress(ctx context.Context, addr, accountID string) error {
+	return h.callElohim(ctx, http.MethodPost, "/v1/addresses/revoke",
+		map[string]string{"address": addr, "account_id": accountID}, nil)
 }
 
-// postElohim sends an internal-authenticated POST to elohim-veni; non-2xx is an error.
-func (h *Handler) postElohim(ctx context.Context, path string, body interface{}) error {
-	if h.cfg.ElohimVeniURL == "" {
-		return manhattan.ErrNotConfigured
-	}
-	payload, err := json.Marshal(body)
-	if err != nil {
-		return err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, h.cfg.ElohimVeniURL+path, bytes.NewReader(payload))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Internal-Key", h.cfg.InternalAPIKey)
-	resp, err := h.httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("elohim-veni %s: %s", path, resp.Status)
-	}
-	return nil
-}
-
-// elohimListAddresses lists an identity's contact addresses. Manhattan gates this
-// read to the owning brain, so it cannot be called from here directly.
-func (h *Handler) elohimListAddresses(ctx context.Context, identityNodeID string) ([]manhattan.Address, error) {
+// elohimListAddresses lists the contact addresses one account minted. Manhattan
+// gates the identity's listing to elohim-veni, which answers per account.
+func (h *Handler) elohimListAddresses(ctx context.Context, accountID string) ([]manhattan.Address, error) {
 	var out struct {
 		Addresses []manhattan.Address `json:"addresses"`
 	}
-	if err := h.postElohimJSON(ctx, "/v1/addresses/list", map[string]string{
-		"identity_node_id": identityNodeID,
-	}, &out); err != nil {
+	if err := h.callElohim(ctx, http.MethodPost, "/v1/addresses/list",
+		map[string]string{"account_id": accountID}, &out); err != nil {
 		return nil, err
 	}
 	return out.Addresses, nil
-}
-
-// postElohimJSON is postElohim with a decoded response body.
-func (h *Handler) postElohimJSON(ctx context.Context, path string, body, target interface{}) error {
-	if h.cfg.ElohimVeniURL == "" {
-		return manhattan.ErrNotConfigured
-	}
-	payload, err := json.Marshal(body)
-	if err != nil {
-		return err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, h.cfg.ElohimVeniURL+path, bytes.NewReader(payload))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Internal-Key", h.cfg.InternalAPIKey)
-	resp, err := h.httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("elohim-veni %s: %s", path, resp.Status)
-	}
-	return json.NewDecoder(resp.Body).Decode(target)
 }

@@ -1,116 +1,95 @@
 mod api;
+mod auth;
 mod bandit;
 mod config;
 mod contracts;
-mod middleware;
+mod db;
+mod import;
+mod learning;
+mod migrate;
 mod model_store;
 mod observ;
 mod persist;
 mod pipeline;
 mod safety;
 mod scoring;
-mod session;
 
 use std::sync::Arc;
-use tracing::{info, warn};
+use std::time::Duration;
+
+use tracing::info;
 
 use crate::api::handlers::AppState;
-use crate::config::AppConfig;
-use crate::contracts::brain_registry::BrainRegistry;
+use crate::config::{AppConfig, Runtime};
+use crate::learning::consumer::{self, Intake};
+use crate::learning::features::FeatureCache;
 use crate::model_store::ModelStore;
-use crate::session::cache::SessionFeatureCache;
+
+const FEATURE_SWEEP: Duration = Duration::from_secs(300);
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     observ::init("aethyrrank")?;
 
-    let cfg = AppConfig::load()?;
-    let surfaces: Vec<&str> = cfg
-        .model_store
-        .surfaces
-        .iter()
-        .map(String::as_str)
-        .collect();
-    let model_store = Arc::new(ModelStore::new(&surfaces, cfg.bandit.feature_dim));
-    let session_cache = Arc::new(SessionFeatureCache::new());
-
-    // ── LinUCB persistence ────────────────────────────────────────────────────
-    // Connect to Postgres and restore any previously checkpointed model state.
-    // If DATABASE_URL is absent (e.g. local dev without DB) we degrade gracefully
-    // to ephemeral in-memory learning rather than crashing.
-    let db_pool = match std::env::var("DATABASE_URL") {
-        Ok(url) => match persist::create_pool(&url).await {
-            Ok(pool) => {
-                if let Err(e) = persist::ensure_schema(&pool).await {
-                    warn!("failed to create linucb_checkpoints table: {e}");
-                    None
-                } else {
-                    match persist::restore_all(&pool, &model_store).await {
-                        Ok(n) => info!("restored {n} LinUCB surface(s) from Postgres"),
-                        Err(e) => warn!("LinUCB restore failed (starting fresh): {e}"),
-                    }
-                    Some(pool)
-                }
-            }
-            Err(e) => {
-                warn!("cannot connect to Postgres ({e}) — running without LinUCB persistence");
-                None
-            }
-        },
-        Err(_) => {
-            warn!("DATABASE_URL not set — LinUCB state is ephemeral (survives only until restart)");
-            None
-        }
-    };
-
-    // Start the 60-second checkpoint loop if we have a DB connection.
-    if let Some(pool) = db_pool.clone() {
-        persist::start_checkpoint_loop(pool, Arc::clone(&model_store), 60);
+    // `aethyrrank-engine import-feed-checkpoints` — the one-shot move of the
+    // old checkpoints out of f33d3r_feed (src/import.rs).
+    if let Some(cmd) = std::env::args().nth(1) {
+        return match cmd.as_str() {
+            "import-feed-checkpoints" => import::run().await,
+            other => anyhow::bail!("unknown command {other:?}; the only command is import-feed-checkpoints"),
+        };
     }
 
-    let brain_registry = BrainRegistry::new();
+    let cfg = AppConfig::load()?;
+    let rt = Runtime::from_env()?;
 
-    // Start staleness checker — marks offline brains after missed heartbeats
+    // f33d3r_rank: created if missing, migrated, restored. A process that
+    // cannot keep the ranking state does not serve.
+    let pool = db::connect(&rt.database_url, 8).await?;
+    migrate::run(&pool).await?;
+
+    let model_store = Arc::new(ModelStore::new(cfg.bandit.feature_dim));
+    let restored = persist::restore_all(&pool, &model_store).await?;
+    info!(models = restored, "LinUCB models restored from f33d3r_rank");
+
+    let features = Arc::new(FeatureCache::new());
     {
-        let reg = Arc::clone(&brain_registry);
+        let features = Arc::clone(&features);
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+            let mut tick = tokio::time::interval(FEATURE_SWEEP);
             loop {
-                interval.tick().await;
-                reg.check_staleness();
+                tick.tick().await;
+                features.sweep();
             }
         });
     }
 
+    consumer::spawn(Intake {
+        pool: pool.clone(),
+        brokers: rt.kafka_brokers.clone(),
+        store: Arc::clone(&model_store),
+        cache: Arc::clone(&features),
+    });
+
     let state = Arc::new(AppState {
         config: Arc::new(cfg.clone()),
-        model_store: Arc::clone(&model_store),
-        session_cache,
-        brain_registry,
+        model_store,
+        features,
+        internal_api_key: rt.internal_api_key,
     });
 
     let app = api::router(state);
     let addr = format!("{}:{}", cfg.server.host, cfg.server.port);
     info!("AethyrRank engine listening on {}", addr);
-
     let listener = tokio::net::TcpListener::bind(&addr).await?;
 
-    // Graceful shutdown: flush LinUCB state one final time before exit.
-    let shutdown_store = Arc::clone(&model_store);
-    let shutdown_pool = db_pool.clone();
-    tokio::spawn(async move {
-        tokio::signal::ctrl_c().await.ok();
-        info!("shutdown signal received — flushing LinUCB checkpoints");
-        if let Some(pool) = shutdown_pool {
-            if let Err(e) = persist::flush_all(&pool, &shutdown_store).await {
-                warn!("final LinUCB flush failed: {e}");
-            } else {
-                info!("LinUCB state saved to Postgres");
-            }
-        }
-        std::process::exit(0);
-    });
-
-    axum::serve(listener, app).await?;
+    // Every learned change is committed with its batch, so shutdown has
+    // nothing to flush: an uncommitted batch is replayed from its offsets.
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async {
+            let _ = tokio::signal::ctrl_c().await;
+            info!("shutdown signal received");
+        })
+        .await?;
     Ok(())
 }

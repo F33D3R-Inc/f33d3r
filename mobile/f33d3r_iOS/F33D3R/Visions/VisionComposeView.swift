@@ -43,10 +43,19 @@ struct VisionComposeView: View {
             guard let item, let composer else { return }
             pickedItem = nil
             Task {
-                guard let data = try? await item.loadTransferable(type: Data.self) else { return }
-                let (mime, ext) = ImageSniff.type(of: data)
                 composer.mode = .photo
-                await composer.attach(data, filename: "vision-\(UUID().uuidString.prefix(8)).\(ext)", mimeType: mime)
+                let data: Data?
+                do {
+                    data = try await item.loadTransferable(type: Data.self)
+                } catch {
+                    composer.refuseAttachment("A photo couldn't be read from Photos: \(error.localizedDescription)")
+                    return
+                }
+                guard let data, let upload = ImageSniff.uploadable(data) else {
+                    composer.refuseAttachment(ImageSniff.notAPicture)
+                    return
+                }
+                await composer.attach(upload.data, filename: "vision-\(UUID().uuidString.prefix(8)).\(upload.ext)", mimeType: upload.mime)
             }
         }
     }

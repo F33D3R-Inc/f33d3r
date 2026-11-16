@@ -206,11 +206,11 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/numbers/mint", post(handlers::mint_number))
         .route("/v1/numbers/revoke", post(handlers::revoke_number))
         .route("/v1/numbers/policy", post(handlers::set_number_policy))
-        .route("/v1/numbers/:pial_id", get(handlers::list_numbers))
+        .route("/v1/numbers/:account_id", get(handlers::list_numbers))
         // Contact policy, capabilities, requests and key discovery.
         .route("/v1/contact/policy", post(handlers::set_contact_policy))
         .route(
-            "/v1/contact/policy/:pial_id",
+            "/v1/contact/policy/:account_id",
             get(handlers::get_contact_policy),
         )
         .route("/v1/contact/evaluate", post(handlers::evaluate_contact))
@@ -224,7 +224,7 @@ async fn main() -> anyhow::Result<()> {
             post(handlers::revoke_contact_capability),
         )
         .route(
-            "/v1/contact/capabilities/:pial_id",
+            "/v1/contact/capabilities/:account_id",
             get(handlers::list_contact_capabilities),
         )
         .route(
@@ -232,7 +232,7 @@ async fn main() -> anyhow::Result<()> {
             post(handlers::decide_contact_request),
         )
         .route(
-            "/v1/contact/requests/:pial_id",
+            "/v1/contact/requests/:account_id",
             get(handlers::list_contact_requests),
         )
         .route(

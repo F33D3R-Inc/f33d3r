@@ -2,6 +2,9 @@ package handler
 
 import (
 	"context"
+	"database/sql"
+	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"net/url"
@@ -265,7 +268,7 @@ func (h *Handler) handleCreateConvoByNumber(w http.ResponseWriter, r *http.Reque
 	// The one notification pipeline, reached the one way: if a request was
 	// opened, the person it landed on hears about it here and nowhere else.
 
-	if outcome.Decision != "allow" || outcome.TargetPIAL == "" {
+	if outcome.Decision != "allow" || outcome.TargetAccount == "" {
 		// "request" is the only outcome worth distinguishing to the caller,
 		// because they caused it. Everything else — unknown, retired, closed,
 		// capability_only without a link — is one indistinguishable refusal.
@@ -277,12 +280,15 @@ func (h *Handler) handleCreateConvoByNumber(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	account := dbpkg.AccountForPIAL(h.db, outcome.TargetPIAL)
-	if account == "" || account == user.ID {
+	// The Number reaches the account that holds it — that persona, never its
+	// person's primary.
+	account := outcome.TargetAccount
+	targetPIAL := dbpkg.ResolvePIAL(h.db, account)
+	if targetPIAL == "" || account == user.ID {
 		gate("refused")
 		return
 	}
-	convoID, err := h.ensureDirectConversation(user, account, outcome.TargetPIAL)
+	convoID, err := h.ensureDirectConversation(user, account, targetPIAL)
 	if err != nil {
 		log.Printf("[gnosis] opening conversation by Number for pial %s: %v", user.PIALID, err)
 		gate("unavailable")
@@ -309,9 +315,9 @@ func (h *Handler) facetGnosisContactRequests(w http.ResponseWriter, r *http.Requ
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	rows, err := h.pendingContactRequests(r.Context(), user.PIALID)
+	rows, err := h.pendingContactRequests(r.Context(), user.ID)
 	if err != nil {
-		log.Printf("[gnosis] contact requests for pial %s: %v", user.PIALID, err)
+		log.Printf("[gnosis] contact requests for account %s: %v", user.ID, err)
 		h.renderPartial(w, "gnosis_contact_requests", map[string]interface{}{
 			"AccountID": user.ID, "Unavailable": true})
 		return
@@ -320,37 +326,44 @@ func (h *Handler) facetGnosisContactRequests(w http.ResponseWriter, r *http.Requ
 		"AccountID": user.ID, "Requests": rows})
 }
 
-// pendingContactRequests reads the requests waiting on one identity from the
-// brain that owns them, and names the requesters this brain already knows.
+// pendingContactRequests reads the requests waiting on one account from the
+// brain that owns them, and names each requesting account. The request records
+// the persona that asked, and that persona is what is rendered — never the
+// requesting person's primary account, which would tell the recipient which
+// accounts are one person.
 //
-// A requester with no account here stays anonymous rather than being dropped:
-// somebody is asking either way, and a row the recipient cannot see is a
-// decision they cannot make.
-func (h *Handler) pendingContactRequests(ctx context.Context, pialID string) ([]contactRequestRow, error) {
+// A requester this brain has no row for stays anonymous rather than being
+// dropped: somebody is asking either way, and a row the recipient cannot see is
+// a decision they cannot make. Any other failure to read the requester is
+// returned, not rendered as anonymity.
+func (h *Handler) pendingContactRequests(ctx context.Context, accountID string) ([]contactRequestRow, error) {
 	var payload struct {
 		Requests []struct {
-			ID            string `json:"id"`
-			RequesterPIAL string `json:"requester_pial"`
-			Note          string `json:"note"`
-			CreatedAt     string `json:"created_at"`
+			ID               string `json:"id"`
+			RequesterAccount string `json:"requester_account"`
+			Note             string `json:"note"`
+			CreatedAt        string `json:"created_at"`
 		} `json:"requests"`
 	}
 	if err := h.callElohim(ctx, http.MethodGet,
-		"/v1/contact/requests/"+url.PathEscape(pialID), nil, &payload); err != nil {
+		"/v1/contact/requests/"+url.PathEscape(accountID), nil, &payload); err != nil {
 		return nil, err
 	}
 	rows := make([]contactRequestRow, 0, len(payload.Requests))
 	for _, req := range payload.Requests {
 		row := contactRequestRow{ID: req.ID, Note: req.Note, When: req.CreatedAt}
-		if account := dbpkg.AccountForPIAL(h.db, req.RequesterPIAL); account != "" {
-			if u, err := dbpkg.GetUserByID(h.db, account); err == nil && u != nil {
-				row.Handle = u.Handle
-				row.Name = u.DisplayName
-				// A face to go with the name. A client that draws its own row
-				// needs it; the Facet draws initials from the handle and simply
-				// does not read this.
-				row.Avatar = u.AvatarURL
-			}
+		u, err := dbpkg.GetUserByID(h.db, req.RequesterAccount)
+		switch {
+		case errors.Is(err, sql.ErrNoRows) || (err == nil && u == nil):
+		case err != nil:
+			return nil, fmt.Errorf("reading requester %s of request %s: %w", req.RequesterAccount, req.ID, err)
+		default:
+			row.Handle = u.Handle
+			row.Name = u.DisplayName
+			// A face to go with the name. A client that draws its own row
+			// needs it; the Facet draws initials from the handle and simply
+			// does not read this.
+			row.Avatar = u.AvatarURL
 		}
 		rows = append(rows, row)
 	}

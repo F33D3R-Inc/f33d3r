@@ -1,10 +1,6 @@
 pub mod api;
 pub mod audio;
-pub mod behavioral;
-pub mod brain;
+pub mod auth;
 pub mod config;
 pub mod jung;
 pub mod observ;
-pub mod signals;
-pub mod store;
-pub mod vector;

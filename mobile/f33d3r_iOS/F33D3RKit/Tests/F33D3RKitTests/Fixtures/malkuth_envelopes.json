@@ -1,5 +1,6 @@
 {
   "go_version": "go1.26.2",
+  "note": "STALE: recorded before author_account (the payload then carried author_pial). Regenerate on a Mac: MALKUTH_EXPORT_DIR=/tmp/mk swift test --filter exportEnvelopesForGo, then (cd Tools/malkuth-golden && go run ./envelope /tmp/mk/envelopes_from_swift.json), and copy /tmp/mk/envelopes_from_swift.json.verdicts here. Until then goAdmittedTheseEnvelopes fails on the new refusal reasons and on signed_as_another_account, which has no recorded verdict. Previous note: Verdicts returned by a Go program running workEvent's admission sequence verbatim (rawBody parse loop, sha256: prefix, verifyCID, verifyMalkuthSig steps 2-6, workKinds, reply/repost rules) over POST /events bodies built by WorkEnvelope. Stops before InsertWork, the last point that needs no database. The signing key is supplied by the vector in place of the Elohim Veni fetch. Regenerate with /tmp/malkuth-golden/envelope.",
   "results": [
     {
       "accepted": true,
@@ -10,8 +11,7 @@
       "parent_cid": "",
       "quoted_work_id": "",
       "reason": "would insert",
-      "status": 201,
-      "tus_upload_id": ""
+      "status": 201
     },
     {
       "accepted": true,
@@ -22,8 +22,7 @@
       "parent_cid": "",
       "quoted_work_id": "",
       "reason": "would insert",
-      "status": 201,
-      "tus_upload_id": ""
+      "status": 201
     },
     {
       "accepted": true,
@@ -34,8 +33,7 @@
       "parent_cid": "",
       "quoted_work_id": "",
       "reason": "would insert",
-      "status": 201,
-      "tus_upload_id": ""
+      "status": 201
     },
     {
       "accepted": true,
@@ -46,20 +44,7 @@
       "parent_cid": "sha256:9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a",
       "quoted_work_id": "",
       "reason": "would insert",
-      "status": 201,
-      "tus_upload_id": ""
-    },
-    {
-      "accepted": true,
-      "expect_accepted": true,
-      "is_nsfw": false,
-      "kind": "post",
-      "name": "repost",
-      "parent_cid": "",
-      "quoted_work_id": "",
-      "reason": "would insert",
-      "status": 201,
-      "tus_upload_id": ""
+      "status": 201
     },
     {
       "accepted": true,
@@ -70,8 +55,7 @@
       "parent_cid": "",
       "quoted_work_id": "",
       "reason": "would insert",
-      "status": 201,
-      "tus_upload_id": ""
+      "status": 201
     },
     {
       "accepted": true,
@@ -82,8 +66,7 @@
       "parent_cid": "",
       "quoted_work_id": "",
       "reason": "would insert",
-      "status": 201,
-      "tus_upload_id": "tus-abc-123"
+      "status": 201
     },
     {
       "accepted": true,
@@ -94,8 +77,7 @@
       "parent_cid": "",
       "quoted_work_id": "",
       "reason": "would insert",
-      "status": 201,
-      "tus_upload_id": ""
+      "status": 201
     },
     {
       "accepted": true,
@@ -106,8 +88,7 @@
       "parent_cid": "",
       "quoted_work_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
       "reason": "would insert",
-      "status": 201,
-      "tus_upload_id": ""
+      "status": 201
     },
     {
       "accepted": false,
@@ -118,8 +99,7 @@
       "parent_cid": "",
       "quoted_work_id": "",
       "reason": "cid mismatch",
-      "status": 400,
-      "tus_upload_id": ""
+      "status": 400
     },
     {
       "accepted": false,
@@ -130,8 +110,7 @@
       "parent_cid": "",
       "quoted_work_id": "",
       "reason": "cid mismatch",
-      "status": 400,
-      "tus_upload_id": ""
+      "status": 400
     },
     {
       "accepted": false,
@@ -142,8 +121,7 @@
       "parent_cid": "",
       "quoted_work_id": "",
       "reason": "signature invalid",
-      "status": 403,
-      "tus_upload_id": ""
+      "status": 403
     },
     {
       "accepted": false,
@@ -154,9 +132,7 @@
       "parent_cid": "",
       "quoted_work_id": "",
       "reason": "signature invalid",
-      "status": 403,
-      "tus_upload_id": ""
+      "status": 403
     }
-  ],
-  "note": "Verdicts returned by a Go program running workEvent's admission sequence verbatim (rawBody parse loop, sha256: prefix, verifyCID, verifyMalkuthSig steps 2-6, workKinds, reply/repost rules) over POST /events bodies built by WorkEnvelope. Stops before InsertWork, the last point that needs no database. The signing key is supplied by the vector in place of the Elohim Veni fetch. Regenerate with /tmp/malkuth-golden/envelope."
+  ]
 }

@@ -322,7 +322,12 @@ func (h *Handler) frequencyAudienceFacts(viewer *model.User, hostPIAL string) au
 	} else {
 		log.Printf("[frequency] follow state: %v", ferr)
 	}
-	facts.Subscribed = dbpkg.IsSubscribed(h.db, a.ID, hostID)
+	if subscribed, serr := dbpkg.IsSubscribed(h.db, a.ID, hostID); serr == nil {
+		facts.Subscribed = subscribed
+	} else {
+		// Fails closed: a subscriber-only room stays shut, and the fault is reported.
+		log.Printf("[frequency] subscription state: %v", serr)
+	}
 	facts.BlockedEitherWay = dbpkg.IsBlocked(h.db, hostID, a.ID) || dbpkg.IsBlocked(h.db, a.ID, hostID)
 	return facts
 }

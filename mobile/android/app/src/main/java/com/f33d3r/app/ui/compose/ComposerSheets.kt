@@ -36,6 +36,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.f33d3r.app.compose.WorkDraft
+import com.f33d3r.app.malkuth.CommentGating
 import com.f33d3r.app.ui.SurfaceTab
 import com.f33d3r.app.ui.theme.Ink
 import java.time.Instant
@@ -47,12 +48,16 @@ import java.time.ZoneOffset
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 
-/** The reply rules the server offers, in the server's words and the composer's. */
+/**
+ * The reply rules the server offers — `everyone | followers | circle | verified | none`,
+ * in the server's order — with the composer's summary of each.
+ */
 internal val REPLY_RULES = listOf(
-    WorkDraft.REPLY_EVERYONE to "Everyone can reply",
-    WorkDraft.REPLY_FOLLOWERS to "Followers can reply",
-    WorkDraft.REPLY_CIRCLE to "Close circle can reply",
-    WorkDraft.REPLY_NONE to "No replies",
+    CommentGating.EVERYONE to "Everyone can reply",
+    CommentGating.FOLLOWERS to "Your followers can reply",
+    CommentGating.CIRCLE to "Your circle can reply",
+    CommentGating.VERIFIED to "Verified accounts can reply",
+    CommentGating.NONE to "Only you can reply",
 )
 
 internal fun replyRuleLabel(rule: String): String =

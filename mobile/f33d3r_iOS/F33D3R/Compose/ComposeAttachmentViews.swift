@@ -63,7 +63,7 @@ struct VideoAttachmentTile: View {
     }
 
     private var duplicatePosterPath: String? {
-        if case .duplicate(_, _, let renditions) = video.state { return renditions?.posterURL }
+        if case .duplicate(_, let renditions) = video.state { return renditions?.posterURL }
         return nil
     }
 
@@ -160,7 +160,7 @@ struct VideoAttachmentTile: View {
     @ViewBuilder
     private var notice: some View {
         switch video.state {
-        case .duplicate(let handle, _, let renditions):
+        case .duplicate(let handle, let renditions):
             VStack(alignment: .leading, spacing: F33Spacing.sm) {
                 Label {
                     Text(duplicateText(handle, canUse: renditions != nil))
@@ -224,7 +224,7 @@ struct VideoAttachmentTile: View {
         case .uploading(let fraction): return "Video, uploading \(Int((fraction * 100).rounded())) percent"
         case .processing: return "Video, processing"
         case .ready(let renditions): return "Video, \(DurationClock.label(renditions.durationSecs)), ready"
-        case .duplicate(let handle, _, _): return "Video already on F33D3R, credited to \(handle.isEmpty ? "another creator" : handle)"
+        case .duplicate(let handle, _): return "Video already on F33D3R, credited to \(handle.isEmpty ? "another creator" : handle)"
         case .failed(let reason): return "Video failed: \(reason)"
         }
     }

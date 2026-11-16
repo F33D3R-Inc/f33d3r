@@ -23,7 +23,8 @@ FACET wallet_send_card
 </div>
 <div class="wallet-send-card-wrap">
   <form class="wallet-send-card" hx-post="/events" hx-vals='{"event_type":"tip"}'
-        hx-target="#tip-result" hx-swap="innerHTML">
+        hx-target="#tip-result" hx-swap="innerHTML" hx-sync="this:drop" hx-disabled-elt="find button">
+    <input type="hidden" name="tip_key" value="{{.TipKey}}">
     <div>
       <label class="wallet-field-label" for="tip-recipient">Recipient</label>
       <input id="tip-recipient" name="target_handle" class="wallet-send-input" type="text"
@@ -37,7 +38,7 @@ FACET wallet_send_card
         <button class="btn-primary" type="submit" style="white-space:nowrap;padding:0 18px">Send</button>
       </div>
     </div>
-    <p class="wallet-send-note">Network fee: 0.001 AET per transfer · Transfers are final</p>
+    <p class="wallet-send-note">A tip fee is taken by the ledger · Tips are final</p>
     <div class="wallet-send-result" id="tip-result"></div>
   </form>
   <p class="wallet-footer-note">To receive AET, share your handle — anyone can tip you from their wallet or from a post.</p>

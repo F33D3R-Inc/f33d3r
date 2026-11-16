@@ -19,7 +19,7 @@ FACET profile_header
     user_avatar, badge_pill, vision_profile_ring
 
   signals:
-    emits:    follow, unfollow (POST /events), openSubscribeModal (JS),
+    emits:    follow, unfollow (POST /events), GET /facets/subscribe_modal (btn_subscribe),
               GET /facets/tip_modal → #overlay-slot, GET /partials/follow-list → #overlay-slot
               vision.ring (GET /facets/vision/ring) — the author's Vision ring
     receives: vision.closed (DOM: visionclosed on body) — the ring restates

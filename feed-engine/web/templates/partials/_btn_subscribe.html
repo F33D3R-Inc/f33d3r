@@ -1,31 +1,48 @@
 {{/*
 FACET btn_subscribe
-  version: 1.0 | status: stable | layer: 5
+  version: 2.0 | status: stable | layer: 5
 
   inputs:
-    CreatorID      string — user UUID for the creator
-    CreatorHandle  string — handle (for modal context)
-    IsSubscribed   bool   — current subscription state
+    CreatorID       string — the creator's account id
+    CreatorHandle   string — the creator's handle
+    IsSubscribed    bool   — the viewer holds a paid, unexpired subscription
+    CancelledUntil  string — optional: the subscription was cancelled and runs to this date
+    Unavailable     bool   — optional: the state could not be read; the control is shut
 
   states:
-    default | subscribed (is-on)
+    default | subscribed (is-on) | cancelled (runs to period end) | unavailable
 
   children: none
 
   signals:
-    emits:    openSubscribeModal (JS — opens subscribe modal) when not subscribed
-              unsubscribeFrom (JS) when already subscribed
-    receives: none
+    emits:    GET /facets/subscribe_modal?handle=… → #overlay-slot (not subscribed)
+              POST /api/unsubscribe {creator_id} (subscribed; the subscription runs to its period end)
+              POST /api/subscribe is made from subscribe_modal
+    receives: none — a change re-requests the Playground, which renders this again
 
   context:
     profile_header → action row, creators only
-    work_focus_sidebar → creator CTA
+    shop.html → shop actions
 */}}
 {{define "btn_subscribe"}}
-{{if .IsSubscribed}}
-<button class="btn-subscribe is-on"
-        onclick="event.stopPropagation();unsubscribeFrom('{{.CreatorID}}')"
-        aria-label="Unsubscribe from @{{.CreatorHandle}}"
+<div class="btn-subscribe-wrap" data-facet-id="facet:f33d3r:subscription:{{.CreatorID}}:btn">
+{{if .Unavailable}}
+<button class="btn-subscribe" type="button" disabled aria-disabled="true">Subscriptions unavailable</button>
+{{else if and .IsSubscribed .CancelledUntil}}
+<button class="btn-subscribe" type="button"
+        hx-get="/facets/subscribe_modal?handle={{.CreatorHandle}}"
+        hx-target="#overlay-slot" hx-swap="innerHTML"
+        aria-label="Resume your subscription to @{{.CreatorHandle}}">
+  Ends {{.CancelledUntil}} · Resume
+</button>
+{{else if .IsSubscribed}}
+<button class="btn-subscribe is-on" type="button"
+        hx-post="/api/unsubscribe"
+        hx-vals='{"creator_id":"{{.CreatorID}}"}'
+        hx-confirm="Cancel your subscription to @{{.CreatorHandle}}? It runs to the end of the period you paid for."
+        hx-target="#subscribe-result-{{.CreatorID}}" hx-swap="innerHTML"
+        hx-disabled-elt="this"
+        aria-label="Cancel your subscription to @{{.CreatorHandle}}"
         aria-pressed="true">
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
     <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
@@ -34,11 +51,14 @@ FACET btn_subscribe
   Subscribed
 </button>
 {{else}}
-<button class="btn-subscribe"
-        onclick="event.stopPropagation();openSubscribeModal('{{.CreatorID}}','{{.CreatorHandle}}')"
+<button class="btn-subscribe" type="button"
+        hx-get="/facets/subscribe_modal?handle={{.CreatorHandle}}"
+        hx-target="#overlay-slot" hx-swap="innerHTML"
         aria-label="Subscribe to @{{.CreatorHandle}}"
         aria-pressed="false">
   Subscribe
 </button>
 {{end}}
+<span id="subscribe-result-{{.CreatorID}}" aria-live="polite"></span>
+</div>
 {{end}}

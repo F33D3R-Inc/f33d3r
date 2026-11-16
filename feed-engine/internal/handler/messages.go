@@ -330,7 +330,7 @@ func (h *Handler) sendToPerson(w http.ResponseWriter, r *http.Request, user *mod
 	// Knowing a handle is not permission to open a conversation. The contact
 	// policy authority decides, and an unreachable authority refuses: an
 	// unknown policy is not an open one.
-	outcome, err := h.evaluateContact(r.Context(), user, contactQuery{TargetPIAL: targetPIAL})
+	outcome, err := h.evaluateContact(r.Context(), user, contactQuery{TargetAccount: target.ID})
 	if err != nil {
 		log.Printf("[gnosis] contact decision for %s: %v", handle, err)
 		h.gateProspect(w, user, target, pending, gnosis.PendingUnavailable)
@@ -810,20 +810,23 @@ func (h *Handler) handleGateNumber(w http.ResponseWriter, r *http.Request) {
 		gate(state)
 		return
 	}
-	if outcome.TargetPIAL == "" {
+	if outcome.TargetAccount == "" {
 		// An allow that names nobody cannot open a conversation, and saying so
 		// would say more than a refusal does.
 		gate(gnosis.PendingDeny)
 		return
 	}
-	account := dbpkg.AccountForPIAL(h.db, outcome.TargetPIAL)
-	if account == "" || account != pending.TargetAccount {
+	// The Number reaches the account that holds it — that persona, never its
+	// person's primary.
+	account := outcome.TargetAccount
+	targetPIAL := dbpkg.ResolvePIAL(h.db, account)
+	if targetPIAL == "" || account != pending.TargetAccount {
 		// A working Number belonging to somebody else does not deliver a message
 		// written to this person, and does not say that is what happened.
 		gate(gnosis.PendingDeny)
 		return
 	}
-	convoID, err := h.ensureDirectConversation(user, account, outcome.TargetPIAL)
+	convoID, err := h.ensureDirectConversation(user, account, targetPIAL)
 	if err != nil {
 		log.Printf("[gnosis] opening conversation by Number for pial %s: %v", user.PIALID, err)
 		gate(gnosis.PendingUnavailable)

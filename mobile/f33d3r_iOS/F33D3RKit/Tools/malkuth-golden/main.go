@@ -5,6 +5,14 @@
 // Go there changes, this file must be updated from it and the fixtures
 // regenerated.
 //
+// The second output, worktext_golden.json, is the text rules of
+// feed-engine/internal/worktext/worktext.go (normalizer v1), COPIED into
+// worktext.go beside this file: for each input, what Normalize, IsNormalized,
+// IsBlank and WeightedLength answer. Both apps' normalisers are tested against
+// it.
+//
+//	go run . <canonical.json> <worktext.json>
+//
 // For every case this program:
 //  1. builds the payload in its natural Go types,
 //  2. runs the exact verifyCID normalise+marshal path to get canonical bytes,
@@ -30,7 +38,7 @@ import (
 // ─── VERBATIM from internal/handler/work_event.go ────────────────────────────
 
 type workCanonicalPayload struct {
-	AuthorPIAL        string      `json:"author_pial"`
+	AuthorAccount     string      `json:"author_account"`
 	Body              string      `json:"body"`
 	CommentGating     string      `json:"comment_gating"`
 	IsRepost          bool        `json:"is_repost"`
@@ -57,6 +65,12 @@ func canonicalBytes(p workCanonicalPayload) []byte {
 	if p.MediaURLs == nil {
 		p.MediaURLs = []string{}
 	}
+	// The server's line here is append([]string(nil), ...), which turns the
+	// empty list back into nil and hashes "media_urls":null — contradicting its
+	// own comment and malkuth.js, which hash []. That is a feed-engine defect;
+	// this copy hashes the contract, [], so the fixtures say what every client
+	// must send.
+	p.MediaURLs = append([]string{}, p.MediaURLs...)
 	sort.Strings(p.MediaURLs)
 	if p.Tags == nil {
 		p.Tags = []string{}
@@ -80,17 +94,18 @@ func cidOf(canonical []byte) string {
 // input mirrors the payload in natural types. Swift decodes this and must
 // rebuild the canonical bytes from it. media_urls is deliberately given
 // unsorted in some cases: sorting is part of what the client has to do.
+//
+// is_repost and repost_source_id are not inputs: a client hashes them as the
+// constants false and null, and the server refuses anything else.
 type input struct {
-	AuthorPIAL        string   `json:"author_pial"`
+	AuthorAccount     string   `json:"author_account"`
 	Body              string   `json:"body"`
 	CommentGating     string   `json:"comment_gating"`
-	IsRepost          bool     `json:"is_repost"`
 	Kind              string   `json:"kind"`
 	MediaURLs         []string `json:"media_urls"`
 	ParentCID         *string  `json:"parent_cid"`
 	PollEndsAt        *string  `json:"poll_ends_at"`
 	PollOptions       []string `json:"poll_options"`
-	RepostSourceID    *string  `json:"repost_source_id"`
 	ScheduledAt       *string  `json:"scheduled_at"`
 	SubscriberOnly    bool     `json:"subscriber_only"`
 	Tags              []string `json:"tags"`
@@ -117,10 +132,9 @@ func i(v int) *int       { return &v }
 // toPayload turns the fixture input into the Go struct the server holds.
 func (in input) toPayload() workCanonicalPayload {
 	p := workCanonicalPayload{
-		AuthorPIAL:     in.AuthorPIAL,
+		AuthorAccount:  in.AuthorAccount,
 		Body:           in.Body,
 		CommentGating:  in.CommentGating,
-		IsRepost:       in.IsRepost,
 		Kind:           in.Kind,
 		MediaURLs:      append([]string(nil), in.MediaURLs...),
 		SubscriberOnly: in.SubscriberOnly,
@@ -135,9 +149,6 @@ func (in input) toPayload() workCanonicalPayload {
 	}
 	if in.PollOptions != nil {
 		p.PollOptions = in.PollOptions
-	}
-	if in.RepostSourceID != nil {
-		p.RepostSourceID = *in.RepostSourceID
 	}
 	if in.ScheduledAt != nil {
 		p.ScheduledAt = *in.ScheduledAt
@@ -160,7 +171,7 @@ func (in input) toPayload() workCanonicalPayload {
 	return p
 }
 
-const pial = "3f2504e0-4f89-11d3-9a0c-0305e82c3301"
+const account = "3f2504e0-4f89-11d3-9a0c-0305e82c3301"
 
 func cases() []struct {
 	name string
@@ -169,7 +180,7 @@ func cases() []struct {
 } {
 	base := func() input {
 		return input{
-			AuthorPIAL:    pial,
+			AuthorAccount: account,
 			Body:          "",
 			CommentGating: "everyone",
 			Kind:          "post",
@@ -269,12 +280,6 @@ func cases() []struct {
 		in.PollOptions = []string{}
 	})
 
-	add("repost", "is_repost with a source UUID", func(in *input) {
-		in.IsRepost = true
-		in.RepostSourceID = s("7c9e6679-7425-40de-944b-e07fc1f90ae7")
-		in.Body = ""
-	})
-
 	add("scheduled", "scheduled_at set; Go silently ignores a non-RFC3339 value, so the client must validate", func(in *input) {
 		in.Body = "goes out later"
 		in.ScheduledAt = s("2026-12-25T09:00:00Z")
@@ -342,6 +347,11 @@ func cases() []struct {
 		in.CommentGating = "circle"
 	})
 
+	add("gating_verified", "verified gating", func(in *input) {
+		in.Body = "verified only"
+		in.CommentGating = "verified"
+	})
+
 	add("subscriber_only", "subscriber_only true", func(in *input) {
 		in.Body = "for subscribers"
 		in.SubscriberOnly = true
@@ -350,13 +360,11 @@ func cases() []struct {
 	add("everything_at_once", "every optional field populated simultaneously", func(in *input) {
 		in.Body = "everything <at> once & then some — 🜃"
 		in.CommentGating = "circle"
-		in.IsRepost = true
 		in.Kind = "video"
 		in.MediaURLs = []string{"/media/b.webp", "/media/a.webp"}
 		in.ParentCID = s("sha256:0000000000000000000000000000000000000000000000000000000000000001")
 		in.PollEndsAt = s("2027-01-01T00:00:00Z")
 		in.PollOptions = []string{"yes", "no"}
-		in.RepostSourceID = s("7c9e6679-7425-40de-944b-e07fc1f90ae7")
 		in.ScheduledAt = s("2027-01-01T00:00:00Z")
 		in.SubscriberOnly = true
 		in.Tags = []string{"one", "two"}
@@ -385,6 +393,11 @@ func main() {
 	if len(os.Args) > 1 {
 		outPath = os.Args[1]
 	}
+	textPath := "worktext_golden.json"
+	if len(os.Args) > 2 {
+		textPath = os.Args[2]
+	}
+	writeWorkText(textPath)
 
 	fixtures := []fixture{}
 	seen := map[string]string{}
@@ -427,7 +440,7 @@ func main() {
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(map[string]interface{}{
 		"generated_by": "feed-engine/internal/handler/work_event.go workCanonicalPayload + verifyCID, " +
-			"copied verbatim into /tmp/malkuth-golden/main.go. Regenerate after any change to that struct.",
+			"copied verbatim into F33D3RKit/Tools/malkuth-golden/main.go. Regenerate after any change to that struct.",
 		"cases": fixtures,
 	}); err != nil {
 		panic(err)

@@ -7,7 +7,6 @@ use std::collections::HashMap;
 use aethyrrank_engine::api::types::*;
 use aethyrrank_engine::config::*;
 use aethyrrank_engine::pipeline::{neural, preranker, revenue, velocity};
-use aethyrrank_engine::safety::barrier;
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -22,6 +21,7 @@ fn sfw_user() -> UserState {
         user_tier: "free".to_string(),
         realm_level: 1,
         nexus_shard_id: None,
+        viewer_pial: None,
     }
 }
 
@@ -36,6 +36,7 @@ fn default_user() -> UserState {
         user_tier: "free".to_string(),
         realm_level: 1,
         nexus_shard_id: None,
+        viewer_pial: None,
     }
 }
 
@@ -68,6 +69,7 @@ fn make_item(id: &str, adult_prob: f64, velocity: f64) -> ContentItem {
         self_reply_cadence: 0.0,
         char_count: 280,
         is_in_network: false,
+        creator_pial: None,
     }
 }
 
@@ -88,59 +90,11 @@ fn rev_cfg() -> RevenueConfig {
     }
 }
 
-fn safety_cfg() -> SafetyConfig {
-    SafetyConfig {
-        default_epsilon: 0.10,
-        sfw_epsilon: 1e-6,
-        hard_block_score: -999999.0,
-    }
-}
-
 fn prerank_cfg() -> PrerankConfig {
     PrerankConfig {
         top_k: 50,
         min_fast_score: 0.0,
     }
-}
-
-// ── Safety barrier tests ──────────────────────────────────────────────────────
-
-#[test]
-fn sfw_user_sees_zero_adult_content() {
-    let user = sfw_user();
-    let adult = make_item("adult_item", 0.80, 0.5);
-    let safe = make_item("safe_item", 0.00, 0.5);
-
-    let adult_result = barrier::check(&user, &adult, &safety_cfg());
-    let safe_result = barrier::check(&user, &safe, &safety_cfg());
-
-    assert!(
-        adult_result.blocked,
-        "adult content must be blocked for SFW user"
-    );
-    assert!(!safe_result.blocked, "clean content must pass SFW user");
-}
-
-#[test]
-fn sfw_user_blocked_by_drift_even_for_borderline_content() {
-    let user = sfw_user();
-    let borderline = make_item("border", 0.20, 0.5);
-    let result = barrier::check(&user, &borderline, &safety_cfg());
-    assert!(
-        result.blocked,
-        "borderline content must be blocked for SFW user via drift amplification"
-    );
-}
-
-#[test]
-fn default_user_passes_mild_content() {
-    let user = default_user();
-    let mild = make_item("mild", 0.03, 0.5);
-    let result = barrier::check(&user, &mild, &safety_cfg());
-    assert!(
-        !result.blocked,
-        "mild content (adult_prob=0.03) should pass default user"
-    );
 }
 
 // ── Velocity layer tests ──────────────────────────────────────────────────────

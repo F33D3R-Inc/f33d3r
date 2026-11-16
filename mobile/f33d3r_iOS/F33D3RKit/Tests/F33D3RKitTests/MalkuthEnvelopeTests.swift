@@ -9,13 +9,14 @@ import Testing
 /// the crypto. This is the join: an envelope whose payload bytes were altered
 /// between hashing and sending would pass both of those and fail every post.
 ///
-/// `Fixtures/malkuth_envelopes.json` records the verdicts a Go program returned
-/// when handed bodies this code built. That program runs `workEvent`'s admission
-/// sequence verbatim — the `rawBody` parse loop, the `sha256:` prefix check,
-/// `verifyCID`, `verifyMalkuthSig` steps 2-6, the `workKinds` lookup, and the
-/// reply and repost rules — stopping just before `InsertWork`, which is the last
-/// point that does not need a database. The only substitution is the signing
-/// key, which comes from the vector instead of from Elohim Veni.
+/// `Fixtures/malkuth_envelopes.json` records the verdicts a Go program
+/// (`Tools/malkuth-golden/envelope`) returned when handed bodies this code
+/// built. That program runs `createWork`'s checks in order — `parseWorkEnvelope`,
+/// the CID shape, `author_account` against the session's account, `verifyCID`,
+/// the signature, the kind, the text normaliser and length, the repost refusal,
+/// the gating vocabulary, the citation rules and the poll rule — stopping before
+/// the media registry and `InsertWork`. The session account and the signing key
+/// come from the vector; "now" is the payload's own `timestamp_ms`.
 ///
 /// So what is proven here is: **every check on the way in accepts these bytes,
 /// and the ones that should refuse do refuse.** What is not proven is anything
@@ -38,7 +39,6 @@ struct MalkuthEnvelopeTests {
         let reason: String
         let kind: String
         let parentCID: String
-        let tusUploadID: String
         let isNSFW: Bool
         let quotedWorkID: String
         let expectAccepted: Bool
@@ -46,7 +46,6 @@ struct MalkuthEnvelopeTests {
         enum CodingKeys: String, CodingKey {
             case name, accepted, status, reason, kind
             case parentCID = "parent_cid"
-            case tusUploadID = "tus_upload_id"
             case isNSFW = "is_nsfw"
             case quotedWorkID = "quoted_work_id"
             case expectAccepted = "expect_accepted"
@@ -62,7 +61,8 @@ struct MalkuthEnvelopeTests {
         let build: (MalkuthKey) throws -> Data
     }
 
-    static let pial = MalkuthCanonicalTests.pial
+    static let account = MalkuthCanonicalTests.account
+    static let otherAccount = "11111111-2222-3333-4444-555555555555"
     static let parentCID = "sha256:" + String(repeating: "9a", count: 32)
     static let sourceUUID = "7c9e6679-7425-40de-944b-e07fc1f90ae7"
 
@@ -70,7 +70,7 @@ struct MalkuthEnvelopeTests {
         func payload(
             _ mutate: (inout WorkPayload) -> Void = { _ in }
         ) -> WorkPayload {
-            var p = WorkPayload(authorPIAL: pial, body: "hello", timestampMS: 1_767_225_600_000)
+            var p = WorkPayload(authorAccount: account, body: "hello", timestampMS: 1_767_225_600_000)
             mutate(&p)
             return p
         }
@@ -94,18 +94,12 @@ struct MalkuthEnvelopeTests {
                     key: key
                 ).httpBody
             },
-            .init(name: "repost", expectAccepted: true, expectReason: "would insert") { key in
-                try WorkEnvelope(
-                    payload: payload { $0.isRepost = true; $0.repostSourceID = sourceUUID },
-                    key: key
-                ).httpBody
-            },
             .init(name: "poll", expectAccepted: true, expectReason: "would insert") { key in
                 try WorkEnvelope(
                     payload: payload {
                         $0.kind = .poll
                         $0.pollOptions = ["a", "b"]
-                        $0.pollEndsAt = "2027-01-01T00:00:00Z"
+                        $0.pollEndsAt = "2026-01-02T00:00:00Z"
                     },
                     key: key
                 ).httpBody
@@ -119,10 +113,8 @@ struct MalkuthEnvelopeTests {
                     },
                     key: key,
                     isNSFW: true,
-                    videoWatermarkedURL: "/media/video/wm.mp4",
                     videoWidth: 1920,
-                    videoHeight: 1080,
-                    tusUploadID: "tus-abc-123"
+                    videoHeight: 1080
                 ).httpBody
             },
             .init(name: "event_type_disagrees_with_kind", expectAccepted: true, expectReason: "would insert") { key in
@@ -148,13 +140,13 @@ struct MalkuthEnvelopeTests {
 
             // Negatives. Each one is a specific way the wire format can go
             // wrong, and each must be refused for the reason named.
-            .init(name: "tampered_body_after_signing", expectAccepted: false, expectReason: "cid mismatch") { key in
+            .init(name: "tampered_body_after_signing", expectAccepted: false, expectReason: "invalid_field cid") { key in
                 let envelope = try WorkEnvelope(payload: payload(), key: key)
                 var text = String(decoding: envelope.httpBody, as: UTF8.self)
                 text = text.replacingOccurrences(of: #""body":"hello""#, with: #""body":"HELLO""#)
                 return Data(text.utf8)
             },
-            .init(name: "media_sent_unsorted", expectAccepted: false, expectReason: "cid mismatch") { key in
+            .init(name: "media_sent_unsorted", expectAccepted: false, expectReason: "invalid_field cid") { key in
                 // What a client that skipped the sort would send: the CID is
                 // over the unsorted order, so the server's re-sort disagrees.
                 var p = payload()
@@ -176,7 +168,7 @@ struct MalkuthEnvelopeTests {
                 body.append(UInt8(ascii: "}"))
                 return body
             },
-            .init(name: "signature_over_the_payload", expectAccepted: false, expectReason: "signature invalid") { key in
+            .init(name: "signature_over_the_payload", expectAccepted: false, expectReason: "invalid_field signature") { key in
                 let envelope = try WorkEnvelope(payload: payload(), key: key)
                 // The classic mistake: sign the payload rather than the CID.
                 let wrong = try key.signature(
@@ -189,11 +181,16 @@ struct MalkuthEnvelopeTests {
                 )
                 return Data(text.utf8)
             },
-            .init(name: "signed_by_another_key", expectAccepted: false, expectReason: "signature invalid") { key in
+            .init(name: "signed_by_another_key", expectAccepted: false, expectReason: "invalid_field signature") { key in
                 let other = MalkuthKey.generate()
                 let envelope = try WorkEnvelope(payload: payload(), key: other)
                 _ = key
                 return envelope.httpBody
+            },
+            .init(name: "signed_as_another_account", expectAccepted: false, expectReason: "invalid_field author_account") { key in
+                // A valid signature over a payload naming an account that is not
+                // the session's: the server refuses it before checking anything else.
+                try WorkEnvelope(payload: payload { $0.authorAccount = otherAccount }, key: key).httpBody
             },
         ]
     }
@@ -223,14 +220,11 @@ struct MalkuthEnvelopeTests {
         #expect(file.results.contains { !$0.accepted })
     }
 
-    @Test("The unsigned outer fields reach the server and stay outside the signature")
+    @Test("The unsigned outer fields reach the server")
     func unsignedFieldsSurvive() throws {
         let verdict = try #require(
             try Self.verdicts().results.first { $0.name == "video_with_unsigned_extras" }
         )
-        // Read back out of the payload object, where it rides without breaking
-        // the CID — which is the whole trick.
-        #expect(verdict.tusUploadID == "tus-abc-123")
         #expect(verdict.isNSFW)
         #expect(verdict.kind == "video")
 
@@ -244,7 +238,7 @@ struct MalkuthEnvelopeTests {
     @Test("The kind Go stores comes from the signed payload, not from event_type")
     func kindComesFromThePayload() throws {
         let key = MalkuthKey.generate()
-        var payload = WorkPayload(authorPIAL: Self.pial, body: "x", timestampMS: 1)
+        var payload = WorkPayload(authorAccount: Self.account, body: "x", timestampMS: 1)
         payload.kind = .voice
         payload.voiceURL = "/media/voice/a.m4a"
 
@@ -269,7 +263,7 @@ struct MalkuthEnvelopeTests {
     func payloadIsSplicedNotReencoded() throws {
         let key = MalkuthKey.generate()
         var payload = WorkPayload(
-            authorPIAL: Self.pial,
+            authorAccount: Self.account,
             body: "a & b < c > \"quoted\" \u{1F703}",
             timestampMS: 1_767_225_600_000
         )
@@ -286,32 +280,32 @@ struct MalkuthEnvelopeTests {
         #expect(ContentID.of(Data(spliced)) == envelope.contentID)
     }
 
-    @Test("tus_upload_id rides inside the payload without changing the CID")
-    func tusUploadIDDoesNotChangeTheCID() throws {
+    @Test("The client never sends a field the server ignores or refuses")
+    func sendsNoRemovedFields() throws {
         let key = MalkuthKey.generate()
-        let payload = WorkPayload(authorPIAL: Self.pial, body: "v", timestampMS: 2)
-
-        let without = try WorkEnvelope(payload: payload, key: key)
-        let with = try WorkEnvelope(payload: payload, key: key, tusUploadID: "tus-1")
-
-        #expect(without.contentID == with.contentID)
-        #expect(String(decoding: with.httpBody, as: UTF8.self).contains(#""tus_upload_id":"tus-1""#))
-        #expect(!String(decoding: without.httpBody, as: UTF8.self).contains("tus_upload_id"))
-
-        // And the payload object is still valid JSON with the extra key.
-        let parsed = try #require(
-            try JSONSerialization.jsonObject(with: with.httpBody) as? [String: Any]
+        let envelope = try WorkEnvelope(
+            payload: WorkPayload(
+                authorAccount: Self.account, body: "v", kind: .video,
+                timestampMS: 2, videoMasterURL: "/static/media/a/x/master.m3u8"
+            ),
+            key: key, videoWidth: 1920, videoHeight: 1080
         )
+        let parsed = try #require(
+            try JSONSerialization.jsonObject(with: envelope.httpBody) as? [String: Any]
+        )
+        #expect(parsed["video_watermarked_url"] == nil)
         let payloadObject = try #require(parsed["payload"] as? [String: Any])
-        #expect(payloadObject["tus_upload_id"] as? String == "tus-1")
-        #expect(payloadObject.count == 20)  // the nineteen signed fields plus one
+        #expect(payloadObject["tus_upload_id"] == nil)
+        #expect(payloadObject["is_repost"] as? Bool == false)
+        #expect(payloadObject["repost_source_id"] is NSNull)
+        #expect(payloadObject.count == 19)  // exactly the signed fields
     }
 
     @Test("The body is valid JSON with every field the server reads")
     func bodyIsWellFormed() throws {
         let key = MalkuthKey.generate()
         let envelope = try WorkEnvelope(
-            payload: WorkPayload(authorPIAL: Self.pial, body: "b", timestampMS: 3),
+            payload: WorkPayload(authorAccount: Self.account, body: "b", timestampMS: 3),
             key: key,
             isNSFW: true,
             quotedWorkID: Self.sourceUUID
@@ -334,7 +328,7 @@ struct MalkuthEnvelopeTests {
     @Test("Identical payloads produce identical bytes, so a retry is the same request")
     func envelopeBytesAreStableAcrossBuilds() throws {
         let key = MalkuthKey.generate()
-        let payload = WorkPayload(authorPIAL: Self.pial, body: "same", timestampMS: 42)
+        let payload = WorkPayload(authorAccount: Self.account, body: "same", timestampMS: 42)
         let first = try WorkEnvelope(payload: payload, key: key)
         let second = try WorkEnvelope(payload: payload, key: key)
 
@@ -363,6 +357,7 @@ struct MalkuthEnvelopeTests {
             cases.append([
                 "name": testCase.name,
                 "public_key_spki_b64": key.publicKeySPKIBase64,
+                "account_id": Self.account,
                 "body_b64": try testCase.build(key).base64EncodedString(),
                 "expect_accepted": testCase.expectAccepted,
                 "expect_reason": testCase.expectReason,

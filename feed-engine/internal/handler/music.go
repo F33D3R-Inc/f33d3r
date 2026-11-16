@@ -20,7 +20,8 @@ package handler
 //	                  server decides what that was: a play, a completion or a
 //	                  skip. A play is counted (work_play_totals) and the plays
 //	                  Facet (facet:f33d3r:track:<work_id>:plays) goes to every
-//	                  watcher; every listening event is forwarded to Zior
+//	                  watcher; every meaningful event is queued for AethyrRank on
+//	                  ranking.events
 //	delete            POST /api/track/delete — SoftDeleteWork, which withdraws the
 //	                  artist's own media from Caeor
 //
@@ -39,7 +40,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/google/uuid"
 
@@ -364,15 +364,15 @@ const (
 // listenMeaning is the server's reading of one report: a play, a completion, a
 // skip, or nothing worth recording. A track left after it began and before its
 // last second is a skip; left at (or past) the end it was already completed.
-func listenMeaning(event trackListen, position, duration float64) (zior.PlayEventType, bool) {
+func listenMeaning(event trackListen, position, duration float64) (dbpkg.RankingAction, bool) {
 	switch event {
 	case listenStarted:
-		return zior.EventPlay, true
+		return dbpkg.RankPlay, true
 	case listenEnded:
-		return zior.EventComplete, true
+		return dbpkg.RankComplete, true
 	case listenLeft:
 		if position > 0.5 && (duration <= 0 || position < duration-1) {
-			return zior.EventSkip, true
+			return dbpkg.RankSkip, true
 		}
 	}
 	return "", false
@@ -380,8 +380,8 @@ func listenMeaning(event trackListen, position, duration float64) (zior.PlayEven
 
 // trackPlayAction is POST /api/track/play: one listening report from the
 // player. Form fields: track_id, event (started | ended | left),
-// position_secs, duration_secs, session_id. A play is counted and its Fragment
-// pushed to every watcher; every meaningful event is forwarded to Zior. 204.
+// position_secs, duration_secs. A play is counted and its Fragment pushed to
+// every watcher; every meaningful event is queued for AethyrRank. 204.
 func (h *Handler) trackPlayAction(w http.ResponseWriter, r *http.Request) {
 	user := h.userFromRequest(w, r)
 	if user == nil || user.ID == "" || user.ID == "demo_user" {
@@ -418,7 +418,7 @@ func (h *Handler) trackPlayAction(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	if meaning == zior.EventPlay {
+	if meaning == dbpkg.RankPlay {
 		plays, err := dbpkg.RecordTrackPlay(h.db, track.ID)
 		if err != nil {
 			log.Printf("[track] play of %s: %v", track.ID, err)
@@ -429,16 +429,13 @@ func (h *Handler) trackPlayAction(w http.ResponseWriter, r *http.Request) {
 			"ID": track.ID, "PlayCount": plays,
 		})
 	}
-	now := time.Now().UTC()
-	h.zior().SendEvents([]zior.PlayEvent{{
-		TrackID:      track.ID,
-		UserID:       user.ID,
-		EventType:    meaning,
-		PositionSecs: position,
-		DurationSecs: duration,
-		SessionID:    truncate(strings.TrimSpace(r.FormValue("session_id")), 128),
-		Timestamp:    &now,
-	}})
+	if err := dbpkg.EnqueueRankingSignal(h.db, dbpkg.RankingSignal{
+		Action: meaning, Viewer: user.ID, WorkID: track.ID,
+	}); err != nil {
+		log.Printf("[track] %s of %s by %s not queued for ranking: %v", meaning, track.ID, user.ID, err)
+		http.Error(w, "could not record that", http.StatusInternalServerError)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

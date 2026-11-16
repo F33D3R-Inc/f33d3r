@@ -40,6 +40,10 @@ f33d3r.com {
     # public edge never serves it. Answered before the catch-all so the path
     # is not proxied.
     respond /metrics 404
+    # Brain-to-brain routes are reached on the container network only, never
+    # from the edge — the same wall the tor site below has. feed-engine refuses
+    # them from the edge as well; this keeps them from being proxied at all.
+    respond /api/internal/* 404
 
     # Frequency audio signaling. The server API under /twirp is never published.
     @livekit path /rtc /rtc/*

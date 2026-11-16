@@ -94,6 +94,7 @@ func WorkToContent(w *model.Work, s WorkSignals) model.AethyrContent {
 	return model.AethyrContent{
 		ContentID:       w.ID,
 		CreatorID:       w.AuthorID,
+		CreatorPIAL:     w.AuthorPIAL,
 		TopicVector:     w.PsychVector,
 		PublishedAt:     w.CreatedAt,
 		ExposureCount:   uint64(w.ViewCount),

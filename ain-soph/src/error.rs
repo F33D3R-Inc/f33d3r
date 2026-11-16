@@ -14,9 +14,6 @@ pub enum WalletError {
     #[error("insufficient balance")]
     InsufficientBalance,
 
-    #[error("account not found: {0}")]
-    AccountNotFound(String),
-
     #[error("invalid amount: must be > 0")]
     InvalidAmount,
 
@@ -63,7 +60,7 @@ pub enum WalletError {
     ActingAsAnother,
 
     /// A platform operation reached with an end-user session. There is no person
-    /// on whose behalf a ledger checkpoint could be made.
+    /// on whose behalf a mint or a reattribution could be made.
     #[error("this endpoint is service-to-service only")]
     ServiceOnly,
 }
@@ -74,7 +71,6 @@ impl IntoResponse for WalletError {
             WalletError::InsufficientBalance => {
                 (StatusCode::UNPROCESSABLE_ENTITY, "insufficient_balance")
             }
-            WalletError::AccountNotFound(_) => (StatusCode::NOT_FOUND, "account_not_found"),
             WalletError::InvalidAmount => (StatusCode::BAD_REQUEST, "invalid_amount"),
             WalletError::SelfTransfer => (StatusCode::BAD_REQUEST, "self_transfer"),
             WalletError::ProposalNotFound => (StatusCode::NOT_FOUND, "proposal_not_found"),

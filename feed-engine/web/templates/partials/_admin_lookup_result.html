@@ -231,6 +231,8 @@ FACET admin_lookup_result
     <div class="admin-action-title">Inject AET</div>
     <form class="admin-devtool-row"
           hx-post="/api/admin/inject-aet"
+          hx-sync="this:drop"
+          hx-disabled-elt="find button"
           hx-target="#admin-aet-result-{{.LookupHandle}}"
           hx-swap="innerHTML">
       <input type="hidden" name="target_handle" value="{{.LookupUser.Handle}}">

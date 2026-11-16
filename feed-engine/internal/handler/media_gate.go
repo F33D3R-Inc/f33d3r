@@ -181,18 +181,21 @@ ORDER BY w.created_at DESC
 LIMIT 64`
 
 // uploaderVisionsQuery returns the uploader's Visions that carry the asset, as
-// the same fact set. A Vision addressed to followers is walled like a private
-// author; its expiry is its lifetime. A Vision has no schedule, no subscription
-// and no gore flag. $1 asset id, $2 the asset's uploader PIAL.
+// the same fact set. A Vision answers for the account that posted it
+// (author_account), never for another persona on the same identity. A Vision
+// addressed to followers is walled like a private author; its expiry is its
+// lifetime; a Vision waiting on its verdict is its author's alone, as the
+// Vision itself is. A Vision has no schedule, no subscription and no gore flag.
+// $1 asset id, $2 the asset's uploader PIAL.
 const uploaderVisionsQuery = `
-SELECT COALESCE(au.id::text, ''),
+SELECT v.author_account::text,
        (v.deleted_at IS NOT NULL),
        (v.is_blocked OR v.scan_state = 'blocked'),
        (v.expires_at <= NOW()),
        v.expires_at,
        FALSE,
        NULL::timestamptz,
-       FALSE,
+       (v.scan_state = 'pending'),
        v.is_nsfw,
        FALSE,
        FALSE,
@@ -200,9 +203,7 @@ SELECT COALESCE(au.id::text, ''),
        COALESCE(up.is_adult_creator, FALSE)
   FROM visions v
   JOIN vision_media vm ON vm.author_pial = v.author_pial AND vm.seq = v.seq
-  LEFT JOIN LATERAL (SELECT u.id FROM users u WHERE u.pial_id = v.author_pial
-                      ORDER BY u.created_at, u.id LIMIT 1) au ON TRUE
-  LEFT JOIN user_profiles up ON up.user_id = au.id
+  LEFT JOIN user_profiles up ON up.user_id = v.author_account
  WHERE vm.caeor_asset_id = $1::text
    AND v.author_pial = $2::uuid
    AND vm.purged_at IS NULL

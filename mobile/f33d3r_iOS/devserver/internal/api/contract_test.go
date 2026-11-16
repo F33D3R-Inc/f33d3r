@@ -144,13 +144,16 @@ func TestFixtureKeySets(t *testing.T) {
 	}
 	var me map[string]any
 	json.Unmarshal(body, &me)
-	check("me", me, "pial_id")
+	check("me", me)
+	if account, _ := me["account_id"].(string); account == "" {
+		t.Errorf("/me carries no account_id")
+	}
 
 	status, body = h.do("POST", "/api/v1/auth/login", "", map[string]string{"handle": "dev", "password": store.DevPassword}, "")
 	var session map[string]any
 	json.Unmarshal(body, &session)
 	check("session", session)
-	check("me", session["user"].(map[string]any), "pial_id")
+	check("me", session["user"].(map[string]any))
 
 	status, body = h.do("GET", "/api/v1/users/dev", token, nil, "")
 	if status != 200 {
@@ -171,14 +174,14 @@ func TestFixtureKeySets(t *testing.T) {
 
 var uuidRe = regexp.MustCompile(`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`)
 
-// TestNoIdentityLeaks: no response other than the owner's own /me may carry a
-// PIAL, and nothing may carry the ranking vocabulary.
+// TestNoIdentityLeaks: no response carries a PIAL — the owner's own /me
+// included, which carries account_id for signing instead — and nothing
+// carries the ranking vocabulary.
 func TestNoIdentityLeaks(t *testing.T) {
 	h := newHarness(t)
 	token, me := h.login("dev")
-	ownPIAL, _ := me["pial_id"].(string)
-	if ownPIAL == "" {
-		t.Fatal("/me must carry pial_id for signing")
+	if account, _ := me["account_id"].(string); account == "" {
+		t.Fatal("/me must carry account_id for signing")
 	}
 
 	rows, err := h.store.DB().Query(`SELECT pial_id FROM pial_roots`)
@@ -194,6 +197,7 @@ func TestNoIdentityLeaks(t *testing.T) {
 	rows.Close()
 
 	for _, path := range []string{
+		"/api/v1/me",
 		"/api/v1/feed?surface=following", "/api/v1/feed?surface=foryou", "/api/v1/feed?surface=trending",
 		"/api/v1/feed?surface=music", "/api/v1/feed?surface=visions", "/api/v1/feed?surface=live",
 		"/api/v1/users/miiyazuko", "/api/v1/users/miiyazuko/works", "/api/v1/notifications", "/api/v1/wallet",
@@ -271,19 +275,19 @@ func envelope(t *testing.T, s *signer, p workCanonicalPayload, extra map[string]
 func TestWriteLane(t *testing.T) {
 	h := newHarness(t)
 	devToken, devMe := h.login("dev")
-	devPIAL := devMe["pial_id"].(string)
+	devAccount := devMe["account_id"].(string)
 	miiToken, miiMe := h.login("miiyazuko")
-	miiPIAL := miiMe["pial_id"].(string)
+	miiAccount := miiMe["account_id"].(string)
 
 	dev := newSigner(t)
 	payload := workCanonicalPayload{
-		AuthorPIAL: devPIAL, Body: "hello from the test #hello", CommentGating: "everyone", Kind: "post",
+		AuthorAccount: devAccount, Body: "hello from the test #hello", CommentGating: "everyone", Kind: "post",
 		MediaURLs: []string{}, Tags: []string{}, TimestampMS: time.Now().UnixMilli(),
 	}
 
 	// Unregistered key: the signature cannot verify.
 	status, body := h.do("POST", "/events", devToken, envelope(t, dev, payload, nil), "application/json")
-	if status != 403 || !strings.Contains(string(body), "signature invalid") {
+	if status != 400 || !strings.Contains(string(body), "signature — does not verify") {
 		t.Fatalf("unregistered key: %d %s", status, body)
 	}
 
@@ -303,10 +307,10 @@ func TestWriteLane(t *testing.T) {
 		t.Fatal("no work_id")
 	}
 
-	// Same bytes again: not a second work.
+	// Same bytes again: answered with the work they already made.
 	status, body = h.do("POST", "/events", devToken, envelope(t, dev, payload, nil), "application/json")
-	if status != 200 {
-		t.Fatalf("duplicate post: %d %s", status, body)
+	if status != 201 {
+		t.Fatalf("replayed post: %d %s", status, body)
 	}
 	var again workAccepted
 	json.Unmarshal(body, &again)
@@ -314,11 +318,44 @@ func TestWriteLane(t *testing.T) {
 		t.Fatalf("duplicate produced a different work")
 	}
 
-	// Tampered body: cid mismatch.
+	// The same content signed again is a Duplicate, final.
+	resigned := payload
+	resigned.TimestampMS++
+	status, body = h.do("POST", "/events", devToken, envelope(t, dev, resigned, nil), "application/json")
+	if status != 409 || !strings.Contains(string(body), "You already posted this.") {
+		t.Fatalf("content duplicate: %d %s", status, body)
+	}
+
+	// Tampered body: the CID no longer matches.
 	tampered := bytes.Replace(envelope(t, dev, payload, nil), []byte("hello from"), []byte("HELLO from"), 1)
 	status, body = h.do("POST", "/events", devToken, tampered, "application/json")
-	if status != 400 || !strings.Contains(string(body), "cid mismatch") {
+	if status != 400 || !strings.Contains(string(body), "cid — does not match the payload") {
 		t.Fatalf("tampered: %d %s", status, body)
+	}
+
+	// Signed as another account: refused before anything else.
+	status, body = h.do("POST", "/events", devToken, envelope(t, dev, func() workCanonicalPayload {
+		p := payload
+		p.AuthorAccount = miiAccount
+		return p
+	}(), nil), "application/json")
+	if status != 400 || !strings.Contains(string(body), "author_account") {
+		t.Fatalf("other account: %d %s", status, body)
+	}
+
+	// Text that is not normalised, and a stale signature, are refused.
+	unnormalised := payload
+	unnormalised.Body = "  padded  "
+	status, body = h.do("POST", "/events", devToken, envelope(t, dev, unnormalised, nil), "application/json")
+	if status != 400 || !strings.Contains(string(body), "body — is not normalized") {
+		t.Fatalf("unnormalised: %d %s", status, body)
+	}
+	stale := payload
+	stale.Body = "stale"
+	stale.TimestampMS = time.Now().Add(-2 * time.Hour).UnixMilli()
+	status, body = h.do("POST", "/events", devToken, envelope(t, dev, stale, nil), "application/json")
+	if status != 400 || !strings.Contains(string(body), "timestamp_ms") {
+		t.Fatalf("stale: %d %s", status, body)
 	}
 
 	// Mii follows dev (seeded), so the work is on her Following lane, with the
@@ -361,7 +398,7 @@ func TestWriteLane(t *testing.T) {
 	mii := newSigner(t)
 	h.do("POST", "/api/pial/signing-key/register", miiToken, map[string]string{"public_key_b64": mii.spkiB64()}, "")
 	reply := workCanonicalPayload{
-		AuthorPIAL: miiPIAL, Body: "welcome @dev", CommentGating: "everyone", Kind: "reply",
+		AuthorAccount: miiAccount, Body: "welcome @dev", CommentGating: "everyone", Kind: "reply",
 		ParentCID: accepted.CID, MediaURLs: []string{}, Tags: []string{}, TimestampMS: time.Now().UnixMilli(),
 	}
 	status, body = h.do("POST", "/events", miiToken, envelope(t, mii, reply, nil), "application/json")
@@ -409,7 +446,7 @@ func TestWriteLane(t *testing.T) {
 	}
 	// A mention of someone not otherwise involved does notify them.
 	mention := workCanonicalPayload{
-		AuthorPIAL: devPIAL, Body: "hey @guest look at this", CommentGating: "everyone", Kind: "post",
+		AuthorAccount: devAccount, Body: "hey @guest look at this", CommentGating: "everyone", Kind: "post",
 		MediaURLs: []string{}, Tags: []string{}, TimestampMS: time.Now().UnixMilli() + 1,
 	}
 	if status, body := h.do("POST", "/events", devToken, envelope(t, dev, mention, nil), "application/json"); status != 201 {

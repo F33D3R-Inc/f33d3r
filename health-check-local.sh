@@ -19,28 +19,22 @@ check() {
 }
 # One line per service docker-compose.local.yml publishes a host port for,
 # probing the same path its compose healthcheck does.
-check "aethyr-schema-registry" 8079
 check "aethyrrank-engine"       8080
 check "feed-engine"             8081 "/api/health"
 check "zior-engine"             8082
 check "transcoding"             8085
 check "caeor"                   8086
-check "astraon"                 8088
 check "ain-soph"                8089
 check "abraxas-shield"          8109
 check "live-edge"               8092 "/healthz"
 check "elohim-veni"             8093
 check "verity"                  8095
-check "aethyr-ledger"           8096
 check "content-scan"            8097 "/ready"
-check "alexandria"              8098
 check "ekyc"                    8099
 check "themis"                  8100
 check "herald"                  8105
-check "lore"                    8106
 check "manhattan"               8107
 check "auralis"                 8108
-check "minio"                   9000 "/minio/health/live"
 check "prometheus"              9090 "/-/healthy"
 check "alertmanager"            9093 "/-/healthy"
 check "loki"                    3100 "/ready"

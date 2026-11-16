@@ -5,8 +5,8 @@ FACET subscription_tier_card
   inputs:
     ID             string  — plan UUID
     Name           string  — plan display name
-    PriceAET       int     — price in AET micro-units (divide by 100 for display)
-    PriceDisplay   string  — pre-formatted price string, e.g. "5.00"
+    PriceUnits     int64   — price in AET units (the ledger's unit)
+    PriceDisplay   string  — the price as decimal AET, e.g. "5.00"
     Description    string  — optional plan description
     SubscriberCount int    — number of active subscribers on this plan
     IsOwner        bool    — whether the viewer is the plan owner
@@ -87,8 +87,8 @@ FACET subscription_tier_card
         </div>
         <div class="stier-edit-field">
           <label class="stier-edit-label" for="stier-edit-price-{{.ID}}">Price (AET/mo)</label>
-          <input id="stier-edit-price-{{.ID}}" type="number" name="price_aet" class="stier-edit-input"
-                 value="{{.PriceAET}}" min="0" required>
+          <input id="stier-edit-price-{{.ID}}" type="number" name="price" class="stier-edit-input"
+                 value="{{.PriceDisplay}}" min="0.01" step="0.01" required>
         </div>
         <div class="stier-edit-field stier-edit-field--full">
           <label class="stier-edit-label" for="stier-edit-desc-{{.ID}}">Description</label>

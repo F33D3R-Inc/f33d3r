@@ -1,5 +1,7 @@
 package com.f33d3r.app.compose
 
+import com.f33d3r.app.malkuth.CommentGating
+import com.f33d3r.app.malkuth.WorkText
 import kotlinx.serialization.Serializable
 import java.util.UUID
 
@@ -7,8 +9,9 @@ import java.util.UUID
  * A video the transcoder has finished with, as the server named it.
  *
  * Every field is the server's: the master and poster it wrote, the dimensions and
- * duration it measured, the resumable-upload id it issued. The composer copies them
- * into the work envelope and asserts nothing of its own about the file.
+ * duration it measured. The composer copies them into the work envelope and asserts
+ * nothing of its own about the file. [creditedTo] names the original uploader when the
+ * clip is somebody else's, already on F33D3R; the work is then a credited reference.
  */
 @Serializable
 data class VideoAttachment(
@@ -17,8 +20,7 @@ data class VideoAttachment(
     val durationSecs: Long = 0,
     val width: Int = 0,
     val height: Int = 0,
-    val tusUploadId: String = "",
-    val watermarkedUrl: String = "",
+    val creditedTo: String = "",
 )
 
 /** The work a reply is to, as the card that offered the reply named it. */
@@ -48,8 +50,8 @@ data class WorkDraft(
     /** Stored photo URLs, as the upload lane returned them. */
     val images: List<String> = emptyList(),
     val video: VideoAttachment? = null,
-    /** Who may reply: the server's `comment_gating` values. */
-    val replyRule: String = REPLY_EVERYONE,
+    /** Who may reply: one of [CommentGating]'s values, the server's vocabulary. */
+    val replyRule: String = CommentGating.EVERYONE,
     /** Subscribers only: the one audience gate the server offers a work. */
     val subscriberOnly: Boolean = false,
     /** In a gated thread, the first post stays free as a preview. */
@@ -75,18 +77,14 @@ data class WorkDraft(
 
     val isThread: Boolean get() = segments.isNotEmpty()
 
-    /** Every body in posting order, blanks dropped. */
+    /**
+     * Every body in posting order, as typed, blanks dropped. Each is normalised when
+     * it is signed ([com.f33d3r.app.malkuth.WorkPayload.preparedForSigning]).
+     */
     val bodies: List<String>
-        get() = (listOf(body) + segments).map { it.trim() }.filter { it.isNotEmpty() }
+        get() = (listOf(body) + segments).filter { !WorkText.isBlank(WorkText.normalize(it)) }
 
     companion object {
-        const val REPLY_EVERYONE = "everyone"
-        const val REPLY_FOLLOWERS = "followers"
-        const val REPLY_CIRCLE = "circle"
-        const val REPLY_NONE = "none"
-
-        /** The server's one character limit for a work's body. */
-        const val BODY_LIMIT = 2000
 
         /** How many photos a work carries at most. */
         const val MAX_IMAGES = 4

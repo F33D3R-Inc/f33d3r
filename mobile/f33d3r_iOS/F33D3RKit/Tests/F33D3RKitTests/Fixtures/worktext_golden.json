@@ -1,0 +1,358 @@
+{
+  "cases": [
+    {
+      "name": "empty",
+      "input": "",
+      "normalized": "",
+      "is_normalized": true,
+      "is_blank": true,
+      "weighted_length": 0,
+      "runes": 0
+    },
+    {
+      "name": "plain",
+      "input": "hello f33d3r",
+      "normalized": "hello f33d3r",
+      "is_normalized": true,
+      "is_blank": false,
+      "weighted_length": 12,
+      "runes": 12
+    },
+    {
+      "name": "crlf",
+      "input": "one\r\ntwo\rthree\n",
+      "normalized": "one\ntwo\nthree",
+      "is_normalized": false,
+      "is_blank": false,
+      "weighted_length": 13,
+      "runes": 13
+    },
+    {
+      "name": "trim_ascii",
+      "input": "  \t padded \t  ",
+      "normalized": "padded",
+      "is_normalized": false,
+      "is_blank": false,
+      "weighted_length": 6,
+      "runes": 6
+    },
+    {
+      "name": "trim_unicode_space",
+      "input": " 　 wide  ",
+      "normalized": "wide",
+      "is_normalized": false,
+      "is_blank": false,
+      "weighted_length": 4,
+      "runes": 4
+    },
+    {
+      "name": "blank_lines_collapse",
+      "input": "a\n\n\n\nb\n \n\t\n　\nc",
+      "normalized": "a\n\nb\n\nc",
+      "is_normalized": false,
+      "is_blank": false,
+      "weighted_length": 7,
+      "runes": 7
+    },
+    {
+      "name": "whitespace_only_line",
+      "input": "a\n   \nb",
+      "normalized": "a\n\nb",
+      "is_normalized": false,
+      "is_blank": false,
+      "weighted_length": 4,
+      "runes": 4
+    },
+    {
+      "name": "internal_spaces_kept",
+      "input": "a   b\t\tc",
+      "normalized": "a   b\t\tc",
+      "is_normalized": true,
+      "is_blank": false,
+      "weighted_length": 8,
+      "runes": 8
+    },
+    {
+      "name": "control_chars",
+      "input": "bell\u0007 nul\u0000 esc\u001b del c1x",
+      "normalized": "bell nul esc del c1x",
+      "is_normalized": false,
+      "is_blank": false,
+      "weighted_length": 20,
+      "runes": 20
+    },
+    {
+      "name": "bidi_controls",
+      "input": "abc‮dcba‬ ⁦iso⁩ ‎mark‏ ؜alm",
+      "normalized": "abcdcba iso mark alm",
+      "is_normalized": false,
+      "is_blank": false,
+      "weighted_length": 20,
+      "runes": 20
+    },
+    {
+      "name": "invisibles",
+      "input": "zero​width soft­hyphen word⁠joiner bom﻿ fillㅤer",
+      "normalized": "zerowidth softhyphen wordjoiner bom filler",
+      "is_normalized": false,
+      "is_blank": false,
+      "weighted_length": 42,
+      "runes": 42
+    },
+    {
+      "name": "zwj_kept",
+      "input": "👩‍💻 family 👨‍👩‍👧 ZWNJ:می‌خواهم",
+      "normalized": "👩‍💻 family 👨‍👩‍👧 ZWNJ:می‌خواهم",
+      "is_normalized": true,
+      "is_blank": false,
+      "weighted_length": 31,
+      "runes": 30
+    },
+    {
+      "name": "only_invisible",
+      "input": "​⁠﻿",
+      "normalized": "",
+      "is_normalized": false,
+      "is_blank": true,
+      "weighted_length": 0,
+      "runes": 0
+    },
+    {
+      "name": "only_space_and_zwj",
+      "input": " ‍ ",
+      "normalized": "‍",
+      "is_normalized": false,
+      "is_blank": true,
+      "weighted_length": 0,
+      "runes": 1
+    },
+    {
+      "name": "cjk",
+      "input": "日本語のテキスト",
+      "normalized": "日本語のテキスト",
+      "is_normalized": true,
+      "is_blank": false,
+      "weighted_length": 16,
+      "runes": 8
+    },
+    {
+      "name": "hangul",
+      "input": "안녕하세요",
+      "normalized": "안녕하세요",
+      "is_normalized": true,
+      "is_blank": false,
+      "weighted_length": 10,
+      "runes": 5
+    },
+    {
+      "name": "emoji",
+      "input": "🔥🚀✨",
+      "normalized": "🔥🚀✨",
+      "is_normalized": true,
+      "is_blank": false,
+      "weighted_length": 6,
+      "runes": 3
+    },
+    {
+      "name": "emoji_skin_tone",
+      "input": "👍🏽👋🏿",
+      "normalized": "👍🏽👋🏿",
+      "is_normalized": true,
+      "is_blank": false,
+      "weighted_length": 4,
+      "runes": 4
+    },
+    {
+      "name": "emoji_variation",
+      "input": "❤️ ☺︎",
+      "normalized": "❤️ ☺︎",
+      "is_normalized": true,
+      "is_blank": false,
+      "weighted_length": 5,
+      "runes": 5
+    },
+    {
+      "name": "flags",
+      "input": "🇯🇵 🏴󠁧󠁢󠁳󠁣󠁴󠁿",
+      "normalized": "🇯🇵 🏴󠁧󠁢󠁳󠁣󠁴󠁿",
+      "is_normalized": true,
+      "is_blank": false,
+      "weighted_length": 7,
+      "runes": 10
+    },
+    {
+      "name": "combining_marks",
+      "input": "q́ ẍ क़",
+      "normalized": "q́ ẍ क़",
+      "is_normalized": true,
+      "is_blank": false,
+      "weighted_length": 5,
+      "runes": 8
+    },
+    {
+      "name": "latin_extended",
+      "input": "café naïve Ω Здравствуйте",
+      "normalized": "café naïve Ω Здравствуйте",
+      "is_normalized": true,
+      "is_blank": false,
+      "weighted_length": 25,
+      "runes": 25
+    },
+    {
+      "name": "arabic_hindi",
+      "input": "مرحبا नमस्ते",
+      "normalized": "مرحبا नमस्ते",
+      "is_normalized": true,
+      "is_blank": false,
+      "weighted_length": 10,
+      "runes": 12
+    },
+    {
+      "name": "general_punctuation",
+      "input": "‘quote’ “double” — dash … ellipsis ′ prime",
+      "normalized": "‘quote’ “double” — dash … ellipsis ′ prime",
+      "is_normalized": true,
+      "is_blank": false,
+      "weighted_length": 43,
+      "runes": 42
+    },
+    {
+      "name": "url_https",
+      "input": "see https://f33d3r.com/a/very/long/path/that/goes/on/and/on?x=1&y=2 now",
+      "normalized": "see https://f33d3r.com/a/very/long/path/that/goes/on/and/on?x=1&y=2 now",
+      "is_normalized": true,
+      "is_blank": false,
+      "weighted_length": 31,
+      "runes": 71
+    },
+    {
+      "name": "url_http",
+      "input": "http://example.com",
+      "normalized": "http://example.com",
+      "is_normalized": true,
+      "is_blank": false,
+      "weighted_length": 23,
+      "runes": 18
+    },
+    {
+      "name": "url_trailing_punct",
+      "input": "read https://example.com/page. Then (https://example.com/x)!",
+      "normalized": "read https://example.com/page. Then (https://example.com/x)!",
+      "is_normalized": true,
+      "is_blank": false,
+      "weighted_length": 61,
+      "runes": 60
+    },
+    {
+      "name": "url_quoted",
+      "input": "\"https://example.com/q\" and 'http://e.co'",
+      "normalized": "\"https://example.com/q\" and 'http://e.co'",
+      "is_normalized": true,
+      "is_blank": false,
+      "weighted_length": 55,
+      "runes": 41
+    },
+    {
+      "name": "url_scheme_only",
+      "input": "https:// and http:/x",
+      "normalized": "https:// and http:/x",
+      "is_normalized": true,
+      "is_blank": false,
+      "weighted_length": 20,
+      "runes": 20
+    },
+    {
+      "name": "url_two",
+      "input": "https://a.com https://b.com",
+      "normalized": "https://a.com https://b.com",
+      "is_normalized": true,
+      "is_blank": false,
+      "weighted_length": 47,
+      "runes": 27
+    },
+    {
+      "name": "url_unicode_path",
+      "input": "https://example.com/日本語 tail",
+      "normalized": "https://example.com/日本語 tail",
+      "is_normalized": true,
+      "is_blank": false,
+      "weighted_length": 28,
+      "runes": 28
+    },
+    {
+      "name": "url_uppercase_scheme",
+      "input": "HTTPS://EXAMPLE.COM",
+      "normalized": "HTTPS://EXAMPLE.COM",
+      "is_normalized": true,
+      "is_blank": false,
+      "weighted_length": 19,
+      "runes": 19
+    },
+    {
+      "name": "newline_in_middle",
+      "input": "line one\nline two",
+      "normalized": "line one\nline two",
+      "is_normalized": true,
+      "is_blank": false,
+      "weighted_length": 17,
+      "runes": 17
+    },
+    {
+      "name": "poll_option_multiline",
+      "input": "yes\nno",
+      "normalized": "yes\nno",
+      "is_normalized": true,
+      "is_blank": false,
+      "weighted_length": 6,
+      "runes": 6
+    },
+    {
+      "name": "punctuation_only",
+      "input": "?!",
+      "normalized": "?!",
+      "is_normalized": true,
+      "is_blank": false,
+      "weighted_length": 2,
+      "runes": 2
+    },
+    {
+      "name": "symbols_only",
+      "input": "+ $ €",
+      "normalized": "+ $ €",
+      "is_normalized": true,
+      "is_blank": false,
+      "weighted_length": 6,
+      "runes": 5
+    },
+    {
+      "name": "marks_on_nothing",
+      "input": "́̈",
+      "normalized": "́̈",
+      "is_normalized": true,
+      "is_blank": true,
+      "weighted_length": 0,
+      "runes": 2
+    },
+    {
+      "name": "long_latin",
+      "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "normalized": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "is_normalized": true,
+      "is_blank": false,
+      "weighted_length": 2001,
+      "runes": 2001
+    },
+    {
+      "name": "long_cjk",
+      "input": "字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字",
+      "normalized": "字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字",
+      "is_normalized": true,
+      "is_blank": false,
+      "weighted_length": 2002,
+      "runes": 1001
+    }
+  ],
+  "generated_by": "feed-engine/internal/worktext/worktext.go, copied verbatim into F33D3RKit/Tools/malkuth-golden/worktext.go. is_blank, weighted_length and runes are of the normalized text. Every input is already NFC.",
+  "max_weighted_length": 2000,
+  "normalizer_version": 1
+}

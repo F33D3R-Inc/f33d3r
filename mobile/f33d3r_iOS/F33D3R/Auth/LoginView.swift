@@ -30,10 +30,18 @@ struct LoginView: View {
         !isSubmitting
             && !password.isEmpty
             && (!isCreatingAccount || password.count >= 8)
-            && (!needsCode || code.count == 6)
+            && (!needsCode || Self.isPlausibleSecondFactor(code))
             && handle.count <= 30
             && !handle.isEmpty
             && handle.allSatisfy { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "-" }
+    }
+
+    /// Six digits from the authenticator, or one of the account's single-use
+    /// backup codes — the server reads six digits as the first and anything
+    /// else as the second.
+    private static func isPlausibleSecondFactor(_ code: String) -> Bool {
+        if code.allSatisfy(\.isNumber) { return code.count == 6 }
+        return code.count >= 6
     }
 
     var body: some View {
@@ -101,23 +109,26 @@ struct LoginView: View {
 
             if needsCode {
                 VStack(alignment: .leading, spacing: F33Spacing.xs) {
-                    Text("Enter the six digits from your authenticator app.")
+                    Text("Enter the six digits from your authenticator app, or one of your backup codes.")
                         .font(.footnote)
                         .foregroundStyle(F33Color.ink3)
                         .frame(maxWidth: .infinity, alignment: .leading)
 
                     TextField("000000", text: $code)
-                        .keyboardType(.numberPad)
+                        .keyboardType(.asciiCapable)
                         .textContentType(.oneTimeCode)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
                         .font(.system(size: 20, weight: .semibold, design: .monospaced))
                         .multilineTextAlignment(.center)
                         .submitLabel(.go)
                         .focused($focused, equals: .code)
                         .onChange(of: code) { _, new in
-                            code = String(new.filter(\.isNumber).prefix(6))
+                            code = String(new.filter { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") }.prefix(32))
                         }
+                        .onSubmit { if canSubmit { submit() } }
                         .f33Field()
-                        .accessibilityLabel("Six-digit code")
+                        .accessibilityLabel("Authenticator or backup code")
                 }
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }

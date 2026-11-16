@@ -123,20 +123,11 @@ struct WorkOverflowMenu: View {
     }
 
     private var gatingOptions: [(CommentGating, String, String)] {
-        [
-            (.everyone, "Everyone", "globe"),
-            (.followers, "People you follow", "person.2"),
-            (.circle, "Your circle", "person.3"),
-            (.none, "Nobody", "bubble.left.and.exclamationmark.bubble.right"),
-        ]
+        CommentGating.allCases.map { ($0, $0.title, $0.systemImage) }
     }
 
-    /// The column stores `open` for everyone; the picker speaks the payload's
-    /// vocabulary. Both spellings are the server's.
+    /// The column and the payload speak one vocabulary.
     private func isCurrentGating(_ value: CommentGating) -> Bool {
-        switch value {
-        case .everyone: return work.commentGating == "open" || work.commentGating == "everyone"
-        default: return work.commentGating == value.rawValue
-        }
+        work.commentGating == value.rawValue
     }
 }

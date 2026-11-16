@@ -114,72 +114,6 @@ HEALTHCHECK --interval=10s --timeout=3s --retries=3 \\
 CMD ["./${BRAIN//-/_}"]
 EOF
 
-# ── k3s manifest ──────────────────────────────────────────────────────────────
-cat > "infra/k3s/manifests/${BRAIN}.yaml" <<EOF
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: ${BRAIN}
-  namespace: f33d3r
-  labels:
-    brain: ${BRAIN}
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      brain: ${BRAIN}
-  template:
-    metadata:
-      labels:
-        brain: ${BRAIN}
-    spec:
-      containers:
-        - name: ${BRAIN}
-          image: registry.gitlab.com/f33d3r-core/platform/${BRAIN}:latest
-          imagePullPolicy: Always
-          ports:
-            - containerPort: ${PORT}
-          env:
-            - name: DATABASE_URL
-              valueFrom:
-                secretKeyRef:
-                  name: f33d3r-secrets
-                  key: ${BRAIN//-/_}-db-url
-            - name: RUST_LOG
-              value: "info"
-          resources:
-            requests:
-              cpu: "100m"
-              memory: "128Mi"
-            limits:
-              cpu: "500m"
-              memory: "256Mi"
-          livenessProbe:
-            httpGet:
-              path: /health
-              port: ${PORT}
-            initialDelaySeconds: 10
-            periodSeconds: 10
-      imagePullSecrets:
-        - name: gitlab-registry-secret
-
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: ${BRAIN}
-  namespace: f33d3r
-  labels:
-    brain: ${BRAIN}
-spec:
-  selector:
-    brain: ${BRAIN}
-  ports:
-    - port: ${PORT}
-      targetPort: ${PORT}
-EOF
-
 # ── README ────────────────────────────────────────────────────────────────────
 cat > "${BRAIN}/README.md" <<EOF
 # ${BRAIN^} Brain
@@ -204,6 +138,5 @@ log ""
 log "Next steps:"
 log "  1. Add to docker-compose.local.yml"
 log "  2. Add database '${DB_NAME}' to postgres-init/01-create-databases.sql"
-log "  3. Add to enforcement/dependency-graph/rules.yaml"
-log "  4. Add to BRAIN_MAP.md and README.md brain tables"
-log "  5. Implement src/main.rs"
+log "  3. Add to BRAIN_MAP.md and README.md brain tables"
+log "  4. Implement src/main.rs"

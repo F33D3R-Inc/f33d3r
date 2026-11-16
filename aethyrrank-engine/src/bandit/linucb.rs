@@ -63,6 +63,25 @@ impl LinUcbModel {
         // b ← b + r·x
         self.b_vector += reward * x;
     }
+
+    /// Exact reversal of one earlier `update(x, reward)`, for a reaction taken
+    /// back. Called only with the very (x, reward) that update applied, which
+    /// is stored per reaction (learning::apply), so A stays I + Σ xxᵀ over the
+    /// reactions that still stand and remains positive definite.
+    pub fn downdate(&mut self, x: &DVector<f64>, reward: f64) {
+        self.a_matrix -= x * x.transpose();
+        self.b_vector -= reward * x;
+    }
+
+    /// θᵀx: the reward this model expects for context `x`, clamped to [0, 1].
+    pub fn expected(&self, x: &DVector<f64>) -> Result<f64> {
+        let a_inv = self
+            .a_matrix
+            .clone()
+            .try_inverse()
+            .ok_or_else(|| anyhow!("A matrix is singular on model '{}'", self.surface))?;
+        Ok((&a_inv * &self.b_vector).dot(x).clamp(0.0, 1.0))
+    }
 }
 
 /// Build the 7-dimensional feature vector used by LinUCB.

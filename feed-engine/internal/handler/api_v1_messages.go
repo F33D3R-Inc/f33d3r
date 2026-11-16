@@ -767,8 +767,8 @@ func (h *Handler) messageStartEvent(w http.ResponseWriter, r *http.Request, user
 	// policy authority decides, and an unreachable authority refuses: an
 	// unknown policy is not an open one.
 	outcome, err := h.evaluateContact(r.Context(), user, contactQuery{
-		TargetPIAL: targetPIAL,
-		Note:       contactNote(body),
+		TargetAccount: target.ID,
+		Note:          contactNote(body),
 	})
 	if err != nil {
 		log.Printf("[gnosis] contact decision for %s: %v", handle, err)

@@ -144,7 +144,11 @@ func (h *Handler) authorWall(authorID string, viewer *model.User) (authorAccess,
 		return authorAccess{}, err
 	}
 	a.IsFollowing = following
-	a.IsSubscribed = dbpkg.IsSubscribed(h.db, viewer.ID, authorID)
+	subscribed, err := dbpkg.IsSubscribed(h.db, viewer.ID, authorID)
+	if err != nil {
+		return authorAccess{}, err
+	}
+	a.IsSubscribed = subscribed
 
 	authorAccessCache.put(key, a, time.Now().Add(authorAccessTTL))
 	return a, nil

@@ -1,12 +1,19 @@
-// Runs a Swift-built `POST /events` body through everything `workEvent` does
-// before it touches the database.
+// Runs a Swift-built `POST /events` body through everything `createWork` does
+// before it touches the database or the media registry.
 //
-// workCanonicalPayload, workKinds, workEnvelope and verifyCID are COPIED
-// VERBATIM from feed-engine/internal/handler/work_event.go. The body parsing
-// mirrors workEvent's own loop over rawBody. The only substitution is the
-// signing key: verifyMalkuthSig's step 1 fetches it from Elohim Veni, which is
-// not running, so the vector supplies the key the registration would have given
-// it. Everything after that is unchanged.
+// workCanonicalPayload, workKinds, cidRe, verifyCID, parseWorkEnvelope's field
+// list, the timestamp, text, repost, gating, citation and poll rules are COPIED
+// from feed-engine/internal/handler/work_event.go, and the text rules from
+// feed-engine/internal/worktext/worktext.go (normalizer v1). Three
+// substitutions, each because the dependency is a service:
+//
+//   - the session account is the vector's `account_id` (the server reads it
+//     from the session);
+//   - the signing key is the vector's (the server asks Elohim Veni);
+//   - "now" is the payload's own timestamp_ms, so a recorded vector stays
+//     decidable — the freshness window itself is the server clock's to judge.
+//
+// Media is not resolved (that is Caeor's), and nothing is inserted.
 //
 //	go run ./envelope envelopes_from_swift.json
 package main
@@ -21,15 +28,19 @@ import (
 	"fmt"
 	"math/big"
 	"os"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
+	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
-// ─── VERBATIM ────────────────────────────────────────────────────────────────
+// ─── COPIED from work_event.go ───────────────────────────────────────────────
 
 type workCanonicalPayload struct {
-	AuthorPIAL        string      `json:"author_pial"`
+	AuthorAccount     string      `json:"author_account"`
 	Body              string      `json:"body"`
 	CommentGating     string      `json:"comment_gating"`
 	IsRepost          bool        `json:"is_repost"`
@@ -51,21 +62,24 @@ type workCanonicalPayload struct {
 }
 
 var workKinds = map[string]bool{
-	"post": true, "reply": true, "quote": true, "poll": true,
-	"video": true, "voice": true, "thread_post": true, "react_video": true,
+	"post": true, "reply": true, "quote": true, "poll": true, "video": true,
+	"voice": true, "thread_post": true, "react_video": true, "track": true,
 }
 
-type workEnvelope struct {
-	EventType string               `json:"event_type"`
-	CID       string               `json:"cid"`
-	Signature string               `json:"signature"`
-	Payload   workCanonicalPayload `json:"payload"`
-}
+var commentGatings = []string{"everyone", "followers", "circle", "verified", "none"}
+
+var cidRe = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
 func verifyCID(claimed string, p workCanonicalPayload) bool {
 	if p.MediaURLs == nil {
 		p.MediaURLs = []string{}
 	}
+	// The server's line here is append([]string(nil), ...), which turns the
+	// empty list back into nil and hashes "media_urls":null — contradicting its
+	// own comment and malkuth.js, which hash []. That is a feed-engine defect;
+	// this copy hashes the contract, [], so the fixtures say what every client
+	// must send.
+	p.MediaURLs = append([]string{}, p.MediaURLs...)
 	sort.Strings(p.MediaURLs)
 	if p.Tags == nil {
 		p.Tags = []string{}
@@ -78,16 +92,14 @@ func verifyCID(claimed string, p workCanonicalPayload) bool {
 	}
 	canonical := bytes.TrimRight(buf.Bytes(), "\n")
 	sum := sha256.Sum256(canonical)
-	expected := fmt.Sprintf("sha256:%x", sum)
-	return claimed == expected
+	return claimed == fmt.Sprintf("sha256:%x", sum)
 }
 
-// verifyMalkuthSig steps 2-6, verbatim; step 1 replaced by the supplied key.
+// verifyMalkuthSig with the key supplied instead of fetched.
 func verifySig(pubKeyB64, cid, sigBase64URL string) bool {
 	spkiBytes, err := base64.StdEncoding.DecodeString(pubKeyB64)
 	if err != nil {
-		spkiBytes, err = base64.RawStdEncoding.DecodeString(pubKeyB64)
-		if err != nil {
+		if spkiBytes, err = base64.RawStdEncoding.DecodeString(pubKeyB64); err != nil {
 			return false
 		}
 	}
@@ -100,10 +112,7 @@ func verifySig(pubKeyB64, cid, sigBase64URL string) bool {
 		return false
 	}
 	sigBytes, err := base64.RawURLEncoding.DecodeString(sigBase64URL)
-	if err != nil {
-		return false
-	}
-	if len(sigBytes) != 64 {
+	if err != nil || len(sigBytes) != 64 {
 		return false
 	}
 	digest := sha256.Sum256([]byte(cid))
@@ -112,119 +121,309 @@ func verifySig(pubKeyB64, cid, sigBase64URL string) bool {
 	return ecdsa.Verify(ecPub, digest[:], r, s)
 }
 
-// ─── workEvent's own admission checks, in its order ──────────────────────────
+// ─── COPIED from worktext.go (normalizer v1) ─────────────────────────────────
+
+const maxWeightedLength = 2000
+const maxRunes = 10000
+const urlWeight = 23
+
+var urlRe = regexp.MustCompile(`https?://[^\s"'<>\x00-\x1f]+`)
+
+const urlTrailing = ".,;:!?)'\""
+
+func stripped(r rune) bool {
+	switch {
+	case r == '\n' || r == '\t':
+		return false
+	case r < 0x20, r == 0x7F, r >= 0x80 && r <= 0x9F:
+		return true
+	case r == 0x061C, r == 0x200E, r == 0x200F,
+		r >= 0x202A && r <= 0x202E,
+		r >= 0x2066 && r <= 0x2069:
+		return true
+	case r == 0x00AD, r == 0x180E, r == 0x200B,
+		r >= 0x2060 && r <= 0x2064,
+		r >= 0x206A && r <= 0x206F,
+		r == 0x3164, r == 0xFFA0,
+		r == 0xFEFF,
+		r >= 0xFFF9 && r <= 0xFFFB:
+		return true
+	}
+	return false
+}
+
+func normalize(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
+	s = strings.Map(func(r rune) rune {
+		if stripped(r) {
+			return -1
+		}
+		return r
+	}, s)
+	lines := strings.Split(s, "\n")
+	out := make([]string, 0, len(lines))
+	blank := false
+	for _, line := range lines {
+		if strings.TrimFunc(line, unicode.IsSpace) == "" {
+			if blank {
+				continue
+			}
+			blank = true
+			out = append(out, "")
+			continue
+		}
+		blank = false
+		out = append(out, line)
+	}
+	return strings.TrimFunc(strings.Join(out, "\n"), unicode.IsSpace)
+}
+
+func isNormalized(s string) bool { return normalize(s) == s }
+
+func isBlank(s string) bool {
+	for _, r := range s {
+		if unicode.In(r, unicode.L, unicode.N, unicode.P, unicode.S) {
+			return false
+		}
+	}
+	return true
+}
+
+func runeWeight(r rune) int {
+	switch {
+	case unicode.In(r, unicode.Mn, unicode.Me),
+		r == 0x200C, r == 0x200D,
+		r >= 0xFE00 && r <= 0xFE0F,
+		r >= 0xE0100 && r <= 0xE01EF,
+		r >= 0x1F3FB && r <= 0x1F3FF,
+		r >= 0xE0020 && r <= 0xE007F:
+		return 0
+	case r <= 0x10FF,
+		r >= 0x2000 && r <= 0x200D,
+		r >= 0x2010 && r <= 0x201F,
+		r >= 0x2032 && r <= 0x2037:
+		return 1
+	}
+	return 2
+}
+
+func textWeight(s string) int {
+	n := 0
+	for _, r := range s {
+		n += runeWeight(r)
+	}
+	return n
+}
+
+func weightedLength(s string) int {
+	n := 0
+	last := 0
+	for _, m := range urlRe.FindAllStringIndex(s, -1) {
+		link := strings.TrimRight(s[m[0]:m[1]], urlTrailing)
+		n += textWeight(s[last:m[0]]) + urlWeight
+		last = m[0] + len(link)
+	}
+	return n + textWeight(s[last:])
+}
+
+// ─── createWork's checks, in its order, up to the database ───────────────────
 
 type verdict struct {
 	Accepted bool   `json:"accepted"`
 	Status   int    `json:"status"`
 	Reason   string `json:"reason"`
 	// What the server would have derived and stored.
-	Kind        string `json:"kind"`
-	ParentCID   string `json:"parent_cid"`
-	TusUploadID string `json:"tus_upload_id"`
-	IsNSFW      bool   `json:"is_nsfw"`
+	Kind         string `json:"kind"`
+	ParentCID    string `json:"parent_cid"`
+	IsNSFW       bool   `json:"is_nsfw"`
 	QuotedWorkID string `json:"quoted_work_id"`
 }
 
-func admit(bodyBytes []byte, pubKeyB64 string) verdict {
-	var rawBody map[string]json.RawMessage
-	if err := json.Unmarshal(bodyBytes, &rawBody); err != nil {
-		return verdict{Status: 400, Reason: "body is not a JSON object: " + err.Error()}
+func refuse(status int, reason string) verdict { return verdict{Status: status, Reason: reason} }
+func invalid(field string) verdict             { return refuse(400, "invalid_field "+field) }
+
+func optString(v interface{}) (string, bool) {
+	switch t := v.(type) {
+	case nil:
+		return "", true
+	case string:
+		return t, true
+	}
+	return "", false
+}
+
+func admit(bodyBytes []byte, pubKeyB64, accountID string) verdict {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(bodyBytes, &raw); err != nil {
+		return refuse(400, "body is not a JSON object")
+	}
+	// eventsPost routes a body with a sha256: cid to workEvent.
+	var cid string
+	if v, ok := raw["cid"]; !ok || json.Unmarshal(v, &cid) != nil || !strings.HasPrefix(cid, "sha256:") {
+		return refuse(404, "would not route to workEvent")
 	}
 
-	// eventsPost: event_type is required, and a cid routes to workEvent.
-	var eventType string
-	if v, ok := rawBody["event_type"]; ok {
-		json.Unmarshal(v, &eventType)
-	}
-	if eventType == "" {
-		return verdict{Status: 400, Reason: "event_type required"}
-	}
-	cidRaw, hasCID := rawBody["cid"]
-	if !hasCID {
-		return verdict{Status: 404, Reason: "no cid: would not route to workEvent"}
-	}
-	var cidStr string
-	if json.Unmarshal(cidRaw, &cidStr) != nil || !strings.HasPrefix(cidStr, "sha256:") {
-		return verdict{Status: 404, Reason: "cid present but not sha256:-prefixed: would not route to workEvent"}
-	}
-
-	// workEvent's parse loop.
-	var env workEnvelope
+	// parseWorkEnvelope.
+	var p workCanonicalPayload
+	var signature, quoted string
 	var isNSFW bool
-	var quotedWorkID, tusUploadID string
-	for key, val := range rawBody {
-		switch key {
-		case "event_type":
-			json.Unmarshal(val, &env.EventType)
-		case "cid":
-			json.Unmarshal(val, &env.CID)
-		case "signature":
-			json.Unmarshal(val, &env.Signature)
-		case "payload":
-			json.Unmarshal(val, &env.Payload)
-			var extra struct {
-				TusUploadID string `json:"tus_upload_id"`
+	fields := []struct {
+		key      string
+		into     interface{}
+		required bool
+	}{
+		{"cid", &cid, true},
+		{"signature", &signature, true},
+		{"payload", &p, true},
+		{"is_nsfw", &isNSFW, false},
+		{"quoted_work_id", &quoted, false},
+	}
+	for _, f := range fields {
+		val, ok := raw[f.key]
+		if !ok || bytes.Equal(bytes.TrimSpace(val), []byte("null")) {
+			if f.required {
+				return invalid(f.key)
 			}
-			if json.Unmarshal(val, &extra) == nil {
-				tusUploadID = extra.TusUploadID
-			}
-		case "is_nsfw":
-			json.Unmarshal(val, &isNSFW)
-		case "quoted_work_id":
-			json.Unmarshal(val, &quotedWorkID)
+			continue
+		}
+		if err := json.Unmarshal(val, f.into); err != nil {
+			return invalid(f.key)
 		}
 	}
-
-	if !strings.HasPrefix(env.CID, "sha256:") {
-		return verdict{Status: 400, Reason: "invalid cid format"}
+	for _, removed := range []string{"video_watermarked_url"} {
+		if _, ok := raw[removed]; ok {
+			return refuse(400, "client sent removed field "+removed)
+		}
 	}
-	if env.Signature == "" {
-		return verdict{Status: 400, Reason: "signature required"}
-	}
-	if !verifyCID(env.CID, env.Payload) {
-		return verdict{Status: 400, Reason: "cid mismatch"}
-	}
-	if !verifySig(pubKeyB64, env.CID, env.Signature) {
-		return verdict{Status: 403, Reason: "signature invalid"}
+	var payloadKeys map[string]json.RawMessage
+	_ = json.Unmarshal(raw["payload"], &payloadKeys)
+	if _, ok := payloadKeys["tus_upload_id"]; ok {
+		return refuse(400, "client sent removed field tus_upload_id")
 	}
 
-	kind := strings.TrimSpace(env.Payload.Kind)
-	if kind == "" {
-		kind = "post"
+	if !cidRe.MatchString(cid) {
+		return invalid("cid")
 	}
+	if signature == "" {
+		return invalid("signature")
+	}
+	if p.AuthorAccount != accountID {
+		return invalid("author_account")
+	}
+	if !verifyCID(cid, p) {
+		return invalid("cid")
+	}
+	if !verifySig(pubKeyB64, cid, signature) {
+		return invalid("signature")
+	}
+
+	// validateWork, with now = the signing time.
+	now := time.UnixMilli(p.TimestampMS)
+	if p.TimestampMS <= 0 {
+		return invalid("timestamp_ms")
+	}
+	kind := p.Kind
 	if !workKinds[kind] {
-		return verdict{Status: 400, Reason: "unknown work kind"}
+		return invalid("kind")
 	}
-	if env.Payload.IsRepost {
-		srcID, _ := env.Payload.RepostSourceID.(string)
-		if strings.TrimSpace(srcID) == "" {
-			return verdict{Status: 400, Reason: "repost requires repost_source_id"}
-		}
+	if !isNormalized(p.Body) {
+		return invalid("body")
 	}
-	parentCID := ""
-	if s, ok := env.Payload.ParentCID.(string); ok {
-		parentCID = s
+	if utf8.RuneCountInString(p.Body) > maxRunes || weightedLength(p.Body) > maxWeightedLength {
+		return refuse(422, "text_too_long")
 	}
-	if kind == "reply" && strings.TrimSpace(parentCID) == "" {
-		return verdict{Status: 400, Reason: "reply requires parent_cid"}
+	if p.IsRepost || p.RepostSourceID != nil {
+		return invalid("is_repost")
 	}
-
+	gating := p.CommentGating
+	if gating == "" {
+		gating = "everyone"
+	}
+	ok := false
+	for _, g := range commentGatings {
+		ok = ok || g == gating
+	}
+	if !ok {
+		return invalid("comment_gating")
+	}
+	parent, good := optString(p.ParentCID)
+	if !good || (parent != "" && !cidRe.MatchString(parent)) || parent == cid {
+		return invalid("parent_cid")
+	}
+	if kind == "reply" && parent == "" {
+		return invalid("parent_cid")
+	}
+	if kind == "quote" && quoted == "" {
+		return invalid("quoted_work_id")
+	}
+	if bad := validatePoll(kind, p, now); bad != "" {
+		return invalid(bad)
+	}
 	return verdict{
 		Accepted: true, Status: 201, Reason: "would insert",
-		Kind: kind, ParentCID: parentCID, TusUploadID: tusUploadID,
-		IsNSFW: isNSFW, QuotedWorkID: quotedWorkID,
+		Kind: kind, ParentCID: parent, IsNSFW: isNSFW, QuotedWorkID: quoted,
 	}
+}
+
+// validatePoll, returning the refused field or "".
+func validatePoll(kind string, p workCanonicalPayload, now time.Time) string {
+	if p.PollOptions == nil {
+		if kind == "poll" {
+			return "poll_options"
+		}
+		if p.PollEndsAt != nil {
+			return "poll_ends_at"
+		}
+		return ""
+	}
+	if kind != "poll" {
+		return "poll_options"
+	}
+	raw, ok := p.PollOptions.([]interface{})
+	if !ok || len(raw) < 2 || len(raw) > 4 {
+		return "poll_options"
+	}
+	seen := map[string]bool{}
+	for _, item := range raw {
+		o, ok := item.(string)
+		if !ok || !isNormalized(o) || strings.ContainsRune(o, '\n') || isBlank(o) || utf8.RuneCountInString(o) > 80 {
+			return "poll_options"
+		}
+		k := strings.ToLower(o)
+		if seen[k] {
+			return "poll_options"
+		}
+		seen[k] = true
+	}
+	s, ok := optString(p.PollEndsAt)
+	if !ok || s == "" {
+		return "poll_ends_at"
+	}
+	ends, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return "poll_ends_at"
+	}
+	opens := now
+	if at, ok := optString(p.ScheduledAt); ok && at != "" {
+		if t, err := time.Parse(time.RFC3339, at); err == nil {
+			opens = t
+		}
+	}
+	if d := ends.Sub(opens); d < 5*time.Minute || d > 7*24*time.Hour {
+		return "poll_ends_at"
+	}
+	return ""
 }
 
 type caseIn struct {
 	Name             string `json:"name"`
 	PublicKeySPKIB64 string `json:"public_key_spki_b64"`
+	AccountID        string `json:"account_id"`
 	BodyB64          string `json:"body_b64"`
 	ExpectAccepted   bool   `json:"expect_accepted"`
 	ExpectReason     string `json:"expect_reason"`
 	ExpectKind       string `json:"expect_kind"`
-	ExpectTusUploadID string `json:"expect_tus_upload_id"`
 }
 
 func main() {
@@ -253,7 +452,7 @@ func main() {
 		if err != nil {
 			panic(err)
 		}
-		v := admit(body, c.PublicKeySPKIB64)
+		v := admit(body, c.PublicKeySPKIB64, c.AccountID)
 
 		problems := []string{}
 		if v.Accepted != c.ExpectAccepted {
@@ -264,9 +463,6 @@ func main() {
 		}
 		if c.ExpectKind != "" && v.Kind != c.ExpectKind {
 			problems = append(problems, fmt.Sprintf("kind=%q want %q", v.Kind, c.ExpectKind))
-		}
-		if c.ExpectTusUploadID != "" && v.TusUploadID != c.ExpectTusUploadID {
-			problems = append(problems, fmt.Sprintf("tus=%q want %q", v.TusUploadID, c.ExpectTusUploadID))
 		}
 		status := "ok"
 		if len(problems) > 0 {
@@ -282,7 +478,6 @@ func main() {
 			"reason":          v.Reason,
 			"kind":            v.Kind,
 			"parent_cid":      v.ParentCID,
-			"tus_upload_id":   v.TusUploadID,
 			"is_nsfw":         v.IsNSFW,
 			"quoted_work_id":  v.QuotedWorkID,
 			"expect_accepted": c.ExpectAccepted,

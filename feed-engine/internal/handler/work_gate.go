@@ -133,7 +133,12 @@ func (h *Handler) gateWorksWith(viewer *model.User, works []*model.Work, opts ga
 		if w.SubscriberOnly && viewerID != "" && !own {
 			has, seen := subscribed[w.AuthorID]
 			if !seen {
-				has = dbpkg.IsSubscribed(h.db, viewerID, w.AuthorID)
+				var err error
+				if has, err = dbpkg.IsSubscribed(h.db, viewerID, w.AuthorID); err != nil {
+					// Fails closed: the work stays locked, and the fault is reported.
+					log.Printf("[gate] subscription of %s to %s unreadable: %v", viewerID, w.AuthorID, err)
+					has = false
+				}
 				subscribed[w.AuthorID] = has
 			}
 			w.ViewerSubscribed = has

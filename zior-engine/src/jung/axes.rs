@@ -61,23 +61,6 @@ impl PsychVector {
         }
     }
 
-    /// Weighted blend of two vectors.
-    pub fn blend(a: &Self, b: &Self, weight_b: f32) -> Self {
-        let wa = 1.0 - weight_b;
-        let mut out = [0.0_f32; 8];
-        for i in 0..8 {
-            out[i] = (a.0[i] * wa + b.0[i] * weight_b).clamp(0.0, 1.0);
-        }
-        Self(out)
-    }
-
-    pub fn as_slice(&self) -> &[f32; 8] {
-        &self.0
-    }
-
-    pub fn to_vec(&self) -> Vec<f32> {
-        self.0.to_vec()
-    }
 }
 
 impl Default for PsychVector {

@@ -1,7 +1,12 @@
 mod notifications;
 mod addresses;
+mod admin;
+mod caeor;
 mod cek;
+mod charges;
 mod clients;
+mod commerce;
+mod commerce_events;
 mod config;
 mod db;
 mod handlers;
@@ -13,7 +18,7 @@ mod watcher;
 
 use axum::{
     middleware,
-    routing::{delete, get, post, put},
+    routing::{get, post, put},
     Router,
 };
 use std::sync::Arc;
@@ -28,6 +33,27 @@ pub struct AppState {
     pub manhattan: manhattan_client::Manhattan,
     pub themis_privkey: p256::SecretKey,
     pub themis_pubkey_b64: String,
+    /// The AET unit, learnt once from Ain Soph, which owns it.
+    pub units_per_aet: tokio::sync::OnceCell<i64>,
+}
+
+impl AppState {
+    /// Units per AET, as Ain Soph publishes it. Asked for once and kept: the
+    /// unit is a constant of the ledger, not a setting.
+    pub async fn units_per_aet(&self) -> anyhow::Result<i64> {
+        self.units_per_aet
+            .get_or_try_init(|| async {
+                clients::AinSoph {
+                    http: &self.http,
+                    url: &self.cfg.ain_soph_url,
+                    key: &self.cfg.internal_api_key,
+                }
+                .units_per_aet()
+                .await
+            })
+            .await
+            .copied()
+    }
 }
 
 #[tokio::main]
@@ -35,13 +61,13 @@ async fn main() -> anyhow::Result<()> {
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
     observ::init("themis")?;
-    let cfg = config::Config::from_env();
+    let cfg = config::Config::from_env()?;
     let pool = sqlx::PgPool::connect(&cfg.database_url).await?;
     notification_outbox::spawn(cfg.database_url.clone());
     db::migrate(&pool).await?;
     info!("Themis schema up to date");
 
-    let privkey = cek::load_privkey(&cfg.themis_privkey_b64)?;
+    let privkey = cek::load_privkey(&pool, &cfg.themis_privkey_b64, &cfg.themis_key_dir).await?;
     let pubkey_b64 = cek::pubkey_to_b64(&privkey.public_key());
     info!("Themis ECDH pubkey: {}", &pubkey_b64[..16]);
 
@@ -62,7 +88,11 @@ async fn main() -> anyhow::Result<()> {
         manhattan: manhattan.clone(),
         themis_privkey: privkey,
         themis_pubkey_b64: pubkey_b64,
+        units_per_aet: tokio::sync::OnceCell::new(),
     });
+
+    commerce_events::spawn_relay(state.pool.clone(), state.cfg.kafka_brokers.clone());
+    charges::spawn_maintenance(state.clone());
 
     tokio::spawn(manhattan_outbox::run_drain(state.cfg.database_url.clone(), manhattan));
     tokio::spawn(watcher::run_btc_watcher(state.clone()));
@@ -85,35 +115,42 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/library", get(handlers::buyer_library))
         .route("/v1/access", get(handlers::access_check))
         // ── Creator commerce ────────────────────────────────────────────────
-        .route("/v1/commerce/stats", get(handlers::commerce_stats))
-        .route("/v1/creator/enable", post(handlers::creator_enable))
-        .route("/v1/creator/:pial_id/status", get(handlers::creator_status))
-        .route("/v1/creator/:pial_id/plans", get(handlers::list_plans))
-        .route("/v1/plans", post(handlers::create_plan))
+        .route("/v1/commerce/stats", get(commerce::commerce_stats))
+        .route("/v1/creator/enable", post(commerce::creator_enable))
+        .route("/v1/creator/:pial_id/status", get(commerce::creator_status))
+        .route("/v1/creator/:pial_id/plans", get(commerce::list_plans))
+        .route("/v1/plans", post(commerce::create_plan))
         .route(
             "/v1/plans/:id",
-            put(handlers::update_plan).delete(handlers::delete_plan),
+            put(commerce::update_plan).delete(commerce::delete_plan),
         )
-        .route("/v1/subscribe", post(handlers::subscribe))
-        .route("/v1/subscribe", delete(handlers::unsubscribe))
-        .route("/v1/access/subscription", get(handlers::check_subscription))
+        .route(
+            "/v1/subscribe",
+            post(commerce::subscribe).delete(commerce::unsubscribe),
+        )
+        .route("/v1/access/subscription", get(commerce::check_subscription))
         .route(
             "/v1/creator/:pial_id/subscribers",
-            get(handlers::list_subscribers),
+            get(commerce::list_subscribers),
         )
         .route(
             "/v1/subscriber/:pial_id/subscriptions",
-            get(handlers::list_subscriptions),
+            get(commerce::list_subscriptions),
         )
-        .route("/v1/ppv", post(handlers::create_ppv))
-        .route("/v1/ppv/:id/purchase", post(handlers::purchase_ppv))
-        .route("/v1/access/ppv", get(handlers::check_ppv_access))
-        .route("/v1/creator/:pial_id/ppv", get(handlers::list_ppv_items))
-        .route("/v1/tips", post(handlers::send_tip))
+        .route("/v1/ppv", post(commerce::create_ppv))
+        .route("/v1/ppv/:id/purchase", post(commerce::purchase_ppv))
+        .route("/v1/access/ppv", get(commerce::check_ppv_access))
+        .route("/v1/creator/:pial_id/ppv", get(commerce::list_ppv_items))
+        .route("/v1/tips", post(commerce::send_tip))
         .route(
             "/v1/creator/:pial_id/earnings",
-            get(handlers::creator_earnings),
+            get(commerce::creator_earnings),
         )
+        // ── Platform value moves (peer calls, founder/admin checked by the caller)
+        .route("/v1/admin/aet/credit", post(admin::credit))
+        .route("/v1/admin/fees/sweep", post(admin::sweep_fees))
+        .route("/v1/admin/accounts/reattribute", post(admin::reattribute))
+        .route("/v1/admin/import/subscriptions", post(admin::import))
         .layer(middleware::from_fn_with_state(state.clone(), handlers::require_service_key))
         .layer(middleware::from_fn(observ::http_middleware))
         .with_state(state);

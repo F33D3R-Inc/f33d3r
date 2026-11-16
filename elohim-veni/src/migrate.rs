@@ -50,6 +50,12 @@ const MIGRATIONS: &[Migration] = &[
         filename: "0003_identity_authority.sql",
         body: include_str!("../migrations/0003_identity_authority.sql"),
     },
+    Migration {
+        version: 4,
+        name: "contact_personas",
+        filename: "0004_contact_personas.sql",
+        body: include_str!("../migrations/0004_contact_personas.sql"),
+    },
 ];
 
 fn checksum(body: &str) -> String {

@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"f33d3r.com/ios/devserver/internal/worktext"
 )
 
 // DeviceKey is one signing key, as a device holds it.
@@ -33,12 +35,13 @@ func (k DeviceKey) SignCID(cid string) string {
 
 // WorkDraft is the part of a work a tool or test chooses.
 type WorkDraft struct {
-	AuthorPIAL string
-	Kind       string
-	Body       string
-	Tags       []string
-	MediaURLs  []string
-	ParentCID  string
+	// AuthorAccount is the signing account's id, as /api/v1/me answers it.
+	AuthorAccount string
+	Kind          string
+	Body          string
+	Tags          []string
+	MediaURLs     []string
+	ParentCID     string
 
 	// A voice note: the uploaded path and the recorder's whole seconds. Both
 	// are signed. Setting them makes the kind `voice`, as the app's composer does.
@@ -46,20 +49,20 @@ type WorkDraft struct {
 	VoiceDurationSecs int
 
 	// A video: the signed half (master, poster, whole seconds) and the
-	// unsigned half that rides on the envelope (watermarked file, frame size).
-	// Setting the master makes the kind `video`.
-	VideoMasterURL      string
-	VideoPosterURL      string
-	VideoDurationSecs   int
-	VideoWatermarkedURL string
-	VideoWidth          int
-	VideoHeight         int
+	// unsigned frame size that rides on the envelope. Setting the master
+	// makes the kind `video`.
+	VideoMasterURL    string
+	VideoPosterURL    string
+	VideoDurationSecs int
+	VideoWidth        int
+	VideoHeight       int
 }
 
 // BuildEnvelope produces the `POST /events` body the app sends for a work:
 // the canonical payload bytes spliced in verbatim, the CID over them, and the
 // signature over the CID. Shared by the contract tests and `cmd/postas`, so
-// the tooling posts exactly what a device posts.
+// the tooling posts exactly what a device posts — the body normalised and the
+// clock read at signing, as the apps do.
 func BuildEnvelope(k DeviceKey, d WorkDraft) (body []byte, cid string, err error) {
 	if d.Kind == "" {
 		d.Kind = "post"
@@ -71,7 +74,7 @@ func BuildEnvelope(k DeviceKey, d WorkDraft) (body []byte, cid string, err error
 		d.MediaURLs = []string{}
 	}
 	p := workCanonicalPayload{
-		AuthorPIAL: d.AuthorPIAL, Body: d.Body, CommentGating: "everyone", Kind: d.Kind,
+		AuthorAccount: d.AuthorAccount, Body: worktext.Normalize(d.Body), CommentGating: "everyone", Kind: d.Kind,
 		MediaURLs: d.MediaURLs, Tags: d.Tags, TimestampMS: time.Now().UnixMilli(),
 	}
 	if d.ParentCID != "" {
@@ -99,9 +102,6 @@ func BuildEnvelope(k DeviceKey, d WorkDraft) (body []byte, cid string, err error
 		"event_type": p.Kind, "cid": cid, "signature": k.SignCID(cid), "is_nsfw": false,
 	}
 	if d.VideoMasterURL != "" {
-		if d.VideoWatermarkedURL != "" {
-			envelope["video_watermarked_url"] = d.VideoWatermarkedURL
-		}
 		if d.VideoWidth > 0 && d.VideoHeight > 0 {
 			envelope["video_width"] = d.VideoWidth
 			envelope["video_height"] = d.VideoHeight

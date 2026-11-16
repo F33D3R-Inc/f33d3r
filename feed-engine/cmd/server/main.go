@@ -109,6 +109,9 @@ func main() {
 	// Every sampled frame is put to Abraxas, the integrity authority.
 	liveManager.Abraxas = abraxas.New(cfg.AbraxasURL, cfg.InternalAPIKey)
 	h.BlockLiveStream = liveManager.BlockStream
+	// The live edge's auth_request: the watch surface's rules, applied to every
+	// playlist, segment and poster before the edge serves it.
+	liveManager.AuthorizeMedia = h.AuthorizeLiveMedia
 	if err := liveManager.Start(liveCtx); err != nil {
 		startupLog.Fatal("live lane failed to start", zap.Error(err))
 	}
@@ -207,11 +210,33 @@ func main() {
 		startupLog.Fatal("work outbox failed to start", zap.Error(werr))
 	}
 	defer stopWorkOutbox()
+	stopRankingRelay, rerr := aethyr.StartSignalRelay(workCtx, database, cfg.KafkaBrokers)
+	if rerr != nil {
+		startupLog.Fatal("ranking signal relay failed to start", zap.Error(rerr))
+	}
+	defer stopRankingRelay()
 	h.StartWorkNoticeWorker(workCtx)
 
-	// Recover any AET trapped in shadow accounts (account UUID vs PIAL UUID mismatch).
-	// Runs once in the background — no-op if all balances are already correct.
-	go handler.RecoverShadowBalances(context.Background(), database, cfg.AinSophURL, cfg.InternalAPIKey)
+	// Commerce. Themis is the commerce authority and the only writer of plans
+	// and subscriptions; this brain keeps their read projection, which the feed,
+	// fanout and gating queries join on, from commerce.events. Without the
+	// broker the projection would silently go stale, so this is fatal too
+	// (KAFKA_BROKERS was required above).
+	commerceCtx, commerceCancel := context.WithCancel(context.Background())
+	defer commerceCancel()
+	stopCommerce, cerr := sitra.StartCommerceConsumer(commerceCtx, cfg.KafkaBrokers, sitra.CommerceHandlers{
+		Apply:      h.ApplyCommerceEvent,
+		DeadLetter: h.CommerceDeadLetter,
+	})
+	if cerr != nil {
+		startupLog.Fatal("commerce consumer failed to start", zap.Error(cerr))
+	}
+	defer stopCommerce()
+	startupLog.Info("commerce projection consumer started", zap.String("brokers", cfg.KafkaBrokers))
+
+	// Shadow balances (wallets keyed on an account id instead of a PIAL) are
+	// returned to their owners through Themis when AET_RECOVERY=on.
+	go h.RecoverShadowBalances(context.Background())
 
 	// Middleware chain (outer → inner):
 	//   request-id + logging + metrics → routes (which apply Recover, security

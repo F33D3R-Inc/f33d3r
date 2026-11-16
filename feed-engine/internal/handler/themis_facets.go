@@ -9,6 +9,7 @@ package handler
 // therefore project the same fragments from the same routes.
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -64,6 +65,85 @@ func (h *Handler) themisGet(ctx context.Context, path string, viewer *model.User
 		return resp.StatusCode, nil, err
 	}
 	return resp.StatusCode, body, nil
+}
+
+// themisCall performs one write (or read with a body) against Themis for
+// viewer. The viewer's PIAL travels in X-Pial-Identity, set here from the
+// session — never from anything the browser sent — and the body never names
+// who pays or who is acting. A transport failure is an error; an answer Themis
+// gave is its status and body.
+func (h *Handler) themisCall(ctx context.Context, method, path string, viewer *model.User, body interface{}) (int, []byte, error) {
+	return h.themisDo(ctx, method, path, viewer, body, false)
+}
+
+// themisPeerCall is themisCall for the platform's own value moves (a founder
+// credit, a fee sweep, a shadow reattribution, the subscription import). It
+// adds X-Internal-Key, which Themis requires on those routes: the caller has
+// already checked that viewer is the founder or an admin, and viewer is named
+// for the record.
+func (h *Handler) themisPeerCall(ctx context.Context, path string, viewer *model.User, body interface{}) (int, []byte, error) {
+	return h.themisDo(ctx, http.MethodPost, path, viewer, body, true)
+}
+
+func (h *Handler) themisDo(ctx context.Context, method, path string, viewer *model.User, body interface{}, peer bool) (int, []byte, error) {
+	if h.themisURL == "" {
+		return 0, nil, errThemisUnconfigured
+	}
+	var reader io.Reader
+	if body != nil {
+		raw, err := json.Marshal(body)
+		if err != nil {
+			return 0, nil, fmt.Errorf("encoding %s body: %w", path, err)
+		}
+		reader = bytes.NewReader(raw)
+	}
+	ctx, cancel := context.WithTimeout(ctx, themisWriteTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, method, h.themisURL+path, reader)
+	if err != nil {
+		return 0, nil, err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if viewer != nil && viewer.PIALID != "" {
+		req.Header.Set("X-Pial-Identity", viewer.PIALID)
+		req.Header.Set("X-Pial-Handle", viewer.Handle)
+	}
+	if peer {
+		req.Header.Set("X-Internal-Key", h.cfg.InternalAPIKey)
+	}
+	resp, err := h.httpClient.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer resp.Body.Close()
+	out, err := io.ReadAll(io.LimitReader(resp.Body, themisMaxBody))
+	if err != nil {
+		return resp.StatusCode, nil, err
+	}
+	return resp.StatusCode, out, nil
+}
+
+// themisWriteTimeout bounds a Themis call that moves value. A charge waits on
+// the ledger, so it is given longer than a Facet read.
+const themisWriteTimeout = 10 * time.Second
+
+// themisRefusal is the message a Themis refusal carries, or fallback.
+func themisRefusal(body []byte, fallback string) string {
+	var r struct {
+		Error   string `json:"error"`
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(body, &r) == nil {
+		if r.Message != "" {
+			return r.Message
+		}
+		if r.Error != "" {
+			return r.Error
+		}
+	}
+	return fallback
 }
 
 // ── Themis ECDH public key ────────────────────────────────────────────────────

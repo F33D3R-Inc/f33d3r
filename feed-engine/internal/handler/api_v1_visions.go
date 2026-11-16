@@ -23,8 +23,10 @@ import (
 // same as one posted there.
 //
 // A Vision has no id of its own — the wire "id" is the
-// `<author_account>.<seq>` address (dbpkg.VisionAddress.String()). The lane's
-// PIAL is resolved from the account server-side; a PIAL never reaches a client.
+// `<author_account>.<account_seq>` address (dbpkg.VisionAddress.String()): the
+// posting account and its own ordinal. Ownership, rings, views, ballots and
+// mutes are all the account's, so nothing here links two of one person's
+// personas, and a PIAL never reaches a client.
 //
 // Shape is F33D3RKit/Sources/F33D3RKit/Models/Vision.swift.
 
@@ -113,7 +115,7 @@ func (h *Handler) visionPollDTO(v *model.Vision) *PollDTO {
 // query's join; the realm is the base realm because the join carries no XP.
 func (h *Handler) visionDTO(v *model.Vision, viewer *model.User) VisionDTO {
 	author := visionAuthorDTO(v.AuthorHandle, v.AuthorName, v.AvatarURL)
-	isOwner := viewer != nil && v.AuthorPIAL == viewer.PIALID
+	isOwner := viewer != nil && v.AuthorAccountID == viewer.ID
 	if isOwner {
 		author = userAuthorDTO(viewer)
 	}
@@ -149,7 +151,7 @@ func (h *Handler) visionDTO(v *model.Vision, viewer *model.User) VisionDTO {
 
 // visionRingDTO assembles one ring from its author's live Visions, already
 // filtered for the viewer.
-func (h *Handler) visionRingDTO(author WorkAuthorDTO, authorPIAL string, visions []*model.Vision, viewer *model.User, isLive bool) VisionRingDTO {
+func (h *Handler) visionRingDTO(author WorkAuthorDTO, authorAccount string, visions []*model.Vision, viewer *model.User, isLive bool) VisionRingDTO {
 	ring := VisionRingDTO{
 		Author:  author,
 		State:   model.VisionRingSeen,
@@ -170,7 +172,7 @@ func (h *Handler) visionRingDTO(author WorkAuthorDTO, authorPIAL string, visions
 	if ring.UnseenCount > 0 {
 		ring.State = model.VisionRingUnseen
 	}
-	if viewer == nil || authorPIAL != viewer.PIALID {
+	if viewer == nil || authorAccount != viewer.ID {
 		ring.Provenance = &ProvenanceDTO{Kind: "you_follow", Text: "You follow @" + author.Handle, Handle: strPtr(author.Handle)}
 	}
 	return ring
@@ -191,9 +193,8 @@ func visionsForViewer(visions []*model.Vision, viewer *model.User) []*model.Visi
 	return kept
 }
 
-// apiV1Visions — GET /api/v1/visions: the tray. LiveAuthorIDs answers by
-// users.id, so a ring's liveness is looked up through the author's account id
-// (resolved from their PIAL) rather than the PIAL itself.
+// apiV1Visions — GET /api/v1/visions: the tray. Every ring is one account's
+// run, and the viewer's own ring is this account's Visions alone.
 func (h *Handler) apiV1Visions(w http.ResponseWriter, r *http.Request, u *model.User) {
 	out := VisionTrayDTO{Rings: []VisionRingDTO{}}
 	liveByID, err := dbpkg.LiveAuthorIDs(h.db)
@@ -202,28 +203,31 @@ func (h *Handler) apiV1Visions(w http.ResponseWriter, r *http.Request, u *model.
 		liveByID = map[string]bool{}
 	}
 
-	if u.PIALID != "" {
-		own, err := dbpkg.GetActiveVisionsForAuthor(h.db, u.PIALID, u.PIALID, 50)
-		if err != nil {
-			apiServerError(w, err)
-			return
-		}
-		if len(own) > 0 {
-			ring := h.visionRingDTO(userAuthorDTO(u), u.PIALID, own, u, liveByID[u.ID])
-			out.Own = &ring
-		}
+	viewerID := viewerAccountID(u)
+	if viewerID == "" {
+		apiJSON(w, http.StatusOK, out)
+		return
+	}
+	own, err := dbpkg.GetActiveVisionsForAuthor(h.db, viewerID, viewerID, 50)
+	if err != nil {
+		apiServerError(w, err)
+		return
+	}
+	if len(own) > 0 {
+		ring := h.visionRingDTO(userAuthorDTO(u), viewerID, own, u, liveByID[viewerID])
+		out.Own = &ring
 	}
 
-	rings, err := dbpkg.GetVisionRingsForViewer(h.db, u.ID, u.PIALID, 100)
+	rings, err := dbpkg.GetVisionRingsForViewer(h.db, viewerID, 100)
 	if err != nil {
 		apiServerError(w, err)
 		return
 	}
 	for _, ring := range rings {
-		if ring == nil || ring.AuthorPIAL == u.PIALID {
+		if ring == nil || ring.AuthorAccountID == viewerID {
 			continue
 		}
-		visions, err := dbpkg.GetActiveVisionsForAuthor(h.db, ring.AuthorPIAL, u.PIALID, 50)
+		visions, err := dbpkg.GetActiveVisionsForAuthor(h.db, ring.AuthorAccountID, viewerID, 50)
 		if err != nil {
 			apiServerError(w, err)
 			return
@@ -233,7 +237,7 @@ func (h *Handler) apiV1Visions(w http.ResponseWriter, r *http.Request, u *model.
 			continue
 		}
 		author := visionAuthorDTO(ring.AuthorHandle, ring.AuthorName, ring.AvatarURL)
-		out.Rings = append(out.Rings, h.visionRingDTO(author, ring.AuthorPIAL, visions, u, liveByID[ring.AuthorAccountID]))
+		out.Rings = append(out.Rings, h.visionRingDTO(author, ring.AuthorAccountID, visions, u, liveByID[ring.AuthorAccountID]))
 	}
 	apiJSON(w, http.StatusOK, out)
 }
@@ -250,7 +254,7 @@ func (h *Handler) apiV1VisionViewers(w http.ResponseWriter, r *http.Request, u *
 		apiServerError(w, err)
 		return
 	}
-	v, err := dbpkg.GetVisionByRef(h.db, ref, u.PIALID)
+	v, err := dbpkg.GetVisionByRef(h.db, ref, viewerAccountID(u))
 	if err != nil {
 		if errors.Is(err, dbpkg.ErrVisionNotLive) {
 			apiError(w, http.StatusNotFound, "not_found", "That vision is gone.")
@@ -259,7 +263,7 @@ func (h *Handler) apiV1VisionViewers(w http.ResponseWriter, r *http.Request, u *
 		apiServerError(w, err)
 		return
 	}
-	if v.AuthorPIAL != u.PIALID {
+	if v.AuthorAccountID != u.ID {
 		apiError(w, http.StatusForbidden, "forbidden", "Only the author can see who watched.")
 		return
 	}
@@ -301,16 +305,22 @@ func (h *Handler) apiV1VisionEvent(w http.ResponseWriter, r *http.Request, event
 	case "vision":
 		h.visionCreateEvent(w, r, user, rawBodyMap)
 	case "vision_seen":
-		_, ref, ok := h.visionForViewer(w, r, user, rawBodyMap)
+		v, ref, ok := h.visionForViewer(w, r, user, rawBodyMap)
 		if !ok {
 			return true
 		}
-		if err := dbpkg.MarkVisionViewed(h.db, ref, user.PIALID); err != nil {
+		// The author opening their own Vision is not a view, and a Vision still
+		// pending its scan (readable only by its author) has none to record.
+		if v.AuthorAccountID == user.ID || v.ScanState == "pending" {
+			w.WriteHeader(http.StatusNoContent)
+			return true
+		}
+		if err := dbpkg.MarkVisionViewed(h.db, ref, user.ID); err != nil {
 			if errors.Is(err, dbpkg.ErrVisionNotLive) {
 				http.Error(w, "vision not found", http.StatusNotFound)
 				return true
 			}
-			log.Printf("[vision] mark viewed %s by %s: %v", ref, user.PIALID, err)
+			log.Printf("[vision] mark viewed %s by %s: %v", ref, user.ID, err)
 			http.Error(w, "server error", http.StatusInternalServerError)
 			return true
 		}
@@ -327,12 +337,12 @@ func (h *Handler) apiV1VisionEvent(w http.ResponseWriter, r *http.Request, event
 			http.Error(w, "server error", http.StatusInternalServerError)
 			return true
 		}
-		if err := dbpkg.SoftDeleteVision(h.db, ref, user.PIALID); err != nil {
+		if err := dbpkg.SoftDeleteVision(h.db, ref, user.ID); err != nil {
 			if errors.Is(err, dbpkg.ErrVisionNotLive) {
 				http.Error(w, "Vision not found or you do not own it", http.StatusForbidden)
 				return true
 			}
-			log.Printf("[vision] delete %s by %s: %v", ref, user.PIALID, err)
+			log.Printf("[vision] delete %s by %s: %v", ref, user.ID, err)
 			http.Error(w, "server error", http.StatusInternalServerError)
 			return true
 		}
@@ -376,14 +386,14 @@ func (h *Handler) apiV1VisionEvent(w http.ResponseWriter, r *http.Request, event
 			http.Error(w, "vision_id and option_idx required", http.StatusBadRequest)
 			return true
 		}
-		if err := dbpkg.CastVisionPollVote(h.db, ref, user.PIALID, idx); err != nil {
+		if err := dbpkg.CastVisionPollVote(h.db, ref, user.ID, idx); err != nil {
 			switch {
 			case errors.Is(err, dbpkg.ErrVisionNotLive):
 				http.Error(w, "vision not found", http.StatusNotFound)
 			case errors.Is(err, dbpkg.ErrVisionNoPoll), errors.Is(err, dbpkg.ErrVisionPollOption):
 				http.Error(w, err.Error(), http.StatusBadRequest)
 			default:
-				log.Printf("[vision] poll vote %s by %s: %v", ref, user.PIALID, err)
+				log.Printf("[vision] poll vote %s by %s: %v", ref, user.ID, err)
 				http.Error(w, "server error", http.StatusInternalServerError)
 			}
 			return true
@@ -396,7 +406,7 @@ func (h *Handler) apiV1VisionEvent(w http.ResponseWriter, r *http.Request, event
 			http.Error(w, "user not found", http.StatusNotFound)
 			return true
 		}
-		if err := dbpkg.SetVisionMuted(h.db, user.PIALID, target.PIALID, eventType == "vision_mute"); err != nil {
+		if err := dbpkg.SetVisionMuted(h.db, user.ID, target.ID, eventType == "vision_mute"); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return true
 		}
@@ -424,7 +434,7 @@ func (h *Handler) visionForViewer(w http.ResponseWriter, r *http.Request, user *
 		http.Error(w, "server error", http.StatusInternalServerError)
 		return nil, dbpkg.VisionRef{}, false
 	}
-	v, err := dbpkg.GetVisionByRef(h.db, ref, user.PIALID)
+	v, err := dbpkg.GetVisionByRef(h.db, ref, user.ID)
 	if err != nil {
 		if errors.Is(err, dbpkg.ErrVisionNotLive) {
 			http.Error(w, "vision not found", http.StatusNotFound)
@@ -434,7 +444,7 @@ func (h *Handler) visionForViewer(w http.ResponseWriter, r *http.Request, user *
 		http.Error(w, "server error", http.StatusInternalServerError)
 		return nil, dbpkg.VisionRef{}, false
 	}
-	if v.Audience == "followers" && v.AuthorPIAL != user.PIALID {
+	if v.Audience == "followers" && v.AuthorAccountID != user.ID {
 		follows, ferr := dbpkg.IsFollowing(h.db, user.ID, v.AuthorAccountID)
 		if ferr != nil {
 			log.Printf("[vision] follow check %s for %s: %v", ref, user.ID, ferr)
@@ -512,6 +522,7 @@ func (h *Handler) visionCreateEvent(w http.ResponseWriter, r *http.Request, user
 	}
 
 	in := dbpkg.VisionInput{
+		AuthorAccount:      user.ID,
 		AuthorPIAL:         user.PIALID,
 		ContentType:        contentType,
 		Body:               body,
@@ -613,18 +624,18 @@ func (h *Handler) visionCreateEvent(w http.ResponseWriter, r *http.Request, user
 		}
 	}
 
-	ref, err := dbpkg.InsertVision(h.db, in)
+	ref, addr, err := dbpkg.InsertVision(h.db, in)
 	if err != nil {
 		log.Printf("[vision] insert for %s: %v", user.ID, err)
 		http.Error(w, "The Vision could not be posted. Try again.", http.StatusInternalServerError)
 		return
 	}
 
-	go dbpkg.TryAwardVisionAchievements(h.db, user.ID, user.PIALID)
+	go dbpkg.TryAwardVisionAchievements(h.db, user.ID)
 	go h.publishVisionContentEvent(ref.String(), user.PIALID, user.ID, in.Body, in.MediaURLs)
 
 	apiJSON(w, http.StatusCreated, map[string]string{
-		"vision_id": dbpkg.VisionAddress{AuthorAccount: user.ID, Seq: ref.Seq}.String(),
+		"vision_id": addr.String(),
 	})
 }
 

@@ -12,7 +12,7 @@ echo -e "\n${BOLD}F33D3R Pre-flight Check${NC}"
 echo "──────────────────────────────────────"
 
 # 1. Service directories
-for d in feed-engine aethyrrank-engine zior-engine aethyr-schema-registry; do
+for d in feed-engine aethyrrank-engine zior-engine; do
   if [ -d "$d" ]; then ok "$d/ found"
   else fail "$d/ NOT FOUND — unzip all 5 zips into this directory"; fi
 done

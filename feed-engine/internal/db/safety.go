@@ -40,7 +40,7 @@ var ErrSafetyPermanent = errors.New("safety event can never be applied")
 type SafetyApply struct {
 	EventID     string
 	Seq         int64
-	Type        string // verdict | ownership | review_decided
+	Type        string // verdict | ownership | review_opened | review_decided
 	SubjectKind string // work | vision | asset | stream | account
 	SubjectID   string
 	AssetID     string
@@ -50,8 +50,9 @@ type SafetyApply struct {
 	// answer to now (empty when they have no account any more).
 	OriginalPIAL   string
 	OriginalHandle string
-	// NotifyAdmins: the event opened something a moderator must look at (a
-	// human_review verdict, an ownership finding sent to review).
+	// NotifyAdmins: the event put an item in front of a person (review_opened).
+	// The notice id derives from the event id, so a redelivery tells no one
+	// twice.
 	NotifyAdmins bool
 }
 
@@ -190,6 +191,9 @@ func ApplySafetyEvent(ctx context.Context, database *sql.DB, ev SafetyApply) (ap
 				}
 				changes = mergeCredited(changes, credited)
 			}
+		case "review_opened":
+			// Nothing about the content moves: the item waits for a person,
+			// and the admins are told below.
 		case "ownership":
 			if ev.OriginalPIAL == "" {
 				return fmt.Errorf("%w: ownership event %s names no original owner", ErrSafetyPermanent, ev.EventID)

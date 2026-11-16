@@ -6,37 +6,40 @@ import Foundation
 /// `feed-engine/internal/handler/work_event.go` field for field. These nineteen
 /// values, and nothing else, are what the author's signature covers: everything
 /// the compose screen sends outside this struct — `is_nsfw`,
-/// `video_watermarked_url`, `video_width`/`video_height`, `quoted_work_id`,
-/// `react_layout`, `tus_upload_id` — is server- or transcoder-derived and rides
-/// unsigned on the envelope. See ``WorkEnvelope``.
+/// `video_width`/`video_height`, `quoted_work_id`, `react_layout`,
+/// `downloads_allowed` — rides unsigned on the envelope. See ``WorkEnvelope``.
 ///
 /// `kind` lives here and only here. The envelope's `event_type` is an unsigned
 /// outer field; the server reads the kind from the payload precisely so that the
 /// content type is inside what the author actually signed.
+///
+/// `is_repost` and `repost_source_id` are two of the nineteen hashed keys, but
+/// they are not fields of this struct: a repost is a reaction, never a signed
+/// work, and the server refuses any envelope that sets them. They are hashed as
+/// the constants `false` and `null` (``canonicalFields()``), exactly as
+/// `malkuth.js` sends them, so nothing on this client can set them.
 public struct WorkPayload: Hashable, Sendable {
 
-    /// The author's PIAL. Signed, so it cannot be filled in by the server, and
-    /// optional on `CurrentUser` because the API did not always carry it —
-    /// signing a payload whose author is `""` is refused with
-    /// ``MalkuthError/pialUnknown`` rather than attempted.
-    public var authorPIAL: String
+    /// The account (persona) the work is published as — the `account_id` that
+    /// `GET /api/v1/me` answers to its owner. Signed; the server refuses a
+    /// payload whose `author_account` is not the session's account.
+    public var authorAccount: String
+    /// The normalised body (``WorkText/normalize(_:)``). The server refuses a
+    /// body that is not already normalised, because it can never rewrite what
+    /// was signed.
     public var body: String
     public var commentGating: CommentGating
-    public var isRepost: Bool
     public var kind: WorkKind
     /// Attachment URLs. **Order here is not the hashed order** — see
     /// ``canonicalFields()``.
     public var mediaURLs: [String]
     /// CID of the work being replied to. Required when `kind == .reply`.
     public var parentCID: String?
-    /// RFC 3339. `nil` and `""` are different things on the wire; this is `nil`
-    /// or a validated string, never empty.
+    /// RFC 3339. Required on a poll: 5 minutes to 7 days after the work opens.
     public var pollEndsAt: String?
-    /// `nil` and `[]` are different on the wire: `null` versus `[]`. A poll
-    /// whose options are still being written is `[]`; a work that is not a poll
-    /// is `nil`.
+    /// `nil` and `[]` are different on the wire: `null` versus `[]`. A work
+    /// that is not a poll is `nil`. Each option is normalised text.
     public var pollOptions: [String]?
-    public var repostSourceID: String?
     /// RFC 3339. When set and in the future the work is stored unpublished until
     /// the scheduler picks it up.
     public var scheduledAt: String?
@@ -46,9 +49,9 @@ public struct WorkPayload: Hashable, Sendable {
     /// but whatever is sent is signed. Unlike `mediaURLs`, these are **not**
     /// sorted.
     public var tags: [String]
-    /// Milliseconds since the epoch. This is the only thing that distinguishes
-    /// two identical posts, which makes it the thing that decides whether a
-    /// retry is the same post or a second one — see ``WorkSubmission``.
+    /// Milliseconds since the epoch, stamped when the work is signed. The
+    /// server accepts a work signed within the last hour and no more than five
+    /// minutes ahead, so it is stamped at send time — see ``WorkSubmission``.
     public var timestampMS: Int64
     public var videoDurationSecs: Int?
     public var videoMasterURL: String?
@@ -57,16 +60,14 @@ public struct WorkPayload: Hashable, Sendable {
     public var voiceURL: String?
 
     public init(
-        authorPIAL: String,
+        authorAccount: String,
         body: String = "",
         commentGating: CommentGating = .default,
-        isRepost: Bool = false,
         kind: WorkKind = .post,
         mediaURLs: [String] = [],
         parentCID: String? = nil,
         pollEndsAt: String? = nil,
         pollOptions: [String]? = nil,
-        repostSourceID: String? = nil,
         scheduledAt: String? = nil,
         subscriberOnly: Bool = false,
         tags: [String] = [],
@@ -77,16 +78,14 @@ public struct WorkPayload: Hashable, Sendable {
         voiceDurationSecs: Int? = nil,
         voiceURL: String? = nil
     ) {
-        self.authorPIAL = authorPIAL
+        self.authorAccount = authorAccount
         self.body = body
         self.commentGating = commentGating
-        self.isRepost = isRepost
         self.kind = kind
         self.mediaURLs = mediaURLs
         self.parentCID = parentCID
         self.pollEndsAt = pollEndsAt
         self.pollOptions = pollOptions
-        self.repostSourceID = repostSourceID
         self.scheduledAt = scheduledAt
         self.subscriberOnly = subscriberOnly
         self.tags = tags
@@ -98,10 +97,22 @@ public struct WorkPayload: Hashable, Sendable {
         self.voiceURL = voiceURL
     }
 
+    /// This payload with its text normalised and the signing time stamped now:
+    /// what is actually signed. Normalising is idempotent, so a payload that
+    /// was already normalised is unchanged apart from the stamp.
+    public func preparedForSigning(at timestampMS: Int64 = WorkPayload.nowMS()) -> WorkPayload {
+        var p = self
+        p.body = WorkText.normalize(body)
+        p.pollOptions = pollOptions?.map(WorkText.normalize)
+        p.timestampMS = timestampMS
+        return p
+    }
+
     // MARK: - Canonical form
 
     /// The nineteen fields in the exact order `workCanonicalPayload` declares
     /// them, with the two normalisations `verifyCID` applies before hashing.
+    /// `is_repost` and `repost_source_id` are hashed as `false` and `null`.
     ///
     /// Both normalisations are the server's, reproduced here because the server
     /// applies them to what it receives and then compares against a CID the
@@ -121,16 +132,16 @@ public struct WorkPayload: Hashable, Sendable {
     ///   why it is modelled as `[String]?` and these two are not.
     public func canonicalFields() -> [(String, CanonicalJSON.Value)] {
         [
-            ("author_pial", .string(authorPIAL)),
+            ("author_account", .string(authorAccount)),
             ("body", .string(body)),
             ("comment_gating", .string(commentGating.rawValue)),
-            ("is_repost", .bool(isRepost)),
+            ("is_repost", .bool(false)),
             ("kind", .string(kind.rawValue)),
             ("media_urls", .array(Self.sortedByUTF8(mediaURLs).map { .string($0) })),
             ("parent_cid", .string(orNull: parentCID)),
             ("poll_ends_at", .string(orNull: pollEndsAt)),
             ("poll_options", pollOptions.map { .array($0.map { .string($0) }) } ?? .null),
-            ("repost_source_id", .string(orNull: repostSourceID)),
+            ("repost_source_id", .null),
             ("scheduled_at", .string(orNull: scheduledAt)),
             ("subscriber_only", .bool(subscriberOnly)),
             ("tags", .array(tags.map { .string($0) })),
@@ -183,21 +194,22 @@ public struct WorkPayload: Hashable, Sendable {
     /// than what the author meant": a `scheduled_at` Go cannot parse becomes an
     /// immediate publish, and a malformed `parent_cid` becomes a top-level work
     /// instead of a reply.
+    ///
+    /// Freshness is not judged here: the stamp is this device's clock at
+    /// signing, so only the server's clock can say it is outside the window
+    /// (``WorkSubmission`` handles that answer). A poll's run is measured from
+    /// the signing stamp, which is when this device says the work opens.
     public func validate() throws(MalkuthError) {
-        guard !authorPIAL.trimmingCharacters(in: .whitespaces).isEmpty else {
-            throw .pialUnknown
+        guard !authorAccount.trimmingCharacters(in: .whitespaces).isEmpty else {
+            throw .accountUnknown
         }
-        try Self.requireUUID(authorPIAL, field: "author_pial")
+        try Self.requireUUID(authorAccount, field: "author_account")
 
         if kind == .reply, (parentCID?.isEmpty ?? true) {
             throw .replyMissingParentCID
         }
-        if isRepost, (repostSourceID?.trimmingCharacters(in: .whitespaces).isEmpty ?? true) {
-            throw .repostMissingSourceID
-        }
 
         if let parentCID { try Self.requireContentID(parentCID, field: "parent_cid") }
-        if let repostSourceID { try Self.requireUUID(repostSourceID, field: "repost_source_id") }
         if let pollEndsAt { try Self.requireRFC3339(pollEndsAt, field: "poll_ends_at") }
         if let scheduledAt { try Self.requireRFC3339(scheduledAt, field: "scheduled_at") }
 
@@ -208,9 +220,18 @@ public struct WorkPayload: Hashable, Sendable {
             try Self.requireDuration(voiceDurationSecs, field: "voice_duration_secs")
         }
 
-        try Self.requireNoNUL(body, field: "body")
-        for tag in tags { try Self.requireNoNUL(tag, field: "tags") }
-        for option in pollOptions ?? [] { try Self.requireNoNUL(option, field: "poll_options") }
+        guard WorkText.isNormalized(body) else { throw .textNotNormalized(field: "body") }
+        let over = WorkText.overLimit(body)
+        if over > 0 { throw .textTooLong(over: over) }
+        try validatePoll()
+        for tag in tags {
+            guard !tag.isEmpty, WorkText.isNormalized(tag),
+                  WorkText.scalarCount(tag) <= WorkPayload.tagMaxScalars,
+                  !tag.unicodeScalars.contains(where: { WorkText.isSpace($0.value) })
+            else { throw .invalidTag(tag) }
+        }
+        if tags.count > WorkPayload.maxClientTags { throw .tooManyTags }
+
         for url in mediaURLs {
             if url.isEmpty { throw .emptyMediaURL }
             try Self.requireNoNUL(url, field: "media_urls")
@@ -218,6 +239,57 @@ public struct WorkPayload: Hashable, Sendable {
         if let voiceURL { try Self.requireNoNUL(voiceURL, field: "voice_url") }
         if let videoMasterURL { try Self.requireNoNUL(videoMasterURL, field: "video_master_url") }
         if let videoPosterURL { try Self.requireNoNUL(videoPosterURL, field: "video_poster_url") }
+    }
+
+    /// The server's poll rule (`validatePoll`): options and the poll kind come
+    /// together, 2–4 distinct one-line options of at most 80 code points, and an
+    /// end 5 minutes to 7 days after the work opens.
+    private func validatePoll() throws(MalkuthError) {
+        guard let pollOptions else {
+            if kind == .poll { throw .pollInvalid("A poll needs options.") }
+            if pollEndsAt != nil { throw .pollInvalid("Only a poll has an end time.") }
+            return
+        }
+        guard kind == .poll else { throw .pollInvalid("Only a poll has options.") }
+        guard (WorkPayload.pollMinOptions...WorkPayload.pollMaxOptions).contains(pollOptions.count) else {
+            throw .pollInvalid("A poll has 2 to 4 options.")
+        }
+        var seen = Set<String>()
+        for option in pollOptions {
+            guard WorkText.isNormalized(option), WorkText.isSingleLine(option), !WorkText.isBlank(option) else {
+                throw .pollInvalid("Every option needs text, on one line.")
+            }
+            guard WorkText.scalarCount(option) <= WorkText.pollOptionMaxScalars else {
+                throw .pollInvalid("Each option is at most \(WorkText.pollOptionMaxScalars) characters.")
+            }
+            guard seen.insert(option.lowercased()).inserted else {
+                throw .pollInvalid("Options must differ.")
+            }
+        }
+        guard let pollEndsAt, let ends = Self.parseRFC3339(pollEndsAt) else {
+            throw .pollInvalid("A poll needs an end time.")
+        }
+        let opens = scheduledAt.flatMap(Self.parseRFC3339)
+            ?? Date(timeIntervalSince1970: Double(timestampMS) / 1000)
+        let runs = ends.timeIntervalSince(opens)
+        guard runs >= WorkPayload.pollMinDuration, runs <= WorkPayload.pollMaxDuration else {
+            throw .pollInvalid("A poll runs from 5 minutes to 7 days.")
+        }
+    }
+
+    public static let pollMinOptions = 2
+    public static let pollMaxOptions = 4
+    public static let pollMinDuration: TimeInterval = 5 * 60
+    public static let pollMaxDuration: TimeInterval = 7 * 24 * 60 * 60
+    public static let maxClientTags = 10
+    public static let tagMaxScalars = 64
+
+    static func parseRFC3339(_ value: String) -> Date? {
+        let withFraction = ISO8601DateFormatter()
+        withFraction.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let plain = ISO8601DateFormatter()
+        plain.formatOptions = [.withInternetDateTime]
+        return plain.date(from: value) ?? withFraction.date(from: value)
     }
 
     private static func requireContentID(_ value: String, field: String) throws(MalkuthError) {

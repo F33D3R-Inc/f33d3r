@@ -48,16 +48,21 @@ import com.f33d3r.app.ui.theme.Ink
  * party. The password is used twice in this one moment: once to authenticate against
  * the server, and once, locally, to derive the key that unwraps this account's
  * messaging identity. It is not stored either time.
+ *
+ * An account with a second factor needs a third thing, and the screen learns that
+ * from the server: the first attempt goes without a code, the server asks for one,
+ * and the code field appears — six digits from an authenticator, or a backup code.
  */
 @Composable
 fun SignIn(
     state: ShellState,
-    onSignIn: (handle: String, password: String) -> Unit,
+    onSignIn: (handle: String, password: String, code: String) -> Unit,
     onOrigin: (String) -> Unit,
     origin: String,
 ) {
     var handle by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
+    var code by remember { mutableStateOf("") }
     var editingOrigin by remember { mutableStateOf(false) }
     var originDraft by remember { mutableStateOf(origin) }
 
@@ -65,19 +70,19 @@ fun SignIn(
     // behalf. The credentials wait for the answer; sign-in then proceeds either way,
     // and a refusal is reported by the server being unreachable, not guessed here.
     val context = LocalContext.current
-    var awaiting by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var awaiting by remember { mutableStateOf<Triple<String, String, String>?>(null) }
     val askLocalNetwork = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) {
-        awaiting?.let { (h, p) -> onSignIn(h, p) }
+        awaiting?.let { (h, p, c) -> onSignIn(h, p, c) }
         awaiting = null
     }
-    val submit: (String, String) -> Unit = { h, p ->
+    val submit: (String, String, String) -> Unit = { h, p, c ->
         if (LocalNetwork.needsPermission(context, origin)) {
-            awaiting = h to p
+            awaiting = Triple(h, p, c)
             askLocalNetwork.launch(LocalNetwork.PERMISSION)
         } else {
-            onSignIn(h, p)
+            onSignIn(h, p, c)
         }
     }
 
@@ -132,9 +137,34 @@ fun SignIn(
                 secret = true,
                 keyboard = KeyboardOptions(
                     keyboardType = KeyboardType.Password,
-                    imeAction = ImeAction.Done,
+                    imeAction = if (state.needsCode) ImeAction.Next else ImeAction.Done,
                 ),
             )
+
+            if (state.needsCode) {
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    text = "Enter the six digits from your authenticator app, or one of your backup codes.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontSize = 14.sp,
+                    color = Ink.Tertiary,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(8.dp))
+                Field(
+                    value = code,
+                    onValueChange = { new ->
+                        code = new.filter { it.isLetterOrDigit() || it == '-' }.take(32)
+                    },
+                    placeholder = "Code",
+                    keyboard = KeyboardOptions(
+                        capitalization = KeyboardCapitalization.None,
+                        keyboardType = KeyboardType.Ascii,
+                        imeAction = ImeAction.Done,
+                    ),
+                )
+            }
 
             if (state.refusal.isNotEmpty()) {
                 Spacer(Modifier.height(12.dp))
@@ -149,14 +179,17 @@ fun SignIn(
             }
 
             Spacer(Modifier.height(20.dp))
-            val ready = handle.isNotBlank() && password.isNotBlank() && !state.loading
+            // Six digits are an authenticator code; anything else is a backup code.
+            val codeReady = !state.needsCode ||
+                (if (code.all { it.isDigit() }) code.length == 6 else code.length >= 6)
+            val ready = handle.isNotBlank() && password.isNotBlank() && codeReady && !state.loading
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(48.dp)
                     .clip(Pill)
                     .background(if (ready) Ink.Accent else Ink.Faint)
-                    .clickable(enabled = ready) { submit(handle, password) },
+                    .clickable(enabled = ready) { submit(handle, password, if (state.needsCode) code else "") },
                 contentAlignment = Alignment.Center,
             ) {
                 Text(

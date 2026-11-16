@@ -335,12 +335,14 @@ pub fn spends_budget(decision: &str, via_number: bool, facts: &ContactFacts) -> 
 /// one clock and no skew to reason about.
 ///
 /// The `WHERE` on the conflict branch is the ownership check: a row already
-/// held by a different identity is left alone rather than reassigned.
+/// held by a different account — another persona of the same person included —
+/// is left alone rather than reassigned.
 #[allow(clippy::too_many_arguments)]
 pub async fn attach(
     pool: &PgPool,
     number_node: Uuid,
     pial: Uuid,
+    account: Uuid,
     policy: &str,
     label: &str,
     expires_in_seconds: Option<Option<i64>>,
@@ -348,8 +350,8 @@ pub async fn attach(
 ) -> Result<()> {
     sqlx::query(
         "INSERT INTO number_policies
-             (number_node_id, pial_id, policy, label, expires_at, max_admissions)
-         VALUES ($1, $2, $3, $4,
+             (number_node_id, pial_id, account_id, policy, label, expires_at, max_admissions)
+         VALUES ($1, $2, $9, $3, $4,
                  CASE WHEN $5::BOOL AND $6::BIGINT IS NOT NULL
                       THEN NOW() + ($6::BIGINT * INTERVAL '1 second')
                  END,
@@ -362,7 +364,7 @@ pub async fn attach(
                 max_admissions = CASE WHEN $7::BOOL THEN EXCLUDED.max_admissions
                                       ELSE number_policies.max_admissions END,
                 updated_at     = NOW()
-          WHERE number_policies.pial_id = EXCLUDED.pial_id",
+          WHERE number_policies.account_id = EXCLUDED.account_id",
     )
     .bind(number_node)
     .bind(pial)
@@ -372,6 +374,7 @@ pub async fn attach(
     .bind(expires_in_seconds.flatten())
     .bind(max_admissions.is_some())
     .bind(max_admissions.flatten())
+    .bind(account)
     .execute(pool)
     .await?;
     Ok(())
@@ -500,11 +503,16 @@ pub enum Admission {
 ///
 /// A Number with no policy row has no budget to spend, so nothing is recorded
 /// and nothing is refused.
+///
+/// An admission is one ACCOUNT let through: two personas of one person are two
+/// introductions to the owner, and counting them as one would show the owner
+/// that they are one person.
 pub async fn record_admission(
     pool: &PgPool,
     number_node: Uuid,
-    initiator: Uuid,
-    owner: Uuid,
+    initiator_account: Uuid,
+    owner_account: Uuid,
+    owner_pial: Uuid,
 ) -> Result<Admission> {
     let mut tx = pool.begin().await?;
 
@@ -526,10 +534,10 @@ pub async fn record_admission(
 
     let already: Option<(bool,)> = sqlx::query_as(
         "SELECT TRUE FROM number_admissions
-          WHERE number_node_id = $1 AND initiator_pial = $2",
+          WHERE number_node_id = $1 AND initiator_account = $2",
     )
     .bind(number_node)
-    .bind(initiator)
+    .bind(initiator_account)
     .fetch_optional(&mut *tx)
     .await?;
     if already.is_some() {
@@ -549,12 +557,12 @@ pub async fn record_admission(
     }
 
     sqlx::query(
-        "INSERT INTO number_admissions (number_node_id, initiator_pial)
+        "INSERT INTO number_admissions (number_node_id, initiator_account)
          VALUES ($1, $2)
-         ON CONFLICT (number_node_id, initiator_pial) DO NOTHING",
+         ON CONFLICT (number_node_id, initiator_account) DO NOTHING",
     )
     .bind(number_node)
-    .bind(initiator)
+    .bind(initiator_account)
     .execute(&mut *tx)
     .await?;
 
@@ -578,8 +586,8 @@ pub async fn record_admission(
             &mut *tx,
             &crate::notifications::Event {
                 event_id: format!("elohim:{kind}:{number_node}"),
-                recipient_account: None,
-                recipient_pial: owner.to_string(),
+                recipient_account: Some(owner_account.to_string()),
+                recipient_pial: owner_pial.to_string(),
                 actor_account: None,
                 kind: kind.into(),
                 target_id: number_node.to_string(),
@@ -614,8 +622,8 @@ pub struct LeaseView {
     pub state: LeaseState,
 }
 
-/// Every lease held by one identity, for that identity's own surface.
-pub async fn leases_for(pool: &PgPool, pial: Uuid) -> Result<Vec<LeaseView>> {
+/// Every lease held by one account, for that account's own surface.
+pub async fn leases_for(pool: &PgPool, account: Uuid) -> Result<Vec<LeaseView>> {
     let rows: Vec<(
         Uuid,
         Option<DateTime<Utc>>,
@@ -634,9 +642,9 @@ pub async fn leases_for(pool: &PgPool, pial: Uuid) -> Result<Vec<LeaseView>> {
                       WHERE a.number_node_id = np.number_node_id),
                     (np.expires_at IS NOT NULL AND np.expires_at <= NOW())
                FROM number_policies np
-              WHERE np.pial_id = $1",
+              WHERE np.account_id = $1",
     )
-    .bind(pial)
+    .bind(account)
     .fetch_all(pool)
     .await?;
     Ok(rows

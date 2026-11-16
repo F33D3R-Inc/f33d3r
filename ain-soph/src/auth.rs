@@ -10,13 +10,13 @@
 //!
 //! Every value handler took the acting identity straight out of the request
 //! body — `deposit.user_id`, `transfer.from_user_id`, `tip.from_pial_id`,
-//! `withdraw.user_id`. [`identity::resolve_owner`] proved that name *existed*;
+//! and the rest. [`identity::resolve_owner`] proved that name *existed*;
 //! nothing ever proved the caller *was* it. A request could therefore name whose
 //! money it moved. Reaching the port was the whole authorisation check:
 //!
 //! ```text
-//! curl -X POST http://ain-soph:8089/v1/withdraw \
-//!      -d '{"user_id":"<anyone>","amount_cents":500000, ...}'
+//! curl -X POST http://ain-soph:8089/v1/transfer \
+//!      -d '{"from_user_id":"<anyone>","amount_units":500000, ...}'
 //! ```
 //!
 //! answered 200 and debited them. feed-engine's `CanMonetize()` gate in front of
@@ -39,7 +39,9 @@
 //!     the same Director so a browser cannot forge it. themis reads exactly this
 //!     header for exactly this reason on its commerce endpoints.
 //!
-//! [`Caller`] is the two of them as one extractor, and it denies by default.
+//! [`Caller`] is the two of them as one extractor, and it denies by default:
+//! the key is required on every route, and `X-Pial-Identity` is honoured only
+//! alongside it.
 //!
 //! # The rule
 //!
@@ -84,6 +86,12 @@ impl InternalApiKey {
     }
 }
 
+/// Compares without stopping at the first difference, so timing reveals nothing
+/// about the key.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
 /// True when the request carries the configured internal key.
 ///
 /// An empty configured key can never match. Without that guard an unset
@@ -93,26 +101,46 @@ fn internal_key_ok(headers: &HeaderMap, cfg_key: &str) -> bool {
     headers
         .get(HEADER_INTERNAL_KEY)
         .and_then(|v| v.to_str().ok())
-        .map(|k| !cfg_key.is_empty() && k == cfg_key)
+        .map(|k| !cfg_key.is_empty() && constant_time_eq(k.as_bytes(), cfg_key.as_bytes()))
         .unwrap_or(false)
+}
+
+/// Every route but `/health` and `/metrics` answers only a caller holding the
+/// internal service key — reads included. Ain Soph is a private book: the only
+/// brains that may reach it are Themis (which moves value) and feed-engine
+/// (which renders balances), and both hold the key.
+pub async fn require_internal_key(
+    axum::extract::State(key): axum::extract::State<InternalApiKey>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let path = req.uri().path();
+    if path == "/health" || path == "/metrics" {
+        return next.run(req).await;
+    }
+    if !internal_key_ok(req.headers(), &key.0) {
+        return WalletError::Unauthenticated.into_response();
+    }
+    next.run(req).await
 }
 
 /// The authenticated origin of a request.
 ///
 /// There is deliberately no third variant for "anonymous". A request that
-/// proves neither identity nor peership is rejected by the extractor and never
+/// does not hold the service key is rejected by the extractor and never
 /// becomes a `Caller` at all, so no handler can forget to check.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Caller {
-    /// Another brain, holding the shared secret. It may act for an identity that
-    /// is not making the call — themis settling a purchase for a buyer,
-    /// aethyr-ledger checkpointing a sealed block, feed-engine sweeping the fee
-    /// float. It must still say who it is acting for, explicitly, in the body.
+    /// Another brain, holding the shared secret and naming no end user. It may
+    /// act for an identity that is not making the call — Themis settling a
+    /// purchase for a buyer. It must still say who it is acting for,
+    /// explicitly, in the body.
     Service,
 
-    /// An end user, as authenticated by feed-engine. Canonical PIAL, verified
-    /// against the naming plane before it reaches the ledger. It may act only as
-    /// itself.
+    /// An end user, as authenticated by feed-engine and named in
+    /// `X-Pial-Identity` alongside the service key. Verified against the naming
+    /// plane before it reaches the ledger. It may act only as itself.
     Identity(String),
 }
 
@@ -127,15 +155,13 @@ where
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let cfg = InternalApiKey::from_ref(state);
 
-        if internal_key_ok(&parts.headers, &cfg.0) {
-            return Ok(Caller::Service);
-        }
-
-        // A present-but-wrong internal key is a peer that is misconfigured or an
-        // attacker guessing. Either way it is not an end user, so it does not
-        // fall through to the identity lane.
-        if parts.headers.contains_key(HEADER_INTERNAL_KEY) {
-            tracing::warn!("refused: X-Internal-Key present but does not match INTERNAL_API_KEY");
+        // The key is the only authority. X-Pial-Identity says which person a
+        // keyed caller is acting for; without the key it is a header anyone can
+        // type, and is worth nothing.
+        if !internal_key_ok(&parts.headers, &cfg.0) {
+            if parts.headers.contains_key(HEADER_INTERNAL_KEY) {
+                tracing::warn!("refused: X-Internal-Key present but does not match INTERNAL_API_KEY");
+            }
             return Err(WalletError::Unauthenticated);
         }
 
@@ -145,7 +171,7 @@ where
             .and_then(|v| v.to_str().ok())
         {
             Some(raw) if !raw.trim().is_empty() => Ok(Caller::Identity(raw.trim().to_string())),
-            _ => Err(WalletError::Unauthenticated),
+            _ => Ok(Caller::Service),
         }
     }
 }
@@ -245,10 +271,27 @@ impl Caller {
         }
     }
 
+    /// The account a read is allowed to see. A service may read any account; an
+    /// identity may read only its own.
+    pub async fn reading(&self, manhattan: &Manhattan, path_owner: &str) -> Result<String, WalletError> {
+        let owner = identity::resolve_owner(manhattan, path_owner).await?;
+        match self {
+            Caller::Service => Ok(owner),
+            Caller::Identity(raw) => {
+                let me = identity::resolve_owner(manhattan, raw).await?;
+                if me != owner {
+                    tracing::warn!(caller = %me, "refused: identity tried to read another account");
+                    return Err(WalletError::ActingAsAnother);
+                }
+                Ok(owner)
+            }
+        }
+    }
+
     /// Gate for operations that belong to the platform rather than to any person
-    /// — the ledger checkpoint aethyr-ledger posts after sealing a block. There
-    /// is no end user on whose behalf such a call could be made, so an end-user
-    /// session is not sufficient authority for it.
+    /// — minting platform credit, reattributing a shadow account. There is no
+    /// end user on whose behalf such a call could be made, so an end-user
+    /// identity is not sufficient authority for it.
     pub fn require_service(&self) -> Result<(), WalletError> {
         match self {
             Caller::Service => Ok(()),
@@ -340,8 +383,8 @@ mod tests {
     /// value moves is refused, and refused locally — no naming-plane round trip,
     /// so this cannot degrade into an allow when Manhattan is unreachable.
     ///
-    /// This is the defect in one assertion. Before this module, `withdraw` read
-    /// `req.user_id` and debited whoever it named.
+    /// This is the defect in one assertion. Before this module, a value route
+    /// read the payer from the body and debited whoever it named.
     #[test]
     fn body_may_not_name_a_different_identity() {
         assert_eq!(claim_verdict(ME, SOMEONE_ELSE), ClaimVerdict::Different);
@@ -432,10 +475,11 @@ mod tests {
             "pub async fn deposit(",
             "pub async fn transfer(",
             "pub async fn tip(",
-            "pub async fn withdraw(",
+            "pub async fn reattribute(",
+            "pub async fn get_balance(",
+            "pub async fn list_transactions(",
             "pub async fn create_proposal(",
             "pub async fn cast_vote(",
-            "pub async fn ledger_checkpoint(",
         ] {
             let start = src
                 .find(handler)

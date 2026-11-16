@@ -34,8 +34,13 @@ FROM bluenviron/mediamtx:latest-ffmpeg AS mediamtx
 
 FROM debian:stable-slim
 
+# fonts-dejavu-core is named, not left to arrive as a dependency of ffmpeg's
+# fontconfig: the ladder burns the moving watermark with DejaVuSans and refuses
+# to package a broadcast without it, so the font is part of this image's
+# contract. It is the package already installed here, the same font
+# transcoding and caeor draw their marks with.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      bash curl ca-certificates ffmpeg jq \
+      bash curl ca-certificates ffmpeg jq fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=mediamtx /mediamtx /mediamtx

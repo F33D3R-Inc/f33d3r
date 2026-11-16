@@ -76,8 +76,9 @@ final class AppModel {
     /// Fetches walled media with the session attached. One per app: it holds
     /// the image cache the feed scrolls through.
     let media: MediaLoader
-    /// This device's Work-signing key. Registered with the key authority on
-    /// every sign-in, so the key the server holds is the key that is posting.
+    /// This device's Work-signing keys, one per account. The signed-in
+    /// account's is registered with the key authority on every sign-in, so the
+    /// key the server holds is the key that is posting.
     let signer: MalkuthSigner
 
     /// The reader's lane and density, restored from the device at launch.
@@ -85,7 +86,7 @@ final class AppModel {
 
     private(set) var state: SessionStore.State = .unknown
 
-    /// The signed-in user together with the PIAL their works are signed as.
+    /// The signed-in user together with the account their works are signed as.
     /// Nil until `/me` has answered after sign-in; compose refuses to open
     /// without it rather than sign as nobody.
     private(set) var identity: AuthenticatedIdentity?
@@ -247,17 +248,20 @@ final class AppModel {
         try? await sessions.refreshUser(using: client)
     }
 
-    /// Fetches the PIAL and registers this device's signing key. Called once
-    /// per sign-in; safe to call again.
+    /// Fetches the account id and registers this account's signing key on
+    /// this device. Called once per sign-in; safe to call again.
     func loadIdentity() async {
+        let loaded: AuthenticatedIdentity
         do {
-            identity = try await client.meIdentity()
+            loaded = try await client.meIdentity()
+            identity = loaded
         } catch {
             identity = nil
+            signingProblem = "Your account could not be read, so this device can't sign works yet."
             return
         }
         do {
-            try await signer.registerIfNeeded(with: client, force: true)
+            try await signer.registerIfNeeded(with: client, accountID: try loaded.requireAccount(), force: true)
             signingProblem = nil
         } catch let error as MalkuthError {
             signingProblem = error.isKeyAuthorityUnavailable

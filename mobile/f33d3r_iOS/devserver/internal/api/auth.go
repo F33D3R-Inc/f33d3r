@@ -1,8 +1,10 @@
 package api
 
 import (
+	"crypto/subtle"
 	"errors"
 	"net/http"
+	"os"
 	"strings"
 
 	"f33d3r.com/ios/devserver/internal/store"
@@ -12,6 +14,19 @@ type loginRequest struct {
 	Handle     string `json:"handle"`
 	Password   string `json:"password"`
 	DeviceName string `json:"device_name"`
+	// Code is the second factor for an account with TOTP on: six digits, or a
+	// backup code. As feed-engine's apiLoginRequest.
+	Code string `json:"code"`
+}
+
+// devSecondFactor is the one code this server accepts for an account with
+// TOTP on. It holds no authenticator secrets (there is no enrolment route
+// here), so the code a tester types is the one they configured in
+// F33D3R_DEV_TOTP_CODE; with none configured, every code is wrong.
+func devSecondFactor(code string) bool {
+	want := os.Getenv("F33D3R_DEV_TOTP_CODE")
+	code = strings.ReplaceAll(strings.TrimSpace(code), " ", "")
+	return want != "" && subtle.ConstantTimeCompare([]byte(code), []byte(want)) == 1
 }
 
 // login — POST /api/v1/auth/login.
@@ -37,6 +52,17 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		}
 		serverError(w, err)
 		return
+	}
+	// The second factor, answered as feed-engine's /api/v1/auth/login does.
+	if u.TwoFAEnabled {
+		if strings.TrimSpace(req.Code) == "" {
+			writeError(w, http.StatusUnauthorized, "two_fa_required", "Enter the code from your authenticator app.")
+			return
+		}
+		if !devSecondFactor(req.Code) {
+			writeError(w, http.StatusUnauthorized, "two_fa_invalid", "That code is not right. Try again.")
+			return
+		}
 	}
 	s.issueSession(w, r, u, http.StatusOK, req.DeviceName)
 }

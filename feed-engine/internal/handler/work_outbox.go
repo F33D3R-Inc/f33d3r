@@ -9,7 +9,7 @@ package handler
 // (migration 0035 holds the operator queries). Any number of replicas run it:
 // claims are FOR UPDATE SKIP LOCKED with a lease.
 //
-// Local actions — FA Live mutations, HTTP calls to Alexandria and Zior, the link
+// Local actions — FA Live mutations, HTTP calls to Zior, the link
 // preview cache, interest learning, achievements — run on every replica, with or
 // without a broker. The Sitra-bound action (content_event, the moderation scan)
 // is produced with ProduceSync and closed only after the broker confirms it; a
@@ -56,7 +56,6 @@ var (
 	localObligations = []dbpkg.WorkObligation{
 		dbpkg.ObligationFollowerFanout,
 		dbpkg.ObligationCitedUpdate,
-		dbpkg.ObligationAlexandriaCatalog,
 		dbpkg.ObligationLinkPreview,
 		dbpkg.ObligationZiorVoice,
 		dbpkg.ObligationInterestLearning,
@@ -239,17 +238,6 @@ func (o *workOutbox) perform(ctx context.Context, row dbpkg.WorkOutboxRow) error
 		return h.publishNewPostToFollowers(w.AuthorID, w.ID)
 	case dbpkg.ObligationCitedUpdate:
 		return h.publishCitedWorks(w.ID)
-	case dbpkg.ObligationAlexandriaCatalog:
-		return h.alexandriaCreateTitle(ctx, alexandriaTitlePayload{
-			AuthorPIALID: w.AuthorPIAL,
-			SectionSlug:  "feed",
-			Body:         w.Body,
-			MediaArea:    alexandriaMediaArea(w),
-			Visibility:   "public",
-			IsNSFW:       w.IsNSFW,
-			Tags:         w.Tags,
-			LegacyWorkID: w.ID,
-		})
 	case dbpkg.ObligationLinkPreview:
 		return h.triggerWorkLinkPreview(w.Body)
 	case dbpkg.ObligationZiorVoice:
@@ -265,16 +253,6 @@ func (o *workOutbox) perform(ctx context.Context, row dbpkg.WorkOutboxRow) error
 		return h.bindLegacyWorkMedia(ctx, w.ID)
 	}
 	return fmt.Errorf("no action is defined for obligation %q", row.Action)
-}
-
-func alexandriaMediaArea(w *dbpkg.WorkSubject) string {
-	switch {
-	case w.VideoMasterURL != "":
-		return "video"
-	case w.VoiceURL != "":
-		return "audio"
-	}
-	return "text"
 }
 
 // produceContentEvent hands the work to the moderation scan on content.events and

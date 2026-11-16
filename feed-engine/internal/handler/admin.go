@@ -1,16 +1,14 @@
 package handler
 
 import (
-	"bytes"
+	"github.com/google/uuid"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"html/template"
-	"io"
 	"log"
-	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -34,7 +32,11 @@ func (h *Handler) adminPage(w http.ResponseWriter, r *http.Request) {
 	userCount, postCount, pialCount, activeDevices := h.adminHeadlineCounts()
 
 	pendingReportCount := h.openReportCount(r.Context())
-	siteAnalytics, _ := dbpkg.GetSiteAnalytics(h.db)
+	siteAnalytics, err := dbpkg.GetSiteAnalytics(h.db)
+	if err != nil {
+		analyticsUnavailable(w, "admin overview", err)
+		return
+	}
 
 	var dmcaCount, orgCount int
 	if h.db != nil {
@@ -104,7 +106,11 @@ func (h *Handler) adminPanelOverview(w http.ResponseWriter, r *http.Request) {
 	userCount, postCount, pialCount, activeDevices := h.adminHeadlineCounts()
 
 	pendingReportCount := h.openReportCount(r.Context())
-	siteAnalytics, _ := dbpkg.GetSiteAnalytics(h.db)
+	siteAnalytics, err := dbpkg.GetSiteAnalytics(h.db)
+	if err != nil {
+		analyticsUnavailable(w, "admin overview", err)
+		return
+	}
 
 	var dmcaCount, orgCount int
 	if h.db != nil {
@@ -692,98 +698,74 @@ func (h *Handler) fileContentReport(user *model.User, contentID, contentType, re
 	return nil
 }
 
-// adminInjectAET credits AET to a user's wallet via ain-soph.
+// adminInjectAET credits platform AET to a user's wallet. AET is
+// non-redeemable platform credit, and this — the founder's grant, made through
+// Themis to Ain Soph's service-only mint — is the only way it comes into being.
+//
+// The form's amount is a decimal AET amount; grant_key is rendered with the
+// form, so a double submit is one grant.
 func (h *Handler) adminInjectAET(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "405", 405)
+		http.Error(w, "405", http.StatusMethodNotAllowed)
 		return
 	}
 	caller := h.userFromRequest(w, r)
-	if !caller.IsAdmin() {
-		http.Error(w, "403 Forbidden", 403)
+	if !caller.IsFounder() {
+		http.Error(w, "403 Forbidden — founder only", http.StatusForbidden)
 		return
 	}
 	_ = r.ParseForm()
-	targetHandle := strings.TrimSpace(r.FormValue("target_handle"))
-	amountStr := strings.TrimSpace(r.FormValue("amount"))
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	fail := func(msg string) {
+		fmt.Fprintf(w, `<span style="color:#ef4444;font-size:12px">%s</span>`, template.HTMLEscapeString(msg))
+	}
+	targetHandle := strings.TrimPrefix(strings.TrimSpace(r.FormValue("target_handle")), "@")
 	reason := strings.TrimSpace(r.FormValue("reason"))
 	if reason == "" {
 		reason = "admin_inject"
 	}
-
-	amount, err := strconv.ParseFloat(amountStr, 64)
-	if err != nil || amount <= 0 || amount > 1000000 {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write([]byte(`<span style="color:#ef4444;font-size:12px">Invalid amount.</span>`))
+	grantKey := strings.TrimSpace(r.FormValue("grant_key"))
+	if _, err := uuid.Parse(grantKey); err != nil {
+		grantKey = uuid.NewString()
+	}
+	unit, err := h.aetUnit(r.Context())
+	if err != nil {
+		log.Printf("[admin] AET inject: %v", err)
+		fail("The wallet is unavailable — nothing was credited.")
 		return
 	}
-
+	units, err := parseAETAmount(r.FormValue("amount"), unit)
+	if err != nil || units <= 0 {
+		fail("Invalid amount.")
+		return
+	}
 	target, _ := dbpkg.GetUserByHandle(h.db, targetHandle)
 	if target == nil || target.PIALID == "" {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write([]byte(`<span style="color:#ef4444;font-size:12px">User not found.</span>`))
+		fail("User not found.")
 		return
 	}
-
-	// Ain Soph has no /v1/admin/credit route — that call has been 404-ing since it
-	// was written, so admin AET injection never worked and the 404 was reported as
-	// a generic "Ain-Soph error". The real mint path is /v1/deposit: it credits an
-	// account named by a service caller (the acting identity comes from the caller,
-	// the recipient from the body) and is the only route that brings AET into
-	// existence. No new endpoint is invented here — the broken call is pointed at
-	// the route that already does exactly this.
-	//
-	// Units: Ain Soph stores value as micro-AET (1 AET = 100 units); the admin form
-	// takes whole AET. Deposit applies the standard 2.50% deposit fee, so the target
-	// receives the net — the amount confirmed below reflects the request, and the
-	// ledger records the fee split exactly as any other deposit.
-	amountUnits := int64(math.Round(amount * 100))
-	if amountUnits <= 0 {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write([]byte(`<span style="color:#ef4444;font-size:12px">Invalid amount.</span>`))
-		return
-	}
-	// Idempotency: a double-submit of the same admin grant must not mint twice.
-	// Keyed on actor + target + amount + reason + minute so a retry within the
-	// window collapses, while a deliberate repeat later is its own grant.
-	idem := fmt.Sprintf("admin_credit:%s:%s:%d:%s:%s",
-		caller.Handle, target.PIALID, amountUnits, reason,
-		time.Now().UTC().Format("2006-01-02T15:04"))
-	payload, _ := json.Marshal(map[string]interface{}{
-		"user_id":         target.PIALID,
-		"amount_cents":    amountUnits,
-		"idempotency_key": idem,
+	status, body, err := h.themisPeerCall(r.Context(), "/v1/admin/aet/credit", caller, map[string]interface{}{
+		"target_pial":     target.PIALID,
+		"amount_units":    units,
+		"reason":          reason,
+		"idempotency_key": grantKey,
 	})
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		h.cfg.AinSophURL+"/v1/deposit", bytes.NewReader(payload))
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err != nil {
-		w.Write([]byte(`<span style="color:#ef4444;font-size:12px">Request error.</span>`))
+		log.Printf("[admin] AET inject for @%s: themis unreachable: %v", targetHandle, err)
+		fail("Themis unreachable — nothing was credited.")
 		return
 	}
-	req.Header.Set("Content-Type", "application/json")
-	// Crediting somebody else's balance is a service act, not the admin acting as
-	// themselves, so it authenticates as a peer.
-	req.Header.Set("X-Internal-Key", h.cfg.InternalAPIKey)
-	resp, err := h.httpClient.Do(req)
-	if err != nil {
-		log.Printf("[admin] AET inject transport error for @%s: %v", targetHandle, err)
-		w.Write([]byte(`<span style="color:#ef4444;font-size:12px">Ain-Soph unreachable — check logs.</span>`))
+	if status != http.StatusOK {
+		// A value path must never fail quietly: the status and Themis's own
+		// reason go to the operator.
+		msg := themisRefusal(body, "refused")
+		log.Printf("[admin] AET inject for @%s refused: themis %d: %s", targetHandle, status, msg)
+		fail(fmt.Sprintf("The credit was refused (%d): %s", status, msg))
 		return
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		// A value path must never fail quietly. Surface the status and Ain Soph's
-		// own error to the operator, not a generic string.
-		log.Printf("[admin] AET inject failed for @%s: ain-soph %d: %s", targetHandle, resp.StatusCode, string(body))
-		fmt.Fprintf(w, `<span style="color:#ef4444;font-size:12px">Ain-Soph rejected the credit (%d) — check logs.</span>`, resp.StatusCode)
-		return
-	}
-	log.Printf("[admin] %s injected %.2f AET to @%s (%s)", caller.Handle, amount, targetHandle, reason)
-	fmt.Fprintf(w, `<span style="color:#22c55e;font-size:12px;font-weight:500">✓ %.2f AET credited to @%s (net of deposit fee)</span>`, amount, targetHandle)
+	log.Printf("[admin] %s credited %d units to @%s (%s)", caller.Handle, units, targetHandle, reason)
+	fmt.Fprintf(w, `<span style="color:#22c55e;font-size:12px;font-weight:500">✓ %s AET credited to @%s (net of the deposit fee)</span>`,
+		formatAETUnits(units, unit), template.HTMLEscapeString(targetHandle))
 }
 
 // adminResetPassword sets a new password for a user directly (admin only).
@@ -851,16 +833,16 @@ func (h *Handler) adminSetEmail(w http.ResponseWriter, r *http.Request) {
 
 const ainSophFeesAccount = "ain_soph_fees"
 
+// adminFeeTx is one fee float movement as the treasury shows it. No PIAL is
+// rendered: the other party is not named.
 type adminFeeTx struct {
-	FromUserID  string `json:"from_user_id"`
-	ToUserID    string `json:"to_user_id"`
-	AmountUnits int64  `json:"amount_units"`
-	AmountAet   string `json:"amount_aet"`
-	TxMeta      string `json:"tx_meta"`
-	CreatedAt   string `json:"created_at"`
+	Direction string
+	Kind      string
+	Amount    string
+	When      string
 }
 
-// adminPanelTreasury renders the Treasury tab — fee vault balance + recent collections.
+// adminPanelTreasury renders the Treasury tab — fee vault balance + recent movements.
 func (h *Handler) adminPanelTreasury(w http.ResponseWriter, r *http.Request) {
 	user := h.userFromRequest(w, r)
 	if !user.IsAdmin() {
@@ -871,35 +853,30 @@ func (h *Handler) adminPanelTreasury(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
 	defer cancel()
 
-	var balanceUnits int64
-	balanceAet := "0.00 AET"
-	if req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		h.cfg.AinSophURL+"/v1/balance/"+ainSophFeesAccount, nil); err == nil {
-		if resp, err := http.DefaultClient.Do(req); err == nil {
-			var body struct {
-				BalanceUnits int64  `json:"balance_units"`
-				BalanceAet   string `json:"balance_aet"`
-			}
-			if json.NewDecoder(resp.Body).Decode(&body) == nil && body.BalanceAet != "" {
-				balanceUnits = body.BalanceUnits
-				balanceAet = body.BalanceAet
-			}
-			resp.Body.Close()
-		}
+	data := map[string]interface{}{"Notice": ""}
+	var bal struct {
+		BalanceUnits int64  `json:"balance_units"`
+		BalanceAet   string `json:"balance_aet"`
 	}
-
-	var txs []adminFeeTx
-	if req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		h.cfg.AinSophURL+"/v1/transactions/"+ainSophFeesAccount+"?limit=50", nil); err == nil {
-		if resp, err := http.DefaultClient.Do(req); err == nil {
-			var body struct {
-				Entries []adminFeeTx `json:"entries"`
-			}
-			if json.NewDecoder(resp.Body).Decode(&body) == nil {
-				txs = body.Entries
-			}
-			resp.Body.Close()
-		}
+	if err := h.ainSophGet(ctx, "/v1/balance/"+ainSophFeesAccount, &bal); err != nil {
+		log.Printf("[admin] treasury balance: %v", err)
+		data["Notice"] = "The fee vault could not be read."
+	}
+	var hist struct {
+		Entries []struct {
+			TxType    string    `json:"tx_type"`
+			Direction string    `json:"direction"`
+			NetAet    string    `json:"net_aet"`
+			CreatedAt time.Time `json:"created_at"`
+		} `json:"entries"`
+	}
+	if err := h.ainSophGet(ctx, "/v1/transactions/"+ainSophFeesAccount+"?limit=50", &hist); err != nil {
+		log.Printf("[admin] treasury history: %v", err)
+		data["Notice"] = "The fee vault could not be read."
+	}
+	txs := make([]adminFeeTx, 0, len(hist.Entries))
+	for _, e := range hist.Entries {
+		txs = append(txs, adminFeeTx{Direction: e.Direction, Kind: e.TxType, Amount: e.NetAet, When: TimeAgo(e.CreatedAt)})
 	}
 
 	// The sweep pays the founder, so the panel names who that is. A database
@@ -915,16 +892,17 @@ func (h *Handler) adminPanelTreasury(w http.ResponseWriter, r *http.Request) {
 		founderHandle = founder.Handle
 	}
 
+	data["FeeBalance"] = bal.BalanceAet
+	data["FeeBalanceUnits"] = bal.BalanceUnits
+	data["FeeTxs"] = txs
+	data["FounderHandle"] = founderHandle
+	data["SweepKey"] = uuid.NewString()
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	h.renderPartial(w, "admin_panel_treasury", map[string]interface{}{
-		"FeeBalance":      balanceAet,
-		"FeeBalanceUnits": balanceUnits,
-		"FeeTxs":          txs,
-		"FounderHandle":   founderHandle,
-	})
+	h.renderPartial(w, "admin_panel_treasury", data)
 }
 
-// adminSweepFees transfers the entire ain_soph_fees balance to the founder's PIAL.
+// adminSweepFees moves the entire fee float to the founder's identity, through
+// Themis. sweep_key is rendered with the panel, so a double submit is one sweep.
 func (h *Handler) adminSweepFees(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "405", http.StatusMethodNotAllowed)
@@ -935,7 +913,6 @@ func (h *Handler) adminSweepFees(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "403 Forbidden — founder only", http.StatusForbidden)
 		return
 	}
-
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
 	// The destination is looked up by role, never named. The caller is the
@@ -947,62 +924,39 @@ func (h *Handler) adminSweepFees(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`<span style="color:#ef4444;font-size:12px">Founder account could not be resolved — nothing swept.</span>`))
 		return
 	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-	defer cancel()
-
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet,
-		h.cfg.AinSophURL+"/v1/balance/"+ainSophFeesAccount, nil)
-	resp, err := http.DefaultClient.Do(req)
+	sweepKey := strings.TrimSpace(r.FormValue("sweep_key"))
+	if _, err := uuid.Parse(sweepKey); err != nil {
+		sweepKey = uuid.NewString()
+	}
+	status, body, err := h.themisPeerCall(r.Context(), "/v1/admin/fees/sweep", caller, map[string]string{
+		"to_pial":         founder.PIALID,
+		"idempotency_key": sweepKey,
+	})
 	if err != nil {
-		w.Write([]byte(`<span style="color:#ef4444;font-size:12px">Ain Soph unavailable.</span>`))
+		log.Printf("[admin] fee sweep: themis unreachable: %v", err)
+		w.Write([]byte(`<span style="color:#ef4444;font-size:12px">Themis unreachable — nothing swept.</span>`))
 		return
 	}
-	var balResp struct {
-		BalanceUnits int64  `json:"balance_units"`
-		BalanceAet   string `json:"balance_aet"`
+	if status != http.StatusOK {
+		msg := themisRefusal(body, "refused")
+		log.Printf("[admin] fee sweep refused: themis %d: %s", status, msg)
+		fmt.Fprintf(w, `<span style="color:#ef4444;font-size:12px">Sweep refused (%d): %s</span>`, status, template.HTMLEscapeString(msg))
+		return
 	}
-	json.NewDecoder(resp.Body).Decode(&balResp)
-	resp.Body.Close()
-
-	if balResp.BalanceUnits <= 0 {
+	var out struct {
+		AmountUnits   int64  `json:"amount_units"`
+		AmountDisplay string `json:"amount_display"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		log.Printf("[admin] fee sweep answer unreadable: %v", err)
+	}
+	if out.AmountUnits <= 0 {
 		w.Write([]byte(`<span style="font-size:12px;color:var(--text-muted)">Fee vault is empty — nothing to sweep.</span>`))
 		return
 	}
-
-	payload, _ := json.Marshal(map[string]interface{}{
-		"from_user_id":    ainSophFeesAccount,
-		"to_user_id":      founder.PIALID,
-		"amount_cents":    balResp.BalanceUnits,
-		"idempotency_key": fmt.Sprintf("sweep-%d", time.Now().Unix()),
-		"tx_meta":         "admin_sweep",
-	})
-	xferReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		h.cfg.AinSophURL+"/v1/transfer", bytes.NewReader(payload))
-	if err != nil {
-		w.Write([]byte(`<span style="color:#ef4444;font-size:12px">Request error.</span>`))
-		return
-	}
-	xferReq.Header.Set("Content-Type", "application/json")
-	// The payer here is the platform fee float, not the admin making the click,
-	// so this is a service acting for an account no session owns. Ain Soph now
-	// derives the payer from the authenticated caller and only a peer holding the
-	// shared secret may name a payer other than itself.
-	xferReq.Header.Set("X-Internal-Key", h.cfg.InternalAPIKey)
-	xferResp, err := http.DefaultClient.Do(xferReq)
-	if err != nil || xferResp.StatusCode >= 400 {
-		log.Printf("[admin] fee sweep failed: %v", err)
-		w.Write([]byte(`<span style="color:#ef4444;font-size:12px">Sweep failed — check logs.</span>`))
-		if xferResp != nil {
-			xferResp.Body.Close()
-		}
-		return
-	}
-	xferResp.Body.Close()
-	log.Printf("[admin] %s swept %d units (%s) to founder @%s (PIAL %s)",
-		caller.Handle, balResp.BalanceUnits, balResp.BalanceAet, founder.Handle, founder.PIALID)
+	log.Printf("[admin] %s swept %d units to founder @%s", caller.Handle, out.AmountUnits, founder.Handle)
 	fmt.Fprintf(w, `<span style="color:#22c55e;font-size:12px;font-weight:500">✓ Swept %s to @%s — vault now empty.</span>`,
-		balResp.BalanceAet, template.HTMLEscapeString(founder.Handle))
+		template.HTMLEscapeString(out.AmountDisplay), template.HTMLEscapeString(founder.Handle))
 }
 
 // adminScanSweep reports works still waiting on a verdict from Abraxas. It

@@ -11,10 +11,11 @@ import (
 // store type. Keys match the Swift CodingKeys in F33D3RKit/Sources/Models
 // exactly, and the golden fixtures in F33D3RKit/Tests check them.
 //
-// Not present, on purpose: account UUIDs, anyone else's PIAL, ranking
-// internals. The one identity field that crosses is `pial_id` on MeDTO, to
-// the authenticated owner only, because `author_pial` is inside the signed
-// payload and the device has to know what to sign.
+// Not present, on purpose: anyone else's account UUID, any PIAL at all — the
+// owner's included — and ranking internals. The one identity field that
+// crosses is `account_id` on MeDTO, to the authenticated owner only, because
+// `author_account` is inside the signed payload and the device has to know
+// which account it signs as. (feed-engine's api_v1_dto.go, the same rule.)
 
 // UserDTO is a user as any client may see them.
 type UserDTO struct {
@@ -70,8 +71,9 @@ type MeDTO struct {
 	ExternalTipLinks map[string]string `json:"external_tip_links"`
 	// ISO-3166 alpha-2, null when unset.
 	CountryCode *string `json:"country_code"`
-	// The identity the device signs as. Owner-only; see the file comment.
-	PIALID string `json:"pial_id"`
+	// The account the device signs works as (author_account). Owner-only; see
+	// the file comment.
+	AccountID string `json:"account_id"`
 }
 
 // SessionDTO is the login answer.
@@ -353,7 +355,7 @@ func meDTO(u *store.User, unread int) MeDTO {
 		SocialLinks:            nonNilLinks(u.SocialLinks),
 		ExternalTipLinks:       nonNilLinks(u.ExternalTipLinks),
 		CountryCode:            strPtr(u.CountryCode),
-		PIALID:                 u.PIALID,
+		AccountID:              u.ID,
 	}
 }
 

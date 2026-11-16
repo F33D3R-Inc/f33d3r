@@ -5,24 +5,13 @@ use serde::Deserialize;
 #[derive(Debug, Clone, Deserialize)]
 pub struct AppConfig {
     pub server: ServerConfig,
-    pub aethyr: AethyrConfig,
     pub audio: AudioConfig,
-    pub jung: JungConfig,
-    pub mood: MoodConfig,
-    pub velocity: VelocityConfig,
-    pub safety: SafetyConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ServerConfig {
     pub host: String,
     pub port: u16,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct AethyrConfig {
-    pub content_store_url: String,
-    pub signal_push_timeout_ms: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -35,29 +24,13 @@ pub struct AudioConfig {
     pub max_duration_secs: f64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct JungConfig {
-    pub vector_dim: usize,
-    pub audio_weight: f64,
-    pub behavioral_weight: f64,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct MoodConfig {
-    pub major_key_valence_boost: f64,
-    pub high_bpm_threshold: f64,
-    pub low_bpm_threshold: f64,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct VelocityConfig {
-    pub window_hours: f64,
-    pub half_life_hours: f64,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct SafetyConfig {
-    pub explicit_threshold: f64,
+/// The shared X-Internal-Key every caller but /health and /metrics must
+/// present. Required: Zior refuses to start without it.
+pub fn internal_api_key() -> Result<String> {
+    match std::env::var("INTERNAL_API_KEY") {
+        Ok(v) if !v.trim().is_empty() => Ok(v),
+        _ => anyhow::bail!("INTERNAL_API_KEY is not set; Zior refuses to start without it"),
+    }
 }
 
 impl AppConfig {

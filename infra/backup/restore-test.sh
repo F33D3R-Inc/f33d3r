@@ -1,116 +1,65 @@
-#!/usr/bin/env sh
-# F33D3R — restore-test: pull last backup from MinIO, restore into scratch container,
-# verify row counts are within 1% of live.
+#!/bin/sh
+# F33D3R — prove a backup set restores, without touching the live databases.
 #
-# Usage: bash restore-test.sh [database]
-#   database: optional — if omitted, tests all databases
+# Usage: restore-test.sh [<dir under /backups/db>]
+#   default: the newest complete scheduled set
 #
-# Exits 0 if all checks pass, 1 if any fail.
+# Each <database>.dump is restored into a scratch database
+# (<database>_restore_test) with --exit-on-error, so any error fails the test,
+# and every table's row count is compared with the live database. Live tables
+# keep changing after the dump, so a count within 1% passes; a table missing
+# from the restore fails. Scratch databases are dropped afterwards, pass or
+# fail. The cluster needs free space for the largest database while it runs.
 
-set -eu
+set -euo pipefail
 
-DATABASES="${1:-f33d3r_feed f33d3r_msg f33d3r_wallet f33d3r_security f33d3r_verity f33d3r_ledger}"
-MINIO_ENDPOINT="${MINIO_ENDPOINT:-minio:9000}"
-MINIO_BUCKET="${MINIO_BUCKET:-backups}"
-POSTGRES_HOST="${POSTGRES_HOST:-postgres}"
-POSTGRES_USER="${POSTGRES_USER:-f33d3r}"
-POSTGRES_PASSWORD="${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}"
-SCRATCH_SUFFIX="_restore_test_$$"
-TOLERANCE=0.01   # 1% row count variance allowed
-FAILED=0
+TOLERANCE_PCT=1
+log() { echo "[restore-test] $*"; }
+die() { log "ERROR: $*" >&2; exit 1; }
 
-mc alias set store "http://${MINIO_ENDPOINT}" "${MINIO_ACCESS_KEY}" "${MINIO_SECRET_KEY}" --quiet
-
-check_db() {
-  DB="$1"
-  SCRATCH="${DB}${SCRATCH_SUFFIX}"
-
-  echo "[restore-test] === ${DB} ==="
-
-  # Find latest backup
-  LATEST=$(mc find "store/${MINIO_BUCKET}/postgres/${DB}/" --name "*.sql.gz" \
-    | sort | tail -1)
-
-  if [ -z "${LATEST}" ]; then
-    echo "[restore-test] SKIP: no backup found for ${DB}"
-    return 0
-  fi
-
-  echo "[restore-test] latest backup: ${LATEST}"
-  TMPFILE="/tmp/${DB}_restore_test.sql.gz"
-  mc cp "${LATEST}" "${TMPFILE}" --quiet
-
-  # Create scratch database
-  PGPASSWORD="${POSTGRES_PASSWORD}" psql \
-    -h "${POSTGRES_HOST}" -U "${POSTGRES_USER}" -d postgres \
-    -c "DROP DATABASE IF EXISTS ${SCRATCH};" \
-    -c "CREATE DATABASE ${SCRATCH};" \
-    --quiet
-
-  # Restore
-  echo "[restore-test] restoring into ${SCRATCH}…"
-  PGPASSWORD="${POSTGRES_PASSWORD}" \
-    zcat "${TMPFILE}" | psql \
-      -h "${POSTGRES_HOST}" -U "${POSTGRES_USER}" -d "${SCRATCH}" \
-      --quiet 2>/dev/null || true  # non-fatal: some statements may fail on non-superuser
-
-  # Row-count comparison per table
-  TABLES=$(PGPASSWORD="${POSTGRES_PASSWORD}" psql \
-    -h "${POSTGRES_HOST}" -U "${POSTGRES_USER}" -d "${DB}" \
-    -t -c "SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename;")
-
-  TABLE_FAIL=0
-  for TABLE in $TABLES; do
-    TABLE=$(echo "$TABLE" | tr -d '[:space:]')
-    [ -z "$TABLE" ] && continue
-
-    LIVE=$(PGPASSWORD="${POSTGRES_PASSWORD}" psql \
-      -h "${POSTGRES_HOST}" -U "${POSTGRES_USER}" -d "${DB}" \
-      -t -c "SELECT COUNT(*) FROM ${TABLE};" 2>/dev/null | tr -d '[:space:]' || echo 0)
-
-    RESTORED=$(PGPASSWORD="${POSTGRES_PASSWORD}" psql \
-      -h "${POSTGRES_HOST}" -U "${POSTGRES_USER}" -d "${SCRATCH}" \
-      -t -c "SELECT COUNT(*) FROM ${TABLE};" 2>/dev/null | tr -d '[:space:]' || echo 0)
-
-    # Skip tables that don't exist in scratch (view, extension tables, etc.)
-    [ -z "$RESTORED" ] || [ "$RESTORED" = "0" ] && [ -z "$LIVE" ] && continue
-
-    # Variance check: allow TOLERANCE difference
-    if [ "${LIVE}" -gt 0 ]; then
-      # Use awk for float comparison
-      VARIANCE=$(awk "BEGIN { d=${LIVE}-${RESTORED}; if(d<0)d=-d; print d/${LIVE} }")
-      PASS=$(awk "BEGIN { print (${VARIANCE} <= ${TOLERANCE}) ? 1 : 0 }")
-      if [ "${PASS}" -ne 1 ]; then
-        echo "[restore-test] FAIL: ${TABLE}: live=${LIVE} restored=${RESTORED} variance=$(awk "BEGIN{printf \"%.2f%%\",${VARIANCE}*100}")"
-        TABLE_FAIL=1
-      fi
-    fi
+dir="${1:-}"
+if [ -z "${dir}" ]; then
+  for d in $(ls -1 /backups/db/scheduled 2>/dev/null | sort -r); do
+    if [ -f "/backups/db/scheduled/${d}/COMPLETE" ]; then dir="/backups/db/scheduled/${d}"; break; fi
   done
+  [ -n "${dir}" ] || die "no complete scheduled backup set under /backups/db/scheduled"
+fi
+/backup/backup.sh verify "${dir}"
+log "testing ${dir}"
 
-  # Drop scratch
-  PGPASSWORD="${POSTGRES_PASSWORD}" psql \
-    -h "${POSTGRES_HOST}" -U "${POSTGRES_USER}" -d postgres \
-    -c "DROP DATABASE IF EXISTS ${SCRATCH};" --quiet
-
-  rm -f "${TMPFILE}"
-
-  if [ "${TABLE_FAIL}" -ne 0 ]; then
-    echo "[restore-test] ${DB}: FAILED row count checks"
-    return 1
-  else
-    echo "[restore-test] ${DB}: PASSED"
-    return 0
+FAILED=0
+SCRATCH=""
+cleanup() {
+  if [ -n "${SCRATCH}" ]; then
+    psql -X -q -d template1 -c "DROP DATABASE IF EXISTS \"${SCRATCH}\" WITH (FORCE)"
   fi
 }
+trap cleanup EXIT
 
-for DB in $DATABASES; do
-  check_db "$DB" || FAILED=1
+for f in "${dir}"/*.dump; do
+  db="$(basename "${f}" .dump)"
+  SCRATCH="${db}_restore_test"
+  psql -X -q -d template1 -c "DROP DATABASE IF EXISTS \"${SCRATCH}\" WITH (FORCE)"
+  psql -X -q -d template1 -c "CREATE DATABASE \"${SCRATCH}\" TEMPLATE template0"
+  pg_restore --exit-on-error --no-owner -d "${SCRATCH}" "${f}" || die "${db}: the archive did not restore"
+
+  tables="$(psql -X -At -d "${db}" -c \
+    "SELECT quote_ident(schemaname) || '.' || quote_ident(tablename) FROM pg_tables
+     WHERE schemaname NOT IN ('pg_catalog','information_schema') ORDER BY 1")"
+  for t in ${tables}; do
+    live="$(psql -X -At -d "${db}" -c "SELECT count(*) FROM ${t}")"
+    restored="$(psql -X -At -d "${SCRATCH}" -c "SELECT count(*) FROM ${t}")" \
+      || { log "FAIL ${db} ${t}: missing from the restore"; FAILED=1; continue; }
+    diff=$((live - restored)); [ "${diff}" -ge 0 ] || diff=$((-diff))
+    if [ "${live}" -gt 0 ] && [ $((diff * 100)) -gt $((live * TOLERANCE_PCT)) ]; then
+      log "FAIL ${db} ${t}: live ${live}, restored ${restored}"
+      FAILED=1
+    fi
+  done
+  psql -X -q -d template1 -c "DROP DATABASE \"${SCRATCH}\" WITH (FORCE)"
+  SCRATCH=""
+  log "${db}: restored and compared"
 done
 
-if [ "${FAILED}" -ne 0 ]; then
-  echo "[restore-test] RESULT: FAILED — at least one database did not pass"
-  exit 1
-fi
-
-echo "[restore-test] RESULT: ALL PASS"
-exit 0
+[ "${FAILED}" -eq 0 ] || die "at least one table did not match"
+log "PASS — ${dir} restores"

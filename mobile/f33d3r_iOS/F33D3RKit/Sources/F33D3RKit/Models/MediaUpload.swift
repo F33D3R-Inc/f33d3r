@@ -22,14 +22,15 @@ public struct VideoJob: Codable, Hashable, Sendable {
         case queued
         /// The transcoder has it, or could not be asked this instant. Keep polling.
         case processing
-        /// `masterURL`, `posterURL`, `watermarkedURL`, `durationSecs`, `width`
-        /// and `height` are set.
+        /// `masterURL`, `posterURL`, `durationSecs`, `width` and `height` are
+        /// set. `masterURL` is the watermarked HLS master; there is no
+        /// downloadable-file URL — a download is the work's download route's.
         case ready
         /// `error` says why. Upload again.
         case failed
-        /// The same bytes are already on F33D3R. `duplicateOfWorkID` and
-        /// `duplicateOfHandle` name the original, and the media fields carry
-        /// its renditions when the work is known. Nothing was transcoded.
+        /// The same bytes are already on F33D3R. `duplicateOfHandle` names the
+        /// original's uploader, who keeps the credit, and the media fields
+        /// carry the original's renditions. Nothing was transcoded.
         case duplicate
     }
 
@@ -39,9 +40,6 @@ public struct VideoJob: Codable, Hashable, Sendable {
     public let status: Status
     public let masterURL: String?
     public let posterURL: String?
-    /// The moving-watermark rendition — the file that leaves the platform.
-    /// Rides unsigned on the envelope; see ``WorkEnvelope``.
-    public let watermarkedURL: String?
     /// Fractional seconds, as the transcoder measured them. The signed payload
     /// carries whole seconds — see ``WorkPayload/videoDurationSecs``.
     public let durationSecs: Double?
@@ -49,7 +47,6 @@ public struct VideoJob: Codable, Hashable, Sendable {
     public let height: Int?
     /// Why a `failed` job failed, in the server's words.
     public let error: String?
-    public let duplicateOfWorkID: String?
     public let duplicateOfHandle: String?
 
     enum CodingKeys: String, CodingKey {
@@ -57,10 +54,8 @@ public struct VideoJob: Codable, Hashable, Sendable {
         case status
         case masterURL = "master_url"
         case posterURL = "poster_url"
-        case watermarkedURL = "watermarked_url"
         case durationSecs = "duration_secs"
         case width, height, error
-        case duplicateOfWorkID = "duplicate_of_work_id"
         case duplicateOfHandle = "duplicate_of_handle"
     }
 
@@ -69,24 +64,20 @@ public struct VideoJob: Codable, Hashable, Sendable {
         status: Status,
         masterURL: String? = nil,
         posterURL: String? = nil,
-        watermarkedURL: String? = nil,
         durationSecs: Double? = nil,
         width: Int? = nil,
         height: Int? = nil,
         error: String? = nil,
-        duplicateOfWorkID: String? = nil,
         duplicateOfHandle: String? = nil
     ) {
         self.uploadID = uploadID
         self.status = status
         self.masterURL = masterURL
         self.posterURL = posterURL
-        self.watermarkedURL = watermarkedURL
         self.durationSecs = durationSecs
         self.width = width
         self.height = height
         self.error = error
-        self.duplicateOfWorkID = duplicateOfWorkID
         self.duplicateOfHandle = duplicateOfHandle
     }
 

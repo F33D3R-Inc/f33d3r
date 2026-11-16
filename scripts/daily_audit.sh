@@ -28,7 +28,6 @@ BRAIN_AINSOPH=$(check_brain "AinSoph" "http://localhost:8089/health")
 BRAIN_ELOHIM=$(check_brain "ElohimVeni" "http://localhost:8093/health")
 BRAIN_ABRAXAS=$(check_brain "Abraxas" "http://localhost:8109/health")
 BRAIN_VERITY=$(check_brain "Verity" "http://localhost:8095/health")
-BRAIN_LEDGER=$(check_brain "Ledger" "http://localhost:8096/health")
 
 # ── DB stats ──────────────────────────────────────────────────────────────────
 
@@ -66,7 +65,7 @@ FAILED_LOGINS=$(run_sql "SELECT COUNT(*) FROM user_sessions WHERE created_at > N
 
 ONLINE_COUNT=0
 OFFLINE_LIST=""
-for brain in "${BRAIN_NANTAR}" "${BRAIN_AETHYRRANK}" "${BRAIN_AINSOPH}" "${BRAIN_ELOHIM}" "${BRAIN_ABRAXAS}" "${BRAIN_VERITY}" "${BRAIN_LEDGER}"; do
+for brain in "${BRAIN_NANTAR}" "${BRAIN_AETHYRRANK}" "${BRAIN_AINSOPH}" "${BRAIN_ELOHIM}" "${BRAIN_ABRAXAS}" "${BRAIN_VERITY}"; do
   name="${brain%%:*}"
   status="${brain##*:}"
   if [[ "${status}" == "ok" ]]; then

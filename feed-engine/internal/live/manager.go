@@ -68,6 +68,14 @@ type Manager struct {
 	// on safety.events and is the safety consumer's.
 	Abraxas *abraxas.Client
 
+	// AuthorizeMedia decides whether the viewer who sent r may fetch the live
+	// files of streamID, and answers with the status the live edge acts on:
+	// 204 serve, 401 no session, 403 refused, 503 undecidable. The rules are
+	// the watch surface's — audience, the adult wall, a block — so they are
+	// wired in by whatever owns sessions rather than restated here. Nil means
+	// nothing is served.
+	AuthorizeMedia func(r *http.Request, streamID string) int
+
 	mu     sync.Mutex
 	misses map[string]int // stream id -> consecutive reconcile misses
 }

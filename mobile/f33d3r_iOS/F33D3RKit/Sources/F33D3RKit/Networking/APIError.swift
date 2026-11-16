@@ -79,21 +79,52 @@ public enum APIError: Error, Hashable, Sendable {
     /// being wrong. A sign-in screen has to open a code field for the first and
     /// leave it open with an error for the second, so the difference is a type
     /// here rather than a string comparison at the call site.
-    public enum TwoFactorFailure: String, Sendable {
-        case required = "two_fa_required"
-        case invalid = "two_fa_invalid"
+    public enum TwoFactorFailure: Sendable {
+        case required
+        case invalid
     }
 
     /// The two-factor state of a refused login, or nil when the refusal was
-    /// about something else.
+    /// about something else. `/api/v1/auth/login` answers `two_fa_required`
+    /// and `two_fa_invalid`; `totp_required` is the identity authority's own
+    /// spelling of the first, answered `409`, and means the same thing.
     public var twoFactor: TwoFactorFailure? {
-        code.flatMap(TwoFactorFailure.init(rawValue:))
+        switch code {
+        case "two_fa_required", "totp_required": return .required
+        case "two_fa_invalid", "totp_invalid", "backup_code_invalid": return .invalid
+        default: return nil
+        }
     }
+
+    /// True when sign-in was refused because the account is suspended.
+    public var isAccountSuspended: Bool { code == "account_suspended" }
 
     /// True when the viewer is asking for someone else's likes. There is no
     /// public likes surface on this platform, so this is a rule rather than a
     /// failure, and it gets a state of its own rather than an error screen.
     public var isPrivateLikes: Bool { code == "likes_private" }
+
+    /// What an upload's refusal means for the person who made it, by the
+    /// media lane's codes (`apiUploadError`, api_v1_media.go). Falls back to
+    /// ``userMessage`` for anything else.
+    public var uploadMessage: String {
+        switch code {
+        case "held_for_review":
+            return "This upload is being reviewed before it can be posted. Post it again once the review is done."
+        case "content_refused":
+            return "This content can't be uploaded to F33D3R."
+        case "media_withdrawn":
+            return "This media has been removed from F33D3R and can't be uploaded again."
+        case "unsupported_media":
+            return "This file type isn't accepted."
+        case "too_large":
+            return "This file is larger than F33D3R accepts."
+        case "unprocessable_media":
+            return "F33D3R couldn't process this file."
+        default:
+            return userMessage
+        }
+    }
 
     /// A message safe to put in front of a user.
     public var userMessage: String {

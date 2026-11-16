@@ -12,10 +12,12 @@ package handler
 // path hides an expired Vision with CSS or a timer.
 //
 // A Vision has no id of its own: inside the server it is addressed as
-// (author_pial, seq), a position in its author's PIAL-owned lane (db.VisionRef).
-// Everything a page or a URL carries is the wire address (author_account, seq)
-// (db.VisionAddress): a PIAL is never written into a page, and the server
-// resolves it from the account (resolveVisionWire).
+// (author_pial, seq), a position in its author's PIAL-owned lane (db.VisionRef),
+// which is the content-safety subject and nothing more. Everything a page or a
+// URL carries is the wire address (author_account, account_seq)
+// (db.VisionAddress), and every ring, run and ownership check on this path is
+// the posting account's — never every account on its PIAL, so nothing here
+// links two of one person's personas.
 
 import (
 	"database/sql"
@@ -64,23 +66,22 @@ func visionRef(v *model.Vision) dbpkg.VisionRef {
 // visionAddress is the wire address of one Vision — what URLs, Facet ids and
 // JSON carry. It names the author's account, never the PIAL.
 func visionAddress(v *model.Vision) dbpkg.VisionAddress {
-	return dbpkg.VisionAddress{AuthorAccount: v.AuthorAccountID, Seq: v.Seq}
+	return dbpkg.VisionAddress{AuthorAccount: v.AuthorAccountID, Seq: v.AccountSeq}
 }
 
-// errVisionAddressUnknown is a well-formed wire address that names no lane.
-var errVisionAddressUnknown = errors.New("vision address names no author")
+// errVisionAddressUnknown is a wire address that names no Vision.
+var errVisionAddressUnknown = errors.New("vision address names no vision")
 
-// resolveVisionWire turns the address a client sent into the server's ref,
-// resolving the author account's PIAL server-side. A malformed address and an
-// unknown author are errVisionAddressUnknown-wrapped client errors; anything else
-// is the identity projection failing.
+// resolveVisionWire turns the address a client sent into the server's ref. A
+// malformed address and one naming no Vision are errVisionAddressUnknown-wrapped
+// client errors; anything else is the database failing.
 func (h *Handler) resolveVisionWire(raw string) (dbpkg.VisionRef, error) {
 	addr, err := dbpkg.ParseVisionAddress(strings.TrimSpace(raw))
 	if err != nil {
 		return dbpkg.VisionRef{}, fmt.Errorf("%w: %v", errVisionAddressUnknown, err)
 	}
 	ref, err := dbpkg.ResolveVisionAddress(h.db, addr)
-	if errors.Is(err, dbpkg.ErrVisionAuthorUnknown) {
+	if errors.Is(err, dbpkg.ErrVisionAddressUnknown) {
 		return dbpkg.VisionRef{}, fmt.Errorf("%w: %v", errVisionAddressUnknown, err)
 	}
 	return ref, err
@@ -264,15 +265,12 @@ func (h *Handler) visionSequence(viewer *model.User, scope string) ([]*model.Vis
 	if h.db == nil {
 		return nil, errors.New("vision: db unavailable")
 	}
-	viewerPIAL, viewerID := "", ""
-	if viewer != nil {
-		viewerPIAL, viewerID = viewer.PIALID, viewerAccountID(viewer)
-	}
+	viewerID := viewerAccountID(viewer)
 	includeNSFW := !excludeNSFW(viewer)
 	if scope == visionScopeForYou || viewerID == "" {
-		return dbpkg.GetActiveVisions(h.db, viewerPIAL, includeNSFW, 0)
+		return dbpkg.GetActiveVisions(h.db, viewerID, includeNSFW, 0)
 	}
-	return dbpkg.GetActiveVisionsForViewer(h.db, viewerID, viewerPIAL, includeNSFW, 0)
+	return dbpkg.GetActiveVisionsForViewer(h.db, viewerID, includeNSFW, 0)
 }
 
 // visionRuns describes where one Vision sits in the sequence: the bounds of its
@@ -287,7 +285,7 @@ type visionRuns struct {
 
 // locateVision finds a Vision and its author's run inside a sequence. The
 // sequence is grouped by author in SQL, so an author's Visions are always
-// contiguous.
+// contiguous. An author is one account: a run never spans two personas.
 func locateVision(seq []*model.Vision, ref dbpkg.VisionRef) visionRuns {
 	idx := -1
 	for i, v := range seq {
@@ -299,13 +297,13 @@ func locateVision(seq []*model.Vision, ref dbpkg.VisionRef) visionRuns {
 	if idx < 0 {
 		return visionRuns{}
 	}
-	author := seq[idx].AuthorPIAL
+	author := seq[idx].AuthorAccountID
 	start := idx
-	for start > 0 && seq[start-1].AuthorPIAL == author {
+	for start > 0 && seq[start-1].AuthorAccountID == author {
 		start--
 	}
 	end := idx + 1
-	for end < len(seq) && seq[end].AuthorPIAL == author {
+	for end < len(seq) && seq[end].AuthorAccountID == author {
 		end++
 	}
 	return visionRuns{Index: idx, RunStart: start, RunEnd: end, Found: true}
@@ -357,7 +355,7 @@ func (h *Handler) visionRings(viewer *model.User, scope string) ([]*model.Vision
 	if viewerID == "" {
 		return nil, nil
 	}
-	rings, err := dbpkg.GetVisionRingsForViewer(h.db, viewerID, viewer.PIALID, visionRingLimit)
+	rings, err := dbpkg.GetVisionRingsForViewer(h.db, viewerID, visionRingLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -474,7 +472,7 @@ func (h *Handler) visionRingForAuthor(author *model.User, viewer *model.User) (*
 	if h.db == nil {
 		return nil, errors.New("vision: db unavailable")
 	}
-	if author == nil || author.PIALID == "" {
+	if author == nil || author.ID == "" {
 		return nil, nil
 	}
 	rings, err := h.visionRings(viewer, visionScopeFollowing)
@@ -486,27 +484,15 @@ func (h *Handler) visionRingForAuthor(author *model.User, viewer *model.User) (*
 			return r, nil
 		}
 	}
-	viewerPIAL := ""
-	if viewer != nil {
-		viewerPIAL = viewer.PIALID
-	}
-	lane, err := dbpkg.GetActiveVisionsForAuthor(h.db, author.PIALID, viewerPIAL, 0)
+	run, err := dbpkg.GetActiveVisionsForAuthor(h.db, author.ID, viewerAccountID(viewer), 0)
 	if err != nil {
 		return nil, err
 	}
-	// The lane is read through the PIAL and joined to its accounts; this ring is
-	// one account's, so only that account's rows are its run.
-	run := make([]*model.Vision, 0, len(lane))
-	for _, v := range gateVisionsFor(viewer, lane) {
-		if v.AuthorAccountID == author.ID {
-			run = append(run, v)
-		}
-	}
+	run = gateVisionsFor(viewer, run)
 	if len(run) == 0 {
 		return nil, nil
 	}
 	stub := &model.VisionRing{
-		AuthorPIAL:      author.PIALID,
 		AuthorAccountID: author.ID,
 		AuthorHandle:    run[0].AuthorHandle,
 		AuthorName:      run[0].AuthorName,
@@ -798,7 +784,8 @@ func (h *Handler) facetVisionViewer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	v, err := dbpkg.GetVisionByRef(h.db, ref, user.PIALID)
+	viewerID := viewerAccountID(user)
+	v, err := dbpkg.GetVisionByRef(h.db, ref, viewerID)
 	if err != nil {
 		if errors.Is(err, dbpkg.ErrVisionNotLive) {
 			h.renderVisionGone(w, scope)
@@ -820,10 +807,11 @@ func (h *Handler) facetVisionViewer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Opening the frame is what marks it seen. Idempotent, so a step back and
-	// forward over the same Vision writes once. An author reading their own
-	// Vision is not one of its viewers, so it is not recorded as a view.
-	if user.PIALID != "" && user.PIALID != v.AuthorPIAL {
-		if mErr := dbpkg.MarkVisionViewed(h.db, ref, user.PIALID); mErr != nil {
+	// forward over the same Vision writes once. The posting account reading its
+	// own Vision is not one of its viewers, so it is not recorded as a view, and
+	// neither is a Vision still pending its scan (only its author can open it).
+	if viewerID != "" && viewerID != v.AuthorAccountID && v.ScanState != "pending" {
+		if mErr := dbpkg.MarkVisionViewed(h.db, ref, viewerID); mErr != nil {
 			if errors.Is(mErr, dbpkg.ErrVisionNotLive) {
 				h.renderVisionGone(w, scope)
 				return
@@ -854,7 +842,7 @@ func (h *Handler) buildVisionFrame(v *model.Vision, viewer *model.User, scope st
 	ref := visionRef(v)
 	loc := locateVision(seq, ref)
 	if !loc.Found {
-		run, aErr := dbpkg.GetActiveVisionsForAuthor(h.db, v.AuthorPIAL, viewer.PIALID, 0)
+		run, aErr := dbpkg.GetActiveVisionsForAuthor(h.db, v.AuthorAccountID, viewerAccountID(viewer), 0)
 		if aErr != nil {
 			return visionFrameView{}, aErr
 		}
@@ -877,7 +865,7 @@ func (h *Handler) buildVisionFrame(v *model.Vision, viewer *model.User, scope st
 		Position:  loc.Index - loc.RunStart + 1,
 		Total:     loc.RunEnd - loc.RunStart,
 		ViewCount: v.ViewCount,
-		IsAuthor:  viewer != nil && viewer.PIALID == v.AuthorPIAL,
+		IsAuthor:  viewer != nil && viewer.ID == v.AuthorAccountID,
 		CloseURL:  "/visions?scope=" + scope,
 	}
 	fv.Segments = visionSegments(fv.Position, fv.Total)

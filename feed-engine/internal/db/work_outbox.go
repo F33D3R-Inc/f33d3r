@@ -3,11 +3,11 @@ package db
 // work_outbox.go — the durable obligations of a work.
 //
 // A work owes things to the rest of the platform: a moderation scan, its
-// followers' live feeds, the counts of the work it cites, a catalog entry, a link
-// preview, a voice analysis, interest learning, achievements. Each is a
-// work_outbox row written in the transaction that creates the work (InsertWork)
-// or releases it (ReleaseScheduledWorks), so the commit that acknowledges the
-// work is also the record of everything it is owed. A worker in the handler
+// followers' live feeds, the counts of the work it cites, a link preview, a
+// voice analysis, interest learning, achievements. Each is a work_outbox row
+// written in the transaction that creates the work (InsertWork) or releases it
+// (ReleaseScheduledWorks), so the commit that acknowledges the work is also the
+// record of everything it is owed. A worker in the handler
 // package drains the rows; nothing here performs an action.
 //
 // Obligations come in two phases, and the phase is the whole of the difference
@@ -17,8 +17,8 @@ package db
 //	           content_event (the scan must have its verdict before release),
 //	           link_preview, zior_voice
 //	published  owed when the work becomes visible: follower_fanout,
-//	           cited_update, interest_learning, achievements,
-//	           alexandria_catalog, and the notification job
+//	           cited_update, interest_learning, achievements, and the
+//	           notification job
 //	migration  media_bind, owed once by every work created before Caeor
 //	           became the media authority (queued by 0037)
 //
@@ -36,19 +36,18 @@ import (
 )
 
 // WorkObligation is the closed vocabulary of work_outbox.action. Mirrored by the
-// work_outbox_action_vocabulary CHECK in migration 0035; change one and the other
-// must change with it.
+// work_outbox_action_vocabulary CHECK, last redefined in migration
+// 0041; change one and the other must change with it.
 type WorkObligation string
 
 const (
-	ObligationContentEvent      WorkObligation = "content_event"
-	ObligationFollowerFanout    WorkObligation = "follower_fanout"
-	ObligationCitedUpdate       WorkObligation = "cited_update"
-	ObligationAlexandriaCatalog WorkObligation = "alexandria_catalog"
-	ObligationLinkPreview       WorkObligation = "link_preview"
-	ObligationZiorVoice         WorkObligation = "zior_voice"
-	ObligationInterestLearning  WorkObligation = "interest_learning"
-	ObligationAchievements      WorkObligation = "achievements"
+	ObligationContentEvent     WorkObligation = "content_event"
+	ObligationFollowerFanout   WorkObligation = "follower_fanout"
+	ObligationCitedUpdate      WorkObligation = "cited_update"
+	ObligationLinkPreview      WorkObligation = "link_preview"
+	ObligationZiorVoice        WorkObligation = "zior_voice"
+	ObligationInterestLearning WorkObligation = "interest_learning"
+	ObligationAchievements     WorkObligation = "achievements"
 	// ObligationMediaBind re-binds a work created before Caeor became the media
 	// authority: every legacy media path is resolved to its Caeor asset, the
 	// work is rewritten to the watermarked objects, and its work_assets and
@@ -107,7 +106,7 @@ func enqueuePublished(tx *sql.Tx, workID string) error {
 	if err != nil {
 		return fmt.Errorf("reading publish facts of work %s: %w", workID, err)
 	}
-	actions := []WorkObligation{ObligationAchievements, ObligationAlexandriaCatalog}
+	actions := []WorkObligation{ObligationAchievements}
 	if !isReply {
 		actions = append(actions, ObligationFollowerFanout)
 	}
@@ -187,7 +186,7 @@ type WorkOutboxRow struct {
 
 // awaitingVerdict are the obligations that show a work to other people, and so
 // are not due while its verdict is pending.
-var awaitingVerdict = []string{string(ObligationFollowerFanout), string(ObligationAlexandriaCatalog)}
+var awaitingVerdict = []string{string(ObligationFollowerFanout)}
 
 // ClaimWorkOutbox takes up to limit due rows whose action is in actions, and
 // holds each for lease: the claim moves next_attempt_at past the lease and counts

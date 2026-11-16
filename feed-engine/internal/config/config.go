@@ -31,8 +31,6 @@ type Config struct {
 	ElohimVeniURL string
 	// Verity (KYC / compliance brain)
 	VerityURL string
-	// Aethyr Ledger (AET settlement fabric)
-	LedgerURL string
 	// Caeor — the one media-asset authority. Every uploaded byte is stored,
 	// watermarked, deduplicated, resolved and withdrawn there (video and clips
 	// are transcoded through it too); this brain is its client and calls it
@@ -40,8 +38,6 @@ type Config struct {
 	CaeorURL string
 	// Themis — unified commerce + Bitcoin marketplace brain
 	ThemisURL string
-	// Astraon — creator analytics brain (Rust, port 8088)
-	AstraonURL string
 	// Zior — audio brain (Rust, port 8082). Places a track or a voice work on
 	// the eight Jung axes from the audio itself and blends listener behaviour
 	// into it; for audio works its vector is authoritative over the text
@@ -49,8 +45,6 @@ type Config struct {
 	ZiorURL string
 	// eKYC brain — face match, OCR, anti-spoof (Python, port 8099)
 	EKYCUrl string
-	// Alexandria — hypermedia library brain (content catalog)
-	AlexandriaURL string
 	// Herald push notification brain
 	HeraldURL string
 	// Manhattan — the naming plane. Resolves a public name to the node it
@@ -130,13 +124,10 @@ func Load() *Config {
 		AbraxasURL:        getEnv("ABRAXAS_URL", ""),
 		ElohimVeniURL:     getEnv("ELOHIM_VENI_URL", "http://localhost:8093"),
 		VerityURL:         getEnv("VERITY_URL", "http://localhost:8095"),
-		LedgerURL:         getEnv("LEDGER_URL", "http://localhost:8096"),
 		CaeorURL:          getEnv("CAEOR_URL", "http://localhost:8086"),
 		ThemisURL:         getEnv("THEMIS_URL", "http://localhost:8100"),
-		AstraonURL:        getEnv("ASTRAON_URL", "http://astraon:8088"),
 		ZiorURL:           getEnv("ZIOR_URL", "http://localhost:8082"),
 		EKYCUrl:           getEnv("EKYC_URL", "http://ekyc:8099"),
-		AlexandriaURL:     getEnv("ALEXANDRIA_URL", "http://localhost:8098"),
 		HeraldURL:         getEnv("HERALD_URL", ""),
 		ManhattanURL:      getEnv("MANHATTAN_URL", ""),
 		SMTPHost:          getEnv("SMTP_HOST", ""),

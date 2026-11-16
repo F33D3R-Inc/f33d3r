@@ -673,8 +673,11 @@ func TestFrequencyNoIdentityLeak(t *testing.T) {
 		pials = append(pials, p)
 	}
 	rows.Close()
-	if me["pial_id"] == nil {
-		t.Fatal("/me must carry pial_id")
+	if me["account_id"] == nil {
+		t.Fatal("/me must carry account_id")
+	}
+	if me["pial_id"] != nil {
+		t.Fatal("/me must not carry a PIAL")
 	}
 
 	for _, token := range []string{miiToken, guestToken} {

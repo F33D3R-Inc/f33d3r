@@ -96,7 +96,7 @@ func (h *Handler) rankWorks(ctx context.Context, user *model.User, surface, sess
 
 	rctx, cancel := context.WithTimeout(ctx, rankTimeout)
 	defer cancel()
-	resp, err := h.aethyr.Rank(rctx, req)
+	resp, err := h.aethyr.Rank(rctx, h.cfg.InternalAPIKey, req)
 	if err != nil {
 		log.Printf("[aethyr] rank unavailable for surface=%s: %v — serving chronological window", surface, err)
 		return spreadAuthors(window, limit)
@@ -290,6 +290,7 @@ func (h *Handler) buildRankRequest(user *model.User, surface, sessionID string, 
 			SafetyEpsilon:      user.SafetyEpsilon,
 			UserTier:           tier,
 			RealmLevel:         realm,
+			ViewerPIAL:         user.PIALID,
 		},
 		ContentPool: pool,
 		SessionContext: model.AethyrSession{
@@ -386,6 +387,21 @@ func (h *Handler) learnFromCitations(authorID, workID string) error {
 		return nil // the account is gone; there is nobody to teach
 	}
 	for _, t := range targets {
+		// A reply or a quote is a ranking signal about the work it cites. The
+		// event id is fixed per (citing work, cited work), so a retried
+		// obligation queues it once.
+		action := dbpkg.RankReply
+		if t.Type == "quote" {
+			action = dbpkg.RankQuote
+		}
+		if err := dbpkg.EnqueueRankingSignal(h.db, dbpkg.RankingSignal{
+			EventID: dbpkg.RankingEventID(string(action), workID, t.WorkID),
+			Action:  action,
+			Viewer:  author.ID,
+			WorkID:  t.WorkID,
+		}); err != nil {
+			return err
+		}
 		cited, err := dbpkg.GetWorkForPsych(h.db, t.WorkID)
 		if errors.Is(err, sql.ErrNoRows) {
 			continue // removed since it was cited

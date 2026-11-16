@@ -64,22 +64,7 @@ pub struct Purchase {
     pub content_hash: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct MarketplaceSubscription {
-    pub id: Uuid,
-    pub buyer_pial: PialRef,
-    pub seller_pial: PialRef,
-    pub status: String,
-    pub period_end: DateTime<Utc>,
-    pub created_at: DateTime<Utc>,
-}
-
 // ── Request bodies ─────────────────────────────────────────────────────────────
-
-#[derive(Debug, Deserialize)]
-pub struct ShopOpenReq {
-    pub btc_address: String,
-}
 
 #[derive(Debug, Deserialize)]
 pub struct ListingCreateReq {
@@ -93,25 +78,6 @@ pub struct ListingCreateReq {
     pub cek_encrypted: String, // base64
     pub phash: Option<String>,
     pub visibility: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ListingEditReq {
-    pub listing_id: Uuid,
-    pub title: Option<String>,
-    pub description: Option<String>,
-    pub price_sats: Option<i64>,
-    pub is_active: Option<bool>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct PurchaseInitiateReq {
-    pub listing_id: Uuid,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct SubscriptionCreateReq {
-    pub seller_pial: PialRef,
 }
 
 #[derive(Debug, Deserialize)]
@@ -142,41 +108,18 @@ pub struct MarketplaceEvent {
     pub pial_sig: Option<String>,
 }
 
-// ── Response types ─────────────────────────────────────────────────────────────
-
-#[derive(Debug, Serialize)]
-pub struct PurchaseInitiatedResp {
-    pub purchase_id: Uuid,
-    pub btc_address: String,
-    pub amount_sats: i64,
-    pub expires_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct AccessCheckResp {
-    pub has_access: bool,
-}
-
-// ── Commerce (Thessalon) models ────────────────────────────────────────────────
-
-pub const AET_UNITS: f64 = 1_000_000.0;
-pub fn aet_to_units(aet: f64) -> i64 {
-    (aet * AET_UNITS) as i64
-}
-pub fn units_to_aet(units: i64) -> f64 {
-    units as f64 / AET_UNITS
-}
-
-#[derive(Deserialize)]
-pub struct EnableCreatorReq {
-    pub pial_id: PialRef,
-}
+// ── Commerce models ────────────────────────────────────────────────────────────
+//
+// Every amount is an integer of AET units — Ain Soph's unit, published at its
+// GET /v1/unit — and is named `*_units` on the wire. The acting person is never
+// in a body: it is the X-Pial-Identity feed-engine sets from the session.
 
 #[derive(Deserialize)]
 pub struct CreatePlanReq {
-    pub creator_pial_id: PialRef,
+    /// The creator's account, for feed-engine's projection of the plan.
+    pub creator_account: Uuid,
     pub name: String,
-    pub price_aet: f64,
+    pub price_units: i64,
     #[serde(default)]
     pub description: String,
 }
@@ -184,21 +127,20 @@ pub struct CreatePlanReq {
 #[derive(Deserialize)]
 pub struct UpdatePlanReq {
     pub name: Option<String>,
-    pub price_aet: Option<f64>,
+    pub price_units: Option<i64>,
     pub description: Option<String>,
     pub is_active: Option<bool>,
 }
 
 #[derive(Deserialize)]
 pub struct SubscribeReq {
-    pub subscriber_pial_id: PialRef,
-    pub creator_pial_id: PialRef,
     pub plan_id: Uuid,
+    /// The subscribing account, for feed-engine's projection.
+    pub subscriber_account: Uuid,
 }
 
 #[derive(Deserialize)]
 pub struct UnsubscribeReq {
-    pub subscriber_pial_id: PialRef,
     pub creator_pial_id: PialRef,
 }
 
@@ -212,26 +154,32 @@ pub struct CommerceAccessQuery {
 
 #[derive(Deserialize)]
 pub struct CreatePpvReq {
-    pub creator_pial_id: PialRef,
     pub content_id: String,
-    pub price_aet: f64,
+    pub price_units: i64,
     #[serde(default)]
     pub title: String,
 }
 
 #[derive(Deserialize)]
-pub struct PurchasePpvReq {
-    pub buyer_pial_id: PialRef,
-}
-
-#[derive(Deserialize)]
 pub struct SendTipReq {
-    pub sender_pial_id: PialRef,
     pub recipient_pial_id: PialRef,
-    pub amount_aet: f64,
+    pub amount_units: i64,
+    /// The caller's key for this tip: a retry with the same key is the same tip.
+    pub idempotency_key: String,
     #[serde(default)]
     pub message: String,
     pub content_id: Option<String>,
+    /// Who the recipient's notification names, as persona accounts.
+    #[serde(default)]
+    pub from_account: Option<String>,
+    #[serde(default)]
+    pub to_account: Option<String>,
+    #[serde(default)]
+    pub from_handle: String,
+    #[serde(default)]
+    pub target_id: String,
+    #[serde(default)]
+    pub target_type: String,
 }
 
 #[derive(Serialize, FromRow)]
@@ -239,6 +187,7 @@ pub struct PlanRow {
     pub id: Uuid,
     pub creator_pial_id: PialRef,
     pub name: String,
+    #[serde(rename = "price_units")]
     pub price_aet: i64,
     pub description: String,
     pub is_active: bool,
@@ -263,6 +212,7 @@ pub struct PpvItemRow {
     pub id: Uuid,
     pub creator_pial_id: PialRef,
     pub content_id: String,
+    #[serde(rename = "price_units")]
     pub price_aet: i64,
     pub title: String,
     pub is_active: bool,

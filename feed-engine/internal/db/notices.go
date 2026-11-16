@@ -144,6 +144,12 @@ func FollowUserNotifying(database *sql.DB, followerID, followingID, followerHand
 		if !changed {
 			return nil
 		}
+		// What AethyrRank learns from the follow commits with it.
+		if err := EnqueueRankingSignal(tx, RankingSignal{
+			Action: RankFollow, Viewer: followerID, TargetAccount: followingID,
+		}); err != nil {
+			return err
+		}
 		_, err = WriteNotice(tx, Notice{
 			Recipient: followingID, Kind: "follow", Actor: followerID,
 			TargetID: followerID, TargetType: "user",
@@ -180,7 +186,19 @@ func SetWorkReaction(database *sql.DB, workID, reactorID, reactorHandle, reactio
 			return err
 		}
 		changed = n > 0
-		if !changed || !add {
+		if !changed {
+			return nil
+		}
+		// What AethyrRank learns from the reaction — or from taking it back —
+		// commits with it.
+		if action, ok := ReactionRankingAction(reactionType, add); ok {
+			if err := EnqueueRankingSignal(tx, RankingSignal{
+				Action: action, Viewer: reactorID, WorkID: workID,
+			}); err != nil {
+				return err
+			}
+		}
+		if !add {
 			return nil
 		}
 		title := ""

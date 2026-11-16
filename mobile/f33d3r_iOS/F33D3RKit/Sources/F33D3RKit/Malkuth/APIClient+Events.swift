@@ -29,15 +29,29 @@ public extension APIClient {
 
     /// Posts a signed Work and returns the row the server stored it as.
     ///
-    /// The envelope's bytes are sent exactly as built. Retrying with the *same*
-    /// envelope is safe by construction — see ``WorkSubmission`` for why, and
-    /// prefer it to calling this directly from a compose screen.
+    /// The envelope's bytes are sent exactly as built. The server answers
+    /// `201 {"work_id","cid"}` and names its outcome in `X-Work-Create-State`;
+    /// every refusal is plain text written for the poster, thrown as
+    /// ``MalkuthError/workRefused(state:message:)``. Prefer ``WorkSubmission``
+    /// to calling this directly from a compose screen.
     func post(_ envelope: WorkEnvelope) async throws -> WorkAccepted {
-        let (data, status) = try await sendRaw(
+        let (data, http) = try await sendRawResponse(
             .events, body: envelope.httpBody, contentType: "application/json"
         )
+        let status = http.statusCode
+        let header = http.value(forHTTPHeaderField: "X-Work-Create-State")
         guard status == 201 || status == 200 else {
-            throw MalkuthError.rejected(status: status, reason: Self.reason(from: data, status: status))
+            let message = String(decoding: data.prefix(1000), as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            // An answer without the header is not the create path's own — the
+            // session middleware, or a proxy in front of the server.
+            guard header != nil else {
+                throw MalkuthError.rejected(status: status, reason: Self.reason(from: data, status: status))
+            }
+            throw MalkuthError.workRefused(
+                state: WorkCreateState.of(header: header, status: status),
+                message: message.isEmpty ? "F33D3R refused the post (HTTP \(status))." : message
+            )
         }
         do {
             return try JSONDecoder().decode(WorkAccepted.self, from: data)
@@ -63,9 +77,9 @@ public extension APIClient {
     /// because it is the one failure here that is a missing service rather than
     /// a wrong client.
     ///
-    /// Call it on every launch, as `malkuth.js` does. The authority holds one
-    /// key per PIAL, so the registration is what makes *this* device the one
-    /// whose signatures verify.
+    /// Call it on every sign-in, as `malkuth.js` does on every page load. The
+    /// authority holds one key per identity, so the registration is what makes
+    /// *this* device the one whose signatures verify.
     func registerSigningKey(publicKeySPKIBase64: String) async throws {
         let body = CanonicalJSON.object([
             ("public_key_b64", .string(publicKeySPKIBase64)),
@@ -275,11 +289,8 @@ public extension APIClient {
 
     /// Sets who may reply to a work the caller owns.
     ///
-    /// Form-encoded, and note the vocabulary is not the payload's: this endpoint
-    /// maps `everyone` to the stored value `open`, while `comment_gating` inside
-    /// a signed payload is stored verbatim. The two spellings of the same idea
-    /// are the server's; ``CommentGating`` is the one this client speaks and the
-    /// mapping happens on the far side.
+    /// Form-encoded. The vocabulary is the one a signed payload carries
+    /// (``CommentGating``); the server refuses anything else.
     func setReplyRestriction(_ gating: CommentGating, workID: String) async throws {
         try await postFormEvent("set_reply_restriction", fields: [
             "post_id": workID,

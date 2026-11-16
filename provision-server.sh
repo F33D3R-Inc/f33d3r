@@ -2,15 +2,22 @@
 # ═══════════════════════════════════════════════════════════════════════════════
 # F33D3R — Debian Server Provisioning Script
 #
-# Run this ONCE on a fresh Debian 11/12 server as root or a sudo user.
-# After this script completes, the site will be live at https://f33d3r.com
+# Run this ONCE on a fresh Debian 12 server as root or a sudo user. It installs
+# Docker and the firewall, clones the repository, generates .env.prod, creates
+# the backup directory, installs the boot unit and starts F33D3R through
+# bootstrap-prod.sh. The first account to sign up is the founder.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/... | bash   (if you host it)
-#   — OR —
 #   bash provision-server.sh
 #
-# Idempotent: safe to re-run if something fails partway through.
+# Configuration (environment, all optional):
+#   F33D3R_REPO_URL   git remote to clone  (default git@github.com:F33D3R-Inc/f33d3r.git)
+#   F33D3R_BRANCH     branch to deploy     (default main)
+#   F33D3R_APP_DIR    checkout location    (default /opt/f33d3r)
+#
+# Idempotent: safe to re-run if something fails partway through. A re-run on a
+# host that already has a database does not start anything; later updates are
+# `git pull` and `bash deploy.sh --all`, which backs up first.
 # ═══════════════════════════════════════════════════════════════════════════════
 set -euo pipefail
 
@@ -21,32 +28,38 @@ warn()    { echo -e "${Y}[!]${NC} $*"; }
 err()     { echo -e "${R}[✗]${NC} $*" >&2; }
 section() { echo -e "\n${B}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n    $*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"; }
 
-REPO_URL="git@gitlab.com:f33d3r-core/platform/f33d3r-local.git"
-APP_DIR="/opt/f33d3r"
+REPO_URL="${F33D3R_REPO_URL:-git@github.com:F33D3R-Inc/f33d3r.git}"
+BRANCH="${F33D3R_BRANCH:-main}"
+APP_DIR="${F33D3R_APP_DIR:-/opt/f33d3r}"
 COMPOSE_FILE="docker-compose.prod.yml"
 ENV_FILE=".env.prod"
 
-# ── 0. Must be root or sudo ───────────────────────────────────────────────────
+# ── 0. Who runs what ──────────────────────────────────────────────────────────
 if [ "$EUID" -ne 0 ]; then
   warn "Not running as root. Will use sudo for system commands."
   SUDO="sudo"
 else
   SUDO=""
 fi
+# The account that owns the checkout, the SSH key and the backups, and runs
+# deploy.sh. Under sudo that is the invoking user, not root.
+REAL_USER="${SUDO_USER:-$(id -un)}"
+REAL_HOME="$(getent passwd "$REAL_USER" | cut -d: -f6)"
+as_user() {
+  if [ "$(id -un)" = "$REAL_USER" ]; then "$@"; else $SUDO -u "$REAL_USER" -H "$@"; fi
+}
 
 # ── 1. System packages ────────────────────────────────────────────────────────
-section "1 / 8 — System packages"
-
+section "1 / 9 — System packages"
 $SUDO apt-get update -qq
 $SUDO apt-get install -y -qq \
-  git curl wget ca-certificates gnupg lsb-release \
-  ufw openssl unzip jq
-
+  git curl ca-certificates gnupg lsb-release \
+  ufw openssl jq dnsutils
 ok "Core packages installed"
 
 # Remove host-level nginx/apache — Caddy (in Docker) owns ports 80 and 443
 for svc in nginx apache2 lighttpd; do
-  if systemctl is-active --quiet "$svc" 2>/dev/null; then
+  if systemctl is-active --quiet "$svc"; then
     warn "Stopping $svc (conflicts with Caddy on ports 80/443)"
     $SUDO systemctl stop "$svc"
     $SUDO systemctl disable "$svc"
@@ -55,8 +68,7 @@ for svc in nginx apache2 lighttpd; do
 done
 
 # ── 2. Docker ─────────────────────────────────────────────────────────────────
-section "2 / 8 — Docker Engine"
-
+section "2 / 9 — Docker Engine"
 if command -v docker &>/dev/null; then
   ok "Docker already installed: $(docker --version | awk '{print $3}' | tr -d ',')"
 else
@@ -64,110 +76,115 @@ else
   curl -fsSL https://get.docker.com | $SUDO sh
   ok "Docker installed: $(docker --version | awk '{print $3}' | tr -d ',')"
 fi
-
-# Ensure docker compose v2 is available
-if ! docker compose version &>/dev/null; then
-  err "docker compose v2 not found. Install manually: https://docs.docker.com/compose/install/"
-  exit 1
-fi
-ok "Compose $(docker compose version --short 2>/dev/null || echo ok)"
-
-# Add current user to docker group so we can run without sudo
-REAL_USER="${SUDO_USER:-$(whoami)}"
+$SUDO docker compose version >/dev/null || { err "docker compose v2 not found: https://docs.docker.com/compose/install/"; exit 1; }
+ok "Compose $($SUDO docker compose version --short)"
 if [ "$REAL_USER" != "root" ]; then
   $SUDO usermod -aG docker "$REAL_USER"
-  warn "Added $REAL_USER to docker group. Run 'newgrp docker' or log out and back in to apply."
+  warn "Added $REAL_USER to the docker group. Log out and back in before running deploy.sh yourself."
 fi
 
 # ── 3. Firewall ───────────────────────────────────────────────────────────────
-section "3 / 8 — Firewall (ufw)"
-
+# The same list docker-compose.prod.yml publishes, and nothing else. Docker
+# publishes container ports through its own iptables chain, ahead of ufw, so a
+# published port is reachable whatever ufw says; keeping the two lists equal is
+# what makes `ufw status` the truth about this host.
+section "3 / 9 — Firewall (ufw)"
 $SUDO ufw --force enable
 $SUDO ufw allow 22/tcp   comment "SSH"
-$SUDO ufw allow 80/tcp   comment "HTTP — Caddy Let's Encrypt challenge"
+$SUDO ufw allow 80/tcp   comment "HTTP — Caddy Let's Encrypt challenge + redirect"
 $SUDO ufw allow 443/tcp  comment "HTTPS — F33D3R"
+$SUDO ufw allow 1935/tcp comment "RTMP live ingest — OBS / desktop encoders"
+$SUDO ufw allow 8890/udp comment "SRT live ingest — hardware / mobile encoders"
+$SUDO ufw allow 8189/udp comment "WebRTC media — browser live broadcast"
 $SUDO ufw allow 7881/tcp comment "LiveKit — Frequency audio over TCP"
 $SUDO ufw allow 7882/udp comment "LiveKit — Frequency audio"
 $SUDO ufw reload
-ok "Firewall: 22 (SSH), 80 (HTTP), 443 (HTTPS) open"
+ok "Firewall: 22, 80, 443, 1935/tcp, 8890/udp, 8189/udp, 7881/tcp, 7882/udp"
 
-# ── 4. SSH key for GitLab ─────────────────────────────────────────────────────
-section "4 / 8 — GitLab SSH key"
-
-SSH_KEY="/root/.ssh/id_ed25519"
-if [ "$REAL_USER" != "root" ]; then
-  SSH_KEY="/home/${REAL_USER}/.ssh/id_ed25519"
-fi
-
-if [ ! -f "$SSH_KEY" ]; then
-  $SUDO -u "$REAL_USER" ssh-keygen -t ed25519 -C "f33d3r-server" -f "$SSH_KEY" -N ""
-  ok "Generated new SSH key: $SSH_KEY"
-  echo ""
-  echo -e "${B}══════════════════════════════════════════════${NC}"
-  echo -e "${B}Add this public key to your GitLab account:${NC}"
-  echo -e "${B}  GitLab → Settings → SSH Keys${NC}"
-  echo -e "${B}══════════════════════════════════════════════${NC}"
-  cat "${SSH_KEY}.pub"
-  echo ""
-  read -r -p "Press ENTER after you've added the key to GitLab → "
+# ── 4. SSH key for the git remote ─────────────────────────────────────────────
+section "4 / 9 — SSH key for ${REPO_URL}"
+GIT_HOST=""
+case "$REPO_URL" in
+  git@*:*) GIT_HOST="${REPO_URL#git@}"; GIT_HOST="${GIT_HOST%%:*}" ;;
+  ssh://*) GIT_HOST="${REPO_URL#ssh://}"; GIT_HOST="${GIT_HOST#*@}"; GIT_HOST="${GIT_HOST%%[:/]*}" ;;
+esac
+if [ -n "$GIT_HOST" ]; then
+  SSH_KEY="${REAL_HOME}/.ssh/id_ed25519"
+  if [ ! -f "$SSH_KEY" ]; then
+    as_user mkdir -p "${REAL_HOME}/.ssh"
+    as_user ssh-keygen -t ed25519 -C "f33d3r-server" -f "$SSH_KEY" -N ""
+    ok "Generated new SSH key: $SSH_KEY"
+    echo ""
+    echo -e "${B}Add this public key as a read-only deploy key on the repository${NC}"
+    echo -e "${B}(GitHub: repository → Settings → Deploy keys):${NC}"
+    cat "${SSH_KEY}.pub"
+    echo ""
+    read -r -p "Press ENTER after the key is added → "
+  else
+    ok "SSH key already exists: $SSH_KEY"
+  fi
+  # GitHub answers a successful key check with exit 1 and a greeting, so the
+  # greeting is what is checked, not the exit status.
+  SSH_ANSWER="$(as_user ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -T "git@${GIT_HOST}" 2>&1 || true)"
+  case "$SSH_ANSWER" in
+    *"successfully authenticated"*|*"Welcome to"*) ok "SSH access to ${GIT_HOST} confirmed" ;;
+    *) err "SSH access to ${GIT_HOST} failed: ${SSH_ANSWER}"; err "Add ${SSH_KEY}.pub to the repository and re-run."; exit 1 ;;
+  esac
 else
-  ok "SSH key already exists: $SSH_KEY"
-fi
-
-# Test GitLab SSH access
-if ssh -o StrictHostKeyChecking=no -o BatchMode=yes git@gitlab.com exit 2>/dev/null; then
-  ok "GitLab SSH access confirmed"
-else
-  warn "Could not verify GitLab SSH access. Continuing — clone may fail if key isn't added."
+  ok "Remote is not SSH; no key needed"
 fi
 
 # ── 5. Clone / update repository ─────────────────────────────────────────────
-section "5 / 8 — Repository"
-
+section "5 / 9 — Repository (${BRANCH})"
 if [ -d "$APP_DIR/.git" ]; then
-  ok "Repo already cloned at $APP_DIR — pulling latest main"
-  git -C "$APP_DIR" fetch origin
-  git -C "$APP_DIR" checkout main
-  git -C "$APP_DIR" pull origin main
-else
-  ok "Cloning F33D3R into $APP_DIR…"
-  $SUDO mkdir -p "$(dirname "$APP_DIR")"
-  git clone "$REPO_URL" "$APP_DIR"
-  if [ "$REAL_USER" != "root" ]; then
-    $SUDO chown -R "$REAL_USER:$REAL_USER" "$APP_DIR"
+  ORIGIN="$(as_user git -C "$APP_DIR" remote get-url origin)"
+  if [ "$ORIGIN" != "$REPO_URL" ]; then
+    err "$APP_DIR tracks $ORIGIN, not $REPO_URL."
+    err "Set F33D3R_REPO_URL to the remote you mean, or: git -C $APP_DIR remote set-url origin $REPO_URL"
+    exit 1
   fi
+  ok "Repo already cloned at $APP_DIR — updating ${BRANCH}"
+  as_user git -C "$APP_DIR" fetch origin "$BRANCH"
+  as_user git -C "$APP_DIR" checkout "$BRANCH"
+  as_user git -C "$APP_DIR" pull --ff-only origin "$BRANCH"
+else
+  ok "Cloning ${REPO_URL} (${BRANCH}) into $APP_DIR…"
+  $SUDO install -d -o "$REAL_USER" -g "$(id -gn "$REAL_USER")" "$APP_DIR"
+  as_user git clone --branch "$BRANCH" "$REPO_URL" "$APP_DIR"
+fi
+cd "$APP_DIR"
+ok "On commit: $(as_user git rev-parse --short HEAD) — $(as_user git log -1 --format='%s')"
+
+# ── 6. Public address + DNS ───────────────────────────────────────────────────
+section "6 / 9 — Public address and DNS"
+SERVER_IP="$(curl -fsS --max-time 5 https://api.ipify.org)" || { err "could not read this server's public IP"; exit 1; }
+RESOLVED_IP="$(dig +short f33d3r.com @1.1.1.1 | tail -n1)"
+ok "Server public IP:  $SERVER_IP"
+ok "f33d3r.com → ${RESOLVED_IP:-unresolved}"
+if [ "$SERVER_IP" = "$RESOLVED_IP" ]; then
+  ok "DNS is correctly pointed at this server"
+else
+  warn "DNS mismatch — f33d3r.com does not resolve to this server yet."
+  warn "Add an A record: f33d3r.com → $SERVER_IP"
+  warn "Caddy cannot obtain a certificate, and the health check through"
+  warn "https://f33d3r.com fails, until it does. Re-run bootstrap-prod.sh then."
 fi
 
-cd "$APP_DIR"
-ok "On commit: $(git rev-parse --short HEAD) — $(git log -1 --format='%s')"
-
-# ── 6. Environment file ───────────────────────────────────────────────────────
-section "6 / 8 — Environment"
-
+# ── 7. Environment file ───────────────────────────────────────────────────────
+section "7 / 9 — Environment"
 if [ ! -f "$ENV_FILE" ]; then
-  cp .env.prod.example "$ENV_FILE"
-
-  echo ""
-  echo -e "${B}═══════════════════════════════════════════════════${NC}"
-  echo -e "${B}  .env.prod needs its secrets. Generating them now.${NC}"
-  echo -e "${B}═══════════════════════════════════════════════════${NC}"
-
+  as_user cp .env.prod.example "$ENV_FILE"
+  chmod 600 "$ENV_FILE"
   # Every secret the template ships as a CHANGE_ME placeholder is generated
   # here, on this host, by openssl — none of them is ever a value in git.
-  # Auto-generate a strong postgres password
-  PG_PASS=$(openssl rand -base64 24 | tr -dc 'a-zA-Z0-9' | head -c 32)
-  # Session cookie signing key
-  SESSION_SECRET=$(openssl rand -base64 48)
-  # Brain-to-brain shared secret: Manhattan, every Rust brain, Verity, Ain
-  # Soph, Themis and feed-engine all carry this one value.
+  PG_PASS=$(openssl rand -hex 24)
+  SESSION_SECRET=$(openssl rand -base64 48 | tr -d '\n')
+  # Brain-to-brain shared secret: every service carries this one value.
   INTERNAL_API_KEY=$(openssl rand -hex 32)
-  # NSFW media URL signing key
-  MEDIA_TOKEN_SECRET=$(openssl rand -base64 48)
+  MEDIA_TOKEN_SECRET=$(openssl rand -base64 48 | tr -d '\n')
   # LiveKit: signs Frequency audio join tokens and Auralis's calls to its server API
   LIVEKIT_API_KEY="frequencies_$(openssl rand -hex 6)"
   LIVEKIT_API_SECRET=$(openssl rand -hex 32)
-  # Prometheus /metrics bearer token
-  METRICS_TOKEN=$(openssl rand -hex 24)
   # Themis P-256 ECDH key (PKCS#8 DER, base64 single line). Losing this key
   # loses every previously sold CEK, which is why it is generated once here
   # and never regenerated on re-run.
@@ -178,66 +195,41 @@ if [ ! -f "$ENV_FILE" ]; then
   sed -i "s|CHANGE_ME_generate_with_openssl_rand_-base64_48|${SESSION_SECRET}|g" "$ENV_FILE"
   sed -i "s|^INTERNAL_API_KEY=CHANGE_ME$|INTERNAL_API_KEY=${INTERNAL_API_KEY}|" "$ENV_FILE"
   sed -i "s|CHANGE_ME_media_token_generate_with_openssl_rand_-base64_48|${MEDIA_TOKEN_SECRET}|g" "$ENV_FILE"
-  sed -i "s|CHANGE_ME_metrics_generate_with_openssl_rand_-hex_24|${METRICS_TOKEN}|g" "$ENV_FILE"
   sed -i "s|CHANGE_ME_generate_with_openssl_ecparam|${THEMIS_ECDH_PRIVKEY_B64}|g" "$ENV_FILE"
   sed -i "s|^LIVEKIT_API_KEY=CHANGE_ME_frequencies$|LIVEKIT_API_KEY=${LIVEKIT_API_KEY}|" "$ENV_FILE"
   sed -i "s|CHANGE_ME_livekit_generate_with_openssl_rand_-hex_32|${LIVEKIT_API_SECRET}|g" "$ENV_FILE"
+  sed -i "s|^LIVE_PUBLIC_HOST=CHANGE_ME_server_public_ip$|LIVE_PUBLIC_HOST=${SERVER_IP}|" "$ENV_FILE"
 
-  ok "Secrets auto-generated in $ENV_FILE"
-  echo ""
-  warn "SAVE THESE — you'll need them if you ever need to access postgres directly:"
-  echo "  POSTGRES_PASSWORD       = $PG_PASS"
-  echo "  SESSION_SECRET          = (saved to .env.prod)"
-  echo "  INTERNAL_API_KEY        = (saved to .env.prod)"
-  echo "  MEDIA_TOKEN_SECRET      = (saved to .env.prod)"
-  echo "  METRICS_TOKEN           = (saved to .env.prod)"
-  echo "  THEMIS_ECDH_PRIVKEY_B64 = (saved to .env.prod — back it up; it unlocks sold content)"
-  echo ""
+  ok "Secrets generated in $APP_DIR/$ENV_FILE (mode 600)"
+  warn "Copy $APP_DIR/$ENV_FILE off this host now. THEMIS_ECDH_PRIVKEY_B64 in it"
+  warn "unlocks every piece of sold content, and the nightly backup does not copy it."
+  warn "Set SMTP_* and SECURITY_ALERT_EMAIL in it for password-reset mail and alerts."
 fi
 
-# Verify no placeholders remain
 if grep -q "CHANGE_ME" "$ENV_FILE"; then
-  err ".env.prod still has CHANGE_ME placeholders:"
+  err "$ENV_FILE still has CHANGE_ME placeholders:"
   grep -n "CHANGE_ME" "$ENV_FILE" | sed 's/=.*//' | while read -r line; do err "  $line"; done
   err "Edit it:  nano $APP_DIR/$ENV_FILE"
   exit 1
 fi
-# The brain-to-brain secret must be a real key: every service refuses or is
-# refused on a short or missing one, and the failure surfaces as 401s at
-# runtime rather than here.
 INTERNAL_KEY_LEN=$(grep -E '^INTERNAL_API_KEY=' "$ENV_FILE" | head -n1 | cut -d= -f2- | tr -d '[:space:]' | wc -c)
 if [ "$INTERNAL_KEY_LEN" -lt 32 ]; then
-  err "INTERNAL_API_KEY in $ENV_FILE is missing or shorter than 32 characters."
-  err "  Generate one:  openssl rand -hex 32"
+  err "INTERNAL_API_KEY in $ENV_FILE is missing or shorter than 32 characters (openssl rand -hex 32)."
   exit 1
 fi
 ok "$ENV_FILE ready"
 
-# ── 7. DNS check ─────────────────────────────────────────────────────────────
-section "7 / 8 — DNS check"
+# ── 8. Backup directory ───────────────────────────────────────────────────────
+section "8 / 9 — Backup directory"
+BACKUP_DIR="$(grep -E '^BACKUP_DIR=' "$ENV_FILE" | tail -n1 | cut -d= -f2-)"
+BACKUP_DIR="${BACKUP_DIR:-/var/backups/f33d3r}"
+$SUDO install -d -m 700 -o "$REAL_USER" -g "$(id -gn "$REAL_USER")" "$BACKUP_DIR"
+ok "Backups: $BACKUP_DIR (mode 700) — copy it off this host on a schedule as well"
 
-SERVER_IP=$(curl -s --max-time 5 https://api.ipify.org 2>/dev/null || echo "unknown")
-RESOLVED_IP=$(dig +short f33d3r.com @1.1.1.1 2>/dev/null | tail -1 || echo "unresolved")
-
-ok "Server public IP:  $SERVER_IP"
-ok "f33d3r.com → $RESOLVED_IP"
-
-if [ "$SERVER_IP" = "$RESOLVED_IP" ]; then
-  ok "DNS is correctly pointed at this server"
-else
-  warn "DNS mismatch — f33d3r.com does not resolve to this server yet."
-  warn "Add an A record: f33d3r.com → $SERVER_IP"
-  warn "Caddy will fail to get a Let's Encrypt cert until DNS propagates."
-  warn "You can still start F33D3R now; Caddy will retry cert provisioning."
-fi
-
-# ── 8. Build and launch ───────────────────────────────────────────────────────
-section "8 / 8 — Build and launch (first build: 10–20 min)"
-
-docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up --build -d
-
-# ── Systemd service — auto-start on reboot ─────────────────────────────────────
-cat > /tmp/f33d3r.service <<SERVICE
+# ── 9. Boot unit, then start ──────────────────────────────────────────────────
+section "9 / 9 — Boot unit and first start"
+UNIT="$(mktemp)"
+cat > "$UNIT" <<SERVICE
 [Unit]
 Description=F33D3R platform
 Requires=docker.service
@@ -248,70 +240,37 @@ Wants=network-online.target
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=${APP_DIR}
-ExecStart=/usr/bin/docker compose -f ${COMPOSE_FILE} --env-file ${ENV_FILE} up -d
-ExecStop=/usr/bin/docker compose -f ${COMPOSE_FILE} --env-file ${ENV_FILE} down
-TimeoutStartSec=300
+ExecStart=/usr/bin/docker compose -f ${COMPOSE_FILE} --env-file ${ENV_FILE} up -d --no-build
+ExecStop=/usr/bin/docker compose -f ${COMPOSE_FILE} --env-file ${ENV_FILE} stop
+TimeoutStartSec=600
 
 [Install]
 WantedBy=multi-user.target
 SERVICE
-
-$SUDO mv /tmp/f33d3r.service /etc/systemd/system/f33d3r.service
+$SUDO install -m 644 "$UNIT" /etc/systemd/system/f33d3r.service
+rm -f "$UNIT"
 $SUDO systemctl daemon-reload
 $SUDO systemctl enable f33d3r.service
-ok "Systemd service installed — F33D3R will start automatically on reboot"
+ok "Boot unit installed — F33D3R starts with the machine"
 
-# ── Wait for services ─────────────────────────────────────────────────────────
-echo ""
-ok "Waiting 45s for services to come online (Rust compile time)…"
-sleep 45
-
-PASS=0; FAIL=0
-check() {
-  local name="$1" container="$2"
-  if docker compose -f "$COMPOSE_FILE" ps --status running "$container" 2>/dev/null | grep -q "$container"; then
-    printf "  ${G}●${NC} %-35s running\n" "$name"
-    PASS=$((PASS+1))
-  else
-    printf "  ${R}○${NC} %-35s NOT running\n" "$name"
-    FAIL=$((FAIL+1))
-  fi
-}
-
-check "postgres"               "postgres"
-check "redis"                  "redis"
-check "aethyr-schema-registry" "aethyr-schema-registry"
-check "aethyrrank-engine"      "aethyrrank-engine"
-check "feed-engine (Nantar)"   "feed-engine"
-check "caeor"                  "caeor"
-check "caddy"                  "caddy"
-
-echo ""
-if [ "$FAIL" -gt 0 ]; then
-  warn "$FAIL service(s) still starting or failed. Check logs:"
-  warn "  docker compose -f $COMPOSE_FILE logs --tail=40 <service-name>"
-else
-  ok "All $PASS services running"
+PROJECT="$($SUDO docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" config --format json | jq -er '.name')"
+if $SUDO docker volume inspect "${PROJECT}_postgres_data" >/dev/null 2>&1; then
+  ok "This host already has a database — nothing started."
+  ok "Update with:  cd $APP_DIR && git pull --ff-only origin $BRANCH && bash deploy.sh --all"
+  exit 0
 fi
 
-# ── Summary ────────────────────────────────────────────────────────────────────
+# bootstrap-prod.sh is the one first-start path; it runs as the checkout's
+# owner through sudo, since the docker group above applies only to new logins.
+$SUDO bash ./bootstrap-prod.sh
+
 echo ""
 echo -e "${B}═══════════════════════════════════════════════════════${NC}"
 echo -e "${B}  F33D3R provisioning complete${NC}"
 echo -e "${B}═══════════════════════════════════════════════════════${NC}"
 echo ""
-echo "  Site:     https://f33d3r.com"
-echo "  Logs:     docker compose -f $COMPOSE_FILE logs -f"
-echo "  Status:   docker compose -f $COMPOSE_FILE ps"
-echo "  Deploy:   bash $APP_DIR/deploy.sh"
-echo "  Stop:     docker compose -f $COMPOSE_FILE down"
-echo "  Restart:  docker compose -f $COMPOSE_FILE restart <service>"
-echo ""
-if [ "$SERVER_IP" != "$RESOLVED_IP" ]; then
-  echo -e "  ${Y}DNS not yet pointed here. Once propagated, Caddy auto-gets TLS cert.${NC}"
-  echo -e "  ${Y}Test HTTP at: http://$SERVER_IP:8081 (bypasses Caddy)${NC}"
-  echo ""
-fi
-echo -e "  ${G}To update after a git push:${NC}"
-echo "    bash $APP_DIR/deploy.sh"
+echo "  Site:     https://f33d3r.com — the first account to sign up is the founder"
+echo "  Health:   bash $APP_DIR/deploy.sh --check"
+echo "  Update:   git -C $APP_DIR pull --ff-only origin $BRANCH && bash $APP_DIR/deploy.sh --all"
+echo "  Backups:  $BACKUP_DIR"
 echo ""

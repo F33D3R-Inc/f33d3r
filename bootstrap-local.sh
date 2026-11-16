@@ -38,7 +38,7 @@ esac
 # ── 1. Directory layout ───────────────────────────────────────────────────────
 section "Checking directory layout"
 MISSING=""
-for d in feed-engine aethyrrank-engine zior-engine aethyr-schema-registry ain-soph; do
+for d in feed-engine aethyrrank-engine zior-engine ain-soph; do
   if [ ! -d "$d" ]; then MISSING="$MISSING $d"; fi
 done
 if [ -n "$MISSING" ]; then
@@ -125,9 +125,6 @@ INTERNAL_API_KEY=${LOCAL_INTERNAL_API_KEY}
 SHOW_SCORES=false
 DEV_MODE=true
 RUST_LOG=info
-MINIO_ROOT_USER=f33d3r_minio
-MINIO_ROOT_PASSWORD=$(openssl rand -hex 24)
-MINIO_PUBLIC_BASE=http://localhost:9000
 GRAFANA_ADMIN_USER=admin
 GRAFANA_ADMIN_PASSWORD=$(openssl rand -hex 16)
 EOF
@@ -192,7 +189,6 @@ check_service() {
 
 # One line per service docker-compose.local.yml publishes a host port for,
 # probing the same path its compose healthcheck does.
-check_service "aethyr-schema-registry" "8079"
 check_service "aethyrrank-engine"      "8080"
 # feed-engine publishes no host port (same as prod); it is probed through the
 # Caddy edge, which is also the only address a browser or phone should use.
@@ -200,22 +196,17 @@ check_service "feed-engine (Nantar) via Caddy" "8443" "/api/health" "https"
 check_service "zior-engine"            "8082"
 check_service "transcoding"            "8085"
 check_service "caeor"                  "8086"
-check_service "astraon"                "8088"
 check_service "ain-soph"               "8089"
 check_service "abraxas-shield"         "8109"
 check_service "live-edge"              "8092" "/healthz"
 check_service "elohim-veni"            "8093"
 check_service "verity"                 "8095"
-check_service "aethyr-ledger"          "8096"
 check_service "content-scan"           "8097" "/ready"
-check_service "alexandria"             "8098"
 check_service "ekyc"                   "8099"
 check_service "themis"                 "8100"
 check_service "herald"                 "8105"
-check_service "lore"                   "8106"
 check_service "manhattan"              "8107"
 check_service "auralis (Frequencies)"  "8108"
-check_service "minio"                  "9000" "/minio/health/live"
 check_service "prometheus"             "9090" "/-/healthy"
 check_service "alertmanager"           "9093" "/-/healthy"
 check_service "loki"                   "3100" "/ready"
@@ -238,7 +229,6 @@ echo "  Site:            https://localhost:8443   (Caddy, local CA — infra/REA
 echo "  Site (LAN):      https://$(hostname | tr '[:upper:]' '[:lower:]').local:8443   for phones, simulators, the other machine"
 echo "  Grafana:         http://localhost:3000   (login in .env.local)"
 echo "  Prometheus:      http://localhost:9090"
-echo "  MinIO console:   http://localhost:9001"
 echo ""
 echo "  Logs:   docker compose -f docker-compose.local.yml logs -f"
 echo "  Stop:   docker compose -f docker-compose.local.yml down"

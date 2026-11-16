@@ -318,22 +318,39 @@ type InsertWorkParams struct {
 	CommentGating                         string
 	SubscriberOnly                        bool
 	IsNSFW                                bool
-	IsRepost                              bool
-	RepostSourceID                        string
 	VoiceURL                              string
 	VoiceDurationSecs                     *int
 	VideoMasterURL                        string
-	VideoWatermarkedURL                   string
 	VideoPosterURL                        string
 	VideoDurationSecs                     *int
 	VideoWidth, VideoHeight               int
 	ReactLayout                           string
+	// LineageHandle is the "Media by" credit: the uploader of media in the
+	// work that the author did not upload. Empty when it is all theirs.
+	LineageHandle string
+	// Fingerprint is the content dedup key (worktext.Fingerprint): the same
+	// content by the same author within the window is a Duplicate.
+	Fingerprint string
 	// PriceUAET sells the work outright at this price in µAET. Zero is not
 	// for sale. Not part of the signed payload today — the seeder sets it;
 	// a client price would have to enter the canonical payload first.
 	PriceUAET int64
 	// CreatedAt overrides the clock; the seeder uses it. Zero means now.
 	CreatedAt time.Time
+}
+
+// FindWorkByFingerprint returns the id of the author's live work with this
+// content fingerprint created since `since`, or ErrNotFound.
+func (s *Store) FindWorkByFingerprint(ctx context.Context, authorID, fingerprint string, since time.Time) (string, error) {
+	var id string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id FROM works
+		WHERE author_id = ? AND fingerprint = ? AND deleted_at IS NULL AND created_at >= ?
+		ORDER BY created_at DESC LIMIT 1`, authorID, fingerprint, FormatTime(since)).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	return id, err
 }
 
 // ErrDuplicateCID is returned when a work with the same CID already exists.
@@ -345,7 +362,7 @@ var ErrDuplicateCID = errors.New("duplicate cid")
 // author's post count and XP. Returns the new id.
 func (s *Store) InsertWork(ctx context.Context, p InsertWorkParams) (string, error) {
 	if p.CommentGating == "" {
-		p.CommentGating = "open"
+		p.CommentGating = "everyone"
 	}
 	if p.Kind == "" {
 		p.Kind = "post"
@@ -361,17 +378,20 @@ func (s *Store) InsertWork(ctx context.Context, p InsertWorkParams) (string, err
 			INSERT INTO works (
 				id, cid, author_id, author_pial, body, kind, media_urls,
 				tags, poll_options, poll_ends_at, scheduled_at,
-				comment_gating, subscriber_only, is_nsfw, is_repost, repost_source_id,
+				comment_gating, subscriber_only, is_nsfw,
 				voice_url, voice_duration_secs,
-				video_master_url, video_watermarked_url, video_poster_url, video_duration_secs,
-				video_width, video_height, react_layout, content_type, created_at, scan_state, price_uaet
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'clean', ?)`,
+				video_master_url, video_poster_url, video_duration_secs,
+				video_width, video_height, react_layout, lineage_handle, fingerprint,
+				content_type, created_at, scan_state, price_uaet
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'clean', ?)`,
 			id, p.CID, p.AuthorID, p.AuthorPIAL, p.Body, p.Kind, encodeStrings(p.MediaURLs),
 			encodeStrings(p.Tags), pollOptionsColumn(p.PollOptions), nullTime(p.PollEndsAt), nullTime(p.ScheduledAt),
-			p.CommentGating, boolInt(p.SubscriberOnly), boolInt(p.IsNSFW), boolInt(p.IsRepost), nullable(p.RepostSourceID),
+			p.CommentGating, boolInt(p.SubscriberOnly), boolInt(p.IsNSFW),
 			nullable(p.VoiceURL), nullInt(p.VoiceDurationSecs),
-			nullable(p.VideoMasterURL), nullable(p.VideoWatermarkedURL), nullable(p.VideoPosterURL), nullInt(p.VideoDurationSecs),
-			nullIfZero(p.VideoWidth), nullIfZero(p.VideoHeight), nullable(p.ReactLayout), contentType, FormatTime(created), p.PriceUAET)
+			nullable(p.VideoMasterURL), nullable(p.VideoPosterURL), nullInt(p.VideoDurationSecs),
+			nullIfZero(p.VideoWidth), nullIfZero(p.VideoHeight), nullable(p.ReactLayout),
+			nullable(p.LineageHandle), nullable(p.Fingerprint),
+			contentType, FormatTime(created), p.PriceUAET)
 		if err != nil {
 			if strings.Contains(err.Error(), "UNIQUE constraint failed: works.cid") {
 				return ErrDuplicateCID
@@ -1341,12 +1361,24 @@ func (s *Store) SoftDeleteWork(ctx context.Context, workID, authorID string) err
 	})
 }
 
-// SetCommentGating changes who may reply. Stored values follow feed-engine:
-// the payload vocabulary is everyone|followers|circle|none and the column
-// keeps `open` for everyone.
+// CommentGatings is feed-engine's closed vocabulary of who may reply
+// (dbpkg.CommentGatings): the spelling clients sign and the column stores.
+var CommentGatings = []string{"everyone", "followers", "circle", "verified", "none"}
+
+// ValidCommentGating reports whether g is in the vocabulary.
+func ValidCommentGating(g string) bool {
+	for _, v := range CommentGatings {
+		if v == g {
+			return true
+		}
+	}
+	return false
+}
+
+// SetCommentGating changes who may reply. The value must be in CommentGatings.
 func (s *Store) SetCommentGating(ctx context.Context, workID, gating string) error {
-	if gating == "everyone" {
-		gating = "open"
+	if !ValidCommentGating(gating) {
+		return fmt.Errorf("comment gating %q is not in the vocabulary", gating)
 	}
 	_, err := s.db.ExecContext(ctx, `UPDATE works SET comment_gating = ? WHERE id = ?`, gating, workID)
 	return err

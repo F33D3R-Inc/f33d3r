@@ -1,69 +1,64 @@
-use anyhow::Result;
 use dashmap::DashMap;
 use nalgebra::{DMatrix, DVector};
 
 use crate::bandit::linucb::LinUcbModel;
 
-/// Thread-safe store of per-surface LinUCB models.
+/// Every learned LinUCB model, keyed `"{viewer_or_nexus_shard}:{surface}"`.
 ///
-/// New surfaces are auto-initialised on first access.
-/// The `DashMap` provides lock-per-shard concurrency — safe for the
-/// read-heavy, write-light workload typical of ranking + feedback.
+/// One writer: the ranking.events consumer (learning::consumer), which builds
+/// each batch's changes on clones and installs them here only after the batch
+/// has committed to f33d3r_rank. /rank only reads. A model that does not exist
+/// has learned nothing, and reading never creates one.
 pub struct ModelStore {
     models: DashMap<String, LinUcbModel>,
     dim: usize,
 }
 
 impl ModelStore {
-    /// Create a new store, pre-populating known surfaces.
-    pub fn new(surfaces: &[&str], dim: usize) -> Self {
-        let map = DashMap::new();
-        for s in surfaces {
-            map.insert(s.to_string(), LinUcbModel::new(s, dim));
+    pub fn new(dim: usize) -> Self {
+        Self {
+            models: DashMap::new(),
+            dim,
         }
-        Self { models: map, dim }
     }
 
-    /// Score a feature vector against the model for `surface`.
-    /// Auto-creates the model if the surface is new.
-    pub fn score(&self, surface: &str, x: &DVector<f64>, alpha: f64) -> Result<(f64, f64, f64)> {
-        let model = self
-            .models
-            .entry(surface.to_string())
-            .or_insert_with(|| LinUcbModel::new(surface, self.dim));
-        model.score(x, alpha)
+    pub fn dim(&self) -> usize {
+        self.dim
     }
 
-    /// Apply an online update for `surface` given feature vector `x` and reward `r`.
-    pub fn update(&self, surface: &str, x: &DVector<f64>, reward: f64) {
-        let mut model = self
-            .models
-            .entry(surface.to_string())
-            .or_insert_with(|| LinUcbModel::new(surface, self.dim));
-        model.update(x, reward);
+    /// θᵀx for this model, or None when the model has never been trained.
+    pub fn expected(&self, model_key: &str, x: &DVector<f64>) -> Option<anyhow::Result<f64>> {
+        self.models.get(model_key).map(|m| m.expected(x))
     }
 
-    /// List all surfaces currently tracked.
-    pub fn surfaces(&self) -> Vec<String> {
-        self.models.iter().map(|e| e.key().clone()).collect()
+    /// A copy of the model to change, or a fresh one when it does not exist yet.
+    pub fn working_copy(&self, model_key: &str) -> LinUcbModel {
+        match self.models.get(model_key) {
+            Some(m) => LinUcbModel {
+                surface: m.surface.clone(),
+                dim: m.dim,
+                a_matrix: m.a_matrix.clone(),
+                b_vector: m.b_vector.clone(),
+            },
+            None => LinUcbModel::new(model_key, self.dim),
+        }
     }
 
-    /// Overwrite a surface's model with a restored checkpoint from Postgres.
-    pub fn load_checkpoint(&self, surface: &str, a_matrix: DMatrix<f64>, b_vector: DVector<f64>) {
-        let mut model = self
-            .models
-            .entry(surface.to_string())
-            .or_insert_with(|| LinUcbModel::new(surface, self.dim));
-        model.a_matrix = a_matrix;
-        model.b_vector = b_vector;
+    /// Install a model whose state is already durable in f33d3r_rank.
+    pub fn install(&self, model_key: &str, a_matrix: DMatrix<f64>, b_vector: DVector<f64>) {
+        let dim = b_vector.len();
+        self.models.insert(
+            model_key.to_string(),
+            LinUcbModel {
+                surface: model_key.to_string(),
+                dim,
+                a_matrix,
+                b_vector,
+            },
+        );
     }
 
-    /// Return a snapshot of every surface's matrices for persistence.
-    /// Clones are cheap relative to the I/O cost of writing to Postgres.
-    pub fn snapshot_all(&self) -> Vec<(String, DMatrix<f64>, DVector<f64>)> {
-        self.models
-            .iter()
-            .map(|e| (e.key().clone(), e.a_matrix.clone(), e.b_vector.clone()))
-            .collect()
+    pub fn len(&self) -> usize {
+        self.models.len()
     }
 }

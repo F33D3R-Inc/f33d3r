@@ -6,15 +6,15 @@ use crate::api::types::{ContentItem, RankedItem, ScoreBreakdown};
 /// Place `explore_count` exploration items on the first page, in its lower half, so
 /// they are actually seen without leading the feed.
 ///
-/// Candidates are anything in the pool not already on that page and not in `excluded`,
-/// which holds whatever the safety barrier refused. New creators and low-exposure
+/// Candidates are anything in the pool not already on that page. The pool holds
+/// nothing the viewer's safety barrier refuses: feed-engine removed it before
+/// asking, and /rank rejects a pool that breaks that (safety::barrier). New creators and low-exposure
 /// content come first. Anything picked moves up rather than appearing twice. Each is
 /// flagged with `exploration_slot: true`.
 pub fn inject_exploration_slots(
     mut ranked: Vec<RankedItem>,
     content_pool: &[ContentItem],
     explore_count: usize,
-    excluded: &HashSet<String>,
     page_size: usize,
 ) -> Vec<RankedItem> {
     if explore_count == 0 {
@@ -30,7 +30,7 @@ pub fn inject_exploration_slots(
 
     let mut candidates: Vec<&ContentItem> = content_pool
         .iter()
-        .filter(|c| !excluded.contains(&c.content_id) && !on_page.contains(c.content_id.as_str()))
+        .filter(|c| !on_page.contains(c.content_id.as_str()))
         .collect();
     candidates.sort_by(|a, b| {
         exploration_priority(b)
@@ -122,6 +122,7 @@ mod tests {
             self_reply_cadence: 0.0,
             char_count: 0,
             is_in_network: false,
+            creator_pial: None,
         }
     }
 
@@ -137,7 +138,7 @@ mod tests {
 
         let pool = vec![make_item("e1", 0, 0), make_item("e2", 10, 5)];
 
-        let result = inject_exploration_slots(ranked, &pool, 2, &HashSet::new(), 10);
+        let result = inject_exploration_slots(ranked, &pool, 2, 10);
 
         let explore_count = result.iter().filter(|i| i.exploration_slot).count();
         assert_eq!(explore_count, 2);
@@ -152,15 +153,6 @@ mod tests {
     }
 
     #[test]
-    fn what_the_barrier_refused_is_never_explored() {
-        let ranked: Vec<RankedItem> = vec![];
-        let pool = vec![make_item("blocked", 0, 0)];
-        let excluded: HashSet<String> = ["blocked".to_string()].into_iter().collect();
-        let result = inject_exploration_slots(ranked, &pool, 1, &excluded, 10);
-        assert!(result.is_empty());
-    }
-
-    #[test]
     fn an_item_moved_up_does_not_appear_twice() {
         let ranked: Vec<RankedItem> = (0..5)
             .map(|i| RankedItem {
@@ -170,7 +162,7 @@ mod tests {
             })
             .collect();
         let pool = vec![make_item("r4", 0, 0)];
-        let result = inject_exploration_slots(ranked, &pool, 1, &HashSet::new(), 2);
+        let result = inject_exploration_slots(ranked, &pool, 1, 2);
         assert_eq!(result.iter().filter(|i| i.content_id == "r4").count(), 1);
         assert!(result.iter().take(2).any(|i| i.content_id == "r4"));
     }

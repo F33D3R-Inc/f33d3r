@@ -428,18 +428,16 @@ func (s *Server) tipEvent(w http.ResponseWriter, r *http.Request, u *store.User,
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// replyRestrictionEvent — owner sets who may reply. `everyone` is stored as
-// `open`, matching feed-engine.
+// replyRestrictionEvent — owner sets who may reply, in the one vocabulary the
+// signed payload carries (store.CommentGatings), as feed-engine does.
 func (s *Server) replyRestrictionEvent(w http.ResponseWriter, r *http.Request, u *store.User, body *eventBody) {
 	workID := body.get("post_id")
 	if workID == "" {
 		workID = body.get("work_id")
 	}
 	restriction := body.get("restriction")
-	switch restriction {
-	case "everyone", "followers", "circle", "none", "verified":
-	default:
-		plainError(w, http.StatusBadRequest, "invalid restriction")
+	if !store.ValidCommentGating(restriction) {
+		plainError(w, http.StatusBadRequest, "restriction must be one of "+strings.Join(store.CommentGatings, ", "))
 		return
 	}
 	if !s.requireOwner(w, r, u, workID) {

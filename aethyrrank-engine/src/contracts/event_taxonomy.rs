@@ -2,10 +2,9 @@
 //!
 //! ## THE RULE
 //!
-//! Every EventType in the entire F33D3R system is defined here.
-//! Every brain imports from this module.
-//! Nobody defines their own EventType anywhere else.
-//! Adding a new event = add it here, recompile all brains.
+//! Every EventType AethyrRank learns from is defined here, and nowhere else.
+//! A ranking signal (learning::signal) is mapped onto one of these, and its
+//! reward is reward_signal()'s — never a number a producer sends.
 //! The compiler enforces exhaustive match — no silent gaps.
 //!
 //! ## Adding a new event type
@@ -15,12 +14,11 @@
 //! 3. Add its category to `event_category()`
 //! 4. The compiler will catch every match statement that needs updating
 //!
-//! This is how you scale to 11 brain regions without compile breaks.
 
 use serde::{Deserialize, Serialize};
 
-/// Every event that any F33D3R brain can emit or receive.
-/// Organised by brain region for readability; all are equal at runtime.
+/// Every event AethyrRank can learn from.
+/// Grouped by the surface it happens on, for readability; all are equal at runtime.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EventType {
@@ -71,7 +69,7 @@ pub enum EventType {
     VoiceSpeak,
     VoiceReact,
 
-    // ── Video (Astraon) ───────────────────────────────────────────────────
+    // ── Video ─────────────────────────────────────────────────────────────
     VideoWatch,
     VideoComplete,
     VideoSkip,
@@ -103,7 +101,7 @@ pub enum EventType {
 /// Canonical reward signal for every event type.
 ///
 /// This is the single source of truth for LinUCB reward signals.
-/// All brain regions that do bandit updates call this function.
+/// learning::apply is the one caller that turns it into a model update.
 /// Range: [-1.0, 2.0] — negative for bad signals, positive for good.
 pub fn reward_signal(event: &EventType) -> f64 {
     match event {
@@ -181,8 +179,7 @@ pub fn reward_signal(event: &EventType) -> f64 {
     }
 }
 
-/// Which brain region primarily emits this event type.
-/// Used by the BrainRegistry to route signals correctly.
+/// The surface an event type belongs to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EventCategory {
     Feed,

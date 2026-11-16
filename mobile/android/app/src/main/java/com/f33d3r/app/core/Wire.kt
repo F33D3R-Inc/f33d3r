@@ -153,15 +153,16 @@ object Endpoints {
     fun following(handle: String) = ContentSource("/$handle/following")
     fun shop(handle: String) = ContentSource("/shop/$handle")
 
-    /** The ring rail above the timeline: one ring per author with a live Vision, each keyed by that author's PIAL. */
+    /** The ring rail above the timeline: one ring per author with a live Vision. */
     val visionRings = ContentSource("/facets/vision/rings")
 
     /**
      * One frame of the sequential Vision viewer, resolved and sequenced by the server.
      *
-     * [vision] is the Vision's address, `<author_pial>.<seq>`, exactly as the server
+     * [vision] is the Vision's address, `<account_uuid>.<seq>`, exactly as the server
      * wrote it into a ring or into the frame's own next and previous controls. It is
-     * handed back as written: nothing here reads a PIAL or a sequence out of it.
+     * opaque here and handed back as written: nothing reads an account or a sequence
+     * out of it.
      */
     fun visionViewer(vision: String, scope: String) =
         ContentSource("/facets/vision/viewer", mapOf("vision" to vision, "scope" to scope))
@@ -242,7 +243,8 @@ object Endpoints {
     const val GNOSIS_SEND_SEALED = "/api/gnosis/send-sealed"
     const val MESSAGES_SEND = "/messages/send"
     const val MESSAGES_NEW = "/messages/new"
-    const val PIAL_SIGNING_KEY = "/api/pial/signing-key/register"
+    /** Where this device registers its account's public signing key (the server's route name). */
+    const val SIGNING_KEY_REGISTER = "/api/pial/signing-key/register"
     const val USERS_SEARCH = "/api/users/search"
     const val PROFILES_MINI = "/api/profiles/mini"
     const val ROOT = "/"

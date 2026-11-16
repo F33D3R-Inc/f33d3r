@@ -1,144 +1,100 @@
 package handler
 
+// analytics.go — the creator analytics page, the creator panel's analytics
+// tab and the admin analytics panel. Every number is read from feed-engine's
+// own rows (internal/db/analytics.go) and rendered here; nothing is fetched
+// from another service.
+
 import (
-	"context"
-	"encoding/json"
-	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"strings"
-	"time"
-
-	"github.com/google/uuid"
 
 	dbpkg "github.com/f33d3r/feed-engine/internal/db"
 )
 
-// astraonGet proxies a GET request to Astraon and decodes JSON into dest.
-// Falls back gracefully when Astraon is unavailable.
-func (h *Handler) astraonGet(ctx context.Context, path string, dest interface{}) error {
-	if h.cfg.AstraonURL == "" {
-		return fmt.Errorf("astraon not configured")
+// creatorAnalytics is everything an analytics surface renders for one creator.
+type creatorAnalytics struct {
+	Summary   *dbpkg.CreatorSummary
+	Posts     *analyticsWorks
+	Timeline  *dbpkg.CreatorTimeline
+	Audience  *dbpkg.CreatorAudience
+	Breakdown *dbpkg.CreatorBreakdown
+}
+
+// analyticsWorkRow is one row of the analytics_post_row Facet.
+type analyticsWorkRow struct {
+	dbpkg.CreatorWorkRow
+	TimeAgo string
+}
+
+type analyticsWorks struct {
+	Posts  []analyticsWorkRow
+	SortBy string
+	Period int
+}
+
+// analyticsPeriod reads ?period=7|30|90|all; anything else is the 30-day default.
+func analyticsPeriod(r *http.Request) int {
+	if d, ok := dbpkg.AnalyticsPeriods[r.URL.Query().Get("period")]; ok {
+		return d
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, h.cfg.AstraonURL+path, nil)
+	return 30
+}
+
+// analyticsSort reads ?sort=; anything not in the vocabulary is impressions.
+func analyticsSort(r *http.Request) string {
+	s := r.URL.Query().Get("sort")
+	if _, ok := dbpkg.AnalyticsSorts[s]; ok {
+		return s
+	}
+	return "impressions"
+}
+
+func (h *Handler) analyticsWorks(accountID string, days int, sortBy string) (*analyticsWorks, error) {
+	cw, err := dbpkg.GetCreatorWorks(h.db, accountID, days, sortBy, 20)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	resp, err := h.httpClient.Do(req)
-	if err != nil {
-		return err
+	out := &analyticsWorks{Posts: make([]analyticsWorkRow, 0, len(cw.Posts)), SortBy: cw.SortBy, Period: cw.Period}
+	for _, p := range cw.Posts {
+		out.Posts = append(out.Posts, analyticsWorkRow{CreatorWorkRow: p, TimeAgo: TimeAgo(p.CreatedAt)})
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		return fmt.Errorf("astraon %d for %s", resp.StatusCode, path)
+	return out, nil
+}
+
+// loadCreatorAnalytics reads every section. full adds the charts the creator
+// panel does not draw.
+func (h *Handler) loadCreatorAnalytics(accountID string, days int, sortBy string, full bool) (*creatorAnalytics, error) {
+	var a creatorAnalytics
+	var err error
+	if a.Summary, err = dbpkg.GetCreatorSummary(h.db, accountID, days); err != nil {
+		return nil, err
 	}
-	b, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return err
+	if a.Posts, err = h.analyticsWorks(accountID, days, sortBy); err != nil {
+		return nil, err
 	}
-	return json.Unmarshal(b, dest)
+	if !full {
+		return &a, nil
+	}
+	if a.Timeline, err = dbpkg.GetCreatorTimeline(h.db, accountID, days); err != nil {
+		return nil, err
+	}
+	if a.Audience, err = dbpkg.GetCreatorAudience(h.db, accountID, days); err != nil {
+		return nil, err
+	}
+	if a.Breakdown, err = dbpkg.GetCreatorBreakdown(h.db, accountID, days); err != nil {
+		return nil, err
+	}
+	return &a, nil
 }
 
-// ── Astraon response types mirrored from astraon/src/models.rs ────────────────
-
-type AstraonSummary struct {
-	PialID               string   `json:"pial_id"`
-	PeriodDays           int      `json:"period_days"`
-	TotalPosts           int64    `json:"total_posts"`
-	Impressions          int64    `json:"impressions"`
-	Likes                int64    `json:"likes"`
-	Reposts              int64    `json:"reposts"`
-	Replies              int64    `json:"replies"`
-	Saves                int64    `json:"saves"`
-	ProfileVisits        int64    `json:"profile_visits"`
-	FollowersGained      int64    `json:"followers_gained"`
-	FollowersLost        int64    `json:"followers_lost"`
-	NetFollowers         int64    `json:"net_followers"`
-	CurrentFollowers     int64    `json:"current_followers"`
-	EngagementRate       float64  `json:"engagement_rate"`
-	ViewTimeSecs         int64    `json:"view_time_secs"`
-	ImpressionsPctChange *float64 `json:"impressions_pct_change"`
-	LikesPctChange       *float64 `json:"likes_pct_change"`
-	FollowersPctChange   *float64 `json:"followers_pct_change"`
-}
-
-type AstraonPostRow struct {
-	PostID        string    `json:"post_id"`
-	BodyPreview   string    `json:"body_preview"`
-	ContentType   string    `json:"content_type"`
-	CreatedAt     time.Time `json:"created_at"`
-	TimeAgo       string    `json:"time_ago"`
-	Impressions   int64     `json:"impressions"`
-	Likes         int64     `json:"likes"`
-	Reposts       int64     `json:"reposts"`
-	Replies       int64     `json:"replies"`
-	Saves         int64     `json:"saves"`
-	EngagementPct float64   `json:"engagement_pct"`
-	BarPct        float64   `json:"bar_pct"`
-}
-
-type AstraonCreatorPosts struct {
-	Posts  []AstraonPostRow `json:"posts"`
-	SortBy string           `json:"sort_by"`
-	Period int              `json:"period"`
-}
-
-type AstraonTimelinePoint struct {
-	Date        string  `json:"date"`
-	Impressions int64   `json:"impressions"`
-	Likes       int64   `json:"likes"`
-	Reposts     int64   `json:"reposts"`
-	Replies     int64   `json:"replies"`
-	Posts       int64   `json:"posts"`
-	Engagement  float64 `json:"engagement"`
-}
-
-type AstraonTimeline struct {
-	Points         []AstraonTimelinePoint `json:"points"`
-	PeriodDays     int                    `json:"period_days"`
-	MaxImpressions int64                  `json:"max_impressions"`
-	MaxEngagement  float64                `json:"max_engagement"`
-}
-
-type AstraonAudiencePoint struct {
-	Date         string `json:"date"`
-	NewFollowers int64  `json:"new_followers"`
-	Unfollows    int64  `json:"unfollows"`
-	Net          int64  `json:"net"`
-}
-
-type AstraonAudience struct {
-	Points         []AstraonAudiencePoint `json:"points"`
-	TotalFollowers int64                  `json:"total_followers"`
-	PeriodDays     int                    `json:"period_days"`
-}
-
-type AstraonBreakdownItem struct {
-	ContentType   string  `json:"content_type"`
-	Count         int64   `json:"count"`
-	Impressions   int64   `json:"impressions"`
-	AvgEngagement float64 `json:"avg_engagement"`
-	PctOfPosts    float64 `json:"pct_of_posts"`
-}
-
-type AstraonBreakdown struct {
-	Types []AstraonBreakdownItem `json:"types"`
-}
-
-type AstraonSiteSummary struct {
-	TotalUsers       int64 `json:"total_users"`
-	TotalPosts       int64 `json:"total_posts"`
-	TotalImpressions int64 `json:"total_impressions"`
-	TotalLikes       int64 `json:"total_likes"`
-	TotalReposts     int64 `json:"total_reposts"`
-	TotalComments    int64 `json:"total_comments"`
-	NewUsersToday    int64 `json:"new_users_today"`
-	NewUsersWeek     int64 `json:"new_users_week"`
-	NewPostsToday    int64 `json:"new_posts_today"`
-	NewPostsWeek     int64 `json:"new_posts_week"`
-	ActiveUsersDay   int64 `json:"active_users_day"`
-	ActiveUsersWeek  int64 `json:"active_users_week"`
+// analyticsUnavailable answers a read that failed. The page is not drawn with
+// sections missing: an empty section would read as "no activity", which is a
+// different and false statement.
+func analyticsUnavailable(w http.ResponseWriter, where string, err error) {
+	log.Printf("[analytics] %s: %v", where, err)
+	http.Error(w, "Analytics are unavailable right now. Try again shortly.", http.StatusServiceUnavailable)
 }
 
 // ── Analytics page ────────────────────────────────────────────────────────────
@@ -149,118 +105,53 @@ func (h *Handler) analyticsPage(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	days := 30
-	switch r.URL.Query().Get("period") {
-	case "7":
-		days = 7
-	case "90":
-		days = 90
-	case "all":
-		days = 0
-	}
-	sortBy := r.URL.Query().Get("sort")
-	if sortBy == "" {
-		sortBy = "impressions"
-	}
+	days := analyticsPeriod(r)
+	sortBy := analyticsSort(r)
 
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-	defer cancel()
-
-	// ── Astraon calls (with DB fallback) ─────────────────────────────────────
-	var summary *AstraonSummary
-	var posts *AstraonCreatorPosts
-	var timeline *AstraonTimeline
-	var audience *AstraonAudience
-	var breakdown *AstraonBreakdown
-
-	pialID := user.PIALID
-	daysStr := fmt.Sprintf("%d", days)
-
-	var astrErr error
-
-	// Summary
-	var s AstraonSummary
-	astrErr = h.astraonGet(ctx, fmt.Sprintf("/v1/analytics/creator/%s/summary?days=%s", pialID, daysStr), &s)
-	if astrErr == nil {
-		summary = &s
-	} else {
-		// DB fallback
-		if dbSum, err := dbpkg.GetCreatorAnalyticsSummary(h.db, pialID); err == nil && dbSum != nil {
-			summary = &AstraonSummary{
-				PialID:         pialID,
-				PeriodDays:     days,
-				TotalPosts:     int64(dbSum.TotalPosts),
-				Impressions:    dbSum.TotalImpressions,
-				Likes:          dbSum.TotalLikes,
-				Reposts:        dbSum.TotalReposts,
-				Replies:        dbSum.TotalComments,
-				Saves:          dbSum.TotalSaves,
-				EngagementRate: dbSum.EngagementRate,
-				ViewTimeSecs:   dbSum.TotalViewSeconds,
-			}
-		}
-	}
-
-	// Posts table
-	var cp AstraonCreatorPosts
-	astrErr = h.astraonGet(ctx, fmt.Sprintf("/v1/analytics/creator/%s/posts?days=%s&sort_by=%s&limit=20", pialID, daysStr, sortBy), &cp)
-	if astrErr == nil {
-		posts = &cp
-	} else {
-		// DB fallback
-		if dbPosts, err := dbpkg.GetCreatorTopPosts(h.db, pialID, 20); err == nil {
-			rows := make([]AstraonPostRow, 0, len(dbPosts))
-			for _, p := range dbPosts {
-				rows = append(rows, AstraonPostRow{
-					PostID:        p.PostID,
-					BodyPreview:   p.Body,
-					ContentType:   "text",
-					CreatedAt:     p.CreatedAt,
-					TimeAgo:       TimeAgo(p.CreatedAt),
-					Impressions:   p.Impressions,
-					Likes:         p.Likes,
-					Reposts:       p.Reposts,
-					Replies:       p.Comments,
-					Saves:         p.Saves,
-					EngagementPct: p.EngagementPct,
-					BarPct:        p.MaxPct,
-				})
-			}
-			posts = &AstraonCreatorPosts{Posts: rows, SortBy: sortBy, Period: days}
-		}
-	}
-
-	// Timeline
-	var tl AstraonTimeline
-	if err := h.astraonGet(ctx, fmt.Sprintf("/v1/analytics/creator/%s/timeline?days=%s", pialID, daysStr), &tl); err == nil {
-		timeline = &tl
-	}
-
-	// Audience
-	var aud AstraonAudience
-	if err := h.astraonGet(ctx, fmt.Sprintf("/v1/analytics/creator/%s/audience?days=%s", pialID, daysStr), &aud); err == nil {
-		audience = &aud
-	}
-
-	// Content breakdown
-	var bd AstraonBreakdown
-	if err := h.astraonGet(ctx, fmt.Sprintf("/v1/analytics/creator/%s/breakdown?days=%s", pialID, daysStr), &bd); err == nil {
-		breakdown = &bd
+	a, err := h.loadCreatorAnalytics(user.ID, days, sortBy, true)
+	if err != nil {
+		analyticsUnavailable(w, "analytics page for "+user.ID, err)
+		return
 	}
 
 	data := h.baseData(user)
 	data["Title"] = "Analytics · F33D3R"
-	data["SessionID"] = uuid.New().String()
 	data["TargetHandle"] = user.Handle
 	data["Period"] = days
 	data["SortBy"] = sortBy
-	data["Summary"] = summary
-	data["Posts"] = posts
-	data["Timeline"] = timeline
-	data["Audience"] = audience
-	data["Breakdown"] = breakdown
-	data["AstraonOnline"] = astrErr == nil
+	data["Summary"] = a.Summary
+	data["Posts"] = a.Posts
+	data["Timeline"] = a.Timeline
+	data["Audience"] = a.Audience
+	data["Breakdown"] = a.Breakdown
 	h.render(w, r, "analytics.html", h.withRail(data, user, "default"))
+}
+
+// creatorPanelAnalytics serves GET /create/partials/analytics: the creator
+// panel's analytics tab, the last 30 days of the creator's own works.
+func (h *Handler) creatorPanelAnalytics(w http.ResponseWriter, r *http.Request) {
+	user := h.userFromRequest(w, r)
+	if h.denyCreatorPanel(w, user) {
+		return
+	}
+	const days = 30
+	sortBy := analyticsSort(r)
+
+	a, err := h.loadCreatorAnalytics(user.ID, days, sortBy, false)
+	if err != nil {
+		analyticsUnavailable(w, "creator panel analytics for "+user.ID, err)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	h.renderPartial(w, "creator_analytics", map[string]interface{}{
+		"Summary":       a.Summary,
+		"Posts":         a.Posts,
+		"Period":        days,
+		"SortBy":        sortBy,
+		"User":          user,
+		"ActiveSection": "analytics",
+	})
 }
 
 // adminUserAnalytics — standalone page redirect for /admin/analytics (bookmarkable URL).
@@ -281,88 +172,34 @@ func (h *Handler) adminPanelAnalytics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	handle := strings.TrimSpace(r.URL.Query().Get("handle"))
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-	defer cancel()
-
-	var siteSummary *AstraonSiteSummary
-	var ss AstraonSiteSummary
-	if err := h.astraonGet(ctx, "/v1/analytics/site/summary", &ss); err == nil {
-		siteSummary = &ss
-	} else {
-		if dbSite, err := dbpkg.GetSiteAnalytics(h.db); err == nil {
-			siteSummary = &AstraonSiteSummary{
-				TotalUsers:       int64(dbSite.TotalUsers),
-				TotalPosts:       int64(dbSite.TotalPosts),
-				TotalImpressions: dbSite.TotalImpressions,
-				TotalLikes:       dbSite.TotalLikes,
-				NewUsersWeek:     int64(dbSite.NewUsersWeek),
-				NewPostsWeek:     int64(dbSite.NewPostsWeek),
-			}
-		}
+	site, err := dbpkg.GetSiteAnalytics(h.db)
+	if err != nil {
+		analyticsUnavailable(w, "admin site analytics", err)
+		return
 	}
 
-	var userSummary *AstraonSummary
-	var userPosts *AstraonCreatorPosts
-	var lookupHandle string
+	handle := strings.TrimSpace(r.URL.Query().Get("handle"))
+	data := map[string]interface{}{"SiteSummary": site, "QueriedHandle": handle, "LookupHandle": ""}
 	if handle != "" {
-		target, tErr := dbpkg.GetUserByHandle(h.db, handle)
-		if tErr != nil {
-			log.Printf("[analytics] target lookup %s: %v", handle, tErr)
+		target, err := dbpkg.GetUserByHandle(h.db, handle)
+		if err != nil {
+			analyticsUnavailable(w, "admin analytics lookup of @"+handle, err)
+			return
 		}
+		// An unknown handle renders the panel with nothing looked up, which the
+		// Facet states as "no account".
 		if target != nil {
-			lookupHandle = target.Handle
-			var s AstraonSummary
-			if err := h.astraonGet(ctx, fmt.Sprintf("/v1/analytics/creator/%s/summary?days=30", target.PIALID), &s); err == nil {
-				userSummary = &s
-			} else {
-				if dbSum, err := dbpkg.GetCreatorAnalyticsSummary(h.db, target.PIALID); err == nil && dbSum != nil {
-					userSummary = &AstraonSummary{
-						PialID:         target.PIALID,
-						PeriodDays:     30,
-						TotalPosts:     int64(dbSum.TotalPosts),
-						Impressions:    dbSum.TotalImpressions,
-						Likes:          dbSum.TotalLikes,
-						Reposts:        dbSum.TotalReposts,
-						Replies:        dbSum.TotalComments,
-						Saves:          dbSum.TotalSaves,
-						EngagementRate: dbSum.EngagementRate,
-					}
-				}
+			a, err := h.loadCreatorAnalytics(target.ID, 30, "impressions", false)
+			if err != nil {
+				analyticsUnavailable(w, "admin analytics of "+target.ID, err)
+				return
 			}
-			var cp AstraonCreatorPosts
-			if err := h.astraonGet(ctx, fmt.Sprintf("/v1/analytics/creator/%s/posts?days=30&limit=20", target.PIALID), &cp); err == nil {
-				userPosts = &cp
-			} else {
-				if dbPosts, err := dbpkg.GetCreatorTopPosts(h.db, target.PIALID, 20); err == nil {
-					rows := make([]AstraonPostRow, 0, len(dbPosts))
-					for _, p := range dbPosts {
-						rows = append(rows, AstraonPostRow{
-							PostID:        p.PostID,
-							BodyPreview:   p.Body,
-							ContentType:   "text",
-							CreatedAt:     p.CreatedAt,
-							TimeAgo:       TimeAgo(p.CreatedAt),
-							Impressions:   p.Impressions,
-							Likes:         p.Likes,
-							Reposts:       p.Reposts,
-							Replies:       p.Comments,
-							Saves:         p.Saves,
-							EngagementPct: p.EngagementPct,
-							BarPct:        p.MaxPct,
-						})
-					}
-					userPosts = &AstraonCreatorPosts{Posts: rows, SortBy: "impressions", Period: 30}
-				}
-			}
+			data["LookupHandle"] = target.Handle
+			data["UserSummary"] = a.Summary
+			data["UserPosts"] = a.Posts
 		}
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	h.renderPartial(w, "admin_analytics_panel", map[string]interface{}{
-		"SiteSummary":  siteSummary,
-		"UserSummary":  userSummary,
-		"UserPosts":    userPosts,
-		"LookupHandle": lookupHandle,
-	})
+	h.renderPartial(w, "admin_analytics_panel", data)
 }

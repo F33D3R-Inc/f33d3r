@@ -30,8 +30,9 @@ package live
 //	             fixed number of concurrent encode sessions and the next one
 //	             fails outright. Measured on this host at 8 (see nvencSessions).
 //
-// A ladder is costed against whichever it uses, and a rung that is copied
-// rather than encoded costs neither.
+// A ladder is costed against whichever it uses. Every rung is encoded: the
+// moving watermark is burned into the pixels of every rung a viewer can fetch,
+// and only an encode puts it there.
 
 import (
 	"fmt"
@@ -58,18 +59,24 @@ import (
 // invocation four ways back to back in one load window, which makes the ratios
 // between them trustworthy even though the box was busy:
 //
-//	libx264, three rungs           4.114 cores   (the baseline this replaces)
+//	libx264, three rungs           4.114 cores
 //	libx264, top rung passed through 2.751       -33%
 //	NVENC, three rungs             2.114         -49%
 //	NVENC, top rung passed through 1.891         -54%
 //
-// Two things fall out of that decomposition and both shaped this file. The
-// single 1080p libx264 encode costs 1.14 cores — a third of the whole ladder in
-// one rung, which is why passthrough is worth the segment-alignment work it
-// costs. And the fixed cost that no encoder choice can touch is around 1.7
-// cores, over 40% of the ladder, which is why hardware encoding raises the
-// ceiling by much less than a naive reading of "the GPU does the encoding"
-// suggests.
+// The passthrough rows are history. Passing the top rung through was this
+// lane's largest single saving and it is gone on purpose: a rung remuxed from
+// the publisher's own elementary stream carries no watermark, and every
+// viewer-facing copy on this platform carries one. The price is the single
+// 1080p libx264 encode, 1.14 cores — a third of the ladder in one rung — on
+// every H.264 source that used to qualify. On the 7.8 core budget this host
+// runs to, that takes the software lane from three concurrent 1080p30
+// broadcasts to two, and the hardware lane from four (two sessions each) to
+// two (three sessions each, against a card that opens eight).
+//
+// The fixed cost that no encoder choice can touch is around 1.7 cores, over
+// 40% of the ladder, which is why hardware encoding raises the ceiling by much
+// less than a naive reading of "the GPU does the encoding" suggests.
 //
 // The coefficients are fitted at the busy-box figures, not at an idle box's.
 // A budget only matters when the machine is loaded, and that is exactly when an
@@ -103,6 +110,19 @@ const x264CoresPerMegapixel = 0.0196
 // than the code it replaced. MEASURED on this host.
 const fixedCoresPerMegapixel = 0.0238
 
+// markCoresPerMegapixel is the moving watermark: one drawtext pass over the
+// source frame, ahead of the split, so the mark is drawn once per broadcast and
+// every rung inherits it through its own scale. drawtext's work is the glyph
+// blend over the text's own pixels plus its expression evaluation, not a pass
+// over the frame, so the figure is small; it is charged against the source
+// pixel rate so it scales with what is being drawn on.
+//
+// ESTIMATED, NOT MEASURED: 0.05 cores for a 1080p30 source, chosen to sit
+// above what a text blend of this size costs. Measure it the way the other
+// coefficients were measured — the ladder's own invocation, /proc, a loaded
+// box — and replace this figure with the measurement.
+const markCoresPerMegapixel = 0.0008
+
 // nvencCoresPerMegapixel is what a rung costs the CPU when the GPU encodes it:
 // the frame still has to be handed to the card and the packet taken back.
 // MEASURED on this host.
@@ -121,17 +141,30 @@ func megapixelsPerSecond(height, fps int) float64 {
 }
 
 // rungCPUCost is what one rung costs in cores under a given encoder.
-func rungCPUCost(height, fps int, mode EncodeMode, encoder string) float64 {
-	if mode == ModeCopy {
-		// A copied rung is a remux. There is no scale, no encode and no
-		// colour conversion — the elementary stream is written through.
-		return 0
-	}
+func rungCPUCost(height, fps int, encoder string) float64 {
 	mpx := megapixelsPerSecond(height, fps)
 	if encoder == EncoderNVENC {
 		return mpx * nvencCoresPerMegapixel
 	}
 	return mpx * x264CoresPerMegapixel
+}
+
+// broadcastCPUCost is what one broadcast costs whatever its rungs: the fixed
+// work every ladder does on the CPU, and the watermark drawn on the source.
+func broadcastCPUCost(sourceHeight, fps int) float64 {
+	return megapixelsPerSecond(sourceHeight, fps) * (fixedCoresPerMegapixel + markCoresPerMegapixel)
+}
+
+// planCPUCost is the whole cost of a ladder: the per-broadcast cost of its
+// source plus each of its rungs under the encoder carrying them. It is the one
+// place a ladder is costed, so a lease costed at planning and a lease recosted
+// after a shed rung can never be costed by two different sums.
+func planCPUCost(sourceHeight, fps int, rungs []PlannedRung, encoder string) float64 {
+	total := broadcastCPUCost(sourceHeight, fps)
+	for _, r := range rungs {
+		total += rungCPUCost(r.Height, fps, encoder)
+	}
+	return total
 }
 
 // ── budgets ──────────────────────────────────────────────────────────────────
@@ -155,8 +188,7 @@ const cpuReserveFraction = 0.35
 // minRungCPU is the cost of the cheapest ladder that is worth calling a
 // broadcast: one 480p30 rung. A box that cannot afford this cannot afford a
 // broadcast at all, and says so instead of accepting one it will destroy.
-var minRungCPU = rungCPUCost(480, 30, ModeEncode, EncoderX264) +
-	megapixelsPerSecond(480, 30)*fixedCoresPerMegapixel
+var minRungCPU = rungCPUCost(480, 30, EncoderX264) + broadcastCPUCost(480, 30)
 
 // nominalLadderCPU is what an unknown broadcast is reserved at. Geometry is not
 // known when the publish is authorised — it is not known until the source has
@@ -169,9 +201,9 @@ var minRungCPU = rungCPUCost(480, 30, ModeEncode, EncoderX264) +
 // broadcast the box cannot carry and then discovering it with somebody else's
 // video already broken, which is the failure this file exists to end.
 var nominalLadderCPU = func() float64 {
-	total := megapixelsPerSecond(1080, 30) * fixedCoresPerMegapixel
+	total := broadcastCPUCost(1080, 30)
 	for _, h := range []int{480, 720, 1080} {
-		total += rungCPUCost(h, 30, ModeEncode, EncoderX264)
+		total += rungCPUCost(h, 30, EncoderX264)
 	}
 	return total
 }()
@@ -190,7 +222,12 @@ type Lease struct {
 	CPUCores      float64
 	NVENCSessions int
 	Plan          EncodePlan
-	AdmittedAt    time.Time
+	// SourceHeight and FPS are the geometry the plan was costed against, kept
+	// so a lease recosted after a shed rung is recosted against the same
+	// source rather than against the rungs alone.
+	SourceHeight int
+	FPS          int
+	AdmittedAt   time.Time
 	// Pressure counts how many times this ladder has reported that it could not
 	// keep up. Each report sheds a rung, so this is also how far it has been
 	// walked down from the ladder it was planned.
@@ -296,12 +333,11 @@ func (g *Governor) Reserve(streamID string) AdmissionResult {
 	// magnitude, so a broadcast that can be given sessions costs the CPU budget
 	// almost nothing and leaves the software lane free for the next one.
 	if g.nvencEnabled {
-		// Costed at the sessions a nominal 1080p ladder needs. Passthrough may
-		// give one of them back when the real geometry arrives.
+		// Costed at the sessions a nominal 1080p ladder needs: one per rung.
 		const nominalSessions = 3
-		nominalGPUCPU := megapixelsPerSecond(1080, 30) * fixedCoresPerMegapixel
+		nominalGPUCPU := broadcastCPUCost(1080, 30)
 		for _, h := range []int{480, 720, 1080} {
-			nominalGPUCPU += rungCPUCost(h, 30, ModeEncode, EncoderNVENC)
+			nominalGPUCPU += rungCPUCost(h, 30, EncoderNVENC)
 		}
 		if usedNVENC+nominalSessions <= g.nvencBudget && usedCPU+nominalGPUCPU <= g.cpuBudget {
 			g.leases[streamID] = &Lease{
@@ -366,20 +402,9 @@ type SourceReport struct {
 	Width  int
 	Height int
 	FPS    int
-	// Codec is the source's video codec as the demuxer names it. "h264" is the
-	// one that can be passed through; a browser publishing WebRTC delivers VP8
-	// and must be encoded.
+	// Codec is the source's video codec as the demuxer names it. It is
+	// recorded, not acted on: every source is decoded and encoded.
 	Codec string
-	// GOPSeconds is the publisher's measured keyframe interval, or zero when it
-	// could not be measured. A copied rung's segments break on the publisher's
-	// keyframes and nowhere else, so this is what the whole ladder's segment
-	// duration has to become for a copy to stay aligned with the encodes.
-	GOPSeconds float64
-	// FPSDeclared reports that the frame rate came from the source rather than
-	// from the ladder's default. Passthrough requires it: a rung copied from a
-	// source whose real cadence is unknown cannot be guaranteed to stay in step
-	// with rungs the ladder is emitting at a rate it invented.
-	FPSDeclared bool
 	// NVENCAvailable is the ladder's answer to "can you actually open a
 	// hardware encode session", established by opening one, not by reading a
 	// list of encoders its ffmpeg was compiled with.
@@ -441,80 +466,6 @@ func (g *Governor) Plan(streamID string, src SourceReport) (EncodePlan, error) {
 	degraded := false
 	reason := ""
 
-	// ── passthrough ──────────────────────────────────────────────────────────
-	// The top rung is the most expensive encode in the ladder and, when the
-	// publisher is already sending H.264 at exactly that height, it is also the
-	// most pointless: re-encoding it spends the largest single share of the box
-	// to produce a second-generation copy of a stream we were handed.
-	//
-	// The reason it is not simply switched on is segment alignment. A copied
-	// rung is not cut where we ask, it is cut where the publisher put its
-	// keyframes, and a ladder whose rungs break at different instants stalls
-	// every time a player switches bitrate. So the publisher's GOP becomes the
-	// whole ladder's segment duration and the encoded rungs are forced to
-	// keyframe on the same cadence. Every rung then breaks on the same frames.
-	//
-	// It is taken only when all of this is true, and re-encoded when any of it
-	// is not:
-	//
-	//   the source codec is H.264                    — VP8 from a browser is not
-	//   the top rung's height is the source height   — or the label would lie
-	//   the source declared its frame rate           — or the timelines drift
-	//   the GOP was measured, and lands in a band we are willing to serve
-	//
-	// The band is the whole reason this is not a blanket rule. An OBS default
-	// is a 2 second GOP and passes. A publisher sending a 10 second GOP would
-	// force 10 second segments on every viewer, and low latency is worth more
-	// than the core the passthrough saves, so that source is encoded.
-	// The frame rate IS a condition, and FPSDeclared is it. A copied rung has
-	// no timeline of its own to resample — it remuxes the publisher's frames
-	// byte for byte, PTS and all — so it depends entirely on those PTS values
-	// being sane. A source with no real cadence (measured on MediaMTX's own
-	// RTSP re-serving of a browser's WebRTC publish: avg_frame_rate=0/0, every
-	// time) hands the muxer packets with no honest duration, which is not a
-	// slow encode: it is "Packet duration ... is out of range" and "N buffers
-	// queued, something may be wrong" on a rung that isn't even running an
-	// encoder, dragging the whole process's measured speed down regardless of
-	// how small the ladder is cut, because the stall is downstream of the
-	// encode, in the muxer. Encoded rungs are immune: their PTS come from
-	// -fps_mode cfr against a rate the ladder chose, not the source's.
-	// Nor must the source land exactly on a ladder height: a phone held
-	// upright sends 720x1280, which is no ladder row at all, and the honest
-	// top rung for it is the source itself, named by its own height. This is
-	// what lets a server without a GPU serve a broadcast at all: the picture
-	// the publisher already encoded goes straight through, and only what the
-	// box can afford is added underneath.
-	if strings.EqualFold(src.Codec, "h264") && src.GOPSeconds > 0 && src.FPSDeclared {
-		gop := int(math.Round(src.GOPSeconds))
-		if gop >= g.minSegment && gop <= g.maxSegment &&
-			math.Abs(src.GOPSeconds-float64(gop)) <= 0.25 {
-			topIdx := len(planned) - 1
-			if planned[topIdx].Height == src.Height {
-				planned[topIdx].Mode = ModeCopy
-			} else {
-				// A source above the ladder's top rung, or between two rungs:
-				// the copy is a new top rung at the source's own height. Its
-				// bitrate envelope is the top ladder rung's scaled by pixel
-				// count, which only sizes the playlist's BANDWIDTH hint — a
-				// copied rung has no encoder to give a target to.
-				top := planned[topIdx]
-				scale := float64(src.Height*src.Height) / float64(top.Height*top.Height)
-				if scale < 1 {
-					scale = 1
-				}
-				planned = append(planned, PlannedRung{
-					Height:    src.Height,
-					VideoKbps: int(float64(top.VideoKbps) * scale),
-					MaxKbps:   int(float64(top.MaxKbps) * scale),
-					BufKbps:   int(float64(top.BufKbps) * scale),
-					Name:      fmt.Sprintf("%dp", src.Height),
-					Mode:      ModeCopy,
-				})
-			}
-			segment = gop
-		}
-	}
-
 	// ── a reduction already taken stays taken ────────────────────────────────
 	// ReportPressure records a shed rung on the lease and asks the ladder to
 	// restart. When it comes back through here it must get the reduced ladder,
@@ -544,12 +495,7 @@ func (g *Governor) Plan(streamID string, src SourceReport) (EncodePlan, error) {
 
 	// ── encoder selection ────────────────────────────────────────────────────
 	encoder := EncoderX264
-	needSessions := 0
-	for _, r := range planned {
-		if r.Mode == ModeEncode {
-			needSessions++
-		}
-	}
+	needSessions := len(planned)
 	// Three things all have to hold. The platform must believe it has a card;
 	// there must be sessions left on it; and THIS ladder must have proved it
 	// can open one. The last is not redundant with the first: a ladder whose
@@ -565,61 +511,23 @@ func (g *Governor) Plan(streamID string, src SourceReport) (EncodePlan, error) {
 	// expensive and the one fewest viewers can actually receive. The bottom
 	// rung is never shed: it is the one a viewer on a phone connection has.
 	cost := func(rs []PlannedRung) float64 {
-		total := megapixelsPerSecond(src.Height, fps) * fixedCoresPerMegapixel
-		for _, r := range rs {
-			total += rungCPUCost(r.Height, fps, r.Mode, encoder)
-		}
-		return total
+		return planCPUCost(src.Height, fps, rs, encoder)
 	}
 	sessions := func(rs []PlannedRung) int {
 		if encoder != EncoderNVENC {
 			return 0
 		}
-		n := 0
-		for _, r := range rs {
-			if r.Mode == ModeEncode {
-				n++
-			}
-		}
-		return n
+		return len(rs)
 	}
 
-	// shedIndex picks the rung to give up: the highest ENCODED one that is not
-	// the last rung standing.
-	//
-	// Never the top rung blindly, because the top rung may be the copied one,
-	// and a copied rung costs nothing. Shedding it would take the best picture
-	// in the ladder away from every viewer who could receive it and free not a
-	// single core in exchange — a pure loss, which is a strange thing for a
-	// measure taken to relieve pressure to be.
-	//
-	// Never the lowest rung either. It is the one a viewer on a phone
-	// connection actually receives, and a ladder that has shed its way down to
-	// 1080p alone has not degraded gracefully, it has stopped serving the
-	// people degradation exists for.
-	shedIndex := func(rs []PlannedRung) int {
-		for i := len(rs) - 1; i > 0; i-- {
-			if rs[i].Mode == ModeEncode {
-				return i
-			}
-		}
-		return -1
-	}
-
-	for cost(planned) > freeCPU || sessions(planned) > freeNVENC {
-		i := shedIndex(planned)
-		if i < 0 {
-			break // nothing left that shedding would actually save anything on
-		}
-		dropped := planned[i]
-		planned = append(planned[:i], planned[i+1:]...)
+	// The top rung is shed first, and never the lowest: it is the one a viewer
+	// on a phone connection actually receives, and a ladder that has shed its
+	// way down to 1080p alone has not degraded gracefully, it has stopped
+	// serving the people degradation exists for.
+	for len(planned) > 1 && (cost(planned) > freeCPU || sessions(planned) > freeNVENC) {
+		dropped := planned[len(planned)-1]
+		planned = planned[:len(planned)-1]
 		degraded = true
-		// Shedding the copied top rung leaves the remaining rungs encoded, and
-		// an encoded ladder has no reason to carry the publisher's segment
-		// duration any more. It keeps it anyway: the segments already on disk
-		// for this broadcast were cut at that duration and a playlist whose
-		// target duration changes mid-broadcast is a playlist players reload
-		// wrong.
 		reason = fmt.Sprintf("the platform is at capacity; %s was not encoded", dropped.Name)
 	}
 	// A single rung that still does not fit is served anyway. The lease was
@@ -647,10 +555,7 @@ func (g *Governor) Plan(streamID string, src SourceReport) (EncodePlan, error) {
 	// threading buys throughput by holding frames back, which is latency this
 	// lane cannot spend, and measured worse here besides.
 	for i := range planned {
-		if planned[i].Mode == ModeCopy {
-			continue // a remux has no encoder to cap
-		}
-		need := rungCPUCost(planned[i].Height, fps, planned[i].Mode, encoder)
+		need := rungCPUCost(planned[i].Height, fps, encoder)
 		t := int(math.Ceil(need)) + 1
 		if t < 1 {
 			t = 1
@@ -674,6 +579,8 @@ func (g *Governor) Plan(streamID string, src SourceReport) (EncodePlan, error) {
 	lease.CPUCores = cost(planned)
 	lease.NVENCSessions = sessions(planned)
 	lease.Plan = plan
+	lease.SourceHeight = src.Height
+	lease.FPS = fps
 	return plan, nil
 }
 
@@ -773,30 +680,18 @@ func (g *Governor) ReportPressure(streamID string, speed float64) PressureVerdic
 			"encoding at %.2fx realtime on a single rung — nothing further can be shed", speed)}
 	}
 
-	// Shed the top ENCODE rung by writing the reduction into the lease. A copy
-	// rung is a remux — it costs nothing (rungCPUCost returns 0 for ModeCopy)
-	// — so if the top rung happens to be a copy, dropping it relieves no
-	// pressure at all and only buys a wasted restart before the real offender
-	// is ever touched. Scan from the top for the highest rung actually paying
-	// for an encode, and drop that one instead; the ladder restarts, asks for
-	// a plan, and Plan() draws it against a budget that no longer includes
-	// what the shed rung was costing.
-	dropIdx := len(lease.Plan.Rungs) - 1
-	for i := dropIdx; i >= 0; i-- {
-		if lease.Plan.Rungs[i].Mode == ModeEncode {
-			dropIdx = i
-			break
-		}
-	}
-	dropped := lease.Plan.Rungs[dropIdx]
-	lease.Plan.Rungs = append(lease.Plan.Rungs[:dropIdx], lease.Plan.Rungs[dropIdx+1:]...)
+	// Shed the top rung by writing the reduction into the lease; the ladder
+	// restarts, asks for a plan, and Plan() draws it against a budget that no
+	// longer includes what the shed rung was costing. The lease is recosted by
+	// the same sum Plan used, per-broadcast cost included: the rungs alone
+	// leave out the largest item in the ladder and under-reserve the box by
+	// over a core and a half for every broadcast that has ever shed.
+	dropped := lease.Plan.Rungs[len(lease.Plan.Rungs)-1]
+	lease.Plan.Rungs = lease.Plan.Rungs[:len(lease.Plan.Rungs)-1]
 	lease.Plan.Degraded = true
-	lease.CPUCores = 0
-	for _, r := range lease.Plan.Rungs {
-		lease.CPUCores += rungCPUCost(r.Height, 30, r.Mode, lease.Encoder)
-	}
-	if lease.Encoder == EncoderNVENC && lease.NVENCSessions > 0 {
-		lease.NVENCSessions--
+	lease.CPUCores = planCPUCost(lease.SourceHeight, lease.FPS, lease.Plan.Rungs, lease.Encoder)
+	if lease.Encoder == EncoderNVENC {
+		lease.NVENCSessions = len(lease.Plan.Rungs)
 	}
 	return PressureVerdict{Restart: true, Reason: fmt.Sprintf(
 		"encoding at %.2fx realtime — dropping the %s rung", speed, dropped.Name)}

@@ -724,6 +724,24 @@ func (h *Handler) liveWatchPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The page answers to the same rule the media edge enforces
+	// (liveMediaVerdict), so a viewer the edge would refuse is shown the wall
+	// that explains why, never a player whose segments will all fail.
+	switch liveMediaVerdict(h, s, liveActor(viewer)) {
+	case http.StatusNoContent:
+	case http.StatusServiceUnavailable:
+		http.Error(w, "stream unavailable", http.StatusServiceUnavailable)
+		return
+	default:
+		if s.IsBlocked {
+			// A removed broadcast is answered like a missing one.
+			h.renderLiveNotFound(w, r, viewer)
+			return
+		}
+		h.renderLiveAudienceGate(w, r, viewer, s)
+		return
+	}
+
 	h.startLiveSweeper()
 
 	v := h.buildLiveView(s, viewer, true)
@@ -806,6 +824,34 @@ func (h *Handler) renderLiveGate(w http.ResponseWriter, r *http.Request, viewer 
 		data[k] = val
 	}
 	w.WriteHeader(http.StatusForbidden)
+	h.render(w, r, "live.html", data)
+}
+
+// renderLiveAudienceGate answers a followers- or subscribers-only broadcast a
+// viewer is not in the audience of. Like the 18+ wall, it names the broadcaster
+// and nothing else: no title, poster or chat of a walled stream is rendered.
+func (h *Handler) renderLiveAudienceGate(w http.ResponseWriter, r *http.Request, viewer *model.User, s *model.LiveStream) {
+	hint := "Follow them to watch."
+	if s.Audience == "subscribers" {
+		hint = "Subscribe to watch."
+	}
+	status := http.StatusForbidden
+	if liveActor(viewer) == nil {
+		hint = "Sign in to watch."
+		status = http.StatusUnauthorized
+	}
+	data := map[string]interface{}{
+		"User":           viewer,
+		"Mode":           "missing",
+		"PageTitle":      "Live on F33D3R",
+		"AudienceHandle": s.AuthorHandle,
+		"Audience":       s.Audience,
+		"AudienceHint":   hint,
+	}
+	for k, val := range h.railData(viewer, "default") {
+		data[k] = val
+	}
+	w.WriteHeader(status)
 	h.render(w, r, "live.html", data)
 }
 

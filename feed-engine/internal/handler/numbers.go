@@ -162,9 +162,9 @@ func (h *Handler) mintNumber(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	body := map[string]interface{}{
-		"pial_id": user.PIALID,
-		"policy":  policy,
-		"label":   strings.TrimSpace(r.FormValue("label")),
+		"account_id": user.ID,
+		"policy":     policy,
+		"label":      strings.TrimSpace(r.FormValue("label")),
 	}
 	// Asking for a Number back rather than being given a new one. The authority
 	// decides whether this identity may have it; nothing here does.
@@ -176,7 +176,7 @@ func (h *Handler) mintNumber(w http.ResponseWriter, r *http.Request) {
 		Number string `json:"number"`
 	}
 	if err := h.callElohim(r.Context(), http.MethodPost, "/v1/numbers/mint", body, &out); err != nil {
-		log.Printf("[numbers] minting for pial %s: %v", user.PIALID, err)
+		log.Printf("[numbers] minting for account %s: %v", user.ID, err)
 		h.renderNumbers(w, r, user, mintRefusalNotice(statedRefusal(err)), "")
 		return
 	}
@@ -221,7 +221,7 @@ func (h *Handler) revokeNumber(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "number required", http.StatusBadRequest)
 		return
 	}
-	body := map[string]interface{}{"pial_id": user.PIALID, "number": number}
+	body := map[string]interface{}{"account_id": user.ID, "number": number}
 	if err := h.callElohim(r.Context(), http.MethodPost, "/v1/numbers/revoke", body, nil); err != nil {
 		log.Printf("[numbers] revoking %s: %v", number, err)
 		h.renderNumbers(w, r, user, "Could not retire that Number right now.", "")
@@ -253,10 +253,10 @@ func (h *Handler) setNumberPolicy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	body := map[string]interface{}{
-		"pial_id": user.PIALID,
-		"number":  number,
-		"policy":  policy,
-		"label":   strings.TrimSpace(r.FormValue("label")),
+		"account_id": user.ID,
+		"number":     number,
+		"policy":     policy,
+		"label":      strings.TrimSpace(r.FormValue("label")),
 	}
 	lease.applyTo(body)
 	if err := h.callElohim(r.Context(), http.MethodPost, "/v1/numbers/policy", body, nil); err != nil {
@@ -268,15 +268,15 @@ func (h *Handler) setNumberPolicy(w http.ResponseWriter, r *http.Request) {
 }
 
 // setContactPolicy — POST /identity/contact/policy
-// The identity-wide defaults: who may reach this person by @handle, and the
-// policy a freshly minted Number inherits.
+// This account's defaults: who may reach it by @handle, and the policy a
+// freshly minted Number inherits. Each persona sets its own.
 func (h *Handler) setContactPolicy(w http.ResponseWriter, r *http.Request) {
 	user := h.userFromRequest(w, r)
 	if user == nil || user.PIALID == "" {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	body := map[string]interface{}{"pial_id": user.PIALID}
+	body := map[string]interface{}{"account_id": user.ID}
 	if v := strings.TrimSpace(r.FormValue("handle_policy")); v != "" {
 		body["handle_policy"] = v
 	}
@@ -284,7 +284,7 @@ func (h *Handler) setContactPolicy(w http.ResponseWriter, r *http.Request) {
 		body["default_number_policy"] = v
 	}
 	if err := h.callElohim(r.Context(), http.MethodPost, "/v1/contact/policy", body, nil); err != nil {
-		log.Printf("[numbers] contact policy for pial %s: %v", user.PIALID, err)
+		log.Printf("[numbers] contact policy for account %s: %v", user.ID, err)
 		h.renderNumbers(w, r, user, "Could not save your contact policy right now.", "")
 		return
 	}
@@ -301,8 +301,8 @@ func (h *Handler) mintContactCapability(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	body := map[string]interface{}{
-		"pial_id": user.PIALID,
-		"label":   strings.TrimSpace(r.FormValue("label")),
+		"account_id": user.ID,
+		"label":      strings.TrimSpace(r.FormValue("label")),
 	}
 	if v := strings.TrimSpace(r.FormValue("number")); v != "" {
 		body["number"] = v
@@ -319,7 +319,7 @@ func (h *Handler) mintContactCapability(w http.ResponseWriter, r *http.Request) 
 		Capability string `json:"capability"`
 	}
 	if err := h.callElohim(r.Context(), http.MethodPost, "/v1/contact/capabilities/mint", body, &out); err != nil {
-		log.Printf("[numbers] minting capability for pial %s: %v", user.PIALID, err)
+		log.Printf("[numbers] minting capability for account %s: %v", user.ID, err)
 		h.renderNumbers(w, r, user, "Could not create a contact link right now.", "")
 		return
 	}
@@ -338,7 +338,7 @@ func (h *Handler) revokeContactCapability(w http.ResponseWriter, r *http.Request
 		http.Error(w, "capability_id required", http.StatusBadRequest)
 		return
 	}
-	body := map[string]interface{}{"pial_id": user.PIALID, "capability_id": id}
+	body := map[string]interface{}{"account_id": user.ID, "capability_id": id}
 	if err := h.callElohim(r.Context(), http.MethodPost, "/v1/contact/capabilities/revoke", body, nil); err != nil {
 		log.Printf("[numbers] revoking capability %s: %v", id, err)
 		h.renderNumbers(w, r, user, "Could not revoke that contact link right now.", "")
@@ -361,23 +361,22 @@ func (h *Handler) decideContactRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	accept := r.FormValue("accept") == "1"
 	body := map[string]interface{}{
-		"pial_id":       user.PIALID,
-		"request_id":    id,
-		"accept":        accept,
-		"owner_account": user.ID,
+		"account_id": user.ID,
+		"request_id": id,
+		"accept":     accept,
 	}
 	var out struct {
-		RequesterPIAL string `json:"requester_pial"`
+		RequesterAccount string `json:"requester_account"`
 	}
 	if err := h.callElohim(r.Context(), http.MethodPost, "/v1/contact/requests/decide", body, &out); err != nil {
 		log.Printf("[numbers] deciding request %s: %v", id, err)
 		h.renderNumbers(w, r, user, "Could not answer that request right now.", "")
 		return
 	}
-	if accept && out.RequesterPIAL != "" {
-		if requester := dbpkg.AccountForPIAL(h.db, out.RequesterPIAL); requester != "" {
-			h.deliverHeldOnAccept(requester, user)
-		}
+	// The request names the account that asked — the persona that asked, not
+	// its person's primary — so the held message goes back to that persona.
+	if accept && out.RequesterAccount != "" {
+		h.deliverHeldOnAccept(out.RequesterAccount, user)
 	}
 	h.renderNumbers(w, r, user, "", "")
 }
@@ -521,21 +520,24 @@ func (h *Handler) startContactByNumber(w http.ResponseWriter, r *http.Request) {
 			"AccountID": user.ID, "Unavailable": true})
 		return
 	}
-	if outcome.Decision != "allow" || outcome.TargetPIAL == "" {
+	if outcome.Decision != "allow" || outcome.TargetAccount == "" {
 		holdFloor(started, numberResolveFloor)
 		h.renderPartial(w, "number_resolve", map[string]interface{}{
 			"AccountID": user.ID, "Decision": outcome.Decision, "Number": number})
 		return
 	}
 
-	account := dbpkg.AccountForPIAL(h.db, outcome.TargetPIAL)
-	if account == "" || account == user.ID {
+	// The Number reaches the account that holds it — that persona, not its
+	// person's primary.
+	account := outcome.TargetAccount
+	targetPIAL := dbpkg.ResolvePIAL(h.db, account)
+	if targetPIAL == "" || account == user.ID {
 		holdFloor(started, numberResolveFloor)
 		h.renderPartial(w, "number_resolve", map[string]interface{}{
 			"AccountID": user.ID, "Decision": "deny", "Number": number})
 		return
 	}
-	if _, err := h.ensureDirectConversation(user, account, outcome.TargetPIAL); err != nil {
+	if _, err := h.ensureDirectConversation(user, account, targetPIAL); err != nil {
 		holdFloor(started, numberResolveFloor)
 		log.Printf("[numbers] opening conversation for pial %s: %v", user.PIALID, err)
 		h.renderPartial(w, "number_resolve", map[string]interface{}{
@@ -557,31 +559,33 @@ func holdFloor(started time.Time, floor time.Duration) {
 	}
 }
 
-// contactQuery is one contact attempt: by Number, or by target identity on the
+// contactQuery is one contact attempt: by Number, or by target account on the
 // @handle path.
 type contactQuery struct {
-	Number     string
-	TargetPIAL string
-	Capability string
-	Note       string
+	Number        string
+	TargetAccount string
+	Capability    string
+	Note          string
 }
 
 // contactOutcome is what the authority decided, and the little it discloses
-// about whom. TargetPIAL is populated only on allow. RequestOwnerPIAL is
-// populated only when a contact request was actually opened, so the person whose
-// inbox it landed in can be told about it; neither ever reaches the browser.
+// about whom. Both ends are ACCOUNTS: a Number reaches the persona that holds
+// it, never its person's primary. TargetAccount is populated only on allow.
+// RequestOwnerAccount is populated only when a contact request was actually
+// opened, so the account it landed on can be told about it; neither ever
+// reaches the browser before a conversation opens.
 type contactOutcome struct {
-	Decision         string
-	TargetPIAL       string
-	RequestOwnerPIAL string
-	RequestID        string
+	Decision            string
+	TargetAccount       string
+	RequestOwnerAccount string
+	RequestID           string
 	// BudgetAlert is what the OWNER of the Number should be told about what is
 	// left of its budget: "low", "spent", or empty for nothing to say. The
 	// authority sends it only alongside an allow, where the target is already
 	// disclosed, so it never travels with a refusal and never reaches the
-	// person who typed the Number. BudgetOwnerPIAL is whose inbox it belongs in.
-	BudgetAlert     string
-	BudgetOwnerPIAL string
+	// person who typed the Number. BudgetOwnerAccount is whose inbox it is.
+	BudgetAlert        string
+	BudgetOwnerAccount string
 }
 
 // evaluateContact asks elohim-veni whether contact may proceed.
@@ -603,7 +607,9 @@ type contactOutcome struct {
 // untouched: nothing on this path learns who a Number belongs to unless the
 // policy already allowed contact.
 func (h *Handler) evaluateContact(ctx context.Context, user *model.User, q contactQuery) (contactOutcome, error) {
-	body := map[string]interface{}{"initiator_pial": user.PIALID, "initiator_account": user.ID}
+	// The initiator is the acting account; elohim-veni derives its identity
+	// itself rather than taking a second claim about who is asking.
+	body := map[string]interface{}{"initiator_account": user.ID}
 	if q.Number != "" {
 		// The check digit, before any I/O — and here that means before the HTTP
 		// hop to the policy authority, not merely before its database read.
@@ -621,8 +627,8 @@ func (h *Handler) evaluateContact(ctx context.Context, user *model.User, q conta
 		}
 		body["number"] = canonical
 	}
-	if q.TargetPIAL != "" {
-		body["target_pial"] = q.TargetPIAL
+	if q.TargetAccount != "" {
+		body["target_account"] = q.TargetAccount
 	}
 	if q.Capability != "" {
 		body["capability"] = q.Capability
@@ -632,12 +638,12 @@ func (h *Handler) evaluateContact(ctx context.Context, user *model.User, q conta
 	}
 
 	var out struct {
-		Decision         string `json:"decision"`
-		TargetPIAL       string `json:"target_pial"`
-		RequestOwnerPIAL string `json:"request_owner_pial"`
-		RequestID        string `json:"request_id"`
-		BudgetAlert      string `json:"budget_alert"`
-		BudgetOwnerPIAL  string `json:"budget_owner_pial"`
+		Decision            string `json:"decision"`
+		TargetAccount       string `json:"target_account"`
+		RequestOwnerAccount string `json:"request_owner_account"`
+		RequestID           string `json:"request_id"`
+		BudgetAlert         string `json:"budget_alert"`
+		BudgetOwnerAccount  string `json:"budget_owner_account"`
 	}
 	if err := h.callElohim(ctx, http.MethodPost, "/v1/contact/evaluate", body, &out); err != nil {
 		return contactOutcome{}, err
@@ -646,12 +652,12 @@ func (h *Handler) evaluateContact(ctx context.Context, user *model.User, q conta
 		return contactOutcome{}, errors.New("contact authority returned no decision")
 	}
 	return contactOutcome{
-		Decision:         out.Decision,
-		TargetPIAL:       out.TargetPIAL,
-		RequestOwnerPIAL: out.RequestOwnerPIAL,
-		RequestID:        out.RequestID,
-		BudgetAlert:      out.BudgetAlert,
-		BudgetOwnerPIAL:  out.BudgetOwnerPIAL,
+		Decision:            out.Decision,
+		TargetAccount:       out.TargetAccount,
+		RequestOwnerAccount: out.RequestOwnerAccount,
+		RequestID:           out.RequestID,
+		BudgetAlert:         out.BudgetAlert,
+		BudgetOwnerAccount:  out.BudgetOwnerAccount,
 	}, nil
 }
 
@@ -731,15 +737,15 @@ type numberEntry struct {
 	LeaseState       string `json:"lease_state"`
 }
 
-// listNumbers reads one identity's own Numbers from the brain that allocated
-// them. It is addressed by PIAL and answers only about that identity — there is
-// no call here, and must never be one, that goes the other way from a Number to
-// whoever holds it.
-func (h *Handler) listNumbers(ctx context.Context, pialID string) ([]numberEntry, error) {
+// listNumbers reads one account's own Numbers from the brain that allocated
+// them. It is addressed by account and answers only about the Numbers that
+// account holds — never another persona's — and there is no call here, and must
+// never be one, that goes the other way from a Number to whoever holds it.
+func (h *Handler) listNumbers(ctx context.Context, accountID string) ([]numberEntry, error) {
 	var out struct {
 		Numbers []numberEntry `json:"numbers"`
 	}
-	if err := h.callElohim(ctx, http.MethodGet, "/v1/numbers/"+url.PathEscape(pialID), nil, &out); err != nil {
+	if err := h.callElohim(ctx, http.MethodGet, "/v1/numbers/"+url.PathEscape(accountID), nil, &out); err != nil {
 		return nil, err
 	}
 	return out.Numbers, nil
@@ -754,21 +760,21 @@ type contactPolicyView struct {
 	Policies            []string `json:"policies"`
 }
 
-func (h *Handler) contactPolicyFor(ctx context.Context, pialID string) (contactPolicyView, error) {
+func (h *Handler) contactPolicyFor(ctx context.Context, accountID string) (contactPolicyView, error) {
 	var out contactPolicyView
 	if err := h.callElohim(ctx, http.MethodGet,
-		"/v1/contact/policy/"+url.PathEscape(pialID), nil, &out); err != nil {
+		"/v1/contact/policy/"+url.PathEscape(accountID), nil, &out); err != nil {
 		return contactPolicyView{}, err
 	}
 	return out, nil
 }
 
-// numbersData hydrates the Numbers surface for one account's identity. Every
-// field is fetched from the brain that owns it; nothing is cached here. The
-// PIAL is used for those calls only: the Facet is addressed by the account id,
-// because the fragment is written into a page and a PIAL never is.
+// numbersData hydrates the Numbers surface for one account. Every field is
+// fetched from the brain that owns it, addressed by the account, so a persona's
+// surface shows its own Numbers, links and requests and nothing of another
+// persona's; nothing is cached here.
 func (h *Handler) numbersData(ctx context.Context, user *model.User) map[string]interface{} {
-	pialID := user.PIALID
+	accountID := user.ID
 	data := map[string]interface{}{
 		"AccountID": user.ID,
 		"Policies":  contactPolicies(),
@@ -787,9 +793,9 @@ func (h *Handler) numbersData(ctx context.Context, user *model.User) map[string]
 		return data
 	}
 
-	numbers, err := h.listNumbers(ctx, pialID)
+	numbers, err := h.listNumbers(ctx, accountID)
 	if err != nil {
-		log.Printf("[numbers] listing for pial %s: %v", pialID, err)
+		log.Printf("[numbers] listing for account %s: %v", accountID, err)
 		data["Unavailable"] = true
 		data["Notice"] = "Could not load your Numbers right now."
 		return data
@@ -809,8 +815,8 @@ func (h *Handler) numbersData(ctx context.Context, user *model.User) map[string]
 	}
 	data["Numbers"] = rows
 
-	if policy, err := h.contactPolicyFor(ctx, pialID); err != nil {
-		log.Printf("[numbers] contact policy for pial %s: %v", pialID, err)
+	if policy, err := h.contactPolicyFor(ctx, accountID); err != nil {
+		log.Printf("[numbers] contact policy for account %s: %v", accountID, err)
 	} else {
 		data["HandlePolicy"] = policy.HandlePolicy
 		data["DefaultNumberPolicy"] = policy.DefaultNumberPolicy
@@ -830,8 +836,8 @@ func (h *Handler) numbersData(ctx context.Context, user *model.User) map[string]
 			Revoked bool   `json:"revoked"`
 		} `json:"capabilities"`
 	}
-	if err := h.callElohim(ctx, http.MethodGet, "/v1/contact/capabilities/"+url.PathEscape(pialID), nil, &caps); err != nil {
-		log.Printf("[numbers] capabilities for pial %s: %v", pialID, err)
+	if err := h.callElohim(ctx, http.MethodGet, "/v1/contact/capabilities/"+url.PathEscape(accountID), nil, &caps); err != nil {
+		log.Printf("[numbers] capabilities for account %s: %v", accountID, err)
 	} else {
 		capRows := make([]capabilityRow, 0, len(caps.Capabilities))
 		for _, c := range caps.Capabilities {
@@ -846,8 +852,8 @@ func (h *Handler) numbersData(ctx context.Context, user *model.User) map[string]
 
 	// One reader for pending contact requests, shared with the messaging
 	// surface. Two copies of this block is two places for the shape to drift.
-	if reqRows, err := h.pendingContactRequests(ctx, pialID); err != nil {
-		log.Printf("[numbers] contact requests for pial %s: %v", pialID, err)
+	if reqRows, err := h.pendingContactRequests(ctx, accountID); err != nil {
+		log.Printf("[numbers] contact requests for account %s: %v", accountID, err)
 	} else {
 		data["Requests"] = reqRows
 	}
@@ -905,9 +911,11 @@ func (h *Handler) callElohim(ctx context.Context, method, path string, body inte
 }
 
 // numberKeyBundle — POST /contact/keys
-// The last link in the chain: a Number is exchanged for the target's messaging
-// key bundle, and ONLY when that Number's policy allows contact. A Number alone
-// never yields key material; the policy decision is what does.
+// The last link in the chain: a Number is exchanged for the messaging key
+// bundle of the account that holds it, and ONLY when that Number's policy allows
+// contact. A Number alone never yields key material; the policy decision is
+// what does. The bundle is elohim-veni's, signed and carrying no PIAL, and is
+// forwarded with its signature.
 func (h *Handler) numberKeyBundle(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
 	user := h.userFromRequest(w, r)
@@ -931,7 +939,7 @@ func (h *Handler) numberKeyBundle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "contact policy authority unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	if outcome.Decision != "allow" || outcome.TargetPIAL == "" {
+	if outcome.Decision != "allow" || outcome.TargetAccount == "" {
 		// Identical for unknown, retired, malformed and refused.
 		holdFloor(started, numberResolveFloor)
 		w.Header().Set("Content-Type", "application/json")
@@ -941,15 +949,13 @@ func (h *Handler) numberKeyBundle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	bundle, err := h.contactBundleFor(r.Context(), outcome.TargetPIAL)
+	bundle, err := h.contactBundleFor(r.Context(), map[string]string{"account_id": outcome.TargetAccount})
 	if err != nil {
 		holdFloor(started, numberResolveFloor)
-		log.Printf("[numbers] key bundle for pial %s: %v", outcome.TargetPIAL, err)
-		http.Error(w, "no key material for that identity", http.StatusConflict)
+		log.Printf("[numbers] key bundle for account %s: %v", outcome.TargetAccount, err)
+		http.Error(w, "no key material for that account", http.StatusConflict)
 		return
 	}
 	holdFloor(started, numberResolveFloor)
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
-	_ = json.NewEncoder(w).Encode(bundle)
+	writeContactBundle(w, http.StatusOK, bundle)
 }

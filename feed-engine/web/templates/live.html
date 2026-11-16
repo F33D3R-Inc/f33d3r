@@ -121,6 +121,12 @@
   {{else}}
   {{if .GateHandle}}
   {{template "stateEmpty" (dict "Icon" "🔞" "Title" "18+ broadcast" "Sub" (printf "@%s is streaming 18+ content. Your account is not set up to view it." .GateHandle))}}
+  {{else if (index . "AudienceHandle")}}
+  {{if eq (index . "Audience") "subscribers"}}
+  {{template "stateEmpty" (dict "Icon" "🔒" "Title" "Subscribers only" "Sub" (printf "@%s is streaming to subscribers. %s" (index . "AudienceHandle") (index . "AudienceHint")))}}
+  {{else}}
+  {{template "stateEmpty" (dict "Icon" "🔒" "Title" "Followers only" "Sub" (printf "@%s is streaming to followers. %s" (index . "AudienceHandle") (index . "AudienceHint")))}}
+  {{end}}
   {{else}}
   {{template "stateEmpty" (dict "Title" "Stream not found" "Sub" "This broadcast does not exist or was removed.")}}
   {{end}}

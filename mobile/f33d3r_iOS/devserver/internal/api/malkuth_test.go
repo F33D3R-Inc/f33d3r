@@ -58,7 +58,11 @@ func TestCanonicalVectors(t *testing.T) {
 			if string(got) != c.Canonical {
 				t.Errorf("canonical bytes differ\n got: %s\nwant: %s", got, c.Canonical)
 			}
-			if !verifyCID(c.CID, p) {
+			ok, err := verifyCID(c.CID, p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !ok {
 				t.Errorf("cid %s did not verify", c.CID)
 			}
 		})

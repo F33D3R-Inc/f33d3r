@@ -208,7 +208,7 @@ struct MalkuthSignatureTests {
     func signsTheCIDString() throws {
         let key = MalkuthKey.generate()
         let payload = WorkPayload(
-            authorPIAL: MalkuthCanonicalTests.pial, body: "what is signed", timestampMS: 1
+            authorAccount: MalkuthCanonicalTests.account, body: "what is signed", timestampMS: 1
         )
         let envelope = try WorkEnvelope(payload: payload, key: key)
 

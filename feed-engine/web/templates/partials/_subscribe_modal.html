@@ -1,0 +1,78 @@
+{{/*
+FACET subscribe_modal
+  version: 1.0 | status: stable | layer: 2
+
+  inputs:
+    CreatorID      string            — the creator's account id
+    CreatorHandle  string            — the creator's handle
+    Plans          []model.ShopPlan  — the creator's active plans, priced server-side
+    Notice         string            — set when the plans could not be read
+
+  states:
+    default | no plans | unavailable
+
+  children: subscribe_result
+
+  signals:
+    emits:    POST /api/subscribe {creator_id, plan_id} → #subscribe-modal-result
+              The price charged is the plan's, read by Themis; nothing here sets it.
+              On success the server clears #overlay-slot and re-requests the Playground.
+    receives: none
+
+  context:
+    #overlay-slot ← btn_subscribe
+*/}}
+{{define "subscribe_modal"}}
+<div class="tip-modal" role="dialog" aria-modal="true" aria-label="Subscribe to @{{.CreatorHandle}}"
+     data-facet-id="facet:f33d3r:subscription:{{.CreatorID}}:modal">
+  <div class="tip-modal-overlay" hx-get="/facets/overlay/close" hx-target="#overlay-slot" hx-swap="innerHTML" hx-trigger="click"></div>
+  <div class="tip-modal-card">
+    <div class="tip-modal-header">
+      <span class="tip-modal-title">Subscribe to @{{.CreatorHandle}}</span>
+      <button class="tip-modal-close" type="button" aria-label="Close"
+              hx-get="/facets/overlay/close" hx-target="#overlay-slot" hx-swap="innerHTML">
+        <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="width:18px;height:18px"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="tip-modal-body">
+      {{if .Notice}}
+      <p class="tip-modal-note" role="alert">{{.Notice}}</p>
+      {{else if .Plans}}
+        {{range .Plans}}
+        <button class="shop-plan-card" type="button"
+                hx-post="/api/subscribe"
+                hx-vals='{"creator_id":"{{$.CreatorID}}","plan_id":"{{.ID}}"}'
+                hx-target="#subscribe-modal-result" hx-swap="innerHTML"
+                hx-disabled-elt="this" hx-sync="closest .tip-modal-body:drop">
+          <span class="shop-plan-name">{{.Name}}</span>
+          <span class="shop-plan-amount">{{.PriceDisplay}} AET / month</span>
+          {{if .Description}}<span class="shop-plan-desc">{{.Description}}</span>{{end}}
+        </button>
+        {{end}}
+        <p class="tip-modal-note">Charged from your AET wallet now and each month until you cancel.</p>
+      {{else}}
+      <p class="tip-modal-note">@{{.CreatorHandle}} has no subscription plans yet.</p>
+      {{end}}
+      <div id="subscribe-modal-result" aria-live="polite"></div>
+    </div>
+  </div>
+</div>
+{{end}}
+
+{{/*
+FACET subscribe_result
+  version: 1.0 | status: stable | layer: 5
+
+  inputs:
+    Message  string — why the subscription change did not go through
+
+  states:
+    refused
+
+  signals:
+    emits:    none
+    receives: none
+*/}}
+{{define "subscribe_result"}}
+<p class="tip-result tip-result--error" role="alert" data-facet-id="facet:f33d3r:subscription:result:message">{{.Message}}</p>
+{{end}}

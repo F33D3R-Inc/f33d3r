@@ -9,8 +9,7 @@ import com.f33d3r.app.net.FacetClient
 import com.f33d3r.app.net.Http
 import com.f33d3r.app.net.Session
 import com.f33d3r.app.net.live.FaLive
-import com.f33d3r.app.pial.DeviceKey
-import com.f33d3r.app.pial.Malkuth
+import com.f33d3r.app.malkuth.Malkuth
 import com.f33d3r.app.seal.Gnosis
 import com.f33d3r.app.upload.VideoUploader
 import kotlinx.coroutines.CoroutineScope
@@ -40,8 +39,8 @@ class Runtime(context: Context) {
     val client: FacetClient = FacetClient(session, http)
     val live: FaLive = FaLive(session, scope)
     val gnosis: Gnosis = Gnosis(session, client)
-    val deviceKey: DeviceKey = DeviceKey()
-    val malkuth: Malkuth = Malkuth(client, deviceKey)
+    /** Signs works with this device's key for the signed-in account. */
+    val malkuth: Malkuth = Malkuth(client)
     val whip: Whip = Whip(session, http)
     val uploader: VideoUploader = VideoUploader(this.context, session, client, http)
 

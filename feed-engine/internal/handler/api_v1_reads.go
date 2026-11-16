@@ -509,10 +509,6 @@ func (h *Handler) apiV1Notifications(w http.ResponseWriter, r *http.Request, u *
 	})
 }
 
-// uaetPerAinSophUnit converts Ain Soph's storage unit (a hundredth of an AET,
-// models.rs AET_DECIMALS) to the µAET the clients carry (a millionth).
-const uaetPerAinSophUnit = 1_000_000 / 100
-
 // apiV1Wallet — GET /api/v1/wallet: settled and pending balances, never
 // summed, and the recent ledger — read from Ain Soph, the ledger brain, keyed
 // on the PIAL the wallet is opened for.
@@ -528,6 +524,13 @@ func (h *Handler) apiV1Wallet(w http.ResponseWriter, r *http.Request, u *model.U
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
 	defer cancel()
+	// The clients carry µAET; the ratio to the ledger's unit is the ledger's.
+	unit, err := h.aetUnit(ctx)
+	if err != nil {
+		log.Printf("[api/v1] wallet unit: %v", err)
+		apiError(w, http.StatusBadGateway, "wallet_unavailable", "The wallet service is unavailable.")
+		return
+	}
 
 	var bal struct {
 		BalanceUnits int64 `json:"balance_units"`
@@ -555,7 +558,7 @@ func (h *Handler) apiV1Wallet(w http.ResponseWriter, r *http.Request, u *model.U
 		return
 	}
 	out := WalletDTO{
-		BalanceUAET: bal.BalanceUnits * uaetPerAinSophUnit,
+		BalanceUAET: bal.BalanceUnits * unit.UAETPerUnit,
 		Entries:     make([]WalletEntryDTO, 0, len(hist.Entries)),
 	}
 	handles := map[string]string{}
@@ -566,7 +569,7 @@ func (h *Handler) apiV1Wallet(w http.ResponseWriter, r *http.Request, u *model.U
 		if e.Direction == "out" {
 			amount = -e.AmountUnits
 		}
-		amount *= uaetPerAinSophUnit
+		amount *= unit.UAETPerUnit
 		if e.Status == "pending" {
 			out.PendingUAET += amount
 		}
@@ -598,6 +601,8 @@ func (h *Handler) ainSophGet(ctx context.Context, path string, v interface{}) er
 		return err
 	}
 	req.Header.Set("Accept", "application/json")
+	// Ain Soph answers nothing without the service key.
+	req.Header.Set("X-Internal-Key", h.cfg.InternalAPIKey)
 	resp, err := h.httpClient.Do(req)
 	if err != nil {
 		return err

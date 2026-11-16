@@ -1,9 +1,10 @@
 // Safety event consumer — how Abraxas's answers reach this brain's content.
 //
 // Abraxas is the integrity authority. It publishes every verdict, ownership
-// finding, banned match and review decision to safety.events, and this
-// consumer hands each record to the handler, which applies it to works,
-// Visions and the CSAM queue and redraws the affected cards over FA Live.
+// finding, review opening, banned match and review decision to safety.events,
+// and this consumer hands each record to the handler, which applies it to
+// works, Visions and the CSAM queue, tells the admins what now waits in the
+// review queue, and redraws the affected cards over FA Live.
 //
 // The shape is the identity consumer's (identity.go), for the same reasons:
 //
@@ -45,6 +46,7 @@ const (
 	SafetyTypeVerdict       = "verdict"
 	SafetyTypeOwnership     = "ownership"
 	SafetyTypeBannedMatch   = "banned_match"
+	SafetyTypeReviewOpened  = "review_opened"
 	SafetyTypeReviewDecided = "review_decided"
 )
 
@@ -88,10 +90,13 @@ type SafetyBannedMatch struct {
 	Score    float64 `json:"score"`
 }
 
-// SafetyReview names the review item a review_decided closed.
+// SafetyReview names a review item: the one a review_opened put in front of a
+// person (Stage "admin_review"), or the one a review_decided closed (Stage
+// "decided", with Decision and DecidedBy).
 type SafetyReview struct {
 	ID        string `json:"id"`
 	ItemKind  string `json:"item_kind"`
+	Stage     string `json:"stage"`
 	Decision  string `json:"decision"`
 	DecidedBy string `json:"decided_by"`
 }
@@ -174,6 +179,13 @@ func decodeSafety(raw []byte) (SafetyEvent, error) {
 	case SafetyTypeVerdict, SafetyTypeReviewDecided:
 		if !safetyVerdicts[ev.Verdict] {
 			return SafetyEvent{}, fmt.Errorf("%s with unknown verdict %q", ev.Type, ev.Verdict)
+		}
+	case SafetyTypeReviewOpened:
+		if ev.Review == nil || ev.Review.ID == "" || ev.Review.ItemKind == "" {
+			return SafetyEvent{}, errors.New("review_opened event without its review id and item kind")
+		}
+		if ev.Review.Stage != "admin_review" {
+			return SafetyEvent{}, fmt.Errorf("review_opened event at stage %q (want admin_review)", ev.Review.Stage)
 		}
 	case SafetyTypeOwnership:
 		if ev.Ownership == nil || ev.Ownership.OriginalPIAL == "" {

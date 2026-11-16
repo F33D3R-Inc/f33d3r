@@ -65,7 +65,7 @@ func Open(path string) (*Store, error) {
 // schemaVersion is stamped into PRAGMA user_version. schema.sql always
 // describes the newest shape; databases created before a column existed get
 // the ALTERs below, in order, before the schema runs.
-const schemaVersion = 6
+const schemaVersion = 7
 
 func migrate(db *sql.DB) error {
 	var version int
@@ -134,6 +134,19 @@ func migrate(db *sql.DB) error {
 		// so payout reads true for them as it would on a fresh start.
 		if _, err := db.Exec(`UPDATE pial_roots SET kyc_tier = 'full', kyc_submitted_at = ?
 			WHERE kyc_tier = 'none' AND pial_id IN (SELECT pial_id FROM users WHERE tier = 'creator')`, Now()); err != nil {
+			return err
+		}
+	}
+
+	// v6 → v7: who-may-reply is one vocabulary on the wire and in the column,
+	// as in feed-engine (migration 0035): everyone, not open.
+	// The content fingerprint the create path dedups on arrives in the same
+	// step.
+	if hasTables > 0 && version < 7 {
+		if _, err := db.Exec(`UPDATE works SET comment_gating = 'everyone' WHERE comment_gating = 'open'`); err != nil {
+			return err
+		}
+		if _, err := db.Exec(`ALTER TABLE works ADD COLUMN fingerprint TEXT`); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return err
 		}
 	}

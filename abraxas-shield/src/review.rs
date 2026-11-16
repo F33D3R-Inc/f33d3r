@@ -93,8 +93,10 @@ pub async fn open(tx: &mut Transaction<'_, Postgres>, it: NewItem<'_>) -> sqlx::
     .bind(it.report_id)
     .fetch_optional(&mut **tx)
     .await?;
-    if let (Some(id), Stage::MlReview) = (id, it.stage) {
-        jobs::enqueue(tx, "ml_review", &id.to_string(), json!({})).await?;
+    match (id, it.stage) {
+        (Some(id), Stage::MlReview) => jobs::enqueue(tx, "ml_review", &id.to_string(), json!({})).await?,
+        (Some(id), Stage::AdminReview) => announce_opened(tx, id, it.item_kind, it.subject_kind, it.subject_id).await?,
+        (None, _) => {}
     }
     if id.is_some() {
         metrics::counter!("abraxas_review_opened_total", "item_kind" => it.item_kind.to_string(), "stage" => it.stage.as_str())
@@ -168,16 +170,54 @@ pub async fn promote_to_admin(tx: &mut Transaction<'_, Postgres>, review_id: &st
     promote(tx, id, json!({ "outcome": "escalated", "reason": why })).await
 }
 
+/// Moves an ml_review item to admin_review and announces it there. An item
+/// that is no longer at ml_review (already promoted or decided) is left alone
+/// and announced nothing, so a retried job never tells the admins twice.
 async fn promote(tx: &mut Transaction<'_, Postgres>, id: Uuid, outcome: Value) -> sqlx::Result<()> {
-    sqlx::query(
+    let moved: Option<(String, String, String)> = sqlx::query_as(
         "UPDATE review_queue SET stage = 'admin_review', admin_at = NOW(), ml_outcome = $2
-          WHERE id = $1 AND stage = 'ml_review'",
+          WHERE id = $1 AND stage = 'ml_review'
+          RETURNING item_kind, subject_kind, subject_id",
     )
     .bind(id)
     .bind(outcome)
-    .execute(&mut **tx)
+    .fetch_optional(&mut **tx)
     .await?;
+    if let Some((item_kind, subject_kind, subject_id)) = moved {
+        announce_opened(tx, id, &item_kind, &subject_kind, &subject_id).await?;
+    }
     Ok(())
+}
+
+/// Queues `review_opened` for an item that now waits for a person, in the
+/// transaction that put it there.
+async fn announce_opened(
+    tx: &mut Transaction<'_, Postgres>,
+    id: Uuid,
+    item_kind: &str,
+    subject_kind: &str,
+    subject_id: &str,
+) -> sqlx::Result<()> {
+    let asset_id = if subject_kind == "asset" { Uuid::parse_str(subject_id).ok() } else { None };
+    let signals: Vec<String> = Vec::new();
+    outbox::enqueue(
+        tx,
+        Event {
+            kind: EventType::ReviewOpened,
+            subject_kind,
+            subject_id,
+            asset_id,
+            pial: None,
+            verdict: "",
+            scores: json!({}),
+            signals: &signals,
+            reason: "",
+            ownership: None,
+            banned: None,
+            review: Some(json!({ "id": id, "item_kind": item_kind, "stage": Stage::AdminReview.as_str() })),
+        },
+    )
+    .await
 }
 
 // ── suppression ──────────────────────────────────────────────────────────────

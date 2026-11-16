@@ -46,16 +46,12 @@ FACET subscription_tier_form
           Price <span class="stier-form-label-unit">(AET / month)</span>
         </label>
         <div class="stier-price-wrap">
-          <input id="stier-price" type="number" name="price_aet" class="stier-form-input"
-                 placeholder="0"
-                 min="0" step="1"
-                 oninput="document.getElementById('stier-price-usd').textContent = (this.value * 0.01).toFixed(2)"
+          <input id="stier-price" type="number" name="price" class="stier-form-input"
+                 placeholder="5.00"
+                 min="0.01" step="0.01" required
                  autocomplete="off">
-          <span class="stier-price-usd-hint">
-            &asymp; $<span id="stier-price-usd">0.00</span> USD
-          </span>
         </div>
-        <span class="stier-form-hint">Enter whole AET units (1 AET = 100 micro-AET). Free tier = 0.</span>
+        <span class="stier-form-hint">The monthly price in AET, like 5 or 5.50. Subscribers are charged it each month until they cancel.</span>
       </div>
 
       <div class="stier-form-field stier-form-field--full">

@@ -24,16 +24,19 @@ var ErrVisionPollOption = errors.New("vision: option out of range")
 // ErrLiveNotOpen: the broadcast is not on air, so the room takes nothing.
 var ErrLiveNotOpen = errors.New("live: this broadcast is not open")
 
-// CastVisionPollVote records one ballot per viewer per Vision. A second
-// ballot from the same viewer is not an error: the first stands.
-func CastVisionPollVote(database *sql.DB, ref VisionRef, voterPIAL string, optionIdx int) error {
-	if voterPIAL == "" {
-		return errors.New("vision: voter_pial is required")
+// CastVisionPollVote records one ballot per voting account per Vision. A
+// second ballot from the same account is not an error: the first stands. Each
+// persona of one person votes as itself; a ballot is never shared across them.
+// A Vision still pending its scan takes ballots only from its own author.
+func CastVisionPollVote(database *sql.DB, ref VisionRef, voterAccount string, optionIdx int) error {
+	if voterAccount == "" {
+		return errors.New("vision: voter_account is required")
 	}
 	var nOptions int
 	err := database.QueryRow(`
 		SELECT COALESCE(array_length(v.poll_options, 1), 0)
-		  FROM visions v WHERE v.author_pial = $1::uuid AND v.seq = $2 AND `+visionLiveSQL, ref.AuthorPIAL, ref.Seq).Scan(&nOptions)
+		  FROM visions v WHERE v.author_pial = $2::uuid AND v.seq = $3
+		   AND `+visionLiveSQL+` AND `+visionScannedSQL, voterAccount, ref.AuthorPIAL, ref.Seq).Scan(&nOptions)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrVisionNotLive
 	}
@@ -47,9 +50,9 @@ func CastVisionPollVote(database *sql.DB, ref VisionRef, voterPIAL string, optio
 		return ErrVisionPollOption
 	}
 	_, err = database.Exec(`
-		INSERT INTO vision_poll_votes (author_pial, seq, voter_pial, option_idx)
+		INSERT INTO vision_poll_votes (author_pial, seq, voter_account, option_idx)
 		VALUES ($1::uuid, $2, $3::uuid, $4)
-		ON CONFLICT (author_pial, seq, voter_pial) DO NOTHING`, ref.AuthorPIAL, ref.Seq, voterPIAL, optionIdx)
+		ON CONFLICT (author_pial, seq, voter_account) DO NOTHING`, ref.AuthorPIAL, ref.Seq, voterAccount, optionIdx)
 	return err
 }
 
@@ -79,19 +82,21 @@ func VisionPollVotes(database *sql.DB, ref VisionRef, nOptions int) ([]int, erro
 	return counts, rows.Err()
 }
 
-// SetVisionMuted hides (or shows again) one author's ring for one viewer,
-// PIAL to PIAL.
-func SetVisionMuted(database *sql.DB, muterPIAL, mutedPIAL string, muted bool) error {
-	if muterPIAL == "" || mutedPIAL == "" || muterPIAL == mutedPIAL {
+// SetVisionMuted hides (or shows again) one account's ring for one viewing
+// account, account to account. Muting a persona hides that persona alone: a
+// mute that reached every account on the target's PIAL would show the muter
+// which accounts belong to one person.
+func SetVisionMuted(database *sql.DB, muterAccount, mutedAccount string, muted bool) error {
+	if muterAccount == "" || mutedAccount == "" || muterAccount == mutedAccount {
 		return errors.New("vision: mute needs two different accounts")
 	}
 	if muted {
 		_, err := database.Exec(`
-			INSERT INTO vision_mutes (muter_pial, muted_pial) VALUES ($1::uuid, $2::uuid)
-			ON CONFLICT DO NOTHING`, muterPIAL, mutedPIAL)
+			INSERT INTO vision_mutes (muter_account, muted_account) VALUES ($1::uuid, $2::uuid)
+			ON CONFLICT DO NOTHING`, muterAccount, mutedAccount)
 		return err
 	}
-	_, err := database.Exec(`DELETE FROM vision_mutes WHERE muter_pial = $1::uuid AND muted_pial = $2::uuid`, muterPIAL, mutedPIAL)
+	_, err := database.Exec(`DELETE FROM vision_mutes WHERE muter_account = $1::uuid AND muted_account = $2::uuid`, muterAccount, mutedAccount)
 	return err
 }
 

@@ -30,14 +30,12 @@ func testGovernor(cpuBudget float64, nvencSessions int) *Governor {
 	}
 }
 
-func h264Source(height int, gop float64) SourceReport {
+func h264Source(height int) SourceReport {
 	return SourceReport{
-		Width:       height * 16 / 9,
-		Height:      height,
-		FPS:         30,
-		Codec:       "h264",
-		GOPSeconds:  gop,
-		FPSDeclared: true,
+		Width:  height * 16 / 9,
+		Height: height,
+		FPS:    30,
+		Codec:  "h264",
 	}
 }
 
@@ -59,7 +57,7 @@ func TestExistingBroadcastsWin(t *testing.T) {
 		if !g.Reserve(id).Admitted {
 			break
 		}
-		plan, err := g.Plan(id, h264Source(1080, 0))
+		plan, err := g.Plan(id, h264Source(1080))
 		if err != nil {
 			t.Fatalf("plan %s: %v", id, err)
 		}
@@ -109,7 +107,7 @@ func TestDegradationBeforeRefusal(t *testing.T) {
 	if !g.Reserve("first").Admitted {
 		t.Fatal("the first broadcast was refused an empty box")
 	}
-	first, err := g.Plan("first", h264Source(1080, 0))
+	first, err := g.Plan("first", h264Source(1080))
 	if err != nil {
 		t.Fatalf("plan first: %v", err)
 	}
@@ -123,7 +121,7 @@ func TestDegradationBeforeRefusal(t *testing.T) {
 	if !g.Reserve("second").Admitted {
 		t.Skip("this budget refuses the second outright; the degradation path needs a wider one")
 	}
-	second, err := g.Plan("second", h264Source(1080, 0))
+	second, err := g.Plan("second", h264Source(1080))
 	if err != nil {
 		t.Fatalf("plan second: %v", err)
 	}
@@ -149,7 +147,7 @@ func TestDegradationBeforeRefusal(t *testing.T) {
 func TestLowestRungIsNeverShed(t *testing.T) {
 	g := testGovernor(0.4, 0)
 	g.Reserve("only")
-	plan, err := g.Plan("only", h264Source(1080, 0))
+	plan, err := g.Plan("only", h264Source(1080))
 	if err != nil {
 		t.Fatalf("plan: %v", err)
 	}
@@ -174,7 +172,7 @@ func TestReleaseReturnsCapacity(t *testing.T) {
 		if !g.Reserve(id).Admitted {
 			break
 		}
-		if _, err := g.Plan(id, h264Source(1080, 0)); err != nil {
+		if _, err := g.Plan(id, h264Source(1080)); err != nil {
 			t.Fatalf("plan %s: %v", id, err)
 		}
 		ids = append(ids, id)
@@ -188,148 +186,66 @@ func TestReleaseReturnsCapacity(t *testing.T) {
 	}
 }
 
-// ── passthrough ──────────────────────────────────────────────────────────────
+// ── the watermark ────────────────────────────────────────────────────────────
 
-// TestPassthroughTakenWhenSafe — H.264 in at exactly the top rung's height,
-// with a declared rate and a measured GOP inside the band, is copied. That is
-// the single largest saving available to this lane and it removes a generation
-// of quality loss as well.
-func TestPassthroughTakenWhenSafe(t *testing.T) {
+// TestEveryRungIsEncoded — the moving watermark is burned into the pixels of
+// every rung, and only an encode puts it there. A rung remuxed from the
+// publisher's own stream would be an unmarked copy on the edge, so no source —
+// H.264 at exactly a ladder height, a portrait phone, a source above the top
+// rung — is ever planned anything but encodes.
+func TestEveryRungIsEncoded(t *testing.T) {
+	cases := []SourceReport{
+		h264Source(1080),
+		h264Source(720),
+		{Width: 720, Height: 1280, FPS: 30, Codec: "h264"},
+		{Width: 1920, Height: 1200, FPS: 30, Codec: "h264"},
+		{Width: 1920, Height: 1080, FPS: 30, Codec: "vp8"},
+	}
+	for _, src := range cases {
+		g := testGovernor(16.0, 0)
+		g.Reserve("s")
+		plan, err := g.Plan("s", src)
+		if err != nil {
+			t.Fatalf("plan %dx%d %s: %v", src.Width, src.Height, src.Codec, err)
+		}
+		for _, r := range plan.Rungs {
+			if r.Mode != ModeEncode {
+				t.Errorf("%dx%d %s: rung %s planned as %q; an unencoded rung carries "+
+					"no watermark", src.Width, src.Height, src.Codec, r.Name, r.Mode)
+			}
+			if r.Height > src.Height {
+				t.Errorf("%dx%d %s: rung %s upscales the source", src.Width, src.Height,
+					src.Codec, r.Name)
+			}
+		}
+		if plan.SegmentSeconds != g.segmentTarget {
+			t.Errorf("segment duration moved to %ds; with every rung encoded it is "+
+				"the governor's target", plan.SegmentSeconds)
+		}
+	}
+}
+
+// TestShedRecostsTheWholeBroadcast — a lease walked down under pressure is
+// recosted by the same sum Plan uses. Costing the remaining rungs alone left
+// out the per-broadcast cost, the largest item in a ladder, and reserved the
+// box over a core and a half short for every broadcast that had ever shed.
+func TestShedRecostsTheWholeBroadcast(t *testing.T) {
 	g := testGovernor(8.0, 0)
 	g.Reserve("s")
-	plan, err := g.Plan("s", h264Source(1080, 2.0))
-	if err != nil {
+	if _, err := g.Plan("s", h264Source(1080)); err != nil {
 		t.Fatalf("plan: %v", err)
 	}
-	top := plan.Rungs[len(plan.Rungs)-1]
-	if top.Mode != ModeCopy {
-		t.Fatalf("the top rung of an H.264 1080p source was re-encoded: %s", plan.Summary())
+	if v := g.ReportPressure("s", 0.7); !v.Restart {
+		t.Fatalf("pressure did not shed a rung: %s", v.Reason)
 	}
-	if plan.SegmentSeconds != 2 {
-		t.Errorf("segment duration is %ds against a 2s publisher GOP: a copied rung "+
-			"breaks on the publisher's keyframes and the encoded rungs must break "+
-			"on the same ones", plan.SegmentSeconds)
+	l := g.leases["s"]
+	want := planCPUCost(1080, 30, l.Plan.Rungs, l.Encoder)
+	if math.Abs(l.CPUCores-want) > 1e-9 {
+		t.Errorf("a shed lease holds %.3f cores; its ladder costs %.3f", l.CPUCores, want)
 	}
-	if top.Threads != 0 {
-		t.Errorf("a copied rung was given a thread ceiling of %d; there is no "+
-			"encoder to cap", top.Threads)
-	}
-	if rungCPUCost(top.Height, 30, top.Mode, plan.Encoder) != 0 {
-		t.Error("a copied rung was costed as though it were being encoded")
-	}
-}
-
-// TestPassthroughRefusedWhenUnsafe walks every condition that makes a copied
-// rung wrong. Each of these produces a ladder whose rungs break at different
-// instants, or a rung whose label is a lie, and each must fall back to an
-// encode rather than being taken because it is cheaper.
-func TestPassthroughRefusedWhenUnsafe(t *testing.T) {
-	cases := []struct {
-		name string
-		src  SourceReport
-		why  string
-	}{
-		{
-			name: "vp8 from a browser",
-			src: SourceReport{Width: 1920, Height: 1080, FPS: 30, Codec: "vp8",
-				GOPSeconds: 2, FPSDeclared: true},
-			why: "there is no H.264 elementary stream to copy",
-		},
-		{
-			name: "GOP not measurable",
-			src: SourceReport{Width: 1920, Height: 1080, FPS: 30, Codec: "h264",
-				GOPSeconds: 0, FPSDeclared: true},
-			why: "there is no cadence to align the encoded rungs to",
-		},
-		{
-			name: "GOP longer than the segment band",
-			src: SourceReport{Width: 1920, Height: 1080, FPS: 30, Codec: "h264",
-				GOPSeconds: 10, FPSDeclared: true},
-			why: "10 second segments cost every viewer more latency than the core it saves",
-		},
-		{
-			name: "GOP not close to a whole number of seconds",
-			src: SourceReport{Width: 1920, Height: 1080, FPS: 30, Codec: "h264",
-				GOPSeconds: 2.6, FPSDeclared: true},
-			why: "the encoded rungs can only be forced to a whole-second cadence",
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			g := testGovernor(8.0, 0)
-			g.Reserve("s")
-			plan, err := g.Plan("s", tc.src)
-			if err != nil {
-				t.Fatalf("plan: %v", err)
-			}
-			for _, r := range plan.Rungs {
-				if r.Mode == ModeCopy {
-					t.Fatalf("a rung was copied when it must not be — %s: %s",
-						tc.why, plan.Summary())
-				}
-			}
-			if plan.SegmentSeconds != g.segmentTarget {
-				t.Errorf("segment duration moved to %ds with nothing being copied",
-					plan.SegmentSeconds)
-			}
-		})
-	}
-}
-
-// TestPassthroughSavesTheLargestEncode quantifies the lever: the top rung is
-// the most expensive one in the ladder, and copying it is the difference
-// between what the box could carry before and after.
-// TestPassthroughFollowsTheSourceNotTheTable — an H.264 source is copied at
-// its own height even when that height is no ladder row (a phone held upright
-// sends 720x1280), but only when it declared a real frame rate. A copied rung
-// has no timeline of its own to resample: it remuxes the publisher's PTS byte
-// for byte, and a source MediaMTX reports as avg_frame_rate=0/0 — every WebRTC
-// publish, measured — hands the muxer packets with no honest duration. That
-// is not a slow encode, it is "Packet duration ... is out of range" on a rung
-// running no encoder at all, which stalls the whole process regardless of how
-// small the ladder is cut. So an undeclared rate always falls back to the
-// standard encoded ladder, on-table height and all; only a source that both
-// clears the GOP band AND declared its own cadence gets copied through.
-func TestPassthroughFollowsTheSourceNotTheTable(t *testing.T) {
-	cases := []struct {
-		name     string
-		src      SourceReport
-		wantName string
-		wantMode EncodeMode
-	}{
-		{
-			name: "portrait phone, no ladder row at 1280",
-			src: SourceReport{Width: 720, Height: 1280, FPS: 30, Codec: "h264",
-				GOPSeconds: 2, FPSDeclared: true},
-			wantName: "1280p", wantMode: ModeCopy,
-		},
-		{
-			name: "source taller than the top rung",
-			src: SourceReport{Width: 1920, Height: 1200, FPS: 30, Codec: "h264",
-				GOPSeconds: 2, FPSDeclared: true},
-			wantName: "1200p", wantMode: ModeCopy,
-		},
-		{
-			name: "rate not declared by the source — falls back to encoding",
-			src: SourceReport{Width: 1920, Height: 1080, FPS: 30, Codec: "h264",
-				GOPSeconds: 2, FPSDeclared: false},
-			wantName: "1080p", wantMode: ModeEncode,
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			g := testGovernor(8.0, 0)
-			g.Reserve("s")
-			plan, err := g.Plan("s", tc.src)
-			if err != nil {
-				t.Fatalf("plan: %v", err)
-			}
-			top := plan.Rungs[len(plan.Rungs)-1]
-			if top.Mode != tc.wantMode || top.Name != tc.wantName || top.Height != tc.src.Height {
-				t.Fatalf("top rung = %s/%s at %d, want %s named %s at the source height: %s",
-					top.Name, top.Mode, top.Height, tc.wantMode, tc.wantName, plan.Summary())
-			}
-		})
+	if l.CPUCores < broadcastCPUCost(1080, 30) {
+		t.Errorf("a shed lease holds %.3f cores, less than the %.3f every 1080p30 "+
+			"broadcast costs before a single rung", l.CPUCores, broadcastCPUCost(1080, 30))
 	}
 }
 
@@ -340,7 +256,7 @@ func TestPassthroughFollowsTheSourceNotTheTable(t *testing.T) {
 func TestShedRungStaysShedAcrossRestart(t *testing.T) {
 	g := testGovernor(8.0, 0)
 	g.Reserve("s")
-	src := SourceReport{Width: 1920, Height: 1080, FPS: 30, Codec: "vp8", GOPSeconds: 2, FPSDeclared: true}
+	src := SourceReport{Width: 1920, Height: 1080, FPS: 30, Codec: "vp8"}
 	first, err := g.Plan("s", src)
 	if err != nil {
 		t.Fatalf("plan: %v", err)
@@ -371,45 +287,6 @@ func TestShedRungStaysShedAcrossRestart(t *testing.T) {
 	}
 }
 
-func TestPassthroughSavesTheLargestEncode(t *testing.T) {
-	encoded := testGovernor(8.0, 0)
-	encoded.Reserve("s")
-	withoutCopy, _ := encoded.Plan("s", h264Source(1080, 0))
-
-	copied := testGovernor(8.0, 0)
-	copied.Reserve("s")
-	withCopy, _ := copied.Plan("s", h264Source(1080, 2))
-
-	if len(withoutCopy.Rungs) != len(withCopy.Rungs) {
-		t.Fatalf("passthrough changed the rung count: %d vs %d — it must change how "+
-			"a rung is produced, never which rungs exist",
-			len(withoutCopy.Rungs), len(withCopy.Rungs))
-	}
-	before := encoded.leases["s"].CPUCores
-	after := copied.leases["s"].CPUCores
-	if after >= before {
-		t.Fatalf("copying the top rung did not reduce the cost: %.3f -> %.3f", before, after)
-	}
-	// MEASURED at 33% on this host: 4.114 cores for the three rung software
-	// ladder against 2.751 with the top rung copied. It is not more than that
-	// because the largest single item in a ladder is not any one encode — it is
-	// the fixed cost of decoding the source, normalising its rate, scaling it,
-	// producing the poster and safety sample, encoding the audio each rung
-	// carries and muxing every rendition, and passthrough touches none of it.
-	//
-	// The floor is below the measured figure rather than at it: this is
-	// guarding against passthrough being quietly reduced to a rounding error,
-	// not pinning a benchmark taken on a busy box to two decimal places.
-	saved := (before - after) / before
-	if saved < 0.30 {
-		t.Errorf("copying the top rung saved only %.0f%% of the ladder's cost; it "+
-			"was measured at 33%% and the 1080p encode alone is 1.14 of the "+
-			"4.11 cores a full software ladder costs", saved*100)
-	}
-	t.Logf("passthrough: %.3f -> %.3f cores per 1080p30 broadcast (%.0f%% saved)",
-		before, after, saved*100)
-}
-
 // ── hardware ─────────────────────────────────────────────────────────────────
 
 // TestNVENCSessionsAreBudgetedNotProbed — the card grants a fixed number of
@@ -424,16 +301,12 @@ func TestNVENCSessionsAreBudgetedNotProbed(t *testing.T) {
 			break
 		}
 		plan, err := g.Plan(id, SourceReport{Width: 1920, Height: 1080, FPS: 30,
-			Codec: "vp8", FPSDeclared: true, NVENCAvailable: true})
+			Codec: "vp8", NVENCAvailable: true})
 		if err != nil {
 			t.Fatalf("plan %s: %v", id, err)
 		}
 		if plan.Encoder == EncoderNVENC {
-			for _, r := range plan.Rungs {
-				if r.Mode == ModeEncode {
-					sessions++
-				}
-			}
+			sessions += len(plan.Rungs)
 		}
 	}
 	if sessions > 8 {
@@ -453,7 +326,7 @@ func TestEncoderCapabilityIsLearnedFromTheLadder(t *testing.T) {
 	g := testGovernor(100, 8)
 	g.Reserve("s")
 	plan, err := g.Plan("s", SourceReport{Width: 1920, Height: 1080, FPS: 30,
-		Codec: "vp8", FPSDeclared: true, NVENCAvailable: false})
+		Codec: "vp8", NVENCAvailable: false})
 	if err != nil {
 		t.Fatalf("plan: %v", err)
 	}
@@ -478,7 +351,7 @@ func TestEncoderCapabilityIsLearnedFromTheLadder(t *testing.T) {
 func TestPressureShedsRungsThenStops(t *testing.T) {
 	g := testGovernor(8.0, 0)
 	g.Reserve("s")
-	plan, err := g.Plan("s", h264Source(1080, 0))
+	plan, err := g.Plan("s", h264Source(1080))
 	if err != nil {
 		t.Fatalf("plan: %v", err)
 	}
@@ -521,44 +394,30 @@ func TestPressureOnAnUnknownStreamIsHarmless(t *testing.T) {
 // this host. If a coefficient is edited without a fresh measurement behind it,
 // this is what says so.
 //
-// The measured figures are the ladder's own ffmpeg invocation against a
-// 1080p30 H.264 source: the full three rung software ladder, and the same
-// ladder with the top rung copied.
+// The measured figure is the ladder's own ffmpeg invocation against a 1080p30
+// H.264 source, the full three rung software ladder. The watermark's share is
+// an estimate (markCoresPerMegapixel) and sits well inside the tolerance.
 func TestCostModelMatchesMeasurement(t *testing.T) {
 	const (
 		// A real 1080p30 RTMP broadcast's ladder, read out of /proc at 3.674
 		// cores sustained, less the 0.19 the poster-branch reordering saves.
 		measuredFullLadderCores = 3.48
-		// The same ladder with the top rung copied: the measured -33% ratio
-		// applied to that anchor, less the same 0.19.
-		measuredPassthroughCores = 2.27
 		// The box is shared and these were taken on a loaded one. The model is
 		// a budget, not a stopwatch; this is wide enough to survive a noisy
 		// measurement and narrow enough to catch a coefficient edited blind.
 		tolerance = 0.35
 	)
 
-	modelled := func(modes []EncodeMode) float64 {
-		total := megapixelsPerSecond(1080, 30) * fixedCoresPerMegapixel
-		for i, h := range []int{480, 720, 1080} {
-			total += rungCPUCost(h, 30, modes[i], EncoderX264)
-		}
-		return total
+	full := broadcastCPUCost(1080, 30)
+	for _, h := range []int{480, 720, 1080} {
+		full += rungCPUCost(h, 30, EncoderX264)
 	}
-
-	full := modelled([]EncodeMode{ModeEncode, ModeEncode, ModeEncode})
 	if math.Abs(full-measuredFullLadderCores) > tolerance {
 		t.Errorf("the model costs the full software ladder at %.2f cores; it was "+
 			"measured at %.2f. Re-measure before changing a coefficient.",
 			full, measuredFullLadderCores)
 	}
-
-	through := modelled([]EncodeMode{ModeEncode, ModeEncode, ModeCopy})
-	if math.Abs(through-measuredPassthroughCores) > tolerance {
-		t.Errorf("the model costs the passthrough ladder at %.2f cores; it was "+
-			"measured at %.2f", through, measuredPassthroughCores)
-	}
-	t.Logf("modelled: full %.2f cores, passthrough %.2f cores", full, through)
+	t.Logf("modelled: full software ladder %.2f cores", full)
 }
 
 // TestThreadCeilingsAreBounded — the isolation mechanism. An encode left to
@@ -567,14 +426,11 @@ func TestCostModelMatchesMeasurement(t *testing.T) {
 func TestThreadCeilingsAreBounded(t *testing.T) {
 	g := testGovernor(8.0, 0)
 	g.Reserve("s")
-	plan, err := g.Plan("s", h264Source(1080, 0))
+	plan, err := g.Plan("s", h264Source(1080))
 	if err != nil {
 		t.Fatalf("plan: %v", err)
 	}
 	for _, r := range plan.Rungs {
-		if r.Mode == ModeCopy {
-			continue
-		}
 		if r.Threads < 1 {
 			t.Errorf("%s was given no thread ceiling; libx264 will size its pool "+
 				"from the whole machine", r.Name)
@@ -596,7 +452,7 @@ func TestHeadroomReachesZeroBeforeRefusing(t *testing.T) {
 		if !g.Reserve(id).Admitted {
 			break
 		}
-		if _, err := g.Plan(id, h264Source(1080, 0)); err != nil {
+		if _, err := g.Plan(id, h264Source(1080)); err != nil {
 			t.Fatalf("plan %s: %v", id, err)
 		}
 	}
@@ -610,18 +466,18 @@ func TestHeadroomReachesZeroBeforeRefusing(t *testing.T) {
 	}
 }
 
-// TestSummaryDistinguishesCopiedRungs — "1080p" produced by an encoder and
-// "1080p" produced by a remux fail differently and are diagnosed differently.
-func TestSummaryDistinguishesCopiedRungs(t *testing.T) {
+// TestSummaryNamesRungsAndEncoder — the row records the summary, and the
+// quality selector reads the rungs back out of it.
+func TestSummaryNamesRungsAndEncoder(t *testing.T) {
 	g := testGovernor(8.0, 0)
 	g.Reserve("s")
-	plan, _ := g.Plan("s", h264Source(1080, 2))
+	plan, _ := g.Plan("s", h264Source(1080))
 	got := plan.Summary()
 	if got == "" {
 		t.Fatal("a plan rendered an empty summary; the row records nothing")
 	}
-	if want := "1080p@copy"; !contains(got, want) {
-		t.Errorf("summary %q does not mark the copied rung", got)
+	if want := "1080p@6500k"; !contains(got, want) {
+		t.Errorf("summary %q does not name the 1080p rung and its bitrate", got)
 	}
 	if !contains(got, EncoderX264) {
 		t.Errorf("summary %q does not name the encoder carrying the ladder", got)
@@ -643,63 +499,40 @@ func indexOf(haystack, needle string) int {
 	return -1
 }
 
-// TestCapacityCeiling is the before-and-after, expressed against this host's
-// real budget so the number cannot drift away from the code that produces it.
+// TestCapacityCeiling expresses the lane's concurrency against this host's
+// real budget, so the number cannot drift away from the code that produces it.
 //
-// "Before" is not a hypothetical: it is what this lane did until now — no
-// governor at all, every broadcast encoding three libx264 rungs because that is
-// what its own copy of the rung table said, and no arithmetic anywhere about
-// whether the box could carry the next one. The ceiling below is where that
-// arrangement ran out of cores; past it, publishes were still accepted and the
-// ladders destroyed each other.
+// Every rung is encoded, because every rung carries the burned-in watermark.
+// The software lane is bounded by cores; the hardware lane by the card's
+// sessions, three per 1080p broadcast; and the real door admits the hardware
+// broadcasts and then fills what cores are left with software ones, so it
+// carries more than the software lane alone.
 func TestCapacityCeiling(t *testing.T) {
 	const budget = 7.8 // LIVE_CPU_BUDGET_CORES on this host: 12 cores less reserve
 
-	full := func(mode EncodeMode, encoder string) float64 {
-		total := megapixelsPerSecond(1080, 30) * fixedCoresPerMegapixel
-		for i, h := range []int{480, 720, 1080} {
-			m := ModeEncode
-			if i == 2 {
-				m = mode
-			}
-			total += rungCPUCost(h, 30, m, encoder)
+	full := func(encoder string) float64 {
+		total := broadcastCPUCost(1080, 30)
+		for _, h := range []int{480, 720, 1080} {
+			total += rungCPUCost(h, 30, encoder)
 		}
 		return total
 	}
-
-	before := full(ModeEncode, EncoderX264)
-	softwarePassthrough := full(ModeCopy, EncoderX264)
-	hardwarePassthrough := full(ModeCopy, EncoderNVENC)
-
-	t.Logf("per 1080p30 broadcast: before %.2f cores, "+
-		"software+passthrough %.2f, hardware+passthrough %.2f",
-		before, softwarePassthrough, hardwarePassthrough)
-
-	beforeCeiling := int(budget / before)
-	softwareCeiling := int(budget / softwarePassthrough)
-
-	// The hardware lane is capped by sessions, not cores: two encoded rungs per
-	// passthrough broadcast against a card that opens eight.
-	hardwareCeiling := nvencSessions / 2
-	if byCores := int(budget / hardwarePassthrough); byCores < hardwareCeiling {
+	software := full(EncoderX264)
+	hardware := full(EncoderNVENC)
+	softwareCeiling := int(budget / software)
+	hardwareCeiling := nvencSessions / 3
+	if byCores := int(budget / hardware); byCores < hardwareCeiling {
 		hardwareCeiling = byCores
 	}
+	t.Logf("per 1080p30 broadcast: software %.2f cores, hardware %.2f cores; "+
+		"at a %.1f core budget: software %d, hardware %d",
+		software, hardware, budget, softwareCeiling, hardwareCeiling)
 
-	t.Logf("concurrent 1080p30 broadcasts at a %.1f core budget: "+
-		"before %d, software+passthrough %d, hardware+passthrough %d",
-		budget, beforeCeiling, softwareCeiling, hardwareCeiling)
-
-	if softwareCeiling <= beforeCeiling {
-		t.Errorf("passthrough bought no additional concurrency: %d -> %d",
-			beforeCeiling, softwareCeiling)
-	}
-	if hardwareCeiling <= beforeCeiling {
-		t.Errorf("hardware encoding bought no additional concurrency: %d -> %d",
-			beforeCeiling, hardwareCeiling)
+	if softwareCeiling < 1 || hardwareCeiling < 1 {
+		t.Fatalf("this host cannot carry one 1080p30 broadcast: software %d, hardware %d",
+			softwareCeiling, hardwareCeiling)
 	}
 
-	// And the box must actually admit that many through the real door, with the
-	// real cost model, rather than only on paper.
 	g := testGovernor(budget, nvencSessions)
 	admitted := 0
 	for i := 0; i < 20; i++ {
@@ -708,7 +541,7 @@ func TestCapacityCeiling(t *testing.T) {
 			break
 		}
 		plan, err := g.Plan(id, SourceReport{Width: 1920, Height: 1080, FPS: 30,
-			Codec: "h264", GOPSeconds: 2, FPSDeclared: true, NVENCAvailable: true})
+			Codec: "h264", NVENCAvailable: true})
 		if err != nil {
 			t.Fatalf("plan %s: %v", id, err)
 		}
@@ -717,8 +550,12 @@ func TestCapacityCeiling(t *testing.T) {
 			map[bool]string{true: " DEGRADED", false: ""}[plan.Degraded])
 	}
 	if admitted < hardwareCeiling {
-		t.Errorf("the governor admitted %d broadcasts where the budget affords %d",
+		t.Errorf("the governor admitted %d broadcasts where the card affords %d",
 			admitted, hardwareCeiling)
+	}
+	if admitted <= softwareCeiling {
+		t.Errorf("the governor admitted %d broadcasts with a card present; the "+
+			"software lane alone carries %d", admitted, softwareCeiling)
 	}
 }
 
@@ -740,7 +577,7 @@ func TestOneFailedProbeDoesNotDisableAWorkingCard(t *testing.T) {
 	for _, id := range []string{"running-a", "running-b"} {
 		g.Reserve(id)
 		plan, err := g.Plan(id, SourceReport{Width: 1920, Height: 1080, FPS: 30,
-			Codec: "vp8", FPSDeclared: true, NVENCAvailable: true})
+			Codec: "vp8", NVENCAvailable: true})
 		if err != nil {
 			t.Fatalf("plan %s: %v", id, err)
 		}
@@ -752,7 +589,7 @@ func TestOneFailedProbeDoesNotDisableAWorkingCard(t *testing.T) {
 	// A third ladder's probe loses a race and reports no hardware.
 	g.Reserve("unlucky")
 	plan, err := g.Plan("unlucky", SourceReport{Width: 1280, Height: 720, FPS: 30,
-		Codec: "vp8", FPSDeclared: true, NVENCAvailable: false})
+		Codec: "vp8", NVENCAvailable: false})
 	if err != nil {
 		t.Fatalf("plan unlucky: %v", err)
 	}
@@ -769,7 +606,7 @@ func TestOneFailedProbeDoesNotDisableAWorkingCard(t *testing.T) {
 	g.Release("running-b")
 	g.Reserve("last")
 	if _, err := g.Plan("last", SourceReport{Width: 1280, Height: 720, FPS: 30,
-		Codec: "vp8", FPSDeclared: true, NVENCAvailable: false}); err != nil {
+		Codec: "vp8", NVENCAvailable: false}); err != nil {
 		t.Fatalf("plan last: %v", err)
 	}
 	if g.nvencEnabled {

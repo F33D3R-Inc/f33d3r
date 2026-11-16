@@ -19,7 +19,7 @@ const (
 // (the wire address). The two differ so a test sees which one reaches a page.
 func visionTestVision(author string, seq int64, handle, contentType string, viewed bool) *model.Vision {
 	return &model.Vision{
-		AuthorPIAL: "pial-" + author, AuthorAccountID: author, Seq: seq,
+		AuthorPIAL: "pial-" + author, AuthorAccountID: author, Seq: seq, AccountSeq: seq,
 		ContentType: contentType, Body: "Visions are back",
 		ArtboardBackground: "ember", ArtboardTypeface: "display",
 		ArtboardTypeScale: "auto", ArtboardAlign: "center",
@@ -47,7 +47,6 @@ func visionTestSequence() []*model.Vision {
 
 func visionTestRing(author, handle, state string, count, unseen int, next string) *model.VisionRing {
 	return &model.VisionRing{
-		AuthorPIAL:      "pial-" + author,
 		AuthorAccountID: author,
 		AuthorHandle:    handle, AuthorName: strings.ToUpper(handle),
 		State: state, Count: count, UnseenCount: unseen,

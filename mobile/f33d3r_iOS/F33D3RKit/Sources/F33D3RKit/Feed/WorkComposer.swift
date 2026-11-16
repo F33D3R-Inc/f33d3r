@@ -21,8 +21,12 @@ import Observation
 /// quoting count — see ``kind``.
 ///
 /// A draft with parts after the first is a thread. Every part is published as
-/// `thread_post`, each chained to the one before it by `parent_cid`, and the
-/// chain is signed whole before any of it is sent — see ``ThreadSubmission``.
+/// `thread_post`, each chained to the one before it by `parent_cid`, and each
+/// part is signed when it is sent — see ``ThreadSubmission``.
+///
+/// The text is what the server will measure and store: every body and poll
+/// option is normalised (``WorkText``) before it is signed, and the counters
+/// measure the server's weighted length of that normalised text.
 /// When a chain stops part way the published parts are real and the rest stay
 /// here, addressed to the last part that landed, so the author can carry on
 /// from where it broke rather than start over or post the head twice.
@@ -73,14 +77,12 @@ public final class WorkComposer {
     /// What a finished transcode hands back, in the units the work carries.
     ///
     /// The signed half — master, poster, whole seconds — goes in the payload;
-    /// the unsigned half — the watermarked file, the frame size, the upload id
-    /// that keeps the file from the orphan sweep — rides on the envelope. One
-    /// value here so a draft can keep it and the payload can be built from it
-    /// without either side knowing about the other. `Codable` for the draft.
+    /// the frame size rides unsigned on the envelope. The upload id is this
+    /// device's own bookkeeping and is never sent: the media registry binds the
+    /// upload to its asset. `Codable` for the draft.
     public struct VideoRenditions: Codable, Hashable, Sendable {
         public var masterURL: String
         public var posterURL: String?
-        public var watermarkedURL: String?
         /// Whole seconds. The transcoder measures fractions; the payload's
         /// field is an integer, so it is rounded here, once.
         public var durationSecs: Int
@@ -96,13 +98,12 @@ public final class WorkComposer {
         public var creditedTo: String?
 
         public init(
-            masterURL: String, posterURL: String? = nil, watermarkedURL: String? = nil,
+            masterURL: String, posterURL: String? = nil,
             durationSecs: Int, width: Int? = nil, height: Int? = nil,
             uploadID: String? = nil, creditedTo: String? = nil
         ) {
             self.masterURL = masterURL
             self.posterURL = posterURL
-            self.watermarkedURL = watermarkedURL
             self.durationSecs = durationSecs
             self.width = width
             self.height = height
@@ -118,7 +119,6 @@ public final class WorkComposer {
             self.init(
                 masterURL: master,
                 posterURL: job.posterURL.flatMap { $0.isEmpty ? nil : $0 },
-                watermarkedURL: job.watermarkedURL.flatMap { $0.isEmpty ? nil : $0 },
                 durationSecs: Int((job.durationSecs ?? 0).rounded()),
                 width: job.width,
                 height: job.height,
@@ -136,7 +136,7 @@ public final class WorkComposer {
     /// half an hour, the web's cadence. Each answer is one of these states, and
     /// Post is held until the state is ``State/ready(_:)``.
     ///
-    /// ``State/duplicate(handle:workID:renditions:)`` is not a failure. The
+    /// ``State/duplicate(handle:renditions:)`` is not a failure. The
     /// server is saying these exact bytes are already on F33D3R under someone
     /// else's name, and offering their renditions instead of transcoding a
     /// second copy. Whether to post it anyway — with the credit going to them
@@ -153,7 +153,7 @@ public final class WorkComposer {
             /// Already on F33D3R. `renditions` is the original's, when the
             /// server could name it; without them there is nothing to attach
             /// and the only honest choice is to remove.
-            case duplicate(handle: String, workID: String?, renditions: VideoRenditions?)
+            case duplicate(handle: String, renditions: VideoRenditions?)
             /// The server's reason, or the transport's.
             case failed(String)
         }
@@ -219,7 +219,8 @@ public final class WorkComposer {
         public var isUploading: Bool { remotePath == nil && failure == nil }
     }
 
-    /// A poll being written. Two to four options, closing after `duration`.
+    /// A poll being written. Two to four options, closing after `duration`
+    /// (which the server bounds to 5 minutes – 7 days after the work opens).
     public struct PollDraft: Sendable, Equatable {
         public var options: [String]
         public var duration: Duration
@@ -235,15 +236,32 @@ public final class WorkComposer {
             self.duration = duration
         }
 
-        public var trimmedOptions: [String] {
-            options.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        /// The options as they will be signed.
+        public var normalizedOptions: [String] {
+            options.map(WorkText.normalize)
         }
 
-        /// Every option filled, at least two, none over the label limit.
-        public var isValid: Bool {
-            let filled = trimmedOptions
-            return filled.count >= 2 && filled.count <= 4 && filled.allSatisfy { !$0.isEmpty && $0.count <= 40 }
+        /// Why the server would refuse these options, or nil: two to four,
+        /// each one line of visible text of at most 80 characters, all
+        /// different (ignoring case).
+        public var problem: String? {
+            let filled = normalizedOptions
+            guard (WorkPayload.pollMinOptions...WorkPayload.pollMaxOptions).contains(filled.count) else {
+                return "A poll has 2 to 4 options."
+            }
+            if filled.contains(where: { WorkText.isBlank($0) || !WorkText.isSingleLine($0) }) {
+                return "Every option needs text, on one line."
+            }
+            if filled.contains(where: { WorkText.scalarCount($0) > WorkText.pollOptionMaxScalars }) {
+                return "Each option is at most \(WorkText.pollOptionMaxScalars) characters."
+            }
+            if Set(filled.map { $0.lowercased() }).count != filled.count {
+                return "Options must differ."
+            }
+            return nil
         }
+
+        public var isValid: Bool { problem == nil }
     }
 
     /// One part of a thread after the first. Text only — see ``payload()``
@@ -257,10 +275,12 @@ public final class WorkComposer {
             self.body = body
         }
 
-        public var trimmed: String { body.trimmingCharacters(in: .whitespacesAndNewlines) }
+        /// The part's text as it will be signed.
+        public var normalized: String { WorkText.normalize(body) }
     }
 
-    public static let maxBodyLength = 2000
+    /// The body limit, in the server's weighted units (``WorkText``).
+    public static let maxBodyLength = WorkText.maxWeightedLength
     /// Pictures and a GIF together. The web's media strip holds four tiles
     /// whatever they are.
     public static let maxAttachments = 4
@@ -345,23 +365,39 @@ public final class WorkComposer {
 
     // MARK: - Validity
 
-    public var remaining: Int { Self.maxBodyLength - body.count }
+    /// Weighted units left in the body: what the server measures, of the text
+    /// as it will be signed.
+    public var remaining: Int { Self.remaining(for: body) }
 
-    /// Characters left in one part after the first.
+    /// Weighted units left in one part after the first.
     public func remaining(in segmentID: UUID) -> Int {
-        Self.maxBodyLength - (segments.first { $0.id == segmentID }?.body.count ?? 0)
+        Self.remaining(for: segments.first { $0.id == segmentID }?.body ?? "")
     }
 
-    private var trimmedBody: String { body.trimmingCharacters(in: .whitespacesAndNewlines) }
+    /// Room left under both of the server's bounds — the weighted limit and
+    /// the stored size — whichever is nearer.
+    static func remaining(for text: String) -> Int {
+        let signed = WorkText.normalize(text)
+        return min(
+            WorkText.maxWeightedLength - WorkText.weightedLength(signed),
+            WorkText.maxScalars - WorkText.scalarCount(signed)
+        )
+    }
+
+    /// The body as it will be signed.
+    private var normalizedBody: String { WorkText.normalize(body) }
+
+    /// Whether the body says anything a reader can see.
+    private var hasBodyText: Bool { !WorkText.isBlank(normalizedBody) }
 
     public var hasContent: Bool {
-        !trimmedBody.isEmpty
+        hasBodyText
             || attachments.contains { $0.remotePath != nil }
             || video?.renditions != nil
             || voice?.remotePath != nil
             || gif != nil
             || (poll?.isValid ?? false)
-            || segments.contains { !$0.trimmed.isEmpty }
+            || segments.contains { !WorkText.isBlank($0.normalized) }
     }
 
     /// Whether this is a thread: parts after the first, or the rest of one
@@ -387,17 +423,17 @@ public final class WorkComposer {
         if let voice, voice.remotePath == nil { return false }
         if let poll, !poll.isValid { return false }
         // A poll is a question with options; options alone are not a work.
-        if poll != nil, trimmedBody.isEmpty { return false }
+        if poll != nil, !hasBodyText { return false }
         if scheduleProblem != nil { return false }
         if !segments.isEmpty {
             // A thread opens with words. The head is the part the feed shows,
             // and a blank one followed by three parts of text is a thread the
             // reader cannot find.
-            if trimmedBody.isEmpty { return false }
+            if !hasBodyText { return false }
             // Every part is a work of its own and is held to a work's limits.
             // An empty part is not dropped on the author's behalf: it is on
             // the screen, and removing it is a tap.
-            if segments.contains(where: { $0.trimmed.isEmpty || $0.body.count > Self.maxBodyLength }) { return false }
+            if segments.contains(where: { WorkText.isBlank($0.normalized) || Self.remaining(for: $0.body) < 0 }) { return false }
         }
         return true
     }
@@ -503,7 +539,7 @@ public final class WorkComposer {
             }
         } catch let error as APIError {
             if let index = attachments.firstIndex(where: { $0.id == id }) {
-                attachments[index].failure = error.userMessage
+                attachments[index].failure = error.uploadMessage
             }
         } catch {
             if let index = attachments.firstIndex(where: { $0.id == id }) {
@@ -560,7 +596,7 @@ public final class WorkComposer {
     /// Nothing to accept when the server named no renditions.
     public func acceptDuplicateVideo() {
         guard let current = video,
-              case .duplicate(let handle, _, let renditions) = current.state,
+              case .duplicate(let handle, let renditions) = current.state,
               var renditions
         else { return }
         renditions.creditedTo = handle.isEmpty ? nil : handle
@@ -633,7 +669,6 @@ public final class WorkComposer {
         case .duplicate:
             setVideoState(id, .duplicate(
                 handle: job.duplicateOfHandle ?? "",
-                workID: job.duplicateOfWorkID,
                 renditions: VideoRenditions(job: job, uploadID: nil)
             ))
             return false
@@ -717,7 +752,7 @@ public final class WorkComposer {
     /// One wording for an upload's failure, whoever failed: the server's
     /// message when it sent one, the transport's otherwise.
     private static func message(for error: any Error) -> String {
-        if let error = error as? APIError { return error.userMessage }
+        if let error = error as? APIError { return error.uploadMessage }
         return error.localizedDescription
     }
 
@@ -887,8 +922,8 @@ public final class WorkComposer {
 
     // MARK: - Submit
 
-    /// Publishes the draft. Signs once on the first call; a later call after
-    /// an uncertain outcome resends the same bytes.
+    /// Publishes the draft. Signs when it is first sent; a later call after an
+    /// uncertain outcome resends the same bytes, which cannot post twice.
     ///
     /// For a thread the accepted row returned is the **head's**, whichever
     /// call landed it — that is the work the feed shows, and the one the
@@ -900,7 +935,7 @@ public final class WorkComposer {
         defer { isSubmitting = false }
 
         do {
-            try await signer.registerIfNeeded(with: client)
+            try await signer.registerIfNeeded(with: client, accountID: try identity.requireAccount())
         } catch let error as MalkuthError {
             failure = error.isKeyAuthorityUnavailable
                 ? "The key authority is unreachable, so this device cannot sign yet."
@@ -916,15 +951,15 @@ public final class WorkComposer {
         if submission == nil {
             do {
                 let renditions = video?.renditions
-                submission = try await WorkSubmission.prepare(
-                    payload(),
-                    signer: signer,
-                    isNSFW: isNSFW,
-                    videoWatermarkedURL: renditions?.watermarkedURL,
-                    videoWidth: renditions?.width,
-                    videoHeight: renditions?.height,
-                    quotedWorkID: mode.quoted?.id,
-                    tusUploadID: renditions?.uploadID
+                submission = WorkSubmission(
+                    draft: try payload(),
+                    unsigned: WorkSubmission.Unsigned(
+                        isNSFW: isNSFW,
+                        videoWidth: renditions?.width,
+                        videoHeight: renditions?.height,
+                        quotedWorkID: mode.quoted?.id
+                    ),
+                    signer: signer
                 )
             } catch let error as MalkuthError {
                 failure = error.description
@@ -935,7 +970,11 @@ public final class WorkComposer {
             }
         }
 
-        let outcome = await submission!.sendWithRetries(using: client)
+        // Copied out and back rather than mutated in place across the await:
+        // a stored property cannot be held exclusively for the duration.
+        var pending = submission!
+        let outcome = await pending.sendWithRetries(using: client)
+        submission = pending
         switch outcome {
         case .accepted:
             uncertain = nil
@@ -945,7 +984,7 @@ public final class WorkComposer {
             submission = nil
         case .uncertain(_, let reason):
             uncertain = outcome
-            failure = "F33D3R didn't confirm the post (\(reason)). It may have gone through — check your profile before posting again, or retry to send the same post."
+            failure = "F33D3R didn't confirm the post (\(reason)). Retry sends the same post again, which cannot post it twice."
         }
         return outcome
     }
@@ -955,15 +994,15 @@ public final class WorkComposer {
         if threadSubmission == nil {
             do {
                 let renditions = video?.renditions
-                threadSubmission = try await ThreadSubmission.prepare(
-                    head: payload(),
-                    continuations: segments.map(\.trimmed),
+                threadSubmission = ThreadSubmission(
+                    head: try payload(),
+                    continuations: segments.map(\.body),
                     signer: signer,
-                    isNSFW: isNSFW,
-                    videoWatermarkedURL: renditions?.watermarkedURL,
-                    videoWidth: renditions?.width,
-                    videoHeight: renditions?.height,
-                    tusUploadID: renditions?.uploadID
+                    headUnsigned: WorkSubmission.Unsigned(
+                        isNSFW: isNSFW,
+                        videoWidth: renditions?.width,
+                        videoHeight: renditions?.height
+                    )
                 )
             } catch let error as MalkuthError {
                 failure = error.description
@@ -1081,7 +1120,7 @@ public final class WorkComposer {
     }
 
     private func payload() throws -> WorkPayload {
-        let pial = try identity.requirePIAL()
+        let account = try identity.requireAccount()
         // Media rides on the head only. The feed shows a thread by its first
         // part, so that is where a picture is seen; the web's threads carry no
         // media at all, and the one list of attachments on this screen has no
@@ -1100,15 +1139,15 @@ public final class WorkComposer {
         var pollOptions: [String]?
         var pollEndsAt: String?
         if let poll, kind == .poll {
-            pollOptions = poll.trimmedOptions
+            pollOptions = poll.normalizedOptions
             // A poll runs from when it is seen, not from when it was written:
             // a scheduled poll closes `duration` after it publishes.
             let opens = scheduledAt ?? Date()
             pollEndsAt = WorkPayload.rfc3339String(opens.addingTimeInterval(TimeInterval(poll.duration.components.seconds)))
         }
         return WorkPayload(
-            authorPIAL: pial,
-            body: trimmedBody,
+            authorAccount: account,
+            body: normalizedBody,
             commentGating: commentGating,
             kind: kind,
             mediaURLs: media,
@@ -1117,6 +1156,7 @@ public final class WorkComposer {
             pollOptions: pollOptions,
             scheduledAt: scheduledAt.map(WorkPayload.rfc3339String),
             subscriberOnly: subscriberOnly,
+            // Stamped again when it is signed, at send time.
             timestampMS: WorkPayload.nowMS(),
             videoDurationSecs: renditions?.durationSecs,
             videoMasterURL: renditions?.masterURL,
@@ -1138,6 +1178,9 @@ public final class WorkComposer {
 
     private static func message(for error: MalkuthError) -> String {
         switch error {
+        case .workRefused(_, let message):
+            // The create path's own sentence, written for the poster.
+            return message
         case .rejected(let status, let reason):
             switch reason.trimmingCharacters(in: .whitespacesAndNewlines) {
             case "signature invalid":

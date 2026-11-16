@@ -71,7 +71,12 @@ func (h *Handler) userProfilePage(w http.ResponseWriter, r *http.Request) {
 	isSubscribed := false
 	if h.db != nil && !anon && !isOwner {
 		isFollowing, _ = dbpkg.IsFollowing(h.db, viewerUser.ID, profileUser.ID)
-		isSubscribed = dbpkg.IsSubscribed(h.db, viewerUser.ID, profileUser.ID)
+		var serr error
+		if isSubscribed, serr = dbpkg.IsSubscribed(h.db, viewerUser.ID, profileUser.ID); serr != nil {
+			// Fails closed: subscriber-only works stay locked, and the fault is reported.
+			log.Printf("[profile] subscription of %s to %s unreadable: %v", viewerUser.ID, profileUser.ID, serr)
+			isSubscribed = false
+		}
 	}
 
 	// ── Feed-area wall ──────────────────────────────────────────────────────────

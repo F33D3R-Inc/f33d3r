@@ -155,7 +155,7 @@ CREATE TABLE IF NOT EXISTS works (
     repost_source_id      TEXT REFERENCES works(id) ON DELETE SET NULL,
     is_sensitive          INTEGER NOT NULL DEFAULT 0,
     subscriber_only       INTEGER NOT NULL DEFAULT 0,
-    comment_gating        TEXT    NOT NULL DEFAULT 'open',
+    comment_gating        TEXT    NOT NULL DEFAULT 'everyone',
     scheduled_at          TEXT,
     tags                  TEXT    NOT NULL DEFAULT '[]',
     content_type          TEXT    NOT NULL DEFAULT 'text',
@@ -172,6 +172,7 @@ CREATE TABLE IF NOT EXISTS works (
     react_layout          TEXT,
     lineage_pial          TEXT,
     lineage_handle        TEXT,
+    fingerprint           TEXT,
     is_edited             INTEGER NOT NULL DEFAULT 0,
     edited_at             TEXT,
     view_count            INTEGER NOT NULL DEFAULT 0,
@@ -539,4 +540,17 @@ CREATE TABLE IF NOT EXISTS frequency_blocks (
     reason       TEXT NOT NULL DEFAULT '',
     created_at   TEXT NOT NULL,
     PRIMARY KEY (frequency_id, pial)
+);
+
+-- The stand-in for Caeor's asset registry. One row per distinct file (the
+-- asset id is the content hash), naming its first uploader, who keeps the
+-- credit when anybody else uploads the same bytes. status is ready | held |
+-- banned: a held asset is waiting on review and a banned one is refused, the
+-- integrity authority's two answers. A tester sets them by hand.
+CREATE TABLE IF NOT EXISTS media_assets (
+    asset_id     TEXT PRIMARY KEY,
+    uploader_id  TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    kind         TEXT NOT NULL CHECK (kind IN ('image','voice','video')),
+    status       TEXT NOT NULL DEFAULT 'ready' CHECK (status IN ('ready','held','banned')),
+    created_at   TEXT NOT NULL
 );

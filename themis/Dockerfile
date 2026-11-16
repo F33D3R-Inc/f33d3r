@@ -7,7 +7,8 @@
 # ── Stage 1: build ─────────────────────────────────────────────────────────────
 FROM rust:latest AS builder
 
-RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+# cmake builds librdkafka (rdkafka's cmake-build feature) for the commerce.events relay.
+RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libssl-dev cmake && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 # One target directory for both cargo invocations, so the dependency build

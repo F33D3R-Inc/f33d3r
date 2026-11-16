@@ -135,8 +135,9 @@ pub fn capability_hash(secret: &str) -> Vec<u8> {
 
 // ── Key bundle ────────────────────────────────────────────────────────────────
 
-/// One messaging key. `device_id` is empty while keys are account-level; the
-/// field is the seam a per-device model drops into without changing the wire.
+/// One device's messaging key. Each device of an account registers its own row;
+/// `device_id` is empty for the key an account registered before it named its
+/// devices.
 #[derive(Debug, Serialize)]
 pub struct DeviceKey {
     pub device_id: String,
@@ -144,15 +145,18 @@ pub struct DeviceKey {
     pub algorithm: String,
 }
 
-/// The signed payload. Field order is the declaration order, so the bytes signed
-/// here are the bytes a verifier reproduces.
+/// The signed payload: one ACCOUNT's per-device messaging keys and nothing else.
+///
+/// It carries no PIAL and no identity-wide key. A bundle is fetched by whoever
+/// holds a contact address or a Number, and anything identity-wide in it — the
+/// PIAL, or a key every persona of one person shares — would let that holder
+/// link two of the person's accounts. The account id is what the holder is
+/// already being introduced to.
 #[derive(Debug, Serialize)]
 pub struct KeyBundle {
-    pub pial_id: String,
+    pub account_id: String,
     pub issued_at: String,
     pub devices: Vec<DeviceKey>,
-    pub signing_pubkey_b64: Option<String>,
-    pub signing_algorithm: Option<String>,
 }
 
 /// Signs assembled bundles with an Ed25519 service key supplied by deployment
@@ -204,12 +208,46 @@ impl BundleSigner {
 }
 
 // ── Storage ───────────────────────────────────────────────────────────────────
+//
+// Every row on the contact plane records the ACCOUNT that acted or was acted on
+// (migration 0004). A PIAL is one person's root identity and one person may hold
+// several accounts; a grant, a request, a capability, a Number or a key that
+// belonged to the PIAL would answer the same way for every persona of it, and
+// that sameness is exactly what links them. The PIAL is kept only where the
+// identity owns a row's lifecycle.
 
-pub async fn get_contact_policy(pool: &PgPool, pial: Uuid) -> Result<(String, String)> {
-    let row: Option<(String, String)> = sqlx::query_as(
-        "SELECT handle_policy, default_number_policy FROM contact_policies WHERE pial_id = $1",
+/// The identity a live account is bound to. `None` for an account that does not
+/// exist, is deactivated or is purged: such an account takes no contact action.
+pub async fn account_pial(pool: &PgPool, account: Uuid) -> Result<Option<Uuid>> {
+    let row: Option<(Uuid,)> = sqlx::query_as(
+        "SELECT pial_id FROM accounts
+          WHERE id = $1 AND deactivated_at IS NULL AND purged_at IS NULL",
+    )
+    .bind(account)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| r.0))
+}
+
+/// The account a row made before the contact plane recorded accounts is
+/// attributed to: the PIAL's primary account, or its earliest when it has no
+/// primary — the rule migration 0004 backfilled with.
+pub async fn primary_account(pool: &PgPool, pial: Uuid) -> Result<Option<Uuid>> {
+    let row: Option<(Uuid,)> = sqlx::query_as(
+        "SELECT id FROM accounts WHERE pial_id = $1
+          ORDER BY is_primary DESC, created_at, id LIMIT 1",
     )
     .bind(pial)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| r.0))
+}
+
+pub async fn get_contact_policy(pool: &PgPool, account: Uuid) -> Result<(String, String)> {
+    let row: Option<(String, String)> = sqlx::query_as(
+        "SELECT handle_policy, default_number_policy FROM contact_account_policies WHERE account_id = $1",
+    )
+    .bind(account)
     .fetch_optional(pool)
     .await?;
     Ok(row.unwrap_or_else(|| {
@@ -222,19 +260,19 @@ pub async fn get_contact_policy(pool: &PgPool, pial: Uuid) -> Result<(String, St
 
 pub async fn set_contact_policy(
     pool: &PgPool,
-    pial: Uuid,
+    account: Uuid,
     handle_policy: &str,
     default_number_policy: &str,
 ) -> Result<()> {
     sqlx::query(
-        "INSERT INTO contact_policies (pial_id, handle_policy, default_number_policy)
+        "INSERT INTO contact_account_policies (account_id, handle_policy, default_number_policy)
          VALUES ($1, $2, $3)
-         ON CONFLICT (pial_id) DO UPDATE
+         ON CONFLICT (account_id) DO UPDATE
             SET handle_policy = EXCLUDED.handle_policy,
                 default_number_policy = EXCLUDED.default_number_policy,
                 updated_at = NOW()",
     )
-    .bind(pial)
+    .bind(account)
     .bind(handle_policy)
     .bind(default_number_policy)
     .execute(pool)
@@ -242,12 +280,13 @@ pub async fn set_contact_policy(
     Ok(())
 }
 
+/// A Number's own policy row: the account that holds it, its policy, its label.
 pub async fn get_number_policy(
     pool: &PgPool,
     number_node: Uuid,
 ) -> Result<Option<(Uuid, String, String)>> {
     let row: Option<(Uuid, String, String)> = sqlx::query_as(
-        "SELECT pial_id, policy, label FROM number_policies WHERE number_node_id = $1",
+        "SELECT account_id, policy, label FROM number_policies WHERE number_node_id = $1",
     )
     .bind(number_node)
     .fetch_optional(pool)
@@ -261,9 +300,22 @@ pub async fn get_number_policy(
 // statement, in number_lease::attach. Two writers for one row is how half of it
 // ends up reflecting a choice nobody made.
 
-pub async fn number_policies_for(pool: &PgPool, pial: Uuid) -> Result<Vec<(Uuid, String, String)>> {
+/// The policy rows of every Number one account holds.
+pub async fn number_policies_for(pool: &PgPool, account: Uuid) -> Result<Vec<(Uuid, String, String)>> {
     let rows: Vec<(Uuid, String, String)> = sqlx::query_as(
-        "SELECT number_node_id, policy, label FROM number_policies WHERE pial_id = $1",
+        "SELECT number_node_id, policy, label FROM number_policies WHERE account_id = $1",
+    )
+    .bind(account)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+/// Every Number node of an identity that has a policy row, with the account
+/// holding it — how an identity-wide Manhattan listing is split per account.
+pub async fn number_holders(pool: &PgPool, pial: Uuid) -> Result<Vec<(Uuid, Uuid)>> {
+    let rows: Vec<(Uuid, Uuid)> = sqlx::query_as(
+        "SELECT number_node_id, account_id FROM number_policies WHERE pial_id = $1",
     )
     .bind(pial)
     .fetch_all(pool)
@@ -271,22 +323,22 @@ pub async fn number_policies_for(pool: &PgPool, pial: Uuid) -> Result<Vec<(Uuid,
     Ok(rows)
 }
 
-pub async fn drop_number_policy(pool: &PgPool, number_node: Uuid, pial: Uuid) -> Result<()> {
-    sqlx::query("DELETE FROM number_policies WHERE number_node_id = $1 AND pial_id = $2")
+pub async fn drop_number_policy(pool: &PgPool, number_node: Uuid, account: Uuid) -> Result<()> {
+    sqlx::query("DELETE FROM number_policies WHERE number_node_id = $1 AND account_id = $2")
         .bind(number_node)
-        .bind(pial)
+        .bind(account)
         .execute(pool)
         .await?;
     Ok(())
 }
 
-pub async fn has_grant(pool: &PgPool, owner: Uuid, peer: Uuid) -> Result<bool> {
+pub async fn has_grant(pool: &PgPool, owner_account: Uuid, peer_account: Uuid) -> Result<bool> {
     let found: Option<(Uuid,)> = sqlx::query_as(
         "SELECT id FROM contact_grants
-          WHERE owner_pial = $1 AND peer_pial = $2 AND revoked_at IS NULL",
+          WHERE owner_account = $1 AND peer_account = $2 AND revoked_at IS NULL",
     )
-    .bind(owner)
-    .bind(peer)
+    .bind(owner_account)
+    .bind(peer_account)
     .fetch_optional(pool)
     .await?;
     Ok(found.is_some())
@@ -294,19 +346,21 @@ pub async fn has_grant(pool: &PgPool, owner: Uuid, peer: Uuid) -> Result<bool> {
 
 pub async fn grant_contact(
     pool: &PgPool,
-    owner: Uuid,
-    peer: Uuid,
+    owner_account: Uuid,
+    owner_pial: Uuid,
+    peer_account: Uuid,
     source: &str,
     number_node: Option<Uuid>,
 ) -> Result<()> {
     sqlx::query(
-        "INSERT INTO contact_grants (owner_pial, peer_pial, source, number_node_id)
-         VALUES ($1, $2, $3, $4)
-         ON CONFLICT (owner_pial, peer_pial) DO UPDATE
+        "INSERT INTO contact_grants (owner_account, owner_pial, peer_account, source, number_node_id)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (owner_account, peer_account) DO UPDATE
             SET revoked_at = NULL, source = EXCLUDED.source",
     )
-    .bind(owner)
-    .bind(peer)
+    .bind(owner_account)
+    .bind(owner_pial)
+    .bind(peer_account)
     .bind(source)
     .bind(number_node)
     .execute(pool)
@@ -316,6 +370,7 @@ pub async fn grant_contact(
 
 pub async fn mint_capability(
     pool: &PgPool,
+    account: Uuid,
     pial: Uuid,
     number_node: Option<Uuid>,
     label: &str,
@@ -323,9 +378,10 @@ pub async fn mint_capability(
 ) -> Result<String> {
     let secret = mint_capability_secret();
     sqlx::query(
-        "INSERT INTO contact_capabilities (pial_id, number_node_id, secret_sha256, label, max_uses)
-         VALUES ($1, $2, $3, $4, $5)",
+        "INSERT INTO contact_capabilities (account_id, pial_id, number_node_id, secret_sha256, label, max_uses)
+         VALUES ($1, $2, $3, $4, $5, $6)",
     )
+    .bind(account)
     .bind(pial)
     .bind(number_node)
     .bind(capability_hash(&secret))
@@ -336,13 +392,13 @@ pub async fn mint_capability(
     Ok(secret)
 }
 
-pub async fn revoke_capability(pool: &PgPool, pial: Uuid, capability_id: Uuid) -> Result<u64> {
+pub async fn revoke_capability(pool: &PgPool, account: Uuid, capability_id: Uuid) -> Result<u64> {
     let done = sqlx::query(
         "UPDATE contact_capabilities SET revoked_at = NOW()
-          WHERE id = $1 AND pial_id = $2 AND revoked_at IS NULL",
+          WHERE id = $1 AND account_id = $2 AND revoked_at IS NULL",
     )
     .bind(capability_id)
-    .bind(pial)
+    .bind(account)
     .execute(pool)
     .await?;
     Ok(done.rows_affected())
@@ -350,24 +406,25 @@ pub async fn revoke_capability(pool: &PgPool, pial: Uuid, capability_id: Uuid) -
 
 pub async fn list_capabilities(
     pool: &PgPool,
-    pial: Uuid,
+    account: Uuid,
 ) -> Result<Vec<(Uuid, String, Option<Uuid>, i32, Option<i32>, bool)>> {
     let rows: Vec<(Uuid, String, Option<Uuid>, i32, Option<i32>, bool)> = sqlx::query_as(
         "SELECT id, label, number_node_id, uses, max_uses, (revoked_at IS NOT NULL)
-           FROM contact_capabilities WHERE pial_id = $1 ORDER BY created_at DESC",
+           FROM contact_capabilities WHERE account_id = $1 ORDER BY created_at DESC",
     )
-    .bind(pial)
+    .bind(account)
     .fetch_all(pool)
     .await?;
     Ok(rows)
 }
 
-/// Redeems a presented capability against one owner, consuming a use. Returns the
-/// capability id when it was live, unexpired, within its use cap, and — when the
-/// capability is scoped to a Number — presented with that Number.
+/// Redeems a presented capability against one owning account, consuming a use.
+/// Returns the capability id when it was live, unexpired, within its use cap,
+/// and — when the capability is scoped to a Number — presented with that Number.
+/// A link minted by one persona never opens another persona of the same person.
 pub async fn redeem_capability(
     pool: &PgPool,
-    owner: Uuid,
+    owner_account: Uuid,
     secret: &str,
     presented_number_node: Option<Uuid>,
 ) -> Result<Option<Uuid>> {
@@ -379,7 +436,7 @@ pub async fn redeem_capability(
         "UPDATE contact_capabilities
             SET uses = uses + 1
           WHERE secret_sha256 = $1
-            AND pial_id = $2
+            AND account_id = $2
             AND revoked_at IS NULL
             AND (expires_at IS NULL OR expires_at > NOW())
             AND (max_uses IS NULL OR uses < max_uses)
@@ -387,30 +444,33 @@ pub async fn redeem_capability(
       RETURNING id",
     )
     .bind(capability_hash(&canonical))
-    .bind(owner)
+    .bind(owner_account)
     .bind(presented_number_node)
     .fetch_optional(pool)
     .await?;
     Ok(row.map(|r| r.0))
 }
 
+/// Opens one contact request from one account to another, and tells the
+/// recipient account — the persona that was asked, never the person's primary.
 pub async fn open_request(
     pool: &PgPool,
-    owner: Uuid,
-    requester: Uuid,
+    owner_account: Uuid,
+    owner_pial: Uuid,
+    requester_account: Uuid,
     number_node: Option<Uuid>,
     note: &str,
-    requester_account: Option<String>,
 ) -> Result<Option<Uuid>> {
     let mut tx = pool.begin().await?;
     let row: Option<(Uuid,)> = sqlx::query_as(
-        "INSERT INTO contact_requests (owner_pial, requester_pial, number_node_id, note)
-         VALUES ($1, $2, $3, $4)
+        "INSERT INTO contact_requests (owner_account, owner_pial, requester_account, number_node_id, note)
+         VALUES ($1, $2, $3, $4, $5)
          ON CONFLICT DO NOTHING
       RETURNING id",
     )
-    .bind(owner)
-    .bind(requester)
+    .bind(owner_account)
+    .bind(owner_pial)
+    .bind(requester_account)
     .bind(number_node)
     .bind(note)
     .fetch_optional(&mut *tx)
@@ -420,11 +480,11 @@ pub async fn open_request(
             &mut *tx,
             &crate::notifications::Event {
                 event_id: format!("elohim:contact_request:{id}"),
-                recipient_account: None,
-                recipient_pial: owner.to_string(),
-                actor_account: requester_account.clone(),
+                recipient_account: Some(owner_account.to_string()),
+                recipient_pial: owner_pial.to_string(),
+                actor_account: Some(requester_account.to_string()),
                 kind: "contact_request".into(),
-                target_id: requester_account.unwrap_or_default(),
+                target_id: requester_account.to_string(),
                 target_type: "user".into(),
                 payload: serde_json::json!({}),
                 push_title: "New contact request".into(),
@@ -438,59 +498,64 @@ pub async fn open_request(
     Ok(row.map(|r| r.0))
 }
 
+/// The pending requests waiting on one account: (id, requester account, note,
+/// status, created).
 pub async fn list_requests(
     pool: &PgPool,
-    owner: Uuid,
+    owner_account: Uuid,
 ) -> Result<Vec<(Uuid, Uuid, String, String, chrono::DateTime<chrono::Utc>)>> {
     let rows: Vec<(Uuid, Uuid, String, String, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
-        "SELECT id, requester_pial, note, status, created_at
+        "SELECT id, requester_account, note, status, created_at
            FROM contact_requests
-          WHERE owner_pial = $1 AND status = 'pending'
+          WHERE owner_account = $1 AND status = 'pending'
           ORDER BY created_at DESC",
     )
-    .bind(owner)
+    .bind(owner_account)
     .fetch_all(pool)
     .await?;
     Ok(rows)
 }
 
-/// Settles a request. Accepting also writes the standing grant, in one
-/// transaction, so an accepted request can never leave contact unauthorised.
+/// Settles a request addressed to one account. Accepting also writes the
+/// standing grant between the two accounts, in one transaction, so an accepted
+/// request can never leave contact unauthorised. Returns the requesting account.
 pub async fn decide_request(
     pool: &PgPool,
-    owner: Uuid,
+    owner_account: Uuid,
     request_id: Uuid,
     accept: bool,
-    owner_account: Option<String>,
 ) -> Result<Option<Uuid>> {
     let mut tx = pool.begin().await?;
-    let row: Option<(Uuid, Option<Uuid>)> = sqlx::query_as(
-        "UPDATE contact_requests
+    let row: Option<(Uuid, Uuid, Option<Uuid>, Uuid)> = sqlx::query_as(
+        "UPDATE contact_requests r
             SET status = CASE WHEN $3 THEN 'accepted' ELSE 'declined' END,
                 decided_at = NOW()
-          WHERE id = $1 AND owner_pial = $2 AND status = 'pending'
-      RETURNING requester_pial, number_node_id",
+           FROM accounts a
+          WHERE r.id = $1 AND r.owner_account = $2 AND r.status = 'pending'
+            AND a.id = r.requester_account
+      RETURNING r.requester_account, r.owner_pial, r.number_node_id, a.pial_id",
     )
     .bind(request_id)
-    .bind(owner)
+    .bind(owner_account)
     .bind(accept)
     .fetch_optional(&mut *tx)
     .await?;
 
-    let Some((requester, number_node)) = row else {
+    let Some((requester_account, owner_pial, number_node, requester_pial)) = row else {
         tx.rollback().await?;
         return Ok(None);
     };
 
     if accept {
         sqlx::query(
-            "INSERT INTO contact_grants (owner_pial, peer_pial, source, number_node_id)
-             VALUES ($1, $2, 'request', $3)
-             ON CONFLICT (owner_pial, peer_pial) DO UPDATE
+            "INSERT INTO contact_grants (owner_account, owner_pial, peer_account, source, number_node_id)
+             VALUES ($1, $2, $3, 'request', $4)
+             ON CONFLICT (owner_account, peer_account) DO UPDATE
                 SET revoked_at = NULL, source = 'request'",
         )
-        .bind(owner)
-        .bind(requester)
+        .bind(owner_account)
+        .bind(owner_pial)
+        .bind(requester_account)
         .bind(number_node)
         .execute(&mut *tx)
         .await?;
@@ -499,11 +564,11 @@ pub async fn decide_request(
             &mut *tx,
             &crate::notifications::Event {
                 event_id: format!("elohim:contact_accepted:{request_id}"),
-                recipient_account: None,
-                recipient_pial: requester.to_string(),
-                actor_account: owner_account.clone(),
+                recipient_account: Some(requester_account.to_string()),
+                recipient_pial: requester_pial.to_string(),
+                actor_account: Some(owner_account.to_string()),
                 kind: "contact_accepted".into(),
-                target_id: owner_account.unwrap_or_default(),
+                target_id: owner_account.to_string(),
                 target_type: "user".into(),
                 payload: serde_json::json!({}),
                 push_title: "Your contact request was accepted".into(),
@@ -515,21 +580,24 @@ pub async fn decide_request(
     }
 
     tx.commit().await?;
-    Ok(Some(requester))
+    Ok(Some(requester_account))
 }
 
+/// Registers one device's messaging public key for one account.
 pub async fn upsert_messaging_key(
     pool: &PgPool,
+    account: Uuid,
     pial: Uuid,
     device_id: &str,
     public_key_b64: &str,
 ) -> Result<()> {
     sqlx::query(
-        "INSERT INTO pial_messaging_keys (pial_id, device_id, public_key_b64)
-         VALUES ($1, $2, $3)
-         ON CONFLICT (pial_id, device_id) DO UPDATE
+        "INSERT INTO pial_messaging_keys (account_id, pial_id, device_id, public_key_b64)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (account_id, device_id) DO UPDATE
             SET public_key_b64 = EXCLUDED.public_key_b64, updated_at = NOW()",
     )
+    .bind(account)
     .bind(pial)
     .bind(device_id)
     .bind(public_key_b64)
@@ -538,12 +606,13 @@ pub async fn upsert_messaging_key(
     Ok(())
 }
 
-pub async fn messaging_keys(pool: &PgPool, pial: Uuid) -> Result<Vec<DeviceKey>> {
+/// One account's per-device messaging keys.
+pub async fn messaging_keys(pool: &PgPool, account: Uuid) -> Result<Vec<DeviceKey>> {
     let rows: Vec<(String, String, String)> = sqlx::query_as(
         "SELECT device_id, public_key_b64, algorithm
-           FROM pial_messaging_keys WHERE pial_id = $1 ORDER BY device_id",
+           FROM pial_messaging_keys WHERE account_id = $1 ORDER BY device_id",
     )
-    .bind(pial)
+    .bind(account)
     .fetch_all(pool)
     .await?;
     Ok(rows
@@ -554,6 +623,33 @@ pub async fn messaging_keys(pool: &PgPool, pial: Uuid) -> Result<Vec<DeviceKey>>
             algorithm,
         })
         .collect())
+}
+
+/// Records which account minted a contact address.
+pub async fn record_address(pool: &PgPool, address: &str, account: Uuid) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO contact_address_accounts (address, account_id) VALUES ($1, $2)
+         ON CONFLICT (address) DO NOTHING",
+    )
+    .bind(address)
+    .bind(account)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// The account a contact address belongs to. An address minted before this
+/// brain recorded accounts is the identity's primary account's.
+pub async fn address_account(pool: &PgPool, address: &str, pial: Uuid) -> Result<Option<Uuid>> {
+    let row: Option<(Uuid,)> =
+        sqlx::query_as("SELECT account_id FROM contact_address_accounts WHERE address = $1")
+            .bind(address)
+            .fetch_optional(pool)
+            .await?;
+    match row {
+        Some((account,)) => Ok(Some(account)),
+        None => primary_account(pool, pial).await,
+    }
 }
 
 #[cfg(test)]

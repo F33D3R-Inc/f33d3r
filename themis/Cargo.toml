@@ -40,6 +40,8 @@ rand = "0.8"
 zeroize = "1"
 qrcode = "0.14"
 image = { version = "0.25", default-features = false, features = ["png"] }
+# commerce.events relay; the same client Abraxas publishes safety.events with.
+rdkafka = { version = "0.39", features = ["cmake-build"] }
 
 [profile.release]
 opt-level = 3

@@ -19,15 +19,11 @@
 !gnosis-malkuth
 
 # Rust brains that depend on libs/ and therefore build from the repo root.
-!aethyr-ledger
-!alexandria
 !herald
 !themis
 !verity
 !abraxas-shield
 !ain-soph
-!astraon
-!lore
 !elohim-veni
 !frequencies
 !caeor

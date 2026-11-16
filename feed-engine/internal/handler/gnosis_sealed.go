@@ -75,9 +75,11 @@ func (h *Handler) gnosisProvision(w http.ResponseWriter, r *http.Request) {
 	// that brain, and the contact key bundle is assembled from its rows. Register
 	// there first — a failure here must not leave a local key the directory has
 	// never heard of.
+	// The key is this ACCOUNT's: each persona keeps its own, so no two of one
+	// person's personas ever hand out the same key bytes.
 	if user.PIALID != "" {
 		if err := h.callElohim(r.Context(), http.MethodPost, "/v1/pial/messaging-key/register",
-			map[string]string{"pial_id": user.PIALID, "public_key_b64": req.PubB64}, nil); err != nil {
+			map[string]string{"account_id": user.ID, "public_key_b64": req.PubB64}, nil); err != nil {
 			log.Printf("[gnosis] registering messaging key for pial %s: %v", user.PIALID, err)
 			http.Error(w, "key directory unavailable", http.StatusBadGateway)
 			return

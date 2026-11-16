@@ -10,14 +10,13 @@ import kotlinx.coroutines.flow.asStateFlow
 /**
  * The signed-in identity, as the server reports it.
  *
- * Three names, three different things, and the client keeps them apart because the
- * server does: [pial] is the person, [account] is the persona that person is
- * currently acting as, and [handle] is the name bound to that persona. Message
- * sealing is per-account; notifications and balance are per-PIAL.
+ * Two names, two different things: [account] is the persona this person is acting
+ * as — the id a signed work names as its `author_account`, and the name this device's
+ * signing key is kept under — and [handle] is the name bound to that persona. The
+ * person's root identity behind the account never reaches a client.
  */
 @Immutable
 data class Identity(
-    val pial: String,
     val account: String,
     val handle: String,
     val displayName: String = "",
@@ -35,7 +34,7 @@ data class Identity(
     val isSignedIn: Boolean get() = account.isNotEmpty() && handle.isNotEmpty()
 
     companion object {
-        val NONE = Identity(pial = "", account = "", handle = "")
+        val NONE = Identity(account = "", handle = "")
     }
 }
 
@@ -129,7 +128,7 @@ class Session(context: Context) {
     fun adopt(identity: Identity) {
         _identity.value = identity
         prefs.edit()
-            .putString(KEY_PIAL, identity.pial)
+            .remove(LEGACY_KEY_ROOT_IDENTITY)
             .putString(KEY_ACCOUNT, identity.account)
             .putString(KEY_HANDLE, identity.handle)
             .putString(KEY_DISPLAY, identity.displayName)
@@ -141,8 +140,12 @@ class Session(context: Context) {
 
     /** Restores the last known identity so the shell draws before the network answers. */
     fun restore(): Identity {
+        // Earlier builds kept the person's root identity here too. It is not this
+        // client's to hold, so it is dropped wherever it is still found.
+        if (prefs.contains(LEGACY_KEY_ROOT_IDENTITY)) {
+            prefs.edit().remove(LEGACY_KEY_ROOT_IDENTITY).apply()
+        }
         val restored = Identity(
-            pial = prefs.getString(KEY_PIAL, "").orEmpty(),
             account = prefs.getString(KEY_ACCOUNT, "").orEmpty(),
             handle = prefs.getString(KEY_HANDLE, "").orEmpty(),
             displayName = prefs.getString(KEY_DISPLAY, "").orEmpty(),
@@ -184,7 +187,8 @@ class Session(context: Context) {
         private const val KEY_ORIGIN = "origin"
         private const val KEY_ASSET_VERSION = "assets.version"
         private const val KEY_TOKEN = "session.token"
-        private const val KEY_PIAL = "identity.pial"
+        /** The pref an earlier build stored the root identity under; only ever removed. */
+        private const val LEGACY_KEY_ROOT_IDENTITY = "identity.pial"
         private const val KEY_ACCOUNT = "identity.account"
         private const val KEY_HANDLE = "identity.handle"
         private const val KEY_DISPLAY = "identity.display"

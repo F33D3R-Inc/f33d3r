@@ -2,13 +2,14 @@ package live
 
 // control.go — the media server's control plane inside the application server.
 //
-// Five things happen here and nothing else:
+// Six things happen here and nothing else:
 //
 //   POST /live/auth            the media server asks whether a publish may proceed
 //   POST /live/hook/ready      the ladder has probed the source and asks for its plan
 //   POST /live/hook/playable   the ladder has written the first segment to disk
 //   POST /live/hook/pressure   the ladder cannot hold realtime
 //   POST /live/hook/notready   the publisher stopped
+//   GET  /live/edge-auth       the live edge asks whether a viewer may fetch a file
 //
 // ready and playable are two hooks and not one because they are two moments.
 // The ladder probes a source for twelve to twenty-five seconds before it can
@@ -53,9 +54,8 @@ type authRequest struct {
 // hookRequest is what the transcoder posts on a stream lifecycle edge.
 //
 // Everything past Protocol is measurement, not request. The ladder reports what
-// the source actually is — its codec, the rate it declared, the keyframe
-// interval the publisher chose — and the server decides what to do about it.
-// The ladder asks for nothing and is told everything.
+// the source actually is — its codec and frame rate — and the server decides
+// what to do about it. The ladder asks for nothing and is told everything.
 type hookRequest struct {
 	StreamID string `json:"stream_id"`
 	Width    int    `json:"width"`
@@ -63,10 +63,6 @@ type hookRequest struct {
 	Protocol string `json:"protocol"`
 	Codec    string `json:"codec"`
 	FPS      int    `json:"fps"`
-	// FPSDeclared distinguishes a rate the source stated from the one the
-	// ladder fell back to. Only the former can carry a passed-through rung.
-	FPSDeclared bool    `json:"fps_declared"`
-	GOPSeconds  float64 `json:"gop_seconds"`
 	// NVENCAvailable is the ladder's answer to whether it can actually open a
 	// hardware encode session, proved by opening one.
 	NVENCAvailable bool `json:"nvenc_available"`
@@ -82,6 +78,7 @@ func (m *Manager) controlRoutes() http.Handler {
 	mux.HandleFunc("POST /live/hook/playable", m.handlePlayable)
 	mux.HandleFunc("POST /live/hook/notready", m.handleNotReady)
 	mux.HandleFunc("POST /live/hook/pressure", m.handlePressure)
+	mux.HandleFunc("GET /live/edge-auth", m.handleEdgeAuth)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
@@ -157,8 +154,7 @@ func (m *Manager) handleAuth(w http.ResponseWriter, r *http.Request) {
 		// single-use ticket the WHIP proxy minted for its owner instead.
 		if ConsumePublishTicket(streamID, pass) {
 			// A browser broadcast costs the box exactly as much as a desktop
-			// one — more, in fact, because VP8 from a browser can never have a
-			// rung passed through. It passes the same door.
+			// one. It passes the same door.
 			if !m.admit(streamID, "", req.Protocol, req.IP) {
 				http.Error(w, "at capacity", http.StatusServiceUnavailable)
 				return
@@ -272,8 +268,6 @@ func (m *Manager) handleReady(w http.ResponseWriter, r *http.Request) {
 		Height:         req.Height,
 		FPS:            req.FPS,
 		Codec:          req.Codec,
-		GOPSeconds:     req.GOPSeconds,
-		FPSDeclared:    req.FPSDeclared,
 		NVENCAvailable: req.NVENCAvailable,
 	})
 	if err != nil {
@@ -287,6 +281,17 @@ func (m *Manager) handleReady(w http.ResponseWriter, r *http.Request) {
 		}
 		m.renderState(req.StreamID)
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+
+	// The words burned into every rung. Without them there is no ladder: an
+	// unmarked broadcast on the edge is the one thing this plan must never
+	// produce, so a stream whose author cannot be read is refused a plan and
+	// the media server restarts the ladder, which asks again.
+	mark, err := m.markText(req.StreamID)
+	if err != nil {
+		log.Printf("[live-hook] no watermark for %s, refusing the plan: %v", req.StreamID, err)
+		http.Error(w, "watermark unavailable", http.StatusServiceUnavailable)
 		return
 	}
 
@@ -308,9 +313,85 @@ func (m *Manager) handleReady(w http.ResponseWriter, r *http.Request) {
 	// them with the player, at the moment there is a playlist for it to name.
 
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(plan); err != nil {
+	if err := json.NewEncoder(w).Encode(readyAnswer{EncodePlan: plan, MarkText: mark}); err != nil {
 		log.Printf("[live-hook] writing plan for %s: %v", req.StreamID, err)
 	}
+}
+
+// readyAnswer is the ready hook's reply: the plan, and the words the ladder
+// burns into every rung and the poster.
+type readyAnswer struct {
+	EncodePlan
+	MarkText string `json:"mark_text"`
+}
+
+// markText is the moving watermark for a stream: "@handle • f33d3r.com", the
+// same words transcoding draws on every video rendition. The handle is reduced
+// to the characters a handle may hold, so nothing in it can reach the filter
+// graph as syntax; the ladder hands the words to drawtext through a file with
+// expansion off as well.
+func (m *Manager) markText(streamID string) (string, error) {
+	s, err := dbpkg.GetLiveStreamByID(m.db, streamID)
+	if err != nil {
+		return "", err
+	}
+	handle := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '.', r == '-':
+			return r
+		}
+		return -1
+	}, s.AuthorHandle)
+	if handle == "" {
+		return "f33d3r.com", nil
+	}
+	return "@" + handle + " \u2022 f33d3r.com", nil
+}
+
+// handleEdgeAuth answers the live edge's auth_request: may the viewer who sent
+// this request fetch this file? The edge forwards the viewer's own request
+// headers, so the session cookie or bearer token is the viewer's, and names
+// the file in X-Original-URI. The answer is a status and nothing else:
+//
+//	204  serve it
+//	401  no session, and this stream needs one
+//	403  not this viewer, or not a stream
+//	503  the answer could not be established; nothing is served
+//
+// The rules themselves are the watch surface's and live with it (wired in as
+// AuthorizeMedia); this handler only finds the stream the path names.
+func (m *Manager) handleEdgeAuth(w http.ResponseWriter, r *http.Request) {
+	streamID, ok := edgeStreamID(r.Header.Get("X-Original-URI"))
+	if !ok {
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
+	if m.AuthorizeMedia == nil {
+		log.Printf("[live-edge-auth] no media authoriser wired — refusing %s", streamID)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
+	w.WriteHeader(m.AuthorizeMedia(r, streamID))
+}
+
+// edgeStreamID reads the stream id out of a live media path,
+// /live/<id>/<file> or /live/<id>/<rung>/<file>. Anything else names no stream.
+func edgeStreamID(uri string) (string, bool) {
+	path, _, _ := strings.Cut(uri, "?")
+	rest, ok := strings.CutPrefix(path, "/live/")
+	if !ok {
+		return "", false
+	}
+	id, file, ok := strings.Cut(rest, "/")
+	if !ok || file == "" || id == "" || len(id) > 64 {
+		return "", false
+	}
+	for _, c := range id {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_') {
+			return "", false
+		}
+	}
+	return id, true
 }
 
 // handlePlayable moves a stream idle -> live. It is the one place that does.
