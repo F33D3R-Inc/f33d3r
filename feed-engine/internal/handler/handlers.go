@@ -140,11 +140,24 @@ func highlightComposeText(text string) template.HTML {
 
 // Handler holds all shared dependencies.
 // sessionEntry caches a session elohim-veni resolved, for sessionCacheTTL, so
-// a page and its Facet requests resolve the session once.
+// a page and its Facet requests ask the identity authority once.
+//
+// It holds the authority's answer — who the session is, their role, caps and
+// identity facts — and nothing else. Profile data (avatar, display name, bio,
+// theme) is this brain's own and is read from its database on every request,
+// so an edit is on the very next render and no cached copy can go stale. This
+// is the split X draws too: Tweetypie wraps its tweet repository in a cache
+// but reads users from the user service uncached, so only the owner of the
+// data ever holds a copy of it.
 type sessionEntry struct {
-	user *model.User
+	sess *identity.Session
 	exp  time.Time
 }
+
+// accountLoaderFunc builds the signed-in account for a resolved session. The
+// running server leaves Handler.accountLoader nil and reads its own database
+// (loadAccount); tests that render as somebody without a database supply one.
+type accountLoaderFunc func(sess *identity.Session) (*model.User, error)
 
 type Handler struct {
 	freqFanout frequencyFanout
@@ -179,6 +192,9 @@ type Handler struct {
 	// sessionCache: session token → sessionEntry (sessionCacheTTL, evicted on
 	// logout and on every identity change this process makes or projects)
 	sessionCache sync.Map
+	// accountLoader, when set, replaces the database read that builds the
+	// signed-in account (see accountLoaderFunc). Only tests set it.
+	accountLoader accountLoaderFunc
 	// caeor is the one media-asset authority: every upload is stored there and
 	// every served media path is resolved through it.
 	caeor      *caeor.Client

@@ -31,7 +31,10 @@ FACET admin_panel_moderation
      hx-trigger="every 60s, fa:engagement from:body"
      hx-swap="outerHTML"
      hx-target="this">
-  <div hx-get="/admin/partials/frequencies" hx-trigger="load" hx-swap="outerHTML"></div>
+  {{/* hx-target="this" is required: the panel above declares hx-target="this"
+       and htmx inherits it, so without its own target this loader's answer
+       would replace the whole moderation panel instead of only this slot. */}}
+  <div hx-get="/admin/partials/frequencies" hx-trigger="load" hx-target="this" hx-swap="outerHTML"></div>
 
   {{if .Problem}}<div class="admin-alert-strip admin-alert-strip--danger">{{.Problem}}</div>{{end}}
 

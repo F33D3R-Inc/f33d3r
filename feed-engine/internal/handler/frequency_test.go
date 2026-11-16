@@ -101,15 +101,13 @@ func frequencyTestHandler(t *testing.T, stub *auralisStub) (*Handler, *httptest.
 	return h, srv
 }
 
-// as injects a signed-in actor through the session cache, the same object the
-// DB path fills, so no database is needed to be somebody.
+// as injects a signed-in actor (seedSession: the identity answer in the
+// session cache, the account through accountLoader), so no database is needed
+// to be somebody.
 func (h *Handler) as(t *testing.T, r *http.Request, handle, pial string) {
 	t.Helper()
 	tok := "tok-" + handle
-	h.sessionCache.Store(tok, sessionEntry{
-		user: &model.User{ID: "u-" + handle, Handle: handle, DisplayName: handle, PIALID: pial, ContentSetting: "default"},
-		exp:  time.Now().Add(time.Minute),
-	})
+	h.seedSession(tok, &model.User{ID: "u-" + handle, Handle: handle, DisplayName: handle, PIALID: pial, ContentSetting: "default"}, time.Minute)
 	r.Header.Set("Authorization", "Bearer "+tok)
 }
 

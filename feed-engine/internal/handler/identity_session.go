@@ -79,22 +79,24 @@ func (h *Handler) viewer(w http.ResponseWriter, r *http.Request) (*model.User, e
 	}
 }
 
-// sessionUser resolves a token to the signed-in account, through the cache.
+// sessionUser resolves a token to the signed-in account. The authority's
+// answer comes through the cache; the account's profile is read fresh from
+// this brain's database every time (see sessionEntry).
 func (h *Handler) sessionUser(ctx context.Context, tok string) (*model.User, error) {
-	if v, ok := h.sessionCache.Load(tok); ok {
-		if e := v.(sessionEntry); time.Now().Before(e.exp) {
-			return e.user, nil
-		}
-		h.sessionCache.Delete(tok)
-	}
-
-	sess, err := h.identity.Resolve(ctx, tok)
+	sess, err := h.cachedSession(ctx, tok)
 	if err != nil {
 		return nil, err
 	}
-	if sess.Stopped() {
-		return nil, errSessionStopped
+	if h.accountLoader != nil {
+		return h.accountLoader(sess)
 	}
+	return h.loadAccount(sess)
+}
+
+// loadAccount builds the signed-in account for one request: this brain's
+// account and profile row, read now, with the identity authority's answer
+// folded on top.
+func (h *Handler) loadAccount(sess *identity.Session) (*model.User, error) {
 	u, err := dbpkg.GetUserByID(h.db, sess.AccountID)
 	if err != nil {
 		return nil, fmt.Errorf("loading account %s: %w", sess.AccountID, err)
@@ -117,9 +119,30 @@ func (h *Handler) sessionUser(ctx context.Context, tok string) (*model.User, err
 	u.CreatorAffinities = map[string]float32{}
 	u.IsColdStart = u.PostCount == 0
 	u.SafetyEpsilon = SafetyEpsilon(u.ContentSetting)
-	h.sessionCache.Store(tok, sessionEntry{user: u, exp: time.Now().Add(sessionCacheTTL)})
-	go dbpkg.TryAwardTrollOnSessionUpdate(h.db, u.ID, u.SessionStartedAt)
 	return u, nil
+}
+
+// cachedSession is the identity authority's answer for a token, reused for
+// sessionCacheTTL. Only the answer is cached, never an account row built from it.
+func (h *Handler) cachedSession(ctx context.Context, tok string) (*identity.Session, error) {
+	if v, ok := h.sessionCache.Load(tok); ok {
+		if e := v.(sessionEntry); time.Now().Before(e.exp) {
+			return e.sess, nil
+		}
+		h.sessionCache.Delete(tok)
+	}
+	sess, err := h.identity.Resolve(ctx, tok)
+	if err != nil {
+		return nil, err
+	}
+	if sess.Stopped() {
+		return nil, errSessionStopped
+	}
+	h.sessionCache.Store(tok, sessionEntry{sess: sess, exp: time.Now().Add(sessionCacheTTL)})
+	// Once per resolution, not once per request: the session's start is the
+	// authority's fact and does not change between them.
+	go dbpkg.TryAwardTrollOnSessionUpdate(h.db, sess.AccountID, sess.SessionCreatedAt)
+	return sess, nil
 }
 
 // applySession folds the authority's answer onto the account row. Identity

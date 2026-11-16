@@ -60,10 +60,7 @@ func (h *Handler) asAPI(t *testing.T, r *http.Request, handle, pial string) {
 	t.Helper()
 	tok := "api-tok-" + handle
 	id := "a0000000-0000-4000-8000-00000000000" + string(rune('1'+len(handle)%8))
-	h.sessionCache.Store(tok, sessionEntry{
-		user: &model.User{ID: id, Handle: handle, DisplayName: handle, PIALID: pial, ContentSetting: "default"},
-		exp:  time.Now().Add(time.Minute),
-	})
+	h.seedSession(tok, &model.User{ID: id, Handle: handle, DisplayName: handle, PIALID: pial, ContentSetting: "default"}, time.Minute)
 	r.Header.Set("Authorization", "Bearer "+tok)
 }
 

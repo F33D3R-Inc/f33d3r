@@ -33,7 +33,7 @@ func accountHandler(t *testing.T, user *model.User) *Handler {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	h := &Handler{cfg: &config.Config{}, db: db}
-	h.sessionCache.Store(accountSessionToken, sessionEntry{user: user, exp: time.Now().Add(time.Hour)})
+	h.seedSession(accountSessionToken, user, time.Hour)
 	return h
 }
 

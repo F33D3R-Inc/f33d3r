@@ -44,10 +44,7 @@ func authedHandler(t *testing.T, upstreamURL string, user *model.User) *Handler 
 		cfg: &config.Config{AinSophURL: upstreamURL, InternalAPIKey: "test-internal-key"},
 		db:  db,
 	}
-	h.sessionCache.Store(injectionSessionToken, sessionEntry{
-		user: user,
-		exp:  time.Now().Add(time.Hour),
-	})
+	h.seedSession(injectionSessionToken, user, time.Hour)
 	return h
 }
 

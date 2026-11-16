@@ -113,18 +113,20 @@ func (h *Handler) endAccountSessions(r *http.Request, userID, keepToken string) 
 	return nil
 }
 
-// evictCachedAccount drops every cached resolution of the account on every
-// device, except the entry for keepToken when one is named. Anything that
-// changes what an account is — role, capability, verification, standing,
-// profile, interest vector — calls it, so the change applies on the account's
-// next request rather than when the cache TTL runs out.
+// evictCachedAccount drops every cached session answer for the account on
+// every device, except the entry for keepToken when one is named. The cache
+// holds only the identity authority's answer (see sessionEntry), so this is
+// what makes a change to that answer — role, capability, verification,
+// standing, sign-out — apply on the account's next request rather than when
+// the cache TTL runs out. Profile edits need no eviction: profile data is read
+// fresh on every request.
 func (h *Handler) evictCachedAccount(userID, keepToken string) {
 	if userID == "" {
 		return
 	}
 	h.sessionCache.Range(func(key, value any) bool {
 		entry, ok := value.(sessionEntry)
-		if ok && entry.user != nil && entry.user.ID == userID && key != keepToken {
+		if ok && entry.sess != nil && entry.sess.AccountID == userID && key != keepToken {
 			h.sessionCache.Delete(key)
 		}
 		return true
