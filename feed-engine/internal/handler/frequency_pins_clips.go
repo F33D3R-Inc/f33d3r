@@ -56,7 +56,7 @@ var frequencyPinCache sync.Map
 
 // frequencyAdultWork says whether a work needs an adult-enabled audience.
 func frequencyAdultWork(w *model.Work) bool {
-	return w.IsNSFW || w.IsGore || w.AuthorIsAdultCreator
+	return w.IsNSFW || w.IsGore
 }
 
 // frequencyPinOf reads one pinned work. A work deleted or gated since it was pinned

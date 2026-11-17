@@ -257,26 +257,37 @@ func safetySubjectWorks(tx *sql.Tx, ev SafetyApply) ([]string, error) {
 }
 
 // applyWorkVerdict moves one work's scan state. An automated verdict applies
-// only to a pending work; a human decision applies to any. A work this brain
-// no longer holds is not an error: there is nothing left to judge.
+// to a work whose state automation set (pending, or an earlier automated
+// verdict); a human decision applies to any, and once a person has decided,
+// automation leaves the work alone. A work this brain no longer holds is not
+// an error: there is nothing left to judge.
 func applyWorkVerdict(tx *sql.Tx, workID, to string, human bool, reason, actor string) (SafetyChange, bool, error) {
 	c := SafetyChange{WorkID: workID, ToState: to}
-	var deleted bool
+	var (
+		deleted bool
+		setBy   string
+	)
 	err := tx.QueryRow(`
-		SELECT scan_state, author_pial::text, deleted_at IS NOT NULL
-		  FROM works WHERE id = $1::uuid FOR UPDATE`, workID).Scan(&c.FromState, &c.AuthorPIAL, &deleted)
+		SELECT scan_state, author_pial::text, deleted_at IS NOT NULL, scan_set_by
+		  FROM works WHERE id = $1::uuid FOR UPDATE`, workID).Scan(&c.FromState, &c.AuthorPIAL, &deleted, &setBy)
 	if errors.Is(err, sql.ErrNoRows) {
 		return c, false, nil
 	}
 	if err != nil {
 		return c, false, fmt.Errorf("reading work %s for a verdict: %w", workID, err)
 	}
-	if deleted || c.FromState == to || (!human && c.FromState != "pending") {
+	// Automation may only revise what automation decided: a person's decision
+	// stands until a person changes it. Ordering between verdicts is the
+	// per-subject seq ledger's, so a newer automated verdict (a re-scan under
+	// a changed policy) replaces an older automated one.
+	if deleted || c.FromState == to || (!human && setBy == "person") {
 		return c, false, nil
 	}
 	// Moderators are told once per event (notifyReviewers), not once per work.
-	if err := applyScanStateTx(tx, workID, to, reason, actor, ScanOutcome{
-		NotifyAuthor: to == "blocked" || to == "age_gated",
+	// Only a removal is a violation: age-gating marks a work 18+ and removes
+	// nothing, so it sends the author no "violation" notice.
+	if err := applyScanStateTx(tx, workID, to, reason, actor, human, ScanOutcome{
+		NotifyAuthor: to == "blocked",
 	}); err != nil {
 		return c, false, err
 	}

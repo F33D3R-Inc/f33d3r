@@ -35,6 +35,7 @@ mod pipeline;
 mod policy;
 mod reports;
 mod republish;
+mod rescan;
 mod review;
 mod scan;
 mod verdicts;
@@ -59,6 +60,10 @@ async fn main() -> anyhow::Result<()> {
     if command == "import" {
         return import::run(&pool).await;
     }
+    if command == "rescan" {
+        let refs: Vec<String> = std::env::args().skip(2).collect();
+        return rescan::run(&pool, &refs).await;
+    }
     if command == "republish" {
         let refs: Vec<String> = std::env::args().skip(2).collect();
         return republish::run(&pool, &refs).await;
@@ -80,7 +85,7 @@ async fn main() -> anyhow::Result<()> {
     match command.as_str() {
         "serve" => serve(state).await,
         "backfill" => backfill::run(&state).await,
-        other => bail!("unknown command {other:?}; expected serve, import, backfill or republish"),
+        other => bail!("unknown command {other:?}; expected serve, import, backfill, republish or rescan"),
     }
 }
 

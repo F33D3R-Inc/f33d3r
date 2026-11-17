@@ -142,7 +142,6 @@ type mediaOwner struct {
 	IsGore               bool
 	SubscriberOnly       bool
 	AuthorIsPrivate      bool
-	AuthorIsAdultCreator bool
 }
 
 // mediaOwnerColumns is the fact set every work lookup returns, in scanMediaOwner
@@ -160,8 +159,7 @@ const mediaOwnerColumns = `
        COALESCE(w.is_nsfw, FALSE),
        COALESCE(w.is_gore, FALSE),
        COALESCE(w.subscriber_only, FALSE),
-       COALESCE(up.is_private, FALSE),
-       COALESCE(up.is_adult_creator, FALSE)`
+       COALESCE(up.is_private, FALSE)`
 
 // mediaOwnerSelect selects mediaOwnerColumns; callers append WHERE.
 const mediaOwnerSelect = `
@@ -199,8 +197,7 @@ SELECT v.author_account::text,
        v.is_nsfw,
        FALSE,
        FALSE,
-       (COALESCE(up.is_private, FALSE) OR v.audience = 'followers'),
-       COALESCE(up.is_adult_creator, FALSE)
+       (COALESCE(up.is_private, FALSE) OR v.audience = 'followers')
   FROM visions v
   JOIN vision_media vm ON vm.author_pial = v.author_pial AND vm.seq = v.seq
   LEFT JOIN user_profiles up ON up.user_id = v.author_account
@@ -314,7 +311,7 @@ func scanMediaOwner(row interface{ Scan(...any) error }, extra ...any) (mediaOwn
 	var expiresAt, scheduledAt *time.Time
 	dest := append([]any{&o.AuthorID, &o.Deleted, &o.Removed, &o.Expired, &expiresAt,
 		&o.Scheduled, &scheduledAt, &o.Pending,
-		&o.IsNSFW, &o.IsGore, &o.SubscriberOnly, &o.AuthorIsPrivate, &o.AuthorIsAdultCreator}, extra...)
+		&o.IsNSFW, &o.IsGore, &o.SubscriberOnly, &o.AuthorIsPrivate}, extra...)
 	if err := row.Scan(dest...); err != nil {
 		return mediaOwner{}, err
 	}
@@ -361,14 +358,14 @@ func decideMediaAccess(o mediaOwner, viewer *model.User, a authorAccess) int {
 	if o.SubscriberOnly && !a.IsSubscribed {
 		return http.StatusForbidden
 	}
-	if o.IsNSFW || o.IsGore || o.AuthorIsAdultCreator {
+	if o.IsNSFW || o.IsGore {
 		anon := viewer == nil || viewer.ID == "" || viewer.ID == "demo_user"
 		if anon || excludeNSFW(viewer) {
 			return http.StatusForbidden
 		}
 		// The card asks an unverified adult to verify before showing adult media, and the
 		// file must say the same, or the gate only hides a link.
-		if (o.IsNSFW || o.AuthorIsAdultCreator) && !(viewer.IsAgeVerified || viewer.IsVerified) {
+		if o.IsNSFW && !(viewer.IsAgeVerified || viewer.IsVerified) {
 			return http.StatusForbidden
 		}
 	}

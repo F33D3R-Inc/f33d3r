@@ -322,7 +322,6 @@ type Post struct {
 	IsVerified           bool
 	AuthorRole           string // admin | founder | creator | user
 	AuthorOfficialType   string // '' | 'government' | 'business'
-	AuthorIsAdultCreator bool   // true when author has active adult creator role
 	Body                 string
 	ContentType          string
 	Tags                 []string
@@ -1063,7 +1062,6 @@ type Work struct {
 	AuthorRealm          int    // 1–5
 	AuthorOfficialType   string // ''|'government'|'business'
 	AuthorIsCreator      bool
-	AuthorIsAdultCreator bool // true when author has active adult creator role — used for feed filtering
 	// Aggregated reaction counts
 	LikeCount     int
 	RepostCount   int

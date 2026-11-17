@@ -492,7 +492,7 @@ func (h *Handler) workWall(work *model.Work, author, viewer *model.User) (privat
 		access, err := h.authorWall(author.ID, viewer)
 		privateWall = err != nil || access.IsBlocked || privateWalled(author.IsPrivate, access)
 	}
-	if !privateWall && (work.IsNSFW || work.IsGore || work.AuthorIsAdultCreator) && !isOwner {
+	if !privateWall && (work.IsNSFW || work.IsGore) && !isOwner {
 		if anon {
 			workGate = "auth"
 		} else if excludeNSFW(viewer) {
@@ -563,7 +563,7 @@ func (h *Handler) workDetailPage(w http.ResponseWriter, r *http.Request) {
 	if author != nil && author.AvatarURL != "" {
 		ogImage = author.AvatarURL
 	}
-	if !walled && !work.IsNSFW && !work.IsGore && !work.AuthorIsAdultCreator {
+	if !walled && !work.IsNSFW && !work.IsGore {
 		if work.VideoPosterURL != "" {
 			ogImage = work.VideoPosterURL
 		} else if len(work.MediaURLs) > 0 {

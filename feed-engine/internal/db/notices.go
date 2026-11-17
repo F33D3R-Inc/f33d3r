@@ -250,17 +250,10 @@ type ScanOutcome struct {
 	NotifyAuthor     bool
 }
 
-// ApplyScanState moves a work to a new scan state and queues what that owes people,
-// in one transaction.
-func ApplyScanState(database *sql.DB, postID, toState, reason, actor string, outcome ScanOutcome) error {
-	return WithTx(database, func(tx *sql.Tx) error {
-		return applyScanStateTx(tx, postID, toState, reason, actor, outcome)
-	})
-}
-
-// applyScanStateTx is ApplyScanState inside the caller's transaction.
-func applyScanStateTx(tx *sql.Tx, postID, toState, reason, actor string, outcome ScanOutcome) error {
-	if err := SetPostScanState(tx, postID, toState, reason, actor); err != nil {
+// applyScanStateTx moves a work to a new scan state inside the caller's
+// transaction and queues the notices that move owes people.
+func applyScanStateTx(tx *sql.Tx, postID, toState, reason, actor string, byPerson bool, outcome ScanOutcome) error {
+	if err := SetPostScanState(tx, postID, toState, reason, actor, byPerson); err != nil {
 		return err
 	}
 	if outcome.NotifyModerators {

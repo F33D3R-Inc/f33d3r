@@ -139,7 +139,7 @@ func withoutBarrierRefused(user *model.User, window []*model.Work) []*model.Work
 	}
 	kept := make([]*model.Work, 0, len(window))
 	for _, w := range window {
-		if !w.IsNSFW && !w.IsGore && !w.AuthorIsAdultCreator {
+		if !w.IsNSFW && !w.IsGore {
 			kept = append(kept, w)
 		}
 	}

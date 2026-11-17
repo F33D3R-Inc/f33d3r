@@ -82,7 +82,7 @@ func WorkToContent(w *model.Work, s WorkSignals) model.AethyrContent {
 	}
 
 	adult := 0.0
-	if w.IsNSFW || w.IsGore || w.AuthorIsAdultCreator {
+	if w.IsNSFW || w.IsGore {
 		adult = 1.0
 	}
 

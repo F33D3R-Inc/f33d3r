@@ -111,11 +111,6 @@ func (h *Handler) gateWorksWith(viewer *model.User, works []*model.Work, opts ga
 			continue
 		}
 		own := viewerID != "" && w.AuthorID == viewerID
-		// An adult creator's works are adult, flagged or not, so every later check
-		// and template treats them the same way.
-		if w.AuthorIsAdultCreator {
-			w.IsNSFW = true
-		}
 		if !own {
 			if blocked[w.AuthorID] || (muted[w.AuthorID] && !opts.keepMuted) {
 				continue
@@ -181,7 +176,7 @@ func surfaceKeepsMuted(surface string) bool {
 // adultMediaOpen says whether a work's media can be drawn with no gate in front of it.
 // The mobile layout has no room for a gate, so anything less draws no media there.
 func adultMediaOpen(w *model.Work, u *model.User) bool {
-	if w == nil || !(w.IsNSFW || w.IsGore || w.AuthorIsAdultCreator) {
+	if w == nil || !(w.IsNSFW || w.IsGore) {
 		return true
 	}
 	return u != nil && u.IsAdult && u.ContentSetting == "adult_enabled" &&

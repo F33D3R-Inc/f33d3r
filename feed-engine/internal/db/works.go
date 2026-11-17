@@ -202,7 +202,7 @@ type WorkCreateOutcome struct {
 // poster's own works always pass. $2 is the poster. The caller appends the key.
 const citableWorkSQL = `
 	SELECT w.id::text, w.author_id::text, w.comment_gating,
-	       (w.is_nsfw OR w.is_gore OR COALESCE(up.is_adult_creator, FALSE)),
+	       (w.is_nsfw OR w.is_gore),
 	       EXISTS (SELECT 1 FROM follows f WHERE f.follower_id = $2::uuid AND f.following_id = w.author_id),
 	       EXISTS (SELECT 1 FROM follows f WHERE f.follower_id = w.author_id AND f.following_id = $2::uuid)
 	  FROM works w
@@ -381,7 +381,7 @@ func InsertWork(database *sql.DB, d WorkDraft) (WorkCreateOutcome, error) {
 			INSERT INTO works (
 				cid, author_id, author_pial, body, kind, media_urls,
 				tags, poll_options, poll_ends_at, scheduled_at,
-				comment_gating, subscriber_only, is_nsfw, is_reply,
+				comment_gating, subscriber_only, is_nsfw, creator_marked_nsfw, is_reply,
 				voice_url, voice_duration_secs,
 				video_master_url, downloads_allowed, video_poster_url, video_duration_secs,
 				video_width, video_height, react_layout,
@@ -393,7 +393,7 @@ func InsertWork(database *sql.DB, d WorkDraft) (WorkCreateOutcome, error) {
 			) VALUES (
 				$1, $2::uuid, $3::uuid, $4, $5, $6,
 				$7, $8, $9, $10,
-				$11, $12, $13, $14,
+				$11, $12, $13, $13, $14,
 				NULLIF($15, ''), $16,
 				NULLIF($17, ''), $18, NULLIF($19, ''), $20,
 				$21, $22, NULLIF($23, ''),
@@ -575,7 +575,6 @@ SELECT
     COALESCE(w.is_edited, FALSE),
     w.edited_at,
     COALESCE(w.view_count, 0),
-    COALESCE(up.is_adult_creator, FALSE),
     w.psych_vector
 FROM works w
 JOIN users u ON u.id = w.author_id
@@ -632,8 +631,6 @@ func scanWork(rows *sql.Rows) (*model.Work, error) {
 		&w.IsEdited, &editedAt,
 		// view count
 		&w.ViewCount,
-		// author adult-creator flag (feed filtering)
-		&w.AuthorIsAdultCreator,
 		// Jung layer — NULL until first computed
 		&psychVector,
 	)
@@ -1769,16 +1766,16 @@ func GetWorksNSFW(db *sql.DB, limit int, before string) ([]*model.Work, error) {
 	if err != nil {
 		return nil, err
 	}
-	// 18+ feed: a work is adult if it is flagged NSFW or gore at the work level,
-	// or its author is an adult-content creator. (The old filter used
-	// w.is_sensitive, a column nothing ever sets — so the feed was always empty.)
+	// 18+ feed: a work is adult when the work itself is 18+ — marked NSFW by its
+	// creator or age-gated by Abraxas — or gore. Who posted it is not the test:
+	// an adult creator's plain posts are ordinary posts.
 	rows, err := db.Query(worksSelectSQL+`
 		WHERE w.deleted_at IS NULL
 		  AND `+workNotBlockedSQL+`
 		  AND NOT w.subscriber_only
 		  AND NOT w.is_reply
 		  AND `+workLiveSQL+`
-		  AND (w.is_nsfw = TRUE OR w.is_gore = TRUE OR COALESCE(up.is_adult_creator, FALSE) = TRUE)
+		  AND (w.is_nsfw = TRUE OR w.is_gore = TRUE)
 		  AND (w.created_at, w.id) < ($1, $3::uuid)
 		ORDER BY w.created_at DESC, w.id DESC
 		LIMIT $2

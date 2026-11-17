@@ -1793,32 +1793,35 @@ func scanSurfaces(rows *sql.Rows, isPinned bool) ([]model.FeedSurface, error) {
 // ── Trust & Safety: Content Moderation ───────────────────────────────────────
 
 // SetPostScanState transitions a work's scan_state and appends to the moderation log.
-// actor should be "system", "abraxas", or a moderator handle.
+// actor should be "system", "abraxas", or a moderator handle; byPerson is whether a
+// person made the decision (it guards the state from later automation).
 //
 // works is the only content table: this used to probe posts first and fall through,
 // which meant a lookup miss on an empty table on every single moderation decision.
-func SetPostScanState(database DBTX, postID, toState, reason, actor string) error {
+func SetPostScanState(database DBTX, postID, toState, reason, actor string, byPerson bool) error {
 	var fromState string
 	err := database.QueryRow(`SELECT COALESCE(scan_state,'clean') FROM works WHERE id = $1`, postID).Scan(&fromState)
 	if err != nil {
 		return err
 	}
-	if _, err2 := database.Exec(`UPDATE works SET scan_state = $1 WHERE id = $2`, toState, postID); err2 != nil {
-		return err2
+	setBy := "auto"
+	if byPerson {
+		setBy = "person"
 	}
-	// scan_state alone does not block or age-gate anything — is_blocked and is_nsfw
-	// are what the read paths and the content gate actually key off. Letting either
-	// fail while this function returns nil produces a work the moderation queue
-	// shows as blocked and the feed still serves.
-	if toState == "blocked" {
-		if _, err2 := database.Exec(`UPDATE works SET is_blocked = TRUE WHERE id = $1`, postID); err2 != nil {
-			return fmt.Errorf("work %s: scan_state set to blocked but is_blocked not set: %w", postID, err2)
-		}
-	}
-	if toState == "age_gated" {
-		if _, err2 := database.Exec(`UPDATE works SET is_nsfw = TRUE WHERE id = $1`, postID); err2 != nil {
-			return fmt.Errorf("work %s: scan_state set to age_gated but is_nsfw not set: %w", postID, err2)
-		}
+	// One statement keeps the state and what the read paths key off together:
+	//   is_blocked — a block sets it (only a person lifts it; applyWorkVerdict);
+	//   is_nsfw    — 18+ when the creator marked the work 18+ or the work is
+	//                age-gated, and nothing else, so leaving age_gated returns
+	//                the work to exactly what its creator declared;
+	//   scan_set_by — whether automation or a person put it in this state.
+	if _, err2 := database.Exec(`
+		UPDATE works
+		   SET scan_state  = $1,
+		       is_blocked  = is_blocked OR $1 = 'blocked',
+		       is_nsfw     = creator_marked_nsfw OR $1 = 'age_gated',
+		       scan_set_by = $3
+		 WHERE id = $2`, toState, postID, setBy); err2 != nil {
+		return fmt.Errorf("work %s: setting scan state %s: %w", postID, toState, err2)
 	}
 	if _, err2 := database.Exec(
 		`INSERT INTO content_moderation_log (post_id, from_state, to_state, reason, actor) VALUES ($1,$2,$3,$4,$5)`,

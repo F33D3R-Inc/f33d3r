@@ -174,8 +174,8 @@ pub fn decide(i: &Inputs<'_>) -> Decision {
         }
     }
     // Nudity: the uncertain band is a review — unless the creator is a
-    // declared adult creator, whose work is age-gated regardless, so the
-    // uncertainty no longer changes the outcome.
+    // declared adult creator. Their uncertain nudity is age-gated instead of
+    // held for a person, because 18+ media is what they declared they post.
     if nsfw >= NSFW_REVIEW && nsfw < NSFW_AGE_GATE && !i.is_adult_creator {
         review(format!("nsfw_uncertain:{nsfw:.2}"));
     }
@@ -183,7 +183,11 @@ pub fn decide(i: &Inputs<'_>) -> Decision {
         signals.push(format!("opaque_media:{}", i.opaque_media));
     }
 
-    let age_gate = i.is_adult_creator || nsfw >= NSFW_AGE_GATE;
+    // Only 18+ material is age-gated: nudity in the media. Being a declared
+    // adult creator never gates a post by itself — an adult creator's text, or
+    // a photo with no nudity in it, is an ordinary post. It only moves the
+    // uncertain nudity band from review to age-gate (above).
+    let age_gate = nsfw >= NSFW_AGE_GATE || (i.is_adult_creator && nsfw >= NSFW_REVIEW);
     if nsfw >= NSFW_AGE_GATE {
         signals.push(format!("nsfw:{nsfw:.2}"));
     }
@@ -267,5 +271,9 @@ mod tests {
         assert_eq!(run(None, &m(0.5), false).verdict, Verdict::HumanReview);
         assert_eq!(run(None, &m(0.5), true).verdict, Verdict::AgeGate);
         assert_eq!(run(None, &m(0.1), false).verdict, Verdict::Approve);
+        // Being an adult creator is not 18+ material: their photo with no
+        // nudity, and their text, are ordinary posts.
+        assert_eq!(run(None, &m(0.1), true).verdict, Verdict::Approve);
+        assert_eq!(run(Some(&text(0.0, &[])), &[], true).verdict, Verdict::Approve);
     }
 }

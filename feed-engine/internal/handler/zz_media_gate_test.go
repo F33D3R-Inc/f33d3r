@@ -128,8 +128,8 @@ func TestMediaWallClosesCapturedURLs(t *testing.T) {
 			want:   http.StatusForbidden,
 		},
 		{
-			name:   "adult creator media requested anonymously",
-			owner:  mediaOwner{AuthorID: author, AuthorIsAdultCreator: true},
+			name:   "18+ media requested anonymously",
+			owner:  mediaOwner{AuthorID: author, IsNSFW: true},
 			viewer: nil,
 			want:   http.StatusForbidden,
 		},
