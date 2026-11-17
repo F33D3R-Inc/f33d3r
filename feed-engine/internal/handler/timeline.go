@@ -19,9 +19,12 @@ package handler
 
 import (
 	"context"
+	"html/template"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -94,6 +97,10 @@ type timelineQuery struct {
 	Tag       string
 	Terms     []string // words to find, on surfaces that search
 	Def       *model.FeedSurface
+	// Placement names where the page is drawn. Frames are placed only on Home's
+	// Playground (timelinePlacementHome); the same surface on a hub or in Explore
+	// carries works alone.
+	Placement string
 }
 
 // timelineSpec is a surface: its parts, never its order.
@@ -140,6 +147,10 @@ func (h *Handler) runTimeline(ctx context.Context, spec *timelineSpec, q *timeli
 		window = rankWindow(q.Limit)
 	}
 	viewerKey := gateViewerID(q.Viewer) + "|" + spec.Name
+	if q.Tag != "" {
+		// One spec serves every league's timeline; each keeps its own history.
+		viewerKey += "|" + q.Tag
+	}
 	var (
 		read []*model.Work
 		pool *timelinePoolCursor
@@ -331,7 +342,11 @@ func forYouCandidates(h *Handler, q *timelineQuery, n int) ([]*model.Work, error
 	}
 	following, err := dbpkg.GetWorksFeedFollowing(h.db, viewerID, n/2, "")
 	add("following", following, err)
-	if topics := dbpkg.GetSubscribedTopics(h.db, viewerID); len(topics) > 0 {
+	topics, err := dbpkg.GetSubscribedTopics(h.db, viewerID)
+	switch {
+	case err != nil:
+		add("topics", nil, err)
+	case len(topics) > 0:
 		fromTopics, err := dbpkg.GetWorksBySurface(h.db, topics, "", n/4, "")
 		add("topics", fromTopics, err)
 	}
@@ -469,6 +484,15 @@ var (
 			return dbpkg.SearchWorksPage(h.db, q.Terms, n, q.Before, gateViewerID(q.Viewer))
 		},
 	}
+	// specLeague serves a league's timeline: Home's league topic tab and the
+	// posts under a league hub. It ranks, like X's topic timelines.
+	specLeague = &timelineSpec{
+		Name: "league", Ranked: true, Paged: true,
+		Empty: timelineEmpty{"No posts yet", "Posts tagged for this league will appear here"},
+		Candidates: func(h *Handler, q *timelineQuery, n int) ([]*model.Work, error) {
+			return dbpkg.GetWorksBySurface(h.db, []string{q.Tag}, "", n, q.Before)
+		},
+	}
 	specTagLane = &timelineSpec{
 		Name: "tag_lane", Paged: true,
 		Empty: timelineEmpty{"No works yet", ""},
@@ -565,11 +589,24 @@ var timelineSurfaces = map[string]*timelineSpec{
 	"bookmarks":       specBookmarks,
 }
 
+// timelineLeaguePrefix names a league's timeline: "league:nfl". A league's
+// topic is its slug, the tag its posts carry.
+const timelineLeaguePrefix = "league:"
+
+func timelineLeagueSurface(slug string) string { return timelineLeaguePrefix + slug }
+
 // timelineSurface finds a surface by name. Anything not fixed is looked up in
 // feed_surfaces, where interest lanes are defined. Nil means there is no such surface.
 func (h *Handler) timelineSurface(name string, q *timelineQuery) *timelineSpec {
 	if spec, ok := timelineSurfaces[name]; ok {
 		return spec
+	}
+	if slug, ok := strings.CutPrefix(name, timelineLeaguePrefix); ok {
+		if !h.sportsCache.HasLeague(slug) {
+			return nil
+		}
+		q.Tag = slug
+		return specLeague
 	}
 	if def := h.feedSurface(name); def != nil {
 		q.Def = def
@@ -614,6 +651,9 @@ func timelineNextURL(surface string, q *timelineQuery, cursor string) string {
 	if q.SessionID != "" {
 		v.Set("session_id", q.SessionID)
 	}
+	if q.Placement != "" {
+		v.Set("placement", q.Placement)
+	}
 	if surface == "topics" {
 		v.Set("topics", strings.Join(q.Terms, ","))
 	} else {
@@ -627,4 +667,63 @@ func timelineNextURL(surface string, q *timelineQuery, cursor string) string {
 // renderTimelineCards turns a finished page into Fragments.
 func (h *Handler) renderTimelineCards(result timelineResult, viewer *model.User, surface string) []workCardFragment {
 	return h.renderFinishedCards(result.Works, h.workCardCtx(viewer, surface))
+}
+
+// ── frames ───────────────────────────────────────────────────────────────────
+//
+// A frame is a server-rendered card placed among a page's works: a pinned
+// scoreboard at the top, a game card every few works. Frames are not works.
+// They are not ranked, not paged and not counted, so a cursor never lands on
+// one and a later page never repeats one. Each source plans its own frames; the
+// page enforces their order and their budget here.
+
+// timelinePlacementHome is Home's Playground, the only place frames are drawn.
+const timelinePlacementHome = "home"
+
+// timelineFramesPerPage is the most frames one page carries, whatever asks.
+// Three keeps a page of twenty works a page of works.
+const timelineFramesPerPage = 3
+
+// timelineFrame is one frame and where it goes.
+type timelineFrame struct {
+	// Slot is how many works precede the frame: 0 is the top of the page.
+	Slot int
+	// Rank orders frames that share a slot.
+	Rank     int
+	Fragment template.HTML
+}
+
+// placeTimelineFrames orders a page's frames, drops any that would land past
+// its last work, and keeps the page's budget.
+func placeTimelineFrames(frames []timelineFrame, works int) []timelineFrame {
+	kept := make([]timelineFrame, 0, len(frames))
+	for _, f := range frames {
+		if f.Slot >= 0 && f.Slot <= works {
+			kept = append(kept, f)
+		}
+	}
+	sort.SliceStable(kept, func(i, j int) bool {
+		if kept[i].Slot != kept[j].Slot {
+			return kept[i].Slot < kept[j].Slot
+		}
+		return kept[i].Rank < kept[j].Rank
+	})
+	if len(kept) > timelineFramesPerPage {
+		kept = kept[:timelineFramesPerPage]
+	}
+	return kept
+}
+
+// writeTimeline writes a page's works with its placed frames among them.
+func writeTimeline(w io.Writer, cards []workCardFragment, frames []timelineFrame) {
+	next := 0
+	for i := 0; i <= len(cards); i++ {
+		for next < len(frames) && frames[next].Slot == i {
+			_, _ = io.WriteString(w, string(frames[next].Fragment))
+			next++
+		}
+		if i < len(cards) {
+			_, _ = io.WriteString(w, string(cards[i].Fragment))
+		}
+	}
 }

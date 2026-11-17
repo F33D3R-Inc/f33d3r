@@ -34,6 +34,7 @@ import (
 	"github.com/f33d3r/feed-engine/internal/caeor"
 	"github.com/f33d3r/feed-engine/internal/config"
 	dbpkg "github.com/f33d3r/feed-engine/internal/db"
+	"github.com/f33d3r/feed-engine/internal/ekyc"
 	"github.com/f33d3r/feed-engine/internal/identity"
 	"github.com/f33d3r/feed-engine/internal/manhattan"
 	"github.com/f33d3r/feed-engine/internal/middleware"
@@ -44,6 +45,7 @@ import (
 	"github.com/f33d3r/feed-engine/internal/rss"
 	"github.com/f33d3r/feed-engine/internal/sitra"
 	"github.com/f33d3r/feed-engine/internal/sports"
+	"github.com/f33d3r/feed-engine/internal/verity"
 )
 
 var (
@@ -206,6 +208,10 @@ type Handler struct {
 	// RSS right-rail cache — polled every 5 min in background
 	rssCache    *rss.Cache
 	sportsCache *sports.Cache
+	// sportsImages answers /img/sports/: club logos and headshots, fetched once
+	// from the upstream's image CDN and served from disk. Nil when the cache
+	// directory cannot be created; the pages then draw initials.
+	sportsImages *sports.ImageStore
 	// Sitra Achra — Kafka/Redpanda event backbone (fire-and-forget)
 	sitra *sitra.Producer
 	// Manhattan — the naming plane. Resolves a public name to the node behind
@@ -224,6 +230,13 @@ type Handler struct {
 	// abraxas — the integrity authority. Reports, the review queue and live
 	// frame checks go there; its verdicts come back on safety.events.
 	abraxas *abraxas.Client
+	// ekyc measures one identity-verification attempt and decides whether it
+	// passes. Unset EKYC_URL means verification is unavailable.
+	ekyc *ekyc.Client
+	// verity owns identity evidence and legal records: verification
+	// submissions, the document-reuse index and 18 U.S.C. § 2257 records. It
+	// holds no tier; elohim-veni does.
+	verity *verity.Client
 	// BlockLiveStream ends a broadcast a person blocked in the review queue.
 	// Wired to the live lane's BlockStream at boot.
 	BlockLiveStream func(ctx context.Context, streamID, reason string) error
@@ -246,6 +259,8 @@ func New(cfg *config.Config, aethyrClient *aethyr.Client, database *sql.DB) *Han
 		rlContactInit:   middleware.NewRateLimiter(10),
 		caeor:           caeor.New(cfg.CaeorURL, cfg.InternalAPIKey),
 		abraxas:         abraxas.New(cfg.AbraxasURL, cfg.InternalAPIKey),
+		ekyc:            ekyc.New(cfg.EKYCUrl, cfg.InternalAPIKey),
+		verity:          verity.New(cfg.VerityURL, cfg.InternalAPIKey),
 		themisURL:       cfg.ThemisURL,
 		httpClient:      &http.Client{Timeout: 30 * time.Second},
 		nexusClient:     nexus.NewClient(cfg.VerityURL, cfg.InternalAPIKey),
@@ -288,7 +303,15 @@ func New(cfg *config.Config, aethyrClient *aethyr.Client, database *sql.DB) *Han
 	// The mutation sink must be registered before the poller's first refresh, so
 	// no state change can slip past the stream.
 	h.sportsCache.OnMutation(h.sportsMutation)
+	// The game page's detail is read only for games someone has open, and the
+	// registry of watches is who has what open.
+	h.sportsCache.OnDetail(sportsPageViewers, h.sportsGameMutation)
 	h.sportsCache.Start(context.Background())
+	if store, err := sports.NewImageStore(sportsImageDir()); err != nil {
+		log.Printf("[sports] %v — logos and headshots render as initials", err)
+	} else {
+		h.sportsImages = store
+	}
 
 	// Wire the security alerter — fires on every critical/high security event.
 	// If SECURITY_ALERT_EMAIL is configured, an email is sent immediately.
@@ -302,7 +325,9 @@ func New(cfg *config.Config, aethyrClient *aethyr.Client, database *sql.DB) *Han
 			"<p><strong>Severity:</strong> " + severity + "</p>" +
 			"<p><strong>IP:</strong> " + ip + "</p>" +
 			"<p><strong>Details:</strong> <pre>" + details + "</pre></p>"
-		h.sendEmail(cfg.SecurityAlertEmail, subject, body)
+		if err := h.sendEmail(cfg.SecurityAlertEmail, subject, body); err != nil {
+			log.Printf("[security] alert %s (%s) not emailed: %v", eventType, severity, err)
+		}
 	})
 
 	return h
@@ -983,12 +1008,12 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("/admin/analytics", h.rlRead.Limit(h.requireHandle(h.adminUserAnalytics)))
 	mux.HandleFunc("/shop/{handle}", h.rlRead.Limit(h.requireHandle(h.shopPage)))
 	mux.HandleFunc("/achievements", h.rlRead.Limit(h.requireHandle(h.achievementsPage)))
-	mux.HandleFunc("/kyc", h.rlRead.Limit(h.requireHandle(h.kycPage)))
-	mux.HandleFunc("/kyc/submit", h.rlWrite.Limit(h.requireHandle(h.kycSubmit)))
-	mux.HandleFunc("/kyc/adult/enable", h.rlWrite.Limit(h.requireHandle(h.kycAdultEnable)))
-	mux.HandleFunc("POST /kyc/liveness/challenge", h.rlWrite.Limit(h.requireHandle(h.kycLivenessChallenge)))
-	mux.HandleFunc("POST /kyc/age-verify", h.rlWrite.Limit(h.requireHandle(h.handleMRZAgeVerify)))
-	mux.HandleFunc("GET /kyc/creator/statement", h.rlRead.Limit(h.requireHandle(h.kycCreatorStatement)))
+	// Identity verification, one fail-closed flow (kyc.go): consent, capture,
+	// ekyc's decision, Verity's record, identity's tier, the notice.
+	mux.HandleFunc("GET /kyc", h.rlRead.Limit(h.requireHandle(h.kycPage)))
+	mux.HandleFunc("POST /kyc/consent", h.rlWrite.Limit(h.requireHandle(h.kycConsent)))
+	mux.HandleFunc("POST /kyc/liveness", h.rlWrite.Limit(h.requireHandle(h.kycLiveness)))
+	mux.HandleFunc("POST /kyc/submit", h.rlWrite.Limit(h.requireHandle(h.kycSubmit)))
 	mux.HandleFunc("POST /kyc/creator/accept", h.rlWrite.Limit(h.requireHandle(h.kycCreatorAccept)))
 	mux.HandleFunc("/legal/2257", h.rlRead.Limit(h.legal2257Page))
 
@@ -1023,12 +1048,23 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /facets/cashtag/search", h.rlRead.Limit(h.requireHandle(h.facetCashtagSearch)))
 	mux.HandleFunc("GET /facets/cashtag/card", h.rlRead.Limit(h.requireHandle(h.facetCashtagCard)))
 
-	// ── Sports lane — game cards, one league per strip ───────────────────────
+	// ── Sports lane — scoreboards, hub canvases, game cards ─────────────────
 	// Public, like the watch surface: a scoreboard is not a private fact, and a
 	// logged-out visitor landing on a game page must see the game. Every one of
 	// these answers 204/404 when SPORTS_PROVIDER is blank.
 	mux.HandleFunc("GET /facets/sports/{league}/strip", h.rlRead.Limit(h.facetSportsStrip))
-	mux.HandleFunc("GET /facets/sports/{league}/card", h.rlRead.Limit(h.facetSportsCard))
+	mux.HandleFunc("GET /facets/sports/{league}/hub", h.rlRead.Limit(h.facetSportsHubCanvas))
+	// The game page's Facets: tabs re-read through these, and a page re-reads
+	// its header after a stream reconnect.
+	mux.HandleFunc("GET /facets/sports/{league}/{game}/header", h.rlRead.Limit(h.facetSportsGameHeader))
+	mux.HandleFunc("GET /facets/sports/{league}/{game}/center", h.rlRead.Limit(h.facetSportsGameCenter))
+	mux.HandleFunc("GET /facets/sports/{league}/{game}/panel", h.rlRead.Limit(h.facetSportsGamePanel))
+	mux.HandleFunc("GET /facets/sports/{league}/{game}/box", h.rlRead.Limit(h.facetSportsGameBox))
+	mux.HandleFunc("GET /facets/sports/{league}/{game}/share", h.rlRead.Limit(h.facetSportsGameShare))
+	// Club logos and player headshots, proxied and cached. The browser never
+	// asks the upstream's CDN for anything.
+	mux.HandleFunc("GET /img/sports/{width}/{path...}", h.rlRead.Limit(h.sportsImage))
+	mux.HandleFunc("GET /css/sports/teams.css", h.rlRead.Limit(h.sportsTeamsCSS))
 	mux.HandleFunc("GET /facets/hashtag/search", h.rlRead.Limit(h.requireHandle(h.facetHashtagSearch)))
 	mux.HandleFunc("POST /facets/compose_highlight", h.rlRead.Limit(h.requireHandle(h.facetComposeHighlight)))
 	mux.HandleFunc("GET /facets/edit_profile_modal", h.rlRead.Limit(h.requireHandle(h.facetEditProfileModal)))
@@ -1191,6 +1227,8 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /sports/{$}", h.rlRead.Limit(h.sportsHubPage))
 	mux.HandleFunc("GET /sports/{league}", h.rlRead.Limit(h.sportsHubPage))
 	mux.HandleFunc("GET /sports/{league}/{game}", h.rlRead.Limit(h.sportsGamePage))
+	mux.HandleFunc("POST /sports/{league}/{game}/chat", h.rlWrite.Limit(h.requireHandle(h.sportsGameChat)))
+	mux.HandleFunc("POST /sports/{league}/{game}/vote", h.rlWrite.Limit(h.requireHandle(h.sportsGameVote)))
 
 	// 2FA TOTP
 	mux.HandleFunc("GET /api/2fa/setup", h.rlWrite.Limit(h.requireHandle(h.totpSetup)))

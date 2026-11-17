@@ -1,6 +1,10 @@
 // nexus.rs — NEXUS multi-persona identity layer for Verity
 // Security contract: nexus_id is NEVER returned to HTTP clients.
-// Only tier, result, and request_id are returned.
+// Only result and request_id are returned.
+//
+// A NEXUS groups the PIALs one person holds. It carries no verification level:
+// that belongs to identity (elohim-veni), so nothing here stores, returns or
+// derives a tier.
 
 use axum::{
     extract::{FromRef, Path, State},
@@ -54,7 +58,6 @@ pub struct VerifyReq {
 #[derive(Serialize)]
 pub struct VerifyResp {
     result: String, // "created" | "already_linked" | "match_found"
-    tier: i16,
     #[serde(skip_serializing_if = "Option::is_none")]
     request_id: Option<String>,
 }
@@ -90,7 +93,6 @@ pub fn nexus_router(state: Arc<NexusState>) -> Router {
         .route("/v1/nexus/link/pending", get(link_pending))
         .route("/v1/nexus/personas", get(list_personas))
         .route("/v1/nexus/personas/:shard", delete(unlink_persona))
-        .route("/v1/nexus/tier/:shard", get(get_tier))
         .route("/v1/nexus/aml/:shard", get(aml_get).post(aml_record))
         .with_state(state)
 }
@@ -120,8 +122,8 @@ async fn verify(
     }
 
     // Step 1: Look up existing nexus identity by biometric hash.
-    let existing: Option<(Uuid, i16, bool)> = sqlx::query_as(
-        "SELECT nexus_id, verity_tier, is_suspended
+    let existing: Option<(Uuid, bool)> = sqlx::query_as(
+        "SELECT nexus_id, is_suspended
          FROM nexus_identities WHERE biometric_hash = $1",
     )
     .bind(&req.biometric_hash)
@@ -134,8 +136,8 @@ async fn verify(
             // New identity — create nexus_identities + primary persona link.
             let nexus_id: Uuid = sqlx::query_scalar(
                 "INSERT INTO nexus_identities
-                     (biometric_hash, document_hash, verity_tier, jurisdiction)
-                 VALUES ($1, $2, 1, $3) RETURNING nexus_id",
+                     (biometric_hash, document_hash, jurisdiction)
+                 VALUES ($1, $2, $3) RETURNING nexus_id",
             )
             .bind(&req.biometric_hash)
             .bind(&req.document_hash)
@@ -175,12 +177,11 @@ async fn verify(
 
             Ok(Json(VerifyResp {
                 result: "created".to_string(),
-                tier: 1,
                 request_id: None,
             }))
         }
 
-        Some((nexus_id, tier, is_suspended)) => {
+        Some((nexus_id, is_suspended)) => {
             if is_suspended {
                 return Err(err(StatusCode::FORBIDDEN, "account suspended"));
             }
@@ -209,7 +210,6 @@ async fn verify(
 
                 return Ok(Json(VerifyResp {
                     result: "already_linked".to_string(),
-                    tier,
                     request_id: None,
                 }));
             }
@@ -238,7 +238,6 @@ async fn verify(
 
             Ok(Json(VerifyResp {
                 result: "match_found".to_string(),
-                tier,
                 request_id: Some(request_id.to_string()),
             }))
         }
@@ -370,8 +369,8 @@ async fn link_decline(
 // User-initiated account linking. Creates a pending link request that the
 // TARGET account must confirm. Does NOT directly link — that requires confirm.
 //
-// If the source has no NEXUS yet, a tier-0 user-initiated NEXUS is created so
-// it can hold the pending request. KYC later upgrades it to tier 1+.
+// If the source has no NEXUS yet, a user-initiated NEXUS is created so it can
+// hold the pending request.
 async fn link_initiate(
     State(state): State<Arc<NexusState>>,
     caller: Caller,
@@ -418,9 +417,9 @@ async fn link_initiate(
     {
         Some(id) => id,
         None => {
-            // Source has no NEXUS — create a tier-0 user-initiated one.
+            // Source has no NEXUS — create a user-initiated one.
             let new_id: Uuid = sqlx::query_scalar(
-                "INSERT INTO nexus_identities (source, verity_tier) VALUES ('user_initiated', 0)
+                "INSERT INTO nexus_identities (source) VALUES ('user_initiated')
                  RETURNING nexus_id",
             )
             .fetch_one(&state.pool)
@@ -585,17 +584,8 @@ async fn list_personas(
         })
         .collect();
 
-    // Return tier from nexus_identities (never nexus_id).
-    let tier: i16 =
-        sqlx::query_scalar("SELECT verity_tier FROM nexus_identities WHERE nexus_id = $1")
-            .bind(nexus_id)
-            .fetch_one(&state.pool)
-            .await
-            .unwrap_or(1);
-
     Ok(Json(json!({
         "personas": personas,
-        "tier":     tier,
         "count":    personas.len(),
     })))
 }
@@ -675,45 +665,6 @@ async fn unlink_persona(
     .await;
 
     Ok(Json(json!({ "result": "unlinked" })))
-}
-
-// ── GET /v1/nexus/tier/:shard ─────────────────────────────────────────────────
-// Verified-tier lookup for a PIAL shard (the PIAL record in feed-engine is authoritative).
-// Returns tier_source: "nexus" if in NEXUS, "pial" if from attestations only.
-async fn get_tier(
-    State(state): State<Arc<NexusState>>,
-    Path(shard): Path<String>,
-) -> NexusRes<Value> {
-    // First: check nexus_persona_links JOIN nexus_identities.
-    let nexus_row: Option<(i16, bool)> = sqlx::query_as(
-        "SELECT ni.verity_tier, ni.is_suspended
-         FROM nexus_persona_links npl
-         JOIN nexus_identities ni ON ni.nexus_id = npl.nexus_id
-         WHERE npl.pial_shard_id = $1",
-    )
-    .bind(&shard)
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()))?;
-
-    if let Some((tier, is_suspended)) = nexus_row {
-        return Ok(Json(json!({
-            "pial_shard_id": shard,
-            "tier":          tier,
-            "tier_source":   "nexus",
-            "is_suspended":  is_suspended,
-        })));
-    }
-
-    // Fallback: query attestations creator_tier (attestations.pial_id is the raw UUID,
-    // not the shard. Shard lookup requires a mapping the caller must provide via metadata.
-    // Return tier 0 with tier_source "pial" to indicate no NEXUS record found.)
-    Ok(Json(json!({
-        "pial_shard_id": shard,
-        "tier":          0,
-        "tier_source":   "pial",
-        "is_suspended":  false,
-    })))
 }
 
 // ── AML types ─────────────────────────────────────────────────────────────────

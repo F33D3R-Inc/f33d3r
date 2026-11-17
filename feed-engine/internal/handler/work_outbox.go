@@ -156,9 +156,11 @@ func (o *workOutbox) run(ctx context.Context) {
 		}
 		o.drain(ctx)
 		o.drainWithdrawals(ctx)
+		o.drain2257(ctx)
 		if time.Since(lastReport) >= workOutboxReportEvery {
 			lastReport = time.Now()
 			o.report()
+			o.report2257()
 		}
 		if time.Since(lastPrune) >= workOutboxPruneEvery {
 			lastPrune = time.Now()

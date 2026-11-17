@@ -29,7 +29,7 @@ type User struct {
 	IsCreator           bool
 	IsVerified          bool
 	// KYCTier is the identity tier recorded on this account's PIAL root:
-	// KYCTierNone | KYCTierBasic | KYCTierSoft | KYCTierFull. It is folded on
+	// KYCTierNone | KYCTierBasic | KYCTierFull. It is folded on
 	// from PIAL state, never read off a users/user_profiles column, because PIAL
 	// is the single system of record for identity. Read it through CanMonetize()
 	// rather than comparing the string — see the tier ladder below.
@@ -118,10 +118,15 @@ func (u *User) IsFounder() bool { return u != nil && u.Role == RoleFounder }
 
 // ── The identity ladder ───────────────────────────────────────────────────────
 //
-// An identity's kyc_tier (elohim-veni's fact, projected as identity_facts.kyc_tier) holds exactly these four values, and they are not four
+// An identity's kyc_tier (elohim-veni's fact, projected as identity_facts.kyc_tier) holds exactly these three values, and they are not three
 // degrees of the same thing. The first two answer "how old does this person say
-// they are"; the last two answer "who is this person". A gate that needs the
+// they are"; the last answers "who is this person". A gate that needs the
 // second question answered cannot be built out of the first two.
+//
+// There was a fourth, "soft": a document's MRZ read with no face match and no
+// liveness. That lane is gone (one verification path, the same checks for age
+// and for creators), no identity held the value, and elohim-veni's migration
+// 0005 removed it from the vocabulary.
 const (
 	// KYCTierNone — nothing recorded. No date of birth, no document.
 	KYCTierNone = "none"
@@ -130,11 +135,6 @@ const (
 	// that completes signup reaches this tier, so it distinguishes nobody from
 	// anybody.
 	KYCTierBasic = "basic"
-	// KYCTierSoft — a government document was read (MRZ) and confirmed 18+.
-	// Explicitly no face match and no liveness (see handleMRZAgeVerify), so it
-	// proves a real document exists and says 18+; it does not prove the person
-	// holding this account is the person named on it.
-	KYCTierSoft = "soft"
 	// KYCTierFull — government document, face match against that document, and
 	// a live challenge-response scan. This is the only tier that binds a named
 	// human to the account operating it.
@@ -146,8 +146,6 @@ const (
 func kycTierRank(tier string) int {
 	switch tier {
 	case KYCTierFull:
-		return 3
-	case KYCTierSoft:
 		return 2
 	case KYCTierBasic:
 		return 1
@@ -162,9 +160,7 @@ func kycTierRank(tier string) int {
 // identity question — is this account operated by the human named on a
 // government document.
 //
-// The bar is KYCTierFull. KYCTierSoft reads a document but never looks at the
-// face holding it, so a scraped passport image satisfies it; that is the exact
-// substitution a creator gate exists to prevent. KYCTierBasic is a typed-in
+// The bar is KYCTierFull. KYCTierBasic is a typed-in
 // birthday. The default /kyc walk already produces KYCTierFull in one pass
 // (document → face match → liveness → kycSubmit), so this bar adds no door that
 // does not already exist.
@@ -235,7 +231,7 @@ type PIALRoot struct {
 	IsTombstoned  bool   // deprecated: use Status
 	Status        string // active | suspended | tombstoned
 	DateOfBirth   *time.Time
-	KYCTier       string // none | basic | soft | full
+	KYCTier       string // none | basic | full
 	KYCVerifiedAt *time.Time
 	AgeVerified   bool
 }
@@ -311,21 +307,21 @@ type ProfileSave struct {
 
 // Post is the full post view used in templates.
 type Post struct {
-	ID                   string
-	AuthorID             string
-	AuthorHandle         string
-	AuthorName           string
-	AvatarURL            string
-	AvatarSeed           string // handle used to derive gradient avatar colour
-	AvatarAnimated       bool
-	AuthorRealm          int // 1–5 realm tier for ring display
-	IsVerified           bool
-	AuthorRole           string // admin | founder | creator | user
-	AuthorOfficialType   string // '' | 'government' | 'business'
-	Body                 string
-	ContentType          string
-	Tags                 []string
-	MediaURLs            []string
+	ID                 string
+	AuthorID           string
+	AuthorHandle       string
+	AuthorName         string
+	AvatarURL          string
+	AvatarSeed         string // handle used to derive gradient avatar colour
+	AvatarAnimated     bool
+	AuthorRealm        int // 1–5 realm tier for ring display
+	IsVerified         bool
+	AuthorRole         string // admin | founder | creator | user
+	AuthorOfficialType string // '' | 'government' | 'business'
+	Body               string
+	ContentType        string
+	Tags               []string
+	MediaURLs          []string
 	// HLS video asset (Sprint 0 / S0.6). Empty when post is not a video.
 	// VideoMasterURL is master.m3u8; player loads variants from there.
 	VideoMasterURL    string
@@ -792,8 +788,8 @@ type AethyrUserState struct {
 }
 
 type AethyrContent struct {
-	ContentID             string           `json:"content_id"`
-	CreatorID             string           `json:"creator_id"`
+	ContentID string `json:"content_id"`
+	CreatorID string `json:"creator_id"`
 	// CreatorPIAL: see AethyrUserState.ViewerPIAL. Server-to-server only.
 	CreatorPIAL           string           `json:"creator_pial,omitempty"`
 	TopicVector           []float32        `json:"topic_vector"`
@@ -936,17 +932,6 @@ type ShopPage struct {
 	PPVItems     []PPVItem
 }
 
-// ── KYC / verification page data ─────────────────────────────────────────────
-
-type KYCPage struct {
-	User          *User
-	VerityTier    int
-	AgeBand       string
-	PayoutEnabled bool
-	NSFWAccess    bool
-	Has2257       bool
-}
-
 // ── Security / threat detection ───────────────────────────────────────────────
 
 type SecurityEvent struct {
@@ -1054,14 +1039,14 @@ type Work struct {
 	// Editions (populated on-demand for detail view)
 	Editions []Edition
 	// Author display — joined at query time
-	AuthorHandle         string
-	AuthorName           string
-	AvatarURL            string
-	IsVerified           bool
-	AuthorRole           string // user|creator|admin|founder
-	AuthorRealm          int    // 1–5
-	AuthorOfficialType   string // ''|'government'|'business'
-	AuthorIsCreator      bool
+	AuthorHandle       string
+	AuthorName         string
+	AvatarURL          string
+	IsVerified         bool
+	AuthorRole         string // user|creator|admin|founder
+	AuthorRealm        int    // 1–5
+	AuthorOfficialType string // ''|'government'|'business'
+	AuthorIsCreator    bool
 	// Aggregated reaction counts
 	LikeCount     int
 	RepostCount   int

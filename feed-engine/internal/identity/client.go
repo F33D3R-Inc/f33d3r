@@ -206,9 +206,14 @@ type FactsUpdate struct {
 	AgeVerified *bool   `json:"age_verified,omitempty"`
 	DOB         *string `json:"dob,omitempty"`
 	DOBLocked   *bool   `json:"dob_locked,omitempty"`
-	// Source is the provenance recorded with the change: "ekyc", "ekyc:mrz",
-	// "admin:<handle>", "org_verification", "risk_signal".
+	// Source is the provenance recorded with the change: "ekyc:<attempt_id>"
+	// (a verification Verity accepted), "admin:<handle>", "org_verification",
+	// "risk_signal", "signup".
 	Source string `json:"source"`
+	// Reason is why the change was made, recorded in the identity ledger.
+	// elohim-veni requires it when Source is "admin:<handle>": a person
+	// overriding a verification says why.
+	Reason string `json:"reason,omitempty"`
 }
 
 // CapabilityWrite sets one capability's state on an identity.

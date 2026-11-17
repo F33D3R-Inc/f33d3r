@@ -95,9 +95,9 @@ func isTOTPCode(code string) bool {
 }
 
 // afterSignIn runs this brain's own accounting of a sign-in: the device
-// record, the new-device alert, and the risk signal. None of it gates the
+// record and the new-device alert. None of it gates the
 // sign-in, which the authority has already granted.
-func (h *Handler) afterSignIn(r *http.Request, accountID, pialID string) {
+func (h *Handler) afterSignIn(r *http.Request, accountID string) {
 	ip := requestIP(r)
 	ua := r.UserAgent()
 	go func() {
@@ -116,7 +116,6 @@ func (h *Handler) afterSignIn(r *http.Request, accountID, pialID string) {
 		}
 		h.sendNewDeviceAlert(u, r)
 	}()
-	go h.loginRiskSignal(pialID, r)
 }
 
 // apiV1Login — POST /api/v1/auth/login.
@@ -137,7 +136,7 @@ func (h *Handler) apiV1Login(w http.ResponseWriter, r *http.Request) {
 	out := h.signIn(r, handle, req.Password, req.Code, apiDeviceName(r, req.DeviceName), "/api/v1/auth/login")
 	switch {
 	case out.Result != nil:
-		h.afterSignIn(r, out.Result.AccountID, out.Result.PIALID)
+		h.afterSignIn(r, out.Result.AccountID)
 		h.apiWriteSession(w, r, out.Result.SessionToken, http.StatusOK, out.Result.NeedsBackupCodes)
 	case out.NeedsCode:
 		apiError(w, http.StatusUnauthorized, "two_fa_required", "Enter the code from your authenticator app.")
@@ -452,7 +451,7 @@ func (h *Handler) createAccount(r *http.Request, p accountParams) (*model.User, 
 		return nil, "", accountRefused(http.StatusInternalServerError, "setup_incomplete",
 			"Your account was created, but we could not finish setting it up. Sign in to continue.")
 	}
-	h.afterSignIn(r, created.AccountID, created.PIALID)
+	h.afterSignIn(r, created.AccountID)
 	return u, created.SessionToken, nil
 }
 

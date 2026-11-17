@@ -93,13 +93,13 @@ func (h *Handler) frequencyTellWeb(w http.ResponseWriter, r *http.Request, msg s
 	htmxError(w, r, msg, status)
 }
 
-// frequencyVerityTier maps the PIAL's KYC tier to Auralis's 0..3 ladder.
+// frequencyVerityTier maps the identity's KYC tier (elohim-veni's fact) to
+// Auralis's 0..3 ladder. Rung 2 was the retired MRZ-only "soft" tier; nothing
+// reaches it now.
 func frequencyVerityTier(u *model.User) int {
 	switch u.KYCTier {
 	case model.KYCTierFull:
 		return 3
-	case model.KYCTierSoft:
-		return 2
 	case model.KYCTierBasic:
 		return 1
 	}

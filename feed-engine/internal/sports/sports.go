@@ -90,6 +90,22 @@ type League struct {
 	// lane sits above the other when neither has anything live, and it breaks
 	// ties in the cross-league rail so the panel is stable between renders.
 	Order int
+
+	// PeriodAbbr is the scoreboard prefix for a period in a compact chip ("Q"
+	// renders "Q3"). Empty prints the ordinal instead.
+	PeriodAbbr string
+
+	// Timeouts is how many timeouts a side holds at the start of a timeout
+	// window (a half, in the NFL). It is how many pips the game header draws.
+	// Zero means the league's timeouts are not drawn as pips at all: an NBA
+	// side's allowance is not a per-half count, and a row of seven dots would
+	// be decoration, not information.
+	Timeouts int
+
+	// BoxGroups names the box-score stat groups the game page shows, in order.
+	// Empty shows every group the upstream sends (a basketball box score is a
+	// single group).
+	BoxGroups []string
 }
 
 // zone is the league's zone, or UTC when it has none. The label always names
@@ -109,11 +125,14 @@ var (
 		Slug: "nfl", Label: "NFL",
 		Regulation: 4, PeriodNoun: "quarter", Weeks: true,
 		Zone: mustZone("America/New_York"), Order: 1,
+		PeriodAbbr: "Q", Timeouts: 3,
+		BoxGroups: []string{"passing", "rushing", "receiving"},
 	}
 	leagueNBA = League{
 		Slug: "nba", Label: "NBA",
 		Regulation: 4, PeriodNoun: "quarter", Weeks: false,
 		Zone: mustZone("America/New_York"), Order: 2,
+		PeriodAbbr: "Q",
 	}
 
 	// leagueTable is the whole table, in display order.
@@ -199,8 +218,50 @@ type Team struct {
 	Name      string // "Seattle Seahawks"
 	ShortName string // "Seahawks"
 	Abbr      string // "SEA"
-	LogoURL   string
-	Record    string // "0-0", "" when the upstream did not say
+	// LogoURL is this platform's image route for the club's logo, never the
+	// upstream's own address (see ImageURL). Empty when the upstream sent none
+	// or sent one from a host this platform does not proxy; the surface then
+	// draws the club's initials on its colour.
+	LogoURL string
+	Record  string // "0-0", "" when the upstream did not say
+	// Color and AltColor are the club's colours as six hex digits ("29126f"),
+	// validated on the way in. Empty when the upstream did not say.
+	Color    string
+	AltColor string
+}
+
+// ColorHex is the club colour as a CSS hex value, with a neutral fallback so a
+// surface never has to decide what an unknown club looks like.
+func (t Team) ColorHex() string {
+	if t.Color != "" {
+		return "#" + t.Color
+	}
+	return "#3a3f47"
+}
+
+// AltColorHex is the club's second colour, falling back to its first.
+func (t Team) AltColorHex() string {
+	if t.AltColor != "" {
+		return "#" + t.AltColor
+	}
+	return t.ColorHex()
+}
+
+// Initials is the mark drawn when the logo cannot be: the abbreviation, or the
+// first letters of the name.
+func (t Team) Initials() string {
+	if t.Abbr != "" {
+		return t.Abbr
+	}
+	var b strings.Builder
+	for _, w := range strings.Fields(t.Name) {
+		r := []rune(w)
+		b.WriteRune(r[0])
+		if b.Len() >= 3 {
+			break
+		}
+	}
+	return strings.ToUpper(b.String())
 }
 
 // Label is the name a card shows: the abbreviation when there is one, so the
@@ -253,7 +314,10 @@ type Game struct {
 	RedZone        bool
 	DownDistance   string // "3rd & 7"
 	PossessionText string // "SEA 45"
-	LastPlay       string
+	// LastPlay is the upstream's one-line account of the latest play. No web
+	// surface renders it — the game page draws plays from Detail — but the
+	// native API carries it as last_play.
+	LastPlay string
 
 	Broadcast string // "NBC"
 	Venue     string // "Lumen Field"
@@ -322,6 +386,92 @@ func ordinal(n int) string {
 		suffix = "rd"
 	}
 	return strconv.Itoa(n) + suffix
+}
+
+// CompactStatus is the game's condition at the size of a pill: "Q3 8:42",
+// "Half", "End Q1", "Final", "Final/OT", or the start time before a game.
+func (g Game) CompactStatus() string {
+	l := g.league()
+	short := periodShort(g.Period, l)
+	switch g.State {
+	case StateInProgress:
+		if g.Clock != "" && short != "" {
+			return short + " " + g.Clock
+		}
+		if short != "" {
+			return short
+		}
+		return "Live"
+	case StateHalftime:
+		return "Half"
+	case StateEndPeriod:
+		if short != "" {
+			return "End " + short
+		}
+	}
+	return g.StatusLabel()
+}
+
+// periodShort is "Q3" in a league with a period abbreviation, the ordinal
+// otherwise, and "OT" / "2OT" past regulation.
+func periodShort(p int, l League) string {
+	if p <= 0 {
+		return ""
+	}
+	if l.Regulation > 0 && p > l.Regulation {
+		return periodLabel(p, l.Regulation)
+	}
+	if l.PeriodAbbr != "" {
+		return l.PeriodAbbr + strconv.Itoa(p)
+	}
+	return ordinal(p)
+}
+
+// PeriodHeading is a period as a section heading: "1st quarter", "Overtime",
+// "2nd overtime". Every grouping of plays reads its heading from here.
+func PeriodHeading(league string, p int) string {
+	l := LeagueOf(league)
+	noun := l.PeriodNoun
+	if noun == "" {
+		noun = "period"
+	}
+	switch {
+	case p <= 0:
+		return "Pregame"
+	case l.Regulation > 0 && p > l.Regulation:
+		if ot := p - l.Regulation; ot > 1 {
+			return ordinal(ot) + " overtime"
+		}
+		return "Overtime"
+	}
+	return ordinal(p) + " " + noun
+}
+
+// TimeoutPips is one entry per timeout a side holds at the start of a window,
+// true for each one still in hand. Empty in a league whose timeouts are not
+// drawn as pips.
+func (g Game) TimeoutPips(side string) []bool {
+	n := g.league().Timeouts
+	if n <= 0 || !g.State.Active() {
+		return nil
+	}
+	left := g.Away.Timeouts
+	if side == "home" {
+		left = g.Home.Timeouts
+	}
+	pips := make([]bool, n)
+	for i := range pips {
+		pips[i] = i < left
+	}
+	return pips
+}
+
+// Side returns one side of the game by name.
+func (g Game) Side(side string) Side {
+	if side == "home" {
+		return g.Home
+	}
+	return g.Away
 }
 
 // StartLabel is the pre-game time, in the league's own zone, explicitly
@@ -572,12 +722,22 @@ func (g Game) SituationKey() string {
 		g.Home.HasBall, g.Away.HasBall, g.RedZone, g.DownDistance, g.PossessionText)
 }
 
-// CardKey changes when anything the whole card renders changes.
+// CardKey changes when anything the whole card renders changes. LastPlay is
+// not in it: no card renders the last play, and keying on it re-sent every
+// card on every snap.
 func (g Game) CardKey() string {
 	return strings.Join([]string{
 		g.ScoreKey(), g.ClockKey(), g.SituationKey(),
-		g.Away.Team.Record, g.Home.Team.Record, g.Broadcast, g.LastPlay,
+		g.Away.Team.Record, g.Home.Team.Record, g.Broadcast,
+		g.Away.Team.LogoURL, g.Home.Team.LogoURL,
 	}, "|")
+}
+
+// SideKey changes when what the game header draws beside one side's score —
+// possession and timeouts in hand — changes.
+func (g Game) SideKey(side string) string {
+	s := g.Side(side)
+	return fmt.Sprintf("%t:%d:%s:%s", s.HasBall && g.State == StateInProgress, s.Timeouts, s.Team.Record, g.State)
 }
 
 // SlateKey identifies the membership and order of a set of games. It changes
@@ -762,12 +922,15 @@ type Cache struct {
 	byID  map[string]Game
 
 	sink MutationSink
+
+	// cast is the per-game detail poller behind the game page. See gamecast.go.
+	cast gamecast
 }
 
 // NewCache builds the cache around one provider per league. No providers is the
 // disabled lane: every read returns nothing and Start does not poll.
 func NewCache(providers ...Provider) *Cache {
-	c := &Cache{byID: map[string]Game{}}
+	c := &Cache{byID: map[string]Game{}, cast: newGamecast()}
 	for _, p := range providers {
 		if p == nil {
 			continue
@@ -979,6 +1142,7 @@ func (c *Cache) Start(ctx context.Context) {
 	log.Printf("[sports] providers %s — ONE platform poller, per-league cadence: live %s, soon %s, today %s, idle %s, dormant %s",
 		c.ProviderName(), LiveInterval, SoonInterval, TodayInterval, IdleInterval, DormantInterval)
 	go c.loop(ctx)
+	c.startGamecast(ctx)
 }
 
 func (c *Cache) loop(ctx context.Context) {

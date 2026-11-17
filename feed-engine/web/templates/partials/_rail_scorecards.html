@@ -67,6 +67,7 @@ FACET rail_scorecards
   because SpokenStatus already says "red zone".
 
   inputs:
+    WatchID      string — sports:rail
     FacetID      string — always facet:f33d3r:sports:all:scorecards, so a
                           fragment can never arrive addressed to a panel the
                           page stopped mounting when the leading league changed
@@ -85,15 +86,17 @@ FACET rail_scorecards
   children: none (rows are markup owned by this facet)
 
   signals:
-    emits:    none
-    receives: sports_facet (SSE) — replacement fragment when the window changes
+    emits:    watch sports:rail while on screen
+    receives: facet.mutate — replacement fragment when the window changes,
+              sent only to people with the panel on screen
 
   context:
     sidebar_right → feed, explore, post and profile rails
 */}}
 {{define "rail_scorecards"}}
 <div class="sidebar-panel rail-scores-panel{{if .Stale}} rail-scores-panel--stale{{end}}"
-     data-facet-id="{{.FacetID}}">
+     data-facet-id="{{.FacetID}}"
+     data-watch-id="{{.WatchID}}">
   <div class="rail-scores-head">
     <h3 class="sidebar-panel-title">{{.Title}}{{if .Subtitle}} <span class="rail-scores-sub">{{.Subtitle}}</span>{{end}}</h3>
     <a class="rail-scores-all" href="{{.HubHref}}">All scores</a>

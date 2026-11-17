@@ -52,7 +52,6 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let port = std::env::var("PORT").unwrap_or_else(|_| "8093".into());
-    let verity_url = std::env::var("VERITY_URL").unwrap_or_else(|_| "http://localhost:8095".into());
 
     // Every route but /health, /metrics and the JWKS requires this key. Without
     // it there is nothing to compare against, and an identity authority that
@@ -94,15 +93,6 @@ async fn main() -> anyhow::Result<()> {
     // the way down rather than only at the policy layer.
     number_lease::spawn(pool.clone(), manhattan.clone());
 
-    let http = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(3))
-        .build()?;
-
-    let nexus_tier_cache = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::<
-        String,
-        (i16, std::time::Instant),
-    >::new()));
-
     // Fails boot on a malformed seed; an unset seed yields an unsigned signer that
     // reports itself as unsigned on every bundle.
     let bundle_signer = contact::BundleSigner::from_env()?;
@@ -112,11 +102,8 @@ async fn main() -> anyhow::Result<()> {
 
     let state = AppState {
         pool,
-        verity_url,
-        http,
         internal_api_key,
         tokens,
-        nexus_tier_cache,
         manhattan,
         bundle_signer,
     };
@@ -242,8 +229,6 @@ async fn main() -> anyhow::Result<()> {
         // Decision engine
         .route("/v1/decisions", post(handlers::make_decision))
         .route("/v1/decisions/log", get(handlers::decision_log))
-        // NEXUS tier proxy — routes to Verity; Nantar calls this instead of Verity directly
-        .route("/v1/nexus/tier/:shard", get(handlers::nexus_tier))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             api::require_internal_key,

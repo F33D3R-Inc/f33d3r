@@ -30,10 +30,12 @@ FACET sports_game_clock
 
   signals:
     emits:    none
-    receives: sports_facet (SSE) — replacement fragment on every clock change
+    receives: facet.mutate — replacement fragment on every clock change, to the
+              watchers of the game page (every five seconds while it is
+              played); sports_facet to the native Shell
 
   context:
-    sports_game_card → the status row beneath the team rows
+    sports_gp_header → the middle of the scoreboard
 */}}
 {{define "sports_game_clock"}}
 {{$g := .Game}}

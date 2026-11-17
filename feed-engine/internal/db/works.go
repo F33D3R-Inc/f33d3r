@@ -471,6 +471,14 @@ func InsertWork(database *sql.DB, d WorkDraft) (WorkCreateOutcome, error) {
 		if err := enqueueCreated(tx, workID, d.VoiceURL != ""); err != nil {
 			return err
 		}
+		// An 18+ work owes Verity its 2257 record from the moment it exists,
+		// scheduled or not. The publish gate (handler.adultPublishGate) has
+		// already confirmed Verity holds the author's creator verification.
+		if d.IsNSFW {
+			if err := enqueue2257Record(tx, workID, d.AuthorPIAL); err != nil {
+				return err
+			}
+		}
 		if d.ScheduledAt == nil {
 			if err := enqueuePublished(tx, workID); err != nil {
 				return err
@@ -843,6 +851,9 @@ func SoftDeleteWork(db *sql.DB, workID, authorID string) error {
 	if err := enqueueWorkMediaWithdrawal(tx, workID, "work deleted by its author", false); err != nil {
 		return fmt.Errorf("retiring work %s: %w", workID, err)
 	}
+	if err := enqueue2257Removals(tx, `SELECT $1::uuid`, workID); err != nil {
+		return fmt.Errorf("retiring work %s: %w", workID, err)
+	}
 
 	// AethyrRank stops holding the contexts this work was ranked in.
 	if err := EnqueueRankingSignal(tx, RankingSignal{
@@ -881,6 +892,9 @@ func AdminDeleteWork(db *sql.DB, workID string) error {
 	// including copies other works still name: a reference to a withdrawn asset
 	// unlocks nothing.
 	if err := enqueueWorkMediaWithdrawal(tx, workID, "work removed by an administrator", true); err != nil {
+		return fmt.Errorf("deleting work %s: %w", workID, err)
+	}
+	if err := enqueue2257Removals(tx, `SELECT $1::uuid`, workID); err != nil {
 		return fmt.Errorf("deleting work %s: %w", workID, err)
 	}
 
@@ -1161,6 +1175,14 @@ func PurgeUser(db *sql.DB, userID, pialID string) error {
 	// statements match nothing rather than being skipped, so the list stays one
 	// list: NULL is never equal to anything, including another NULL.
 	pial := ownPIAL // sql.NullString
+
+	// The account's 18+ works leave with it, and Verity measures the retention
+	// of the creator's 2257 ID copy from their removal. The reports are queued
+	// before the works cascade away; the outbox has no foreign key to works and
+	// is a 2257 obligation, so it is never erased by a purge.
+	if err := enqueue2257Removals(tx, `SELECT id FROM works WHERE author_id = $1::uuid`, userID); err != nil {
+		return fmt.Errorf("purge %s: %w", userID, err)
+	}
 
 	for _, s := range purgeOrphanStatements {
 		var args []interface{}

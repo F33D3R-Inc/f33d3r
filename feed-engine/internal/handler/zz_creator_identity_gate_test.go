@@ -32,10 +32,10 @@ func TestDenyCreatorPanelRefusesAgeAttestation(t *testing.T) {
 			wantDenied: true,
 		},
 		{
-			name: "creator at soft tier is refused — document read, face never checked",
+			name: "creator at the retired soft tier is refused — document read, face never checked",
 			user: &model.User{
 				Role: model.RoleUser, IsCreator: true,
-				KYCTier: model.KYCTierSoft, IsVerified: true, IsAgeVerified: true,
+				KYCTier: "soft", IsVerified: true, IsAgeVerified: true,
 			},
 			wantDenied: true,
 		},

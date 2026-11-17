@@ -15,7 +15,6 @@ type Session struct {
 	NexusShard       string // for AethyrRank — SHA256(nexus_id + "aethyrrank-nexus-v1")
 	ActivePIALShard  string
 	AllPersonaShards []string
-	Tier             int
 	UnifiedView      bool
 	UnifiedMode      string
 	ExpiresAt        time.Time
@@ -79,7 +78,6 @@ func GetSessionForUser(pialID string, client *Client) *Session {
 		NexusShard:       nexusShard,
 		ActivePIALShard:  activeShard,
 		AllPersonaShards: allShards,
-		Tier:             personas.Tier,
 		ExpiresAt:        time.Now().Add(7 * 24 * time.Hour),
 	}
 

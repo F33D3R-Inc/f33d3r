@@ -159,7 +159,11 @@ func (h *Handler) sseEvents(w http.ResponseWriter, r *http.Request) {
 	var registryDone <-chan struct{}
 	var registryCleanup func()
 	if user != nil && user.ID != "" {
-		registryCh, registryDone, registryCleanup = RegisterSSESession(user.ID, user.PIALID)
+		if nativeShellRequest(r) {
+			registryCh, registryDone, registryCleanup = RegisterNativeSSESession(user.ID, user.PIALID)
+		} else {
+			registryCh, registryDone, registryCleanup = RegisterSSESession(user.ID, user.PIALID)
+		}
 	}
 	if registryCleanup == nil {
 		registryCleanup = func() {}

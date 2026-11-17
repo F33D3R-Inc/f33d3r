@@ -1,53 +1,38 @@
 {{define "title"}}{{.Title}}{{end}}
 {{define "body"}}
 <main class="f33d3r-main" id="main-col">
+  {{if .IsBoard}}
+  {{/* The cross-league board: one scoreboard per league with anything on. A
+       league between seasons has no row; nothing on anywhere is one empty
+       state. */}}
   <div class="main-head">
-    <button class="back-btn" onclick="history.back()" aria-label="Back">
-      <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="width:18px;height:18px"><path d="m15 18-6-6 6-6"/></svg>
-    </button>
     <div class="main-head-content">
-      <div class="main-head-title">{{.HeadTitle}}</div>
-      {{if .WeekLabel}}<div class="main-head-sub">{{.WeekLabel}}</div>{{end}}
+      <div class="main-head-title">Sports</div>
     </div>
   </div>
-
-  {{/* The board as a durable destination, one section per league. Every card
-       here is the same Facet the Playground strip mounts, so a score that
-       mutates on this page and a score that mutates in the timeline are the
-       same fragment from the same renderer — they cannot disagree.
-
-       A league with nothing on has no section: it is not playing, and an empty
-       header saying so is scaffolding, not information. When no league has
-       anything, the whole board is one empty state. */}}
-  {{if .Stale}}
-  <p class="sports-hub__notice" role="status">
-    Scores may be out of date — the score feed has not answered recently. {{.StaleLabel}}.
-  </p>
-  {{end}}
-
-  {{/* The section head names the league. It is only drawn on the cross-league
-       board: on /sports/{league} the page head already names the league, and
-       repeating it above the only section would be a heading that divides
-       nothing from nothing. */}}
-  {{$board := not $.LeagueSlug}}
-  {{range .Groups}}
-  <section class="sports-hub__league"{{if $board}} aria-labelledby="sports-board-{{.LeagueSlug}}"{{end}}>
-    {{if $board}}
-    <div class="sports-hub__league-head">
-      <h2 class="sports-hub__league-title" id="sports-board-{{.LeagueSlug}}">
-        {{.LeagueLabel}}{{if .WeekLabel}} <span class="sports-hub__league-week">{{.WeekLabel}}</span>{{end}}
-      </h2>
-      <a class="sports-hub__league-all" href="{{.HubHref}}">{{.LeagueLabel}} only</a>
-    </div>
-    {{end}}
-    <div class="sports-hub__grid">
-      {{range .Cards}}{{template "sports_game_card" .}}{{end}}
-    </div>
-  </section>
-  {{end}}
-
-  {{if not .Groups}}
+  {{range .Boards}}{{template "sports_scoreboard" .}}{{end}}
+  {{if not .Boards}}
   {{template "stateEmpty" (dict "Title" "No games on the board" "Sub" "Nothing is being played and nothing is scheduled yet. The board fills as soon as a league schedules its next round.")}}
+  {{end}}
+  {{else}}
+  {{/* A league hub: the league header, its tabs, and the canvas of the active
+       tab. A tab click swaps the canvas and restates the tabs; the header is
+       the page's own and does not change. */}}
+  <header class="main-head sp-hub__head">
+    <a class="back-btn" href="/sports" aria-label="All sports">
+      <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>
+    </a>
+    <span class="sp-mark sp-mark--lg" aria-hidden="true">{{.League.Label}}</span>
+    <div class="main-head-content">
+      <h1 class="main-head-title sp-hub__name">{{.League.Label}}</h1>
+      <div class="main-head-sub">Scores, games and posts</div>
+    </div>
+    {{if .CanFollow}}{{template "btn_follow_topic" (dict "Tag" .League.Slug "IsFollowing" .IsFollowingTopic)}}{{end}}
+  </header>
+  {{template "sports_hub_tabs" .HubTabs}}
+  <div id="sports-hub-canvas">
+    {{template "sports_hub_canvas" .Canvas}}
+  </div>
   {{end}}
 </main>
 {{end}}

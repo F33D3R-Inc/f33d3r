@@ -197,7 +197,7 @@ func (h *Handler) forgotPasswordResetSubmit(w http.ResponseWriter, r *http.Reque
 
 	h.evictCachedAccount(res.AccountID, "")
 	h.openedSession(w, res.SessionToken)
-	h.afterSignIn(r, res.AccountID, res.PIALID)
+	h.afterSignIn(r, res.AccountID)
 	// The spent code leaves one fewer; a fresh set is issued straight away.
 	hxAwareRedirect(w, r, "/backup-codes/setup")
 }

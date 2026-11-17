@@ -2,7 +2,7 @@
 {{define "nav-active-home"}}active{{end}}
 {{define "body"}}
 <main class="f33d3r-main{{if .User}}{{if eq .User.MobileFeedView "reels"}} reels-enabled{{end}}{{end}}" id="main-col">
-  {{template "home_feed_header" (dict "EngineOnline" .EngineOnline "User" .User "PinnedSurfaces" .PinnedSurfaces "SessionID" .SessionID "ActiveSurface" .ActiveSurface)}}
+  {{template "home_feed_header" (dict "EngineOnline" .EngineOnline "User" .User "PinnedSurfaces" .PinnedSurfaces "TopicTabs" .TopicTabs "SessionID" .SessionID "ActiveSurface" .ActiveSurface)}}
   {{/* Vision rail — the ring row across the top of the timeline, the primary
        surface for the ephemeral lane. The server renders the whole rail, ring
        state and all; this slot only asks for it and restates it once the
@@ -34,19 +34,12 @@
        hx-get="/facets/live/cards"
        hx-trigger="load, refreshFeed"
        hx-swap="innerHTML"></div>
-  {{/* Sports lane — deliberately NOT mounted here.
-
-       The slate has two homes and they do not overlap. Its persistent home is
-       Facet(rail_scorecards) in sidebar_right, which is on every surface the
-       rail is on and survives every navigation between them. Its full-card home
-       is Facet(sports_strip), written as the head lane of the sports surface's
-       Playground by facetWorksFeed — so it arrives when a viewer chooses that
-       feed and leaves with the container when they choose another.
-
-       Mounting it here as well would put the same four games on the Home screen
-       twice at desktop width, once in the centre and once in the rail. */}}
+  {{/* Sports lane — not a head lane of its own. A viewer who follows a league
+       gets its scoreboard and game cards as frames placed among the works of
+       the timeline below, by the server (sportsTimelineFrames); placement=home
+       is what names this Playground as the place frames are drawn. */}}
   <div id="feed-container"
-       hx-get="/facets/works/feed?surface={{.ActiveSurface}}&session_id={{.SessionID}}"
+       hx-get="/facets/works/feed?surface={{.ActiveSurface}}&session_id={{.SessionID}}&placement=home"
        hx-trigger="load, refreshFeed"
        hx-swap="innerHTML">
     {{/* Skeleton cards shown until HTMX replaces with real posts */}}

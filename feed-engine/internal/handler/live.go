@@ -56,6 +56,11 @@ type liveChatMessage struct {
 	// Kind is "chat" or "tip"; AmountUAET is the tip's size, 0 for chat.
 	Kind       string
 	AmountUAET int64
+	// Badge is a room's own mark on the sender, fixed when the line is sent: on
+	// a game page, the club they backed in the fan vote ("BAL"), drawn with
+	// BadgeClass (the club's colour class). Empty in a live stream.
+	Badge      string
+	BadgeClass string
 }
 
 // liveState is the in-process authority for who is watching and what was said.

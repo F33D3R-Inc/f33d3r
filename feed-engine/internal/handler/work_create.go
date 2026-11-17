@@ -35,6 +35,14 @@ const (
 	WorkStatePostingRestricted WorkCreateState = "posting_restricted"
 	WorkStateRateLimited       WorkCreateState = "rate_limited"
 	WorkStateServerError       WorkCreateState = "server_error"
+	// WorkStateAdultRecordRequired refuses an 18+ work whose author has no
+	// passing creator verification at Verity: 18 U.S.C. § 2257 requires the
+	// record before the work exists. 403, so a client that does not know the
+	// state reads it as posting_restricted and shows the server's reason.
+	WorkStateAdultRecordRequired WorkCreateState = "adult_record_required"
+	// WorkStateComplianceUnavailable refuses an 18+ work when Verity could not
+	// be asked. Fail closed: nothing 18+ is published unchecked.
+	WorkStateComplianceUnavailable WorkCreateState = "compliance_unavailable"
 )
 
 // Status is the one HTTP status of a state.
@@ -50,8 +58,10 @@ func (s WorkCreateState) Status() int {
 		return http.StatusBadRequest
 	case WorkStateCitedNotFound:
 		return http.StatusNotFound
-	case WorkStateRepliesRestricted, WorkStatePostingRestricted:
+	case WorkStateRepliesRestricted, WorkStatePostingRestricted, WorkStateAdultRecordRequired:
 		return http.StatusForbidden
+	case WorkStateComplianceUnavailable:
+		return http.StatusServiceUnavailable
 	case WorkStateRateLimited:
 		return http.StatusTooManyRequests
 	}
@@ -104,6 +114,10 @@ func (a *workCreateAnswer) message() string {
 		return "Posting is restricted on this account."
 	case WorkStateRateLimited:
 		return "You have reached the posting limit. Try again later."
+	case WorkStateAdultRecordRequired:
+		return "18+ posts need creator verification first. Complete it at /kyc?mode=creator, then post again."
+	case WorkStateComplianceUnavailable:
+		return "We could not confirm your creator verification right now, so this 18+ post was not sent. Try again shortly."
 	}
 	return "Something went wrong. Your post was not sent."
 }

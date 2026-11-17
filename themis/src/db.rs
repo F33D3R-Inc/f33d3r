@@ -59,7 +59,6 @@ CREATE TABLE IF NOT EXISTS marketplace_subscriptions (
 const COMMERCE_SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS creator_eligibility (
     pial_id              TEXT PRIMARY KEY,
-    kyc_tier             INTEGER NOT NULL DEFAULT 0,
     monetization_enabled BOOLEAN NOT NULL DEFAULT false,
     enabled_at           TIMESTAMPTZ,
     disabled_at          TIMESTAMPTZ,
@@ -205,6 +204,12 @@ ALTER TABLE subscriptions         DROP COLUMN IF EXISTS stripe_subscription_id;
 ALTER TABLE ppv_purchases         DROP COLUMN IF EXISTS stripe_session_id;
 ALTER TABLE tips                  DROP COLUMN IF EXISTS stripe_session_id;
 ALTER TABLE commerce_transactions DROP COLUMN IF EXISTS stripe_session_id;
+
+-- ── The verification level is identity's ─────────────────────────────────────
+-- creator_eligibility.kyc_tier was a copy of a number read from Verity that
+-- never existed there, so every row held 0. elohim-veni owns the verification
+-- level; creator_enable reads it from there when it decides and keeps no copy.
+ALTER TABLE creator_eligibility   DROP COLUMN IF EXISTS kyc_tier;
 
 ALTER TABLE shops ADD COLUMN IF NOT EXISTS xrp_address TEXT NOT NULL DEFAULT '';
 CREATE UNIQUE INDEX IF NOT EXISTS idx_shops_xrp_active ON shops(xrp_address) WHERE xrp_address != '' AND is_active = TRUE;

@@ -199,21 +199,31 @@ pub fn format_aet(units: i64, units_per_aet: i64) -> String {
     }
 }
 
-#[derive(Deserialize)]
-struct KycStatus {
-    tier: i32,
-}
-
-pub async fn kyc_tier(client: &Client, verity_url: &str, pial_id: &str) -> i32 {
-    let Ok(resp) = client
-        .get(format!("{verity_url}/v1/kyc/{pial_id}"))
-        .send()
-        .await
-    else {
-        return 0;
-    };
-    if !resp.status().is_success() {
-        return 0;
+/// The verification level elohim-veni holds for an identity: its kyc_tier
+/// ("none" | "basic" | "full"). elohim-veni is the only owner of that fact;
+/// this brain reads it when it decides and never stores it.
+pub async fn identity_kyc_tier(
+    client: &Client,
+    elohim_veni_url: &str,
+    internal_key: &str,
+    pial_id: &str,
+) -> Result<String> {
+    #[derive(Deserialize)]
+    struct Facts {
+        kyc_tier: String,
     }
-    resp.json::<KycStatus>().await.map(|k| k.tier).unwrap_or(0)
+    #[derive(Deserialize)]
+    struct Pial {
+        facts: Facts,
+    }
+    let resp = client
+        .get(format!("{elohim_veni_url}/v1/pials/{pial_id}"))
+        .header("X-Internal-Key", internal_key)
+        .send()
+        .await?;
+    if resp.status() == StatusCode::NOT_FOUND {
+        return Err(anyhow!("elohim-veni holds no identity {pial_id}"));
+    }
+    let pial: Pial = resp.error_for_status()?.json().await?;
+    Ok(pial.facts.kyc_tier)
 }

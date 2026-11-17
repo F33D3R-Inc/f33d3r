@@ -58,6 +58,22 @@ func (h *Handler) watchHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A sports Facet on screen. Its updates are scores everyone may see, so any
+	// signed-in person may watch one; after a reconnect it is sent its current
+	// fragments, since whatever moved meanwhile was published while it was away.
+	if strings.HasPrefix(id, sportsWatchPrefix) {
+		if action == "watch" {
+			AddPostWatcher(user.PIALID, id)
+			if r.FormValue("resync") == "1" {
+				go h.sportsWatchResync(user.PIALID, id)
+			}
+		} else {
+			RemovePostWatcher(user.PIALID, id)
+		}
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
 	switch watchType {
 	case "post":
 		if action == "watch" {

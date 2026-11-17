@@ -1,41 +1,26 @@
-//! Who is asking, and whether they are allowed to change what a person is
-//! *permitted to do*.
+//! Who is asking, and whether they may touch verity's evidence and legal
+//! records.
 //!
-//! # What this fixes
+//! # What this guards
 //!
-//! Verity is the first layer of the money and age gates. `kyc_tier` /
-//! `creator_tier`, the attestations behind them, the 2257 adult-content record,
-//! and the CSAM verdict are all decided here, and every one of them is read
-//! downstream as authority: feed-engine's `CanMonetize()` gates creator status,
-//! the marketplace, subscriptions and withdrawal on the identity tier, and
-//! elohim-veni's decision engine denies `monetize` / `payout_activation` when
-//! Verity reports a tier below the bar.
+//! Verity holds the KYC evidence for every verification attempt, the
+//! document-reuse index, the 2257 records and the encrypted ID copies behind
+//! them. Writing any of it decides what the platform can later prove about a
+//! person; reading it exposes who a person is. Neither is self-service.
 //!
-//! Until this module existed the router carried exactly one layer,
-//! `observ::http_middleware` — observability. It reads `X-Pial-Identity` into a
-//! tracing span and then throws it away. Nothing authenticated anybody, and
-//! every mutating handler took its subject straight out of the request body or
-//! path. Reaching the port was the whole authorisation check:
-//!
-//! ```text
-//! curl -X POST http://verity:8095/v1/admin/tier \
-//!      -d '{"pial_id":"<anyone>","tier":3,"admin_id":"x","reason":"x"}'
-//! ```
-//!
-//! answered 200 and raised that account to the top creator tier — payout
-//! enabled — from the LAN, with no credentials at all. `/v1/kyc/submit` was the
-//! same: forge a passed `gov_id` and the account is promoted. An
-//! `/v1/admin/*` route in particular must never be callable without credentials.
+//! Before this module the router carried one layer — observability — and
+//! reaching the port was the whole authorisation check: an unauthenticated
+//! `POST /v1/admin/tier` raised any account to the top tier, and a forged
+//! `/v1/kyc/submit` promoted one. Those routes no longer exist (identity owns
+//! the level now), and the rule they taught stays: deny by default.
 //!
 //! # The convention
 //!
-//! This is not a new auth scheme. It is the one the rest of the estate already
-//! uses, in both directions — the same one ain-soph and themis adopted:
+//! The one the rest of the estate already uses, in both directions:
 //!
-//!   * `X-Internal-Key` vs `INTERNAL_API_KEY` — service-to-service. Every brain
-//!     that changes what a person may do is reached this way: feed-engine
-//!     forwards KYC results, risk signals and 2257 records after authenticating
-//!     the session; elohim-veni, zodacare, caeor and ain-soph call in as peers.
+//!   * `X-Internal-Key` vs `INTERNAL_API_KEY` — service-to-service. feed-engine
+//!     forwards KYC evidence and 2257 records after authenticating the session;
+//!     ain-soph records AML withdrawals as a peer.
 //!   * `X-Pial-Identity` — the end-user identity feed-engine injects from the
 //!     session after authenticating it, with the inbound `Cookie` stripped in
 //!     the same Director so a browser cannot forge it.
@@ -44,12 +29,9 @@
 //!
 //! # The rule
 //!
-//! Every route that *changes* what a person is permitted to do — tier, KYC,
-//! risk, compliance record, NEXUS link, AML aggregate — is a platform decision
-//! made by a brain, never by the account it concerns. So those routes require a
-//! [`Caller::Service`]: an end-user session naming itself is not authority to
-//! raise its own tier. The read paths remain internal by deployment (prod
-//! publishes no port; local binds the loopback address).
+//! Every evidence and compliance route — read or write — and every mutating
+//! NEXUS route requires a [`Caller::Service`]. An end-user session naming
+//! itself is not authority to file its own evidence or read anyone's.
 
 use axum::{
     async_trait,
@@ -75,9 +57,9 @@ impl InternalApiKey {
     /// Read the key from the environment.
     ///
     /// An unset or empty key is not a soft configuration warning here. Verity
-    /// decides who may earn money; a brain that cannot tell a peer from a
-    /// stranger must not start and quietly accept both. `main` refuses to boot
-    /// on the empty case, matching the posture ain-soph takes on the ledger.
+    /// holds legal records; a brain that cannot tell a peer from a stranger
+    /// must not start and quietly accept both. `main` refuses to boot on the
+    /// empty case, matching the posture ain-soph takes on the ledger.
     pub fn from_env() -> Self {
         Self(std::env::var("INTERNAL_API_KEY").unwrap_or_default())
     }
@@ -112,14 +94,12 @@ fn auth_err(status: StatusCode, code: &str, msg: &str) -> (StatusCode, Json<Valu
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Caller {
     /// Another brain, holding the shared secret. It names the subject its call
-    /// concerns explicitly, in the body or path — feed-engine forwarding a KYC
-    /// result, elohim-veni recording a decision, ain-soph recording an AML
-    /// withdrawal.
+    /// concerns explicitly, in the body or path — feed-engine forwarding KYC
+    /// evidence or a 2257 record, ain-soph recording an AML withdrawal.
     Service,
 
-    /// An end user, as authenticated by feed-engine. Present so a future
-    /// self-service read or write can be expressed, but never sufficient for a
-    /// platform decision — see [`Caller::require_service`].
+    /// An end user, as authenticated by feed-engine. Never sufficient for an
+    /// evidence or compliance route — see [`Caller::require_service`].
     Identity(String),
 }
 
@@ -166,10 +146,10 @@ where
 }
 
 impl Caller {
-    /// Gate for operations that decide what a person is permitted to do. These
-    /// belong to the platform, not to the account they concern, so an end-user
-    /// session is not sufficient authority for them — otherwise an account could
-    /// raise its own tier, forge its own KYC pass, or clear its own risk score.
+    /// Gate for the platform's own records. They belong to the platform, not to
+    /// the account they concern, so an end-user session is not sufficient
+    /// authority — otherwise an account could file its own KYC pass or read
+    /// another person's evidence.
     pub fn require_service(&self) -> Result<(), (StatusCode, Json<Value>)> {
         match self {
             Caller::Service => Ok(()),
@@ -182,7 +162,7 @@ impl Caller {
                     StatusCode::FORBIDDEN,
                     "service_only",
                     "this endpoint is service-to-service only; \
-                     a tier/KYC/compliance decision is not self-service",
+                     KYC evidence and compliance records are not self-service",
                 ))
             }
         }
@@ -223,8 +203,8 @@ mod tests {
 
     /// An unset INTERNAL_API_KEY must never authenticate anybody. If it did, a
     /// misconfigured deployment would silently reopen the exact hole this module
-    /// closes — every caller would arrive as `Caller::Service` and could set any
-    /// account's tier.
+    /// closes — every caller would arrive as `Caller::Service` and could file any
+    /// account's evidence.
     #[test]
     fn empty_configured_key_never_authenticates() {
         assert!(!internal_key_ok(&headers(&[("X-Internal-Key", "")]), ""));
@@ -240,8 +220,8 @@ mod tests {
         assert!(!internal_key_ok(&HeaderMap::new(), "s3cret"));
     }
 
-    /// A platform decision is not reachable with an end-user session. This is the
-    /// rule the whole module exists for: an account cannot raise its own tier.
+    /// A platform record is not reachable with an end-user session. This is the
+    /// rule the whole module exists for: an account cannot file its own evidence.
     #[test]
     fn identity_cannot_call_service_only_routes() {
         let caller = Caller::Identity("c0ffee00-0000-4000-8000-000000000001".into());
@@ -262,50 +242,54 @@ mod tests {
         assert!(assert_exhaustive(&Caller::Service));
     }
 
-    /// Structural pin: every mutating handler in `main.rs` must take the `Caller`
-    /// extractor and gate on `require_service`. A new tier/KYC/compliance route
-    /// that forgets it fails here rather than in production — the regression that
+    /// Structural pin: every evidence and compliance handler takes the
+    /// `Caller` extractor and gates on `require_service`. A new route that
+    /// forgets it fails here rather than in production — the regression that
     /// would silently reopen the hole while every other test still passed.
     ///
-    /// The check is deliberately on the source of `main.rs`, so it cannot be
-    /// satisfied by a handler that merely accepts `Caller` and never enforces it.
+    /// The check is on the handler source, so it cannot be satisfied by a
+    /// handler that merely accepts `Caller` and never enforces it.
     #[test]
-    fn every_mutating_handler_requires_a_service_caller() {
-        let src = include_str!("main.rs");
-        for handler in [
-            "async fn decide(",
-            "async fn kyc_submit(",
-            "async fn risk_signal(",
-            "async fn admin_set_tier(",
-            "async fn compliance_2257_create(",
-            "async fn compliance_csam_scan(",
+    fn every_record_handler_requires_a_service_caller() {
+        for (file, src, handlers) in [
+            (
+                "kyc.rs",
+                include_str!("kyc.rs"),
+                &["pub async fn submit(", "pub async fn summary("][..],
+            ),
+            (
+                "compliance.rs",
+                include_str!("compliance.rs"),
+                &[
+                    "pub async fn record(",
+                    "pub async fn get(",
+                    "pub async fn content_removed(",
+                ][..],
+            ),
         ] {
-            let start = src
-                .find(handler)
-                .unwrap_or_else(|| panic!("missing {handler}"));
-            let sig_end = src[start..]
-                .find(") -> Res")
-                .or_else(|| src[start..].find(") ->"))
-                .unwrap_or_else(|| panic!("unterminated signature for {handler}"))
-                + start;
-            let sig = &src[start..sig_end];
-            assert!(
-                sig.contains("caller: Caller") || sig.contains("caller:Caller"),
-                "{handler} does not take the Caller extractor — it would accept \
-                 unauthenticated requests."
-            );
-            // The body must actually enforce it. Look between this handler and the
-            // next `async fn` for the require_service call.
-            let body_start = sig_end;
-            let next = src[body_start..]
-                .find("\nasync fn ")
-                .map(|i| body_start + i)
-                .unwrap_or(src.len());
-            assert!(
-                src[body_start..next].contains("caller.require_service()"),
-                "{handler} takes Caller but never calls caller.require_service() — \
-                 the authority check is missing."
-            );
+            for handler in handlers {
+                let start = src
+                    .find(handler)
+                    .unwrap_or_else(|| panic!("missing {handler} in {file}"));
+                let sig_end = src[start..]
+                    .find(") -> Result<")
+                    .unwrap_or_else(|| panic!("unterminated signature for {handler} in {file}"))
+                    + start;
+                assert!(
+                    src[start..sig_end].contains("caller: Caller"),
+                    "{file}: {handler} does not take the Caller extractor — it would \
+                     accept unauthenticated requests."
+                );
+                let next = src[sig_end..]
+                    .find("\npub async fn ")
+                    .map(|i| sig_end + i)
+                    .unwrap_or(src.len());
+                assert!(
+                    src[sig_end..next].contains("caller.require_service()"),
+                    "{file}: {handler} takes Caller but never calls \
+                     caller.require_service() — the authority check is missing."
+                );
+            }
         }
     }
 }

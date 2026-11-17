@@ -1,0 +1,89 @@
+{{/*
+FACET sports_hub_tabs
+  version: 1.0 | status: stable | layer: 2 (composite)
+
+  A league hub's tab row: Home · Games · Standings · Players · Media. Each tab
+  is a link to the page it shows (so it works without a script and in a new
+  tab) that asks for that tab's canvas; the answer carries this row re-rendered
+  out of band with the tab active, so which tab is active is the server's
+  statement. The row scrolls sideways when the column is narrow.
+
+  inputs:
+    SportsHubTabsData — .League .Active .Tabs .OOB .FacetID .HubHref .CanvasHref
+
+  states:
+    one tab active
+
+  children: none
+
+  signals:
+    emits:    GET /facets/sports/{league}/hub?tab=<tab> → #sports-hub-canvas
+    receives: its own re-render, out of band, with every canvas answer
+
+  context:
+    sports_hub page → under the league header
+*/}}
+{{define "sports_hub_tabs"}}
+{{$d := .}}
+<nav class="sp-tabs" id="sports-hub-tabs" data-facet-id="{{.FacetID}}" role="tablist" aria-label="{{.League.Label}}"{{if .OOB}} hx-swap-oob="true"{{end}}>
+  {{range .Tabs}}
+  <a class="sp-tabs__tab{{if eq .Key $d.Active}} is-active{{end}}"
+     role="tab" aria-selected="{{if eq .Key $d.Active}}true{{else}}false{{end}}"
+     href="{{$d.HubHref .Key}}"
+     hx-get="{{$d.CanvasHref .Key}}"
+     hx-target="#sports-hub-canvas"
+     hx-swap="innerHTML"
+     hx-push-url="{{$d.HubHref .Key}}">{{.Label}}</a>
+  {{end}}
+</nav>
+{{end}}
+
+{{/*
+FACET sports_hub_canvas
+  version: 1.0 | status: stable | layer: 2 (composite)
+
+  What one hub tab shows.
+
+    home       the league's scoreboard, then the league's posts
+    games      the whole slate, grouped
+    standings, players, media
+               an honest "on the way": the platform reads scoreboards only,
+               and a table built from anything else would be invented
+
+  inputs:
+    SportsHubCanvasData — .League .Tab .Scoreboard .Games .FeedURL .FacetID
+
+  states:
+    home | games | soon
+
+  children:
+    sports_scoreboard, sports_games
+
+  signals:
+    emits:    GET /facets/works/feed?surface=league:<league> (home, on load)
+    receives: none (its children mutate)
+
+  context:
+    sports_hub page → #sports-hub-canvas
+*/}}
+{{define "sports_hub_canvas"}}
+<div class="sp-canvas" data-facet-id="{{.FacetID}}">
+  {{if eq .Tab.Key "home"}}
+    {{if .Scoreboard}}{{template "sports_scoreboard" .Scoreboard}}{{end}}
+    <h2 class="sp-canvas__title">Posts</h2>
+    <div id="sports-hub-feed" role="feed"
+         hx-get="{{.FeedURL}}"
+         hx-trigger="load"
+         hx-swap="innerHTML">
+      {{template "feed_skeletons" (dict "Count" 3)}}
+    </div>
+  {{else if eq .Tab.Key "games"}}
+    {{template "sports_games" .Games}}
+  {{else}}
+    <div class="sp-soon">
+      <p class="sp-soon__title">{{.League.Label}} {{.Tab.Label}}</p>
+      <p class="sp-soon__sub">Coming soon. {{.Tab.Soon}}</p>
+    </div>
+  {{end}}
+</div>
+{{end}}

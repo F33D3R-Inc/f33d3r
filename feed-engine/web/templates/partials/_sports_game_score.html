@@ -18,21 +18,25 @@ FACET sports_game_score
     Show    bool        — false before kickoff / for a postponed or canceled game
     Reason  string      — why there is no score, in this state's own words
     Leading bool        — this side is ahead
+    Changed bool        — rendered because the score just moved: carries the
+                          class whose keyframes mark the change. A page render
+                          never sets it.
 
   states:
-    unplayed | trailing | leading
+    unplayed | trailing | leading | changed
 
   children: none
 
   signals:
     emits:    none
-    receives: sports_facet (SSE) — replacement fragment on a scoring play
+    receives: facet.mutate — replacement fragment on a scoring play, to the
+              watchers of the game page; sports_facet to the native Shell
 
   context:
-    sports_game_card → the score column of a team row
+    sports_gp_header → the big score beside each club
 */}}
 {{define "sports_game_score"}}
-<span class="sports-score{{if .Leading}} sports-score--lead{{end}}{{if not .Show}} sports-score--none{{end}}"
+<span class="sports-score{{if .Leading}} sports-score--lead{{end}}{{if not .Show}} sports-score--none{{end}}{{if .Changed}} sports-score--changed{{end}}"
       data-facet-id="{{sportsScoreFacetID .GameID .Side}}">
   {{- if .Show -}}
   <span class="sr-only">{{.Team.Name}} score </span>{{.Score}}

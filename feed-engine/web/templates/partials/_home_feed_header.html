@@ -6,6 +6,7 @@ FACET home_feed_header
     EngineOnline   bool       — live/offline status dot
     User           *User      — nil-safe; drives NSFW tab visibility
     PinnedSurfaces []Surface  — user-pinned interest surfaces
+    TopicTabs      []SportsTopicTab — followed leagues, one tab each
     SessionID      string     — forwarded to feed_surface_tabs
     ActiveSurface  string     — the surface #feed-container opens on
 
@@ -32,7 +33,7 @@ FACET home_feed_header
     </div>
   </div>
   <div class="feed-toolbar">
-    {{template "home_feed_tabs" (dict "User" .User "PinnedSurfaces" .PinnedSurfaces "SessionID" .SessionID "Active" .ActiveSurface "OOB" false)}}
+    {{template "home_feed_tabs" (dict "User" .User "PinnedSurfaces" .PinnedSurfaces "TopicTabs" .TopicTabs "SessionID" .SessionID "Active" .ActiveSurface "OOB" false)}}
     <button class="feed-add-btn" id="feed-add-btn" onclick="openAddTopic()" title="Add a feed">Add+</button>
   </div>
 </div>

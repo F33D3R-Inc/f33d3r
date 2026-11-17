@@ -90,9 +90,11 @@ FACET admin_lookup_result
         <input type="checkbox" name="is_verified" value="1"{{if .LookupUser.IsVerified}} checked{{end}}>
         <span class="admin-perm-toggle-label">
           <span class="admin-perm-name">Verified</span>
-          <span class="admin-perm-desc">Passed identity checks</span>
+          <span class="admin-perm-desc">Manual override of identity verification. It never counts as a 2257 creator verification.</span>
         </span>
       </label>
+      <input type="text" name="verification_reason" class="form-input" maxlength="500"
+             placeholder="Reason — required when Verified changes">
       <label class="admin-perm-toggle">
         <input type="checkbox" name="is_creator" value="1"{{if .LookupUser.IsCreator}} checked{{end}}>
         <span class="admin-perm-toggle-label">

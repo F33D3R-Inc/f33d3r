@@ -21,6 +21,10 @@
   <link rel="stylesheet" href="/static/css/styles.css?v={{assetVer}}">
   <link rel="stylesheet" href="/static/css/components.css?v={{assetVer}}">
   <link rel="stylesheet" href="/static/css/desktop.css?v={{assetVer}}">
+  {{/* sports-game.css — the game page's layout and Facets. Scoped to the page by
+       content (.f33d3r-shell:has(.sg)), so it is inert everywhere else; it loads
+       with the Shell because a Playground swap does not carry stylesheets. */}}
+  <link rel="stylesheet" href="/static/css/sports-game.css?v={{assetVer}}">
   {{/* responsive.css — shared site-wide responsive layer (shell/nav/messaging). Loaded after desktop.css so it can override shell layout at mobile/tablet breakpoints. */}}
   <link rel="stylesheet" href="/static/css/responsive.css?v={{assetVer}}">
   <link rel="stylesheet" href="/static/css/video-overlay.css?v={{assetVer}}">

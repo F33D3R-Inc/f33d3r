@@ -31,8 +31,8 @@ import (
 // railSizedFuncs are the functions that decide how long a rail panel is. Every
 // one of them must take its length from railCap.
 var railSizedFuncs = map[string]string{
-	"helpers.go": "railData",
-	"sports.go":  "sportsRailData",
+	"helpers.go":    "railData",
+	"sports_hub.go": "sportsRailData",
 }
 
 // TestEveryRailPanelTakesItsCapFromTheBudget is the guard. A rail panel that

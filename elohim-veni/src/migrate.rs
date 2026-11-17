@@ -56,6 +56,12 @@ const MIGRATIONS: &[Migration] = &[
         filename: "0004_contact_personas.sql",
         body: include_str!("../migrations/0004_contact_personas.sql"),
     },
+    Migration {
+        version: 5,
+        name: "retire_soft_kyc_tier",
+        filename: "0005_retire_soft_kyc_tier.sql",
+        body: include_str!("../migrations/0005_retire_soft_kyc_tier.sql"),
+    },
 ];
 
 fn checksum(body: &str) -> String {

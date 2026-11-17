@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log"
 	"time"
 
@@ -111,8 +112,10 @@ func CountUnreadNotifications(db *sql.DB, userID string) int {
 }
 
 // GetUserEmail returns the email for a user, or "" if unset.
-func GetUserEmail(db *sql.DB, userID string) string {
+func GetUserEmail(db *sql.DB, userID string) (string, error) {
 	var email string
-	db.QueryRow(`SELECT COALESCE(email, '') FROM users WHERE id = $1`, userID).Scan(&email)
-	return email
+	if err := db.QueryRow(`SELECT COALESCE(email, '') FROM users WHERE id = $1`, userID).Scan(&email); err != nil {
+		return "", fmt.Errorf("reading the email address of account %s: %w", userID, err)
+	}
+	return email, nil
 }

@@ -1,0 +1,465 @@
+/* ══════════════════════════════════════════════════════════════════════════════
+   sports-game.css — the game page, /sports/{league}/{game}.
+   Facet(sports_gp_*), and the shared atoms as the game header draws them.
+
+   Presentation only. Every number, label, tab state and list order arrives
+   rendered by the server; nothing here decides anything about the game.
+
+   LAYOUT. One set of Fragments at every width, arranged by CSS alone:
+     ≥ 1280px      nav · center · panel, three columns
+     1000–1279px   the nav collapses to icons and the panel narrows
+     < 1000px      the panel stacks under the center column, beside the icon
+                   rail, down to a 360px phone
+   Spacing scales with the viewport through --sg-gap and --sg-pad, so the
+   rhythm is the same proportion at every width.
+
+   MOTION. A Fragment rendered for a live mutation carries .sg-fresh (rows,
+   groups, drives, the latest play) or .sports-score--changed (a score that
+   moved). Their keyframes run once, when the Fragment lands. A page load never
+   carries either. Reduced motion turns both off.
+
+   CLUB COLOUR. A Fragment names a club's class (.sg-team-<league>-<id>);
+   /css/sports/teams.css sets --team and --team-alt on it.
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+/* ── Shell on the game page ───────────────────────────────────────────────── */
+/* The shell persists across navigation, so the page is recognised by its
+   content, as the live watch surface is. */
+.f33d3r-shell:has(.sg) {
+  --sg-gap: clamp(10px, 1.4vw, 20px);
+  --sg-pad: clamp(12px, 1.6vw, 20px);
+  --sg-panel-w: clamp(340px, 30vw, 440px);
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) var(--sg-panel-w);
+  grid-template-areas: "nav main panel";
+  align-items: start;
+  max-width: 1480px;
+}
+.f33d3r-shell:has(.sg) > .f33d3r-sidebar { grid-area: nav; }
+.f33d3r-shell:has(.sg) > :not(.f33d3r-sidebar):not(#playground) { grid-column: 1 / -1; }
+.f33d3r-shell:has(.sg) .sg {
+  grid-area: main; max-width: none; min-width: 0;
+  border-right: 1px solid var(--border-soft);
+}
+.f33d3r-shell:has(.sg) .f33d3r-right {
+  grid-area: panel; display: block; width: auto; min-width: 0;
+  padding: var(--sg-gap); position: sticky; top: 0; height: 100dvh; overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+/* Narrow desktop: the nav gives its width to the game. */
+@media (min-width: 1080px) and (max-width: 1279px) {
+  .f33d3r-shell:has(.sg) { --sg-panel-w: clamp(300px, 29vw, 360px); }
+  .f33d3r-shell:has(.sg) .f33d3r-sidebar { width: 68px; padding: 12px 8px; }
+  .f33d3r-shell:has(.sg) .nav-item { justify-content: center; padding: 9px 6px; }
+  .f33d3r-shell:has(.sg) .nav-item span,
+  .f33d3r-shell:has(.sg) .nav-brand-text,
+  .f33d3r-shell:has(.sg) .post-fab span,
+  .f33d3r-shell:has(.sg) .sidebar-user-info,
+  .f33d3r-shell:has(.sg) .nav-account-meta,
+  .f33d3r-shell:has(.sg) .nav-account > svg { display: none; }
+}
+@media (min-width: 1000px) and (max-width: 1079px) {
+  .f33d3r-shell:has(.sg) { --sg-panel-w: clamp(300px, 32vw, 340px); }
+}
+
+/* Below a desktop: the panel stacks under the center column. */
+@media (max-width: 999px) {
+  .f33d3r-shell:has(.sg) {
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-areas: "nav main" "nav panel";
+  }
+  .f33d3r-shell:has(.sg) > .f33d3r-sidebar { grid-row: 1 / span 2; align-self: start; }
+  .f33d3r-shell:has(.sg) .sg { border-right: none; padding-bottom: 0; }
+  .f33d3r-shell:has(.sg) .f33d3r-right {
+    position: static; height: auto; overflow: visible;
+    border-top: 1px solid var(--border-soft);
+    padding: var(--sg-gap) var(--sg-gap) calc(88px + env(safe-area-inset-bottom, 0px));
+  }
+}
+
+/* ── Top bar ──────────────────────────────────────────────────────────────── */
+.sg-top {
+  position: sticky; top: 0; z-index: var(--z-sticky);
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px var(--sg-pad);
+  background: var(--vibrancy);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  backdrop-filter: blur(24px) saturate(180%);
+  border-bottom: 1px solid var(--hairline);
+}
+.sg-top__btn {
+  flex: none; display: grid; place-items: center;
+  width: 36px; height: 36px; border-radius: 50%;
+  border: none; background: transparent; color: var(--text-primary); cursor: pointer;
+  transition: background 140ms;
+}
+.sg-top__btn:hover { background: var(--panel-hover); }
+.sg-top__btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sg-top__btn svg { width: 20px; height: 20px; }
+
+/* ── Facet(sports_gp_pills) — scrolls sideways at every width ─────────────── */
+.sg-pills {
+  flex: 1; min-width: 0; display: flex; gap: 8px;
+  overflow-x: auto; scroll-snap-type: x proximity; scrollbar-width: none;
+  -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 24px), transparent);
+          mask-image: linear-gradient(90deg, #000 calc(100% - 24px), transparent);
+}
+.sg-pills::-webkit-scrollbar { display: none; }
+.sg-pill {
+  flex: none; scroll-snap-align: start;
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 6px 12px; border-radius: 999px;
+  background: var(--panel-2); border: 1px solid var(--hairline);
+  color: var(--text-primary); text-decoration: none;
+  font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap;
+  transition: background 140ms, border-color 140ms;
+}
+.sg-pill:hover { border-color: var(--hairline-strong); }
+.sg-pill:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sg-pill--live .sg-pill__label { color: var(--accent); }
+
+/* ── Club marks and headshots ─────────────────────────────────────────────── */
+/* An <img> whose logo failed to load renders its ::before, which draws the
+   club's initials on its colour; a loaded image never renders it. */
+.sg-mark, .sg-hs {
+  position: relative; flex: none; display: inline-grid; place-items: center;
+  width: var(--sz); height: var(--sz);
+  object-fit: contain; font-weight: 700; letter-spacing: -.02em; line-height: 1;
+  color: #fff; overflow: hidden;
+}
+.sg-mark--20 { --sz: 20px; font-size: 7px; }
+.sg-mark--28 { --sz: 28px; font-size: 9px; }
+.sg-mark--40 { --sz: clamp(30px, 3.4vw, 44px); font-size: clamp(10px, 1.1vw, 14px); }
+.sg-mark--init, .sg-mark::before {
+  border-radius: 50%;
+  background: var(--team, #3a3f47);
+}
+.sg-mark::before, .sg-hs::before {
+  content: attr(data-initials);
+  position: absolute; inset: 0; display: grid; place-items: center;
+}
+.sg-hs { --sz: 36px; font-size: 12px; border-radius: 50%; object-fit: cover; background: var(--panel-2); color: var(--text-secondary); }
+.sg-hs::before { background: var(--panel-2); border-radius: 50%; }
+
+/* ── Facet(sports_gp_header) — the team-gradient scoreboard ───────────────── */
+.sg-head {
+  position: relative; isolation: isolate; overflow: hidden;
+  padding: clamp(12px, 2vw, 22px) var(--sg-pad) var(--sg-gap);
+  border-bottom: 1px solid var(--hairline);
+  background: var(--panel);
+}
+.sg-head__glow {
+  position: absolute; z-index: -1; top: -40%; bottom: -40%; width: 70%;
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--team, #3a3f47) 55%, transparent), transparent);
+  opacity: .55; pointer-events: none;
+}
+.sg-head__glow--away { left: -20%; }
+.sg-head__glow--home { right: -20%; }
+[data-mode="dark"] .sg-head__glow { opacity: .8; }
+
+.sg-head__board {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1.3fr) auto minmax(0, 1fr);
+  align-items: center; column-gap: clamp(6px, 1.2vw, 16px);
+}
+.sg-head__team {
+  display: flex; flex-direction: column; align-items: center; gap: 3px; min-width: 0;
+}
+.sg-head__abbr { font-weight: 800; font-size: clamp(12px, 1.2vw, 15px); letter-spacing: .02em; }
+.sg-head__record { font-size: 12px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.sg-head__num { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.sg-head .sports-score {
+  display: inline-block;
+  font-size: clamp(30px, 4.6vw, 52px); font-weight: 800; line-height: 1;
+  letter-spacing: -.03em; color: var(--text-primary);
+}
+.sg-head .sports-score--none { color: var(--text-muted); }
+.sg-head__mid { display: flex; flex-direction: column; align-items: center; gap: 4px; text-align: center; min-width: 0; }
+.sg-head .sports-clock {
+  font-family: var(--font-sans); font-size: clamp(13px, 1.3vw, 16px); font-weight: 700;
+  color: var(--text-primary); justify-content: center; flex-wrap: wrap;
+}
+.sg-head .sports-clock--final { color: var(--text-secondary); }
+.sg-head .sports-situation {
+  justify-content: center; font-family: var(--font-sans);
+  font-size: clamp(11px, 1vw, 13px); color: var(--text-secondary);
+}
+.sg-head .sports-situation:empty { display: none; }
+.sg-head .sports-situation__poss { display: none; } /* the football icon says it */
+
+/* Facet(sports_gp_side) — possession and timeout pips */
+.sg-side { display: flex; align-items: center; gap: 6px; min-height: 16px; }
+.sg-side__ball { width: 16px; height: 16px; color: var(--text-primary); }
+.sg-side__pips { display: inline-flex; gap: 3px; }
+.sg-pip { width: 7px; height: 3px; border-radius: 2px; background: var(--hairline-strong); }
+.sg-pip--on { background: var(--text-primary); }
+
+/* Facet(sports_gp_latest) */
+.sg-latest {
+  display: flex; gap: 10px; align-items: flex-start;
+  margin-top: var(--sg-gap); padding: 10px 12px; border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--panel-2) 80%, transparent);
+  border: 1px solid var(--hairline);
+}
+.sg-latest--none { display: none; }
+.sg-latest__body { min-width: 0; }
+.sg-latest__head { margin: 0; font-size: 15px; }
+.sg-latest__tag {
+  margin-left: 6px; font-size: 11px; font-weight: 700; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--text-muted);
+}
+.sg-latest__text { margin: 2px 0 0; font-size: 13.5px; line-height: 1.4; color: var(--text-secondary); }
+
+/* ── Tabs — the center's and the panel's ──────────────────────────────────── */
+.sg-tabs {
+  display: flex; overflow-x: auto; scrollbar-width: none;
+  border-bottom: 1px solid var(--hairline);
+}
+.sg-tabs::-webkit-scrollbar { display: none; }
+.sg-tab {
+  flex: 1 0 auto; position: relative;
+  padding: 14px clamp(12px, 2vw, 20px);
+  border: none; background: none; cursor: pointer; font: inherit;
+  font-size: 15px; font-weight: 500; color: var(--text-secondary); white-space: nowrap;
+  transition: color 140ms, background 140ms;
+}
+.sg-tab:hover { background: var(--panel-hover); color: var(--text-primary); }
+.sg-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.sg-tab--on { color: var(--text-primary); font-weight: 700; }
+.sg-tab--on::after {
+  content: ""; position: absolute; left: 50%; bottom: 0; transform: translateX(-50%);
+  width: min(56px, 60%); height: 4px; border-radius: 4px; background: var(--accent);
+}
+.sg-tabs--panel { position: sticky; top: calc(-1 * var(--sg-gap)); z-index: 1; background: var(--panel); margin: calc(-1 * var(--sg-gap)) calc(-1 * var(--sg-gap)) var(--sg-gap); }
+@media (max-width: 999px) { .sg-tabs--panel { position: static; } }
+
+/* ── Lists of plays ───────────────────────────────────────────────────────── */
+.sg-list { display: flex; flex-direction: column; }
+.sg-empty { margin: 0; padding: 24px var(--sg-pad); color: var(--text-muted); font-size: 14px; text-align: center; list-style: none; }
+.sg-list > .sg-empty:not(:only-child),
+.sg-chat__log > .sg-empty:not(:only-child) { display: none; }
+.sg-group__head {
+  margin: 0; padding: 14px var(--sg-pad) 6px;
+  font-size: 17px; font-weight: 800; letter-spacing: -.01em;
+}
+.sg-group__rows, .sg-drive__plays { list-style: none; margin: 0; padding: 0; }
+.sg-play {
+  display: flex; gap: 12px; padding: 12px var(--sg-pad);
+  border-bottom: 1px solid var(--hairline);
+}
+.sg-play__body { min-width: 0; flex: 1; }
+.sg-play__meta {
+  margin: 0; display: flex; align-items: center; gap: 8px;
+  font-size: 13px; color: var(--text-secondary); font-variant-numeric: tabular-nums;
+}
+.sg-badge {
+  padding: 1px 6px; border-radius: 4px;
+  background: var(--panel-2); color: var(--text-secondary);
+  font-size: 10px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase;
+}
+.sg-play--latest .sg-badge { background: color-mix(in srgb, var(--accent) 22%, var(--panel-2)); color: var(--text-primary); }
+.sg-play__head { margin: 2px 0 0; font-size: 16px; font-weight: 700; }
+.sg-play__score { margin: 2px 0 0; font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.sg-play--score .sg-play__head { color: var(--accent); }
+.sg-play__text { margin: 4px 0 0; font-size: 14px; line-height: 1.45; color: var(--text-secondary); overflow-wrap: anywhere; }
+
+/* ── Facet(sports_gp_drive) ───────────────────────────────────────────────── */
+.sg-panel .sg-group__head { padding-inline: 4px; }
+.sg-panel .sg-play { padding-inline: 4px 0; }
+.sg-drive { border-bottom: 1px solid var(--hairline); }
+.sg-drive__head {
+  display: flex; align-items: center; gap: 12px; padding: 12px 4px;
+  cursor: pointer; list-style: none;
+}
+.sg-drive__head::-webkit-details-marker { display: none; }
+.sg-drive__head:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 8px; }
+.sg-drive__text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.sg-drive__title { font-weight: 700; font-size: 15px; }
+.sg-drive__sum { font-size: 13px; color: var(--text-secondary); }
+.sg-drive__chev { width: 18px; height: 18px; color: var(--text-secondary); transition: transform 180ms var(--ease-out); }
+.sg-drive[open] > .sg-drive__head .sg-drive__chev { transform: rotate(180deg); }
+.sg-drive--live > .sg-drive__head .sg-drive__title { color: var(--accent); }
+.sg-drive__plays { padding-left: 40px; }
+.sg-chip {
+  display: inline-grid; place-items: center; min-width: 32px;
+  padding: 4px 8px; border-radius: 8px;
+  background: var(--panel-2); font-variant-numeric: tabular-nums; font-weight: 700; font-size: 13px;
+}
+.sg-chip--result { min-width: 0; padding: 1px 7px; font-size: 11px; font-weight: 700; color: var(--text-secondary); vertical-align: 1px; }
+.sg-chip--total { background: color-mix(in srgb, var(--accent) 16%, var(--panel-2)); }
+
+/* ── Facet(sports_gp_panel) and its cards ─────────────────────────────────── */
+.sg-panel { display: flex; flex-direction: column; }
+.sg-panel__body { display: flex; flex-direction: column; gap: var(--sg-gap); }
+.sg-card {
+  padding: 14px; border-radius: var(--r-lg);
+  border: 1px solid var(--hairline); background: var(--panel);
+}
+.sg-card .sg-empty { padding: 8px 0; }
+
+/* Linescore */
+.sg-ls__table { width: 100%; border-collapse: separate; border-spacing: 6px; font-size: 13px; }
+.sg-ls__table th { font-weight: 600; color: var(--text-secondary); font-size: 12px; }
+.sg-ls__table th[scope="row"] { text-align: left; white-space: nowrap; color: var(--text-primary); font-weight: 700; }
+.sg-ls__table th[scope="row"] > * { vertical-align: middle; }
+.sg-ls__table th[scope="row"] span { margin-left: 6px; }
+.sg-ls__table td { text-align: center; }
+.sg-ls__table .sg-chip { width: 100%; }
+
+/* Win probability: the meter's bar is the home club's colour, its value the
+   away club's share. */
+.sg-wp { position: relative; }
+.sg-wp__row { margin: 0 0 8px; display: flex; justify-content: space-between; gap: 8px; font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.sg-wp__title { font-weight: 500; color: var(--text-secondary); }
+.sg-wp__home { display: none; }
+.sg-wp__meter { display: block; width: 100%; height: 8px; border: none; border-radius: 8px; overflow: hidden; background: var(--panel-2); -webkit-appearance: none; appearance: none; }
+.sg-wp__meter::-webkit-meter-bar { background: var(--panel-2); border: none; border-radius: 8px; height: 8px; }
+.sg-wp__meter::-webkit-meter-optimum-value,
+.sg-wp__meter::-webkit-meter-suboptimum-value,
+.sg-wp__meter::-webkit-meter-even-less-good-value { background: var(--team, var(--accent)); border-radius: 8px; transition: inline-size 600ms var(--ease-out); }
+.sg-wp__meter::-moz-meter-bar { background: var(--team, var(--accent)); border-radius: 8px; }
+
+/* Leaders */
+.sg-leaders { padding: 0; }
+.sg-leaders__head {
+  display: grid; grid-template-columns: 1fr auto 1fr; align-items: center;
+  padding: 12px 14px; border-bottom: 1px solid var(--hairline); font-weight: 700; font-size: 13px;
+}
+.sg-leaders__club { display: inline-flex; align-items: center; gap: 6px; }
+.sg-leaders__club--home { justify-self: end; }
+.sg-leaders__title { margin: 0; font-size: 14px; font-weight: 700; }
+.sg-leaders .sg-empty { padding: 14px; }
+.sg-leader-row {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 8px;
+  padding: 12px 14px; border-bottom: 1px solid var(--hairline);
+}
+.sg-leader-row:last-child { border-bottom: none; }
+.sg-leader-row__label { margin: 0; font-size: 13px; color: var(--text-secondary); text-align: center; }
+.sg-leader { min-width: 0; }
+.sg-leader--home { text-align: right; }
+.sg-leader__top { display: flex; align-items: center; gap: 8px; }
+.sg-leader--home .sg-leader__top { justify-content: flex-end; }
+.sg-leader__value { font-size: clamp(18px, 1.8vw, 22px); font-weight: 800; font-variant-numeric: tabular-nums; }
+.sg-leader__name { margin: 4px 0 0; font-weight: 700; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sg-leader__line { margin: 1px 0 0; font-size: 11px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .02em; }
+.sg-leader__none { color: var(--text-muted); }
+
+/* Box score */
+.sg-box { padding: 0; overflow: hidden; }
+.sg-box__toggle { display: flex; border-bottom: 1px solid var(--hairline); }
+.sg-box__team {
+  flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 12px; border: none; background: none; cursor: pointer; font: inherit;
+  font-weight: 600; color: var(--text-secondary); position: relative;
+}
+.sg-box__team--on { color: var(--text-primary); font-weight: 800; }
+.sg-box__team--on::after { content: ""; position: absolute; left: 20%; right: 20%; bottom: 0; height: 3px; border-radius: 3px; background: var(--accent); }
+.sg-box__team:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.sg-boxt { padding: 6px 0 10px; }
+.sg-boxt__scroll { overflow-x: auto; scrollbar-width: thin; }
+.sg-stat { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+.sg-stat th, .sg-stat td { padding: 8px 10px; text-align: right; white-space: nowrap; }
+.sg-stat thead th { font-size: 11px; font-weight: 600; color: var(--text-secondary); }
+.sg-stat .sg-stat__name { text-align: left; font-weight: 700; color: var(--text-primary); position: sticky; left: 0; background: var(--panel); }
+.sg-stat thead .sg-stat__name { font-size: 14px; font-weight: 800; }
+.sg-stat tbody tr { border-top: 1px solid var(--hairline); }
+
+/* ── Chat ─────────────────────────────────────────────────────────────────── */
+.sg-chat { display: flex; flex-direction: column; gap: var(--sg-gap); scroll-margin-top: 64px; }
+.sg-vote { padding: 14px; border-radius: var(--r-lg); border: 1px solid var(--hairline); }
+.sg-vote__q { margin: 0 0 10px; font-weight: 800; font-size: 15px; }
+.sg-vote__btns { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.sg-vote__btn {
+  padding: 11px 10px; border-radius: 999px; cursor: pointer; font: inherit;
+  font-weight: 800; color: #fff; font-variant-numeric: tabular-nums;
+  background: var(--team, #3a3f47);
+  border: 2px solid transparent;
+  transition: filter 140ms, transform 80ms;
+}
+.sg-vote__btn:hover:not(:disabled) { filter: brightness(1.12); }
+.sg-vote__btn:active:not(:disabled) { transform: scale(.98); }
+.sg-vote__btn:disabled { cursor: default; opacity: .78; }
+.sg-vote__btn--mine { border-color: var(--text-primary); opacity: 1; }
+.sg-vote__btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sg-vote__total, .sg-vote__note { margin: 8px 0 0; font-size: 12px; color: var(--text-secondary); text-align: center; }
+
+/* The log is laid out bottom-up: the newest line is first in the markup and
+   lands at the bottom, and the view stays pinned there with no script. */
+.sg-chat__log {
+  list-style: none; margin: 0; padding: 0;
+  display: flex; flex-direction: column-reverse; gap: 10px;
+  max-height: min(56dvh, 520px); overflow-y: auto; overscroll-behavior: contain;
+}
+@media (max-width: 999px) { .sg-chat__log { max-height: 60dvh; } }
+.sg-msg { display: flex; gap: 8px; align-items: flex-start; }
+.sg-msg__av { flex: none; }
+.sg-msg__line { margin: 0; font-size: 14px; line-height: 1.4; overflow-wrap: anywhere; min-width: 0; }
+.sg-msg__who { font-weight: 700; color: var(--text-primary); text-decoration: none; margin-right: 4px; }
+.sg-msg__who:hover { text-decoration: underline; }
+.sg-msg__badge {
+  display: inline-block; margin-right: 6px; padding: 0 6px; border-radius: 4px;
+  background: var(--team, #3a3f47); color: #fff;
+  font-size: 10px; font-weight: 800; letter-spacing: .04em; vertical-align: 1px;
+}
+.sg-msg__text { color: var(--text-primary); }
+.sg-msg__time { margin-left: 6px; font-size: 11px; color: var(--text-muted); }
+
+.sg-composer { display: flex; flex-direction: column; gap: 8px; }
+.sg-composer__reacts { display: flex; gap: 6px; }
+.sg-react {
+  width: 40px; height: 36px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--hairline); background: var(--panel-2); font-size: 18px;
+  transition: transform 80ms, background 140ms;
+}
+.sg-react:hover { background: var(--panel-hover); }
+.sg-react:active { transform: scale(.92); }
+.sg-composer__row { display: flex; gap: 8px; }
+.sg-composer__input {
+  flex: 1; min-width: 0; padding: 10px 14px; border-radius: 999px;
+  border: 1px solid var(--hairline-strong); background: var(--panel-2);
+  color: var(--text-primary); font: inherit; font-size: 15px;
+}
+.sg-composer__input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.sg-composer__send {
+  flex: none; padding: 0 16px; border-radius: 999px; border: none; cursor: pointer;
+  background: var(--ink); color: var(--bg); font: inherit; font-weight: 700;
+}
+.sg-composer__login { margin: 0; font-size: 14px; color: var(--text-secondary); text-align: center; }
+.sg-composer__login a, .sg-vote__note a { color: var(--accent); font-weight: 700; }
+
+/* ── Phone widths ─────────────────────────────────────────────────────────── */
+@media (max-width: 480px) {
+  .sg-tab { font-size: 14px; padding-block: 12px; }
+  .sg-head__record { font-size: 11px; }
+  .sg-play { gap: 10px; }
+  .sg-play__head { font-size: 15px; }
+  .sg-play__text { font-size: 13.5px; }
+  .sg-drive__plays { padding-left: 0; }
+  .sg-pill { padding: 5px 10px; font-size: 12px; }
+}
+@media (max-width: 380px) {
+  .sg-head__board { column-gap: 4px; }
+  .sg-head__abbr { font-size: 11px; }
+}
+
+/* ── Motion ───────────────────────────────────────────────────────────────── */
+@keyframes sg-enter {
+  from { opacity: 0; transform: translateY(-8px); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes sg-flash {
+  from { background-color: color-mix(in srgb, var(--accent) 14%, transparent); }
+  to   { background-color: transparent; }
+}
+@keyframes sg-score {
+  0%   { transform: scale(1); }
+  30%  { transform: scale(1.22); color: var(--accent); }
+  100% { transform: scale(1); }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .sg-fresh { animation: sg-enter 420ms var(--ease-out) both; }
+  .sg-play.sg-fresh, .sg-msg.sg-fresh { animation: sg-enter 420ms var(--ease-out) both, sg-flash 1600ms ease-out 200ms both; }
+  .sports-score--changed { animation: sg-score 760ms var(--spring) both; }
+  .sg-head .sports-clock--in_progress .sports-clock__dot { animation: scorecard-pulse 1.6s ease-in-out infinite; }
+}

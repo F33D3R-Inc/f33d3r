@@ -358,7 +358,6 @@ services:
       RUST_LOG: "${RUST_LOG:-info}"
       PORT: "8093"
       DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:?set this in .env.local}@postgres:5432/f33d3r_security?sslmode=disable"
-      VERITY_URL: "http://verity:8095"
       INTERNAL_API_KEY: "${INTERNAL_API_KEY:?set this in .env.local}"
       # Ed25519 seed (base64, 32 bytes) signing contact key bundles. Unset means
       # bundles ship unsigned and report themselves as unsigned.
@@ -558,9 +557,17 @@ services:
       RUST_LOG: "${RUST_LOG:-info}"
       PORT: "8095"
       DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD:?set this in .env.local}@postgres:5432/f33d3r_verity?sslmode=disable"
-      # Verity decides who may earn money. Every mutating route requires this
-      # shared secret and the service refuses to boot without it.
+      # Verity holds KYC evidence and 2257 records. Every evidence and
+      # compliance route requires this shared secret and the service refuses
+      # to boot without it.
       INTERNAL_API_KEY: "${INTERNAL_API_KEY:?set this in .env.local}"
+      # AES-256-GCM key sealing the 2257 ID copies at rest: 32 random bytes,
+      # base64 (`openssl rand -base64 32`). Verity refuses to boot without it
+      # or if it does not decode to exactly 32 bytes.
+      VERITY_RECORDS_KEY: "${VERITY_RECORDS_KEY:?set this in .env.local}"
+      # Retention job: purges failed-attempt PII after 30 days and 2257 ID
+      # copies seven years after their last content is removed.
+      VERITY_RETENTION_INTERVAL_SECS: "3600"
       # NEXUS maintenance sweep (was the nexus-sweep container): expires stale
       # link requests and session context, flags AML aggregates for EDD.
       NEXUS_SWEEP_INTERVAL_SECS: "900"
@@ -676,7 +683,6 @@ services:
       CONF_THRESHOLD_LOW: "1"
       CONF_THRESHOLD_HIGH: "3"
       AIN_SOPH_URL: "http://ain-soph:8089"
-      VERITY_URL: "http://verity:8095"
     volumes:
       - themis_keys:/var/lib/themis/keys
     healthcheck:
@@ -696,6 +702,8 @@ services:
       - "127.0.0.1:8099:8099"
     environment:
       PORT: "8099"
+      # Keys doc_hmac; the service refuses to start without it.
+      EKYC_DOC_HMAC_KEY: "${EKYC_DOC_HMAC_KEY:?set this in .env.local}"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8099/health"]
       interval: 30s

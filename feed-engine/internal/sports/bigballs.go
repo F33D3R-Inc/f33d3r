@@ -321,10 +321,13 @@ func bigballsTeamOf(t bigballsTeam) Team {
 	// row prints. It carries no separate nickname form, so ShortName stays empty
 	// and Team.Label falls through to the abbreviation as intended.
 	return Team{
-		ID:      t.ID,
-		Name:    strings.TrimSpace(t.Name),
-		Abbr:    strings.TrimSpace(t.ShortName),
-		LogoURL: strings.TrimSpace(t.LogoURL),
+		ID:   t.ID,
+		Name: strings.TrimSpace(t.Name),
+		Abbr: strings.TrimSpace(t.ShortName),
+		// Only an image this platform proxies is ever drawn; any other host
+		// would have the reader's browser call a third party on every page.
+		// An unproxied logo renders as the club's initials instead.
+		LogoURL: ImageURL(t.LogoURL, LogoWidth),
 	}
 }
 

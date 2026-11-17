@@ -283,13 +283,24 @@ func applyScanStateTx(tx *sql.Tx, postID, toState, reason, actor string, byPerso
 	return nil
 }
 
-// NotifyVerified tells an account its identity verification was recorded. The
+// NotifyVerified tells an account its identity was verified, and when. The
 // verification itself is elohim-veni's; the caller sends it there first and
-// calls this only once the authority has accepted it.
-func NotifyVerified(database *sql.DB, pialID, accountID string) error {
+// calls this only once the authority has accepted it. attemptID names the
+// verification attempt, so a repeated call for one attempt notifies once. The
+// notice never carries the identity's PIAL: it names the account itself.
+func NotifyVerified(database *sql.DB, accountID, attemptID string, at time.Time) error {
+	when := at.UTC().Format("Jan 2, 2006 15:04 UTC")
 	return WithTx(database, func(tx *sql.Tx) error {
 		_, err := WriteNotice(tx, Notice{
-			Recipient: accountID, Kind: "verification", TargetID: pialID, TargetType: "identity",
+			EventID:    uuid.NewSHA1(noticeNamespace, []byte("verification|"+attemptID)).String(),
+			Recipient:  accountID,
+			Kind:       "verification",
+			TargetID:   accountID,
+			TargetType: "account",
+			Payload:    map[string]interface{}{"verified_at": at.UTC().Format(time.RFC3339)},
+			PushTitle:  "Identity verified",
+			PushBody:   "Your identity was verified on f33d3r at " + when + ". If this wasn't you, contact support.",
+			PushURL:    "/kyc",
 		})
 		return err
 	})

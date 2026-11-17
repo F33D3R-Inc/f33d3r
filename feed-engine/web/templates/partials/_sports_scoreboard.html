@@ -1,0 +1,95 @@
+{{/*
+FACET sports_scoreboard
+  version: 1.0 | status: stable | layer: 2 (composite)
+
+  One league's scoreboard: a head naming the league and its week, and one
+  horizontal row of game tiles — live first, then what starts soonest, then
+  what has finished. The row scrolls sideways with snap, so it is the same
+  height with three games or twelve and can never push what is under it off
+  the screen.
+
+  It is drawn in four places and is the same Facet in each: the top of a league
+  hub, the cross-league board, pinned at the top of a Home timeline for a
+  viewer who follows the league, and the Android Shell's league strip
+  (GET /facets/sports/{league}/strip).
+
+  inputs:
+    SportsScoreboardData — .League .WeekLabel .Tiles .More .Stale .StaleLabel
+                           .FacetID .WatchID .HubHref .GamesHref
+
+  states:
+    default | stale
+
+  children:
+    sports_tile (one per game)
+
+  signals:
+    emits:    watch sports:league:<league> while on screen
+    receives: facet.mutate when the slate's membership or order changes; a
+              score inside an unchanged slate mutates the tile, not this
+
+  context:
+    sports_hub_canvas (home), sports_hub page (board), playground (pinned frame)
+*/}}
+{{define "sports_scoreboard"}}
+<section class="sp-board{{if .Stale}} is-stale{{end}}"
+         data-facet-id="{{.FacetID}}"
+         data-watch-id="{{.WatchID}}"
+         aria-label="{{.League.Label}} scores">
+  <header class="sp-board__head">
+    <a class="sp-board__title" href="{{.HubHref}}">
+      <span class="sp-mark" aria-hidden="true">{{.League.Label}}</span>
+      <span class="sp-board__name">{{.League.Label}}</span>
+      {{if .WeekLabel}}<span class="sp-board__week">{{.WeekLabel}}</span>{{end}}
+    </a>
+    <a class="sp-board__all" href="{{.GamesHref}}">{{if .More}}All games{{else}}Games{{end}}</a>
+  </header>
+  <div class="sp-row" role="list">
+    {{range .Tiles}}<div class="sp-row__cell" role="listitem">{{template "sports_tile" .}}</div>{{end}}
+  </div>
+  {{if .Stale}}<p class="sp-notice" role="status">Scores may be out of date — {{.StaleLabel}}.</p>{{end}}
+</section>
+{{end}}
+
+{{/*
+FACET sports_games
+  version: 1.0 | status: stable | layer: 2 (composite)
+
+  A league hub's Games tab: the whole slate as a grid of tiles, grouped into
+  Live now, Upcoming and Completed. A group with no games has no heading; a
+  league with no games at all says so once.
+
+  inputs:
+    SportsGamesData — .League .WeekLabel .Sections .Stale .StaleLabel .FacetID .WatchID
+
+  states:
+    default | empty | stale
+
+  children:
+    sports_tile (one per game)
+
+  signals:
+    emits:    watch sports:league:<league> while on screen
+    receives: facet.mutate when the slate's membership or order changes
+
+  context:
+    sports_hub_canvas (games)
+*/}}
+{{define "sports_games"}}
+<section class="sp-games{{if .Stale}} is-stale{{end}}"
+         data-facet-id="{{.FacetID}}"
+         data-watch-id="{{.WatchID}}"
+         aria-label="{{.League.Label}} games">
+  {{if .Stale}}<p class="sp-notice" role="status">Scores may be out of date — {{.StaleLabel}}.</p>{{end}}
+  {{range .Sections}}
+  <div class="sp-games__section">
+    <h2 class="sp-games__title">{{.Title}}</h2>
+    <div class="sp-games__grid" role="list">
+      {{range .Tiles}}<div class="sp-row__cell" role="listitem">{{template "sports_tile" .}}</div>{{end}}
+    </div>
+  </div>
+  {{else}}
+  {{template "stateEmpty" (dict "Title" "No games on the board" "Sub" "The league has nothing scheduled yet. Its next games appear here as soon as they are.")}}
+  {{end}}
+</section>
+{{end}}

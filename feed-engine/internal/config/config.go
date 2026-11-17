@@ -123,11 +123,13 @@ func Load() *Config {
 		AinSophURL:        getEnv("AIN_SOPH_URL", "http://localhost:8089"),
 		AbraxasURL:        getEnv("ABRAXAS_URL", ""),
 		ElohimVeniURL:     getEnv("ELOHIM_VENI_URL", "http://localhost:8093"),
-		VerityURL:         getEnv("VERITY_URL", "http://localhost:8095"),
+		// No default: an unset VERITY_URL or EKYC_URL means identity
+		// verification is unavailable, and the flow says so (fail closed).
+		VerityURL:         getEnv("VERITY_URL", ""),
 		CaeorURL:          getEnv("CAEOR_URL", "http://localhost:8086"),
 		ThemisURL:         getEnv("THEMIS_URL", "http://localhost:8100"),
 		ZiorURL:           getEnv("ZIOR_URL", "http://localhost:8082"),
-		EKYCUrl:           getEnv("EKYC_URL", "http://ekyc:8099"),
+		EKYCUrl:           getEnv("EKYC_URL", ""),
 		HeraldURL:         getEnv("HERALD_URL", ""),
 		ManhattanURL:      getEnv("MANHATTAN_URL", ""),
 		SMTPHost:          getEnv("SMTP_HOST", ""),

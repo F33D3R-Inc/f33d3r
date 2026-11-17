@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 )
 
 // The browser Shell (base.html) is created once per session and lives for the
@@ -28,6 +29,15 @@ func playgroundRequest(r *http.Request) bool {
 	return r.Header.Get("HX-Boosted") == "true" ||
 		r.Header.Get("HX-Target") == "playground" ||
 		r.Header.Get("HX-History-Restore-Request") == "true"
+}
+
+// nativeShellUA is the User-Agent prefix the Android Shell sends on every
+// request, its live stream included (mobile/android Http.USER_AGENT).
+const nativeShellUA = "F33D3R-Android/"
+
+// nativeShellRequest reports whether the caller is the native Android Shell.
+func nativeShellRequest(r *http.Request) bool {
+	return r != nil && strings.HasPrefix(r.UserAgent(), nativeShellUA)
 }
 
 // hxRedirect answers an htmx caller with a full document navigation. It is the

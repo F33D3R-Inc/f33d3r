@@ -1,17 +1,17 @@
 """
-mrz.py — MRZ (Machine Readable Zone) detection and validation for F33D3R eKYC.
+mrz.py — ICAO 9303 machine-readable zone reading for passports (TD3) and
+ID cards (TD1).
 
-Lane 1 age verification: image in → age_verified out. Image never persists.
-
-Supports ICAO 9303 document types:
-  TD1  — ID cards (3-line × 30 chars)
-  TD2  — 2-line ID cards (2-line × 36 chars)
-  TD3  — Passports (2-line × 44 chars)
-  MRVA — Visa A (2-line × 44 chars)
-  MRVB — Visa B (2-line × 36 chars)
+The MRZ is located and OCR'd by PassportEye (MRZ box detection + Tesseract),
+its OCR text is normalised by PassportEye's positional character cleaner
+(digits only where the format allows digits, letters only where it allows
+letters), and then parsed HERE by a strict parser that verifies every check
+digit, including the composite. A result is only "ok" when every check digit
+holds; anything else is "invalid". TD2 and visas are not accepted.
 """
 import io
 import logging
+from dataclasses import dataclass
 from datetime import date
 from typing import Optional
 
@@ -19,206 +19,229 @@ from PIL import Image
 
 log = logging.getLogger("ekyc.mrz")
 
-# ── Checksum constants (ICAO 9303 §4.9) ───────────────────────────────────────
-_WEIGHTS  = [7, 3, 1]
-_CHAR_VAL = {c: i for i, c in enumerate("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ<")}
+_CHAR_VAL = {c: i for i, c in enumerate("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ")}
+_CHAR_VAL["<"] = 0
+_WEIGHTS = (7, 3, 1)
 
 
-def mrz_checksum(field: str) -> int:
-    """Compute the ICAO 9303 check digit for a MRZ field string."""
+def check_digit(field: str) -> str:
+    """ICAO 9303 §4.9 check digit of a field, as a single character."""
     total = 0
     for i, ch in enumerate(field):
-        val = _CHAR_VAL.get(ch, 0)
-        total += val * _WEIGHTS[i % 3]
-    return total % 10
+        if ch not in _CHAR_VAL:
+            raise ValueError("character outside the MRZ alphabet")
+        total += _CHAR_VAL[ch] * _WEIGHTS[i % 3]
+    return str(total % 10)
 
 
-# ── Century resolution ────────────────────────────────────────────────────────
-def _resolve_century(yy: int) -> int:
-    """
-    Convert a 2-digit MRZ year to a 4-digit year.
-    Threshold 30: YY ≤ 30 → 20YY, YY > 30 → 19YY.
-    Safe until ~2030 when the youngest verifiable adult (born 2012) turns 18.
-    """
-    return 2000 + yy if yy <= 30 else 1900 + yy
-
-
-def _parse_dob(yymmdd: str) -> Optional[date]:
-    """Parse a 6-char YYMMDD MRZ date string into a date object."""
+def _digit_ok(field: str, digit: str) -> bool:
     try:
-        yy  = int(yymmdd[0:2])
-        mm  = int(yymmdd[2:4])
-        dd  = int(yymmdd[4:6])
-        return date(_resolve_century(yy), mm, dd)
-    except (ValueError, IndexError):
+        return check_digit(field) == digit
+    except ValueError:
+        return False
+
+
+def _optional_digit_ok(field: str, digit: str) -> bool:
+    """An optional-data check digit may be '<' when the field is all fillers."""
+    if digit == "<":
+        return set(field) <= {"<"}
+    return _digit_ok(field, digit)
+
+
+def _parse_yymmdd(s: str, *, past: bool) -> Optional[date]:
+    """
+    YYMMDD → date. Birth dates (`past=True`) take the latest century that is
+    not in the future; expiry dates take 20YY (no current document expires
+    before 2000 or after 2099).
+    """
+    if len(s) != 6 or not s.isdigit():
+        return None
+    yy, mm, dd = int(s[0:2]), int(s[2:4]), int(s[4:6])
+    try:
+        if past:
+            today = date.today()
+            d = date(2000 + yy, mm, dd)
+            return d if d <= today else date(1900 + yy, mm, dd)
+        return date(2000 + yy, mm, dd)
+    except ValueError:
         return None
 
 
-def _calc_age(dob: date) -> int:
-    today = date.today()
-    return today.year - dob.year - (
-        (today.month, today.day) < (dob.month, dob.day)
+def _names(field: str) -> tuple[str, str]:
+    surname, _, given = field.partition("<<")
+    return (surname.replace("<", " ").strip(),
+            " ".join(given.replace("<", " ").split()))
+
+
+@dataclass
+class MRZData:
+    doc_type: str          # "passport" | "id_card"
+    issuing_country: str   # ICAO 3-letter code, fillers stripped
+    number: str            # document number — never leaves the process
+    surname: str
+    given_names: str
+    dob: date
+    expiry: Optional[date]
+
+
+@dataclass
+class MRZResult:
+    status: str            # "ok" | "absent" | "invalid"
+    data: Optional[MRZData] = None
+    detail: str = ""       # machine-readable failure code, no field values
+
+
+def _doc_type(code: str, fmt: str) -> Optional[str]:
+    first = code[0]
+    if fmt == "TD3" and first == "P":
+        return "passport"
+    if fmt == "TD1" and first in ("I", "A", "C"):
+        return "id_card"
+    return None
+
+
+def _parse_td3(l1: str, l2: str) -> MRZResult:
+    doc_type = _doc_type(l1[0:2], "TD3")
+    if doc_type is None:
+        return MRZResult("invalid", detail="unsupported_document_code")
+    number, number_cd = l2[0:9], l2[9]
+    dob_s, dob_cd = l2[13:19], l2[19]
+    exp_s, exp_cd = l2[21:27], l2[27]
+    opt, opt_cd = l2[28:42], l2[42]
+    composite = l2[0:10] + l2[13:20] + l2[21:43]
+    checks = (
+        _digit_ok(number, number_cd),
+        _digit_ok(dob_s, dob_cd),
+        _digit_ok(exp_s, exp_cd),
+        _optional_digit_ok(opt, opt_cd),
+        _digit_ok(composite, l2[43]),
     )
-
-
-# ── Text-only MRZ parser / validator ─────────────────────────────────────────
-def parse_mrz_lines(mrz_lines: list[str]) -> dict:
-    """
-    Parse and validate a list of MRZ text lines using passporteye's MRZ class.
-
-    Returns a result dict with keys: valid, valid_score, doc_type, country,
-    doc_number, dob, expiry, age, is_18_plus.  On failure: valid=False + error.
-    """
-    try:
-        from passporteye.mrz.text import MRZ as _TextMRZ
-    except ImportError as exc:
-        log.error("passporteye not available: %s", exc)
-        return {"valid": False, "error": "passporteye_unavailable"}
-
-    if not mrz_lines:
-        return {"valid": False, "error": "no_mrz_lines"}
-
-    mrz = _TextMRZ(mrz_lines)
-
-    if mrz.mrz_type is None:
-        return {"valid": False, "error": "unrecognised_mrz_format"}
-
-    # Require all check digits to pass — this is the anti-forgery guarantee.
-    if not mrz.valid:
-        return {
-            "valid":       False,
-            "error":       "checksum_failed",
-            "valid_score": mrz.valid_score,
-            "mrz_type":    mrz.mrz_type,
-        }
-
-    dob = _parse_dob(mrz.date_of_birth)
+    if not all(checks):
+        return MRZResult("invalid", detail="checksum_failed")
+    dob = _parse_yymmdd(dob_s, past=True)
     if dob is None:
-        return {"valid": False, "error": "dob_parse_failed"}
-
-    age       = _calc_age(dob)
-    is_18     = age >= 18
-
-    # Expiry in YYMMDD form — same century heuristic (docs issued now expire ≤ 10 years)
-    expiry_str = None
-    if mrz.expiration_date:
-        exp = _parse_dob(mrz.expiration_date)
-        expiry_str = exp.isoformat() if exp else None
-
-    return {
-        "valid":       True,
-        "valid_score": mrz.valid_score,
-        "mrz_type":    mrz.mrz_type,
-        "doc_type":    (mrz.type or "").replace("<", "").strip() or mrz.mrz_type[:2],
-        "country":     mrz.country,
-        "doc_number":  mrz.number,
-        "dob":         dob.isoformat(),   # kept internally; not forwarded to API callers
-        "age":         age,
-        "is_18_plus":  is_18,
-        "expiry":      expiry_str,
-    }
+        return MRZResult("invalid", detail="dob_unparseable")
+    surname, given = _names(l1[5:44])
+    return MRZResult("ok", MRZData(
+        doc_type=doc_type,
+        issuing_country=l1[2:5].replace("<", ""),
+        number=number.replace("<", ""),
+        surname=surname, given_names=given,
+        dob=dob, expiry=_parse_yymmdd(exp_s, past=False),
+    ))
 
 
-# ── Image-based MRZ detection ─────────────────────────────────────────────────
-def detect_mrz(image_bytes: bytes) -> dict:
-    """
-    Detect and parse the MRZ from a raw image.
-
-    The image is consumed entirely in-memory and never written to disk.
-
-    Args:
-        image_bytes: Raw bytes of any image format PIL can open (JPEG, PNG, etc.).
-
-    Returns:
-        On success: {
-            "valid": True, "doc_type": "P", "country": "USA",
-            "dob": "1985-01-01", "age": 40, "is_18_plus": True,
-            "doc_number": "L898902C3", "expiry": "2028-12-31",
-            "mrz_type": "TD3", "valid_score": 100
-        }
-        On failure: {"valid": False, "error": "<reason>"}
-    """
-    try:
-        from passporteye.mrz.image import read_mrz as _read_mrz
-    except ImportError as exc:
-        log.error("passporteye not available: %s", exc)
-        return {"valid": False, "error": "passporteye_unavailable"}
-
-    # Validate the image with PIL before handing the bytes to passporteye.
-    try:
-        pil_img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-        pil_img.verify()  # checks for truncation / corruption
-    except Exception as exc:
-        log.warning("image decode failed: %s", exc)
-        return {"valid": False, "error": "invalid_image"}
-
-    # passporteye.read_mrz accepts a file-like stream directly.
-    stream = io.BytesIO(image_bytes)
-    try:
-        mrz_obj = _read_mrz(stream)
-    except Exception as exc:
-        log.warning("passporteye pipeline error: %s", exc)
-        return {"valid": False, "error": "mrz_pipeline_error"}
-
-    if mrz_obj is None:
-        return {"valid": False, "error": "no_mrz_detected"}
-
-    # mrz_obj is a passporteye MRZ instance — delegate to the text parser
-    # by extracting the raw lines it detected.
-    try:
-        raw_text: str = mrz_obj.aux.get("raw_text", "")
-        lines = [l for l in raw_text.splitlines() if l.strip()]
-    except Exception:
-        lines = []
-
-    if not lines:
-        # Fallback: reconstruct lines from the structured fields passporteye
-        # already parsed (it uses the same text MRZ class internally).
-        from passporteye.mrz.text import MRZ as _TextMRZ
-        mrz_text = _TextMRZ.__new__(_TextMRZ)
-        mrz_text.__dict__.update(mrz_obj.__dict__)
-        # mrz_obj is already a fully parsed MRZ — re-parse its fields via
-        # our own wrapper to get uniform output.
-        return _from_passporteye_mrz(mrz_obj)
-
-    return parse_mrz_lines(lines)
-
-
-def _from_passporteye_mrz(mrz_obj) -> dict:
-    """
-    Convert a passporteye MRZ object (returned by read_mrz) into our result dict
-    without re-running OCR.  Used when raw_text lines are not available.
-    """
-    if mrz_obj.mrz_type is None:
-        return {"valid": False, "error": "unrecognised_mrz_format"}
-
-    if not mrz_obj.valid:
-        return {
-            "valid":       False,
-            "error":       "checksum_failed",
-            "valid_score": mrz_obj.valid_score,
-            "mrz_type":    mrz_obj.mrz_type,
-        }
-
-    dob = _parse_dob(mrz_obj.date_of_birth)
+def _parse_td1(l1: str, l2: str, l3: str) -> MRZResult:
+    doc_type = _doc_type(l1[0:2], "TD1")
+    if doc_type is None:
+        return MRZResult("invalid", detail="unsupported_document_code")
+    number, number_cd = l1[5:14], l1[14]
+    if number_cd == "<":
+        # Long document number (ICAO 9303-5 §4.2.2 note j): the number
+        # continues in optional data 1; its last character before the
+        # filler is the check digit of the whole number.
+        ext = l1[15:30].split("<", 1)[0]
+        if len(ext) < 2:
+            return MRZResult("invalid", detail="checksum_failed")
+        number, number_cd = number + ext[:-1], ext[-1]
+    dob_s, dob_cd = l2[0:6], l2[6]
+    exp_s, exp_cd = l2[8:14], l2[14]
+    composite = l1[5:30] + l2[0:7] + l2[8:15] + l2[18:29]
+    checks = (
+        _digit_ok(number, number_cd),
+        _digit_ok(dob_s, dob_cd),
+        _digit_ok(exp_s, exp_cd),
+        _digit_ok(composite, l2[29]),
+    )
+    if not all(checks):
+        return MRZResult("invalid", detail="checksum_failed")
+    dob = _parse_yymmdd(dob_s, past=True)
     if dob is None:
-        return {"valid": False, "error": "dob_parse_failed"}
+        return MRZResult("invalid", detail="dob_unparseable")
+    surname, given = _names(l3)
+    return MRZResult("ok", MRZData(
+        doc_type=doc_type,
+        issuing_country=l1[2:5].replace("<", ""),
+        number=number.replace("<", ""),
+        surname=surname, given_names=given,
+        dob=dob, expiry=_parse_yymmdd(exp_s, past=False),
+    ))
 
-    age     = _calc_age(dob)
-    expiry_str = None
-    if mrz_obj.expiration_date:
-        exp = _parse_dob(mrz_obj.expiration_date)
-        expiry_str = exp.isoformat() if exp else None
 
-    return {
-        "valid":       True,
-        "valid_score": mrz_obj.valid_score,
-        "mrz_type":    mrz_obj.mrz_type,
-        "doc_type":    (mrz_obj.type or "").replace("<", "").strip() or mrz_obj.mrz_type[:2],
-        "country":     mrz_obj.country,
-        "doc_number":  mrz_obj.number,
-        "dob":         dob.isoformat(),
-        "age":         age,
-        "is_18_plus":  age >= 18,
-        "expiry":      expiry_str,
-    }
+def parse_lines(lines: list[str]) -> MRZResult:
+    """Strictly parse already-cleaned MRZ lines (TD1: 3×30, TD3: 2×44)."""
+    lines = [ln.strip().upper() for ln in lines if ln.strip()]
+    if len(lines) == 2 and all(len(ln) == 44 for ln in lines):
+        return _parse_td3(*lines)
+    if len(lines) == 3 and all(len(ln) == 30 for ln in lines):
+        return _parse_td1(*lines)
+    return MRZResult("invalid", detail="unsupported_mrz_format")
+
+
+# ── OCR normalisation ─────────────────────────────────────────────────────────
+# Per-position character classes (ICAO 9303 layouts):
+#   a = letter, n = digit, * = any (no correction).
+# OCR confuses O/0, I/1, S/5, B/8, Z/2 and G/6; a confusable character is
+# corrected only where the layout allows exactly one class. Corrections can
+# never forge a pass: every corrected field is still bound by its check digit.
+_TD3_FMT = ("a" + "*" * 43,
+            "*" * 9 + "n" + "a" * 3 + "n" * 7 + "*" + "n" * 7 + "*" * 14 + "*" + "n")
+_TD1_FMT = ("a" + "*" + "a" * 3 + "*" * 25,
+            "n" * 7 + "*" + "n" * 7 + "a" * 3 + "*" * 11 + "n",
+            "*" * 30)
+_TO_LETTER = {"0": "O", "1": "I", "2": "Z", "5": "S", "6": "G", "8": "B"}
+_TO_DIGIT = {"O": "0", "Q": "0", "D": "0", "I": "1", "Z": "2", "S": "5", "G": "6", "B": "8"}
+_MRZ_ALPHABET = set("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789<")
+
+
+def _fix(line: str, fmt: str) -> str:
+    out = []
+    for ch, cls in zip(line, fmt):
+        if cls == "a" and ch != "<":
+            ch = _TO_LETTER.get(ch, ch)
+        elif cls == "n":
+            ch = _TO_DIGIT.get(ch, ch)
+        out.append(ch)
+    return "".join(out)
+
+
+def _candidate_lines(raw: str) -> list[str]:
+    lines = []
+    for ln in raw.upper().splitlines():
+        ln = ln.replace(" ", "")
+        if len(ln) in (30, 44) and set(ln) <= _MRZ_ALPHABET:
+            lines.append(ln)
+    return lines
+
+
+def _from_ocr_text(raw: str) -> MRZResult:
+    lines = _candidate_lines(raw)
+    td3 = [ln for ln in lines if len(ln) == 44]
+    td1 = [ln for ln in lines if len(ln) == 30]
+    if len(td3) >= 2:
+        l1, l2 = td3[-2], td3[-1]
+        return parse_lines([_fix(l1, _TD3_FMT[0]), _fix(l2, _TD3_FMT[1])])
+    if len(td1) >= 3:
+        l1, l2, l3 = td1[-3], td1[-2], td1[-1]
+        return parse_lines([_fix(l1, _TD1_FMT[0]), _fix(l2, _TD1_FMT[1]), l3])
+    return MRZResult("invalid", detail="unsupported_mrz_format")
+
+
+def read_mrz(img: Image.Image) -> MRZResult:
+    """
+    Locate, OCR and strictly validate the MRZ in a document image.
+    "absent" when no MRZ region is found; "invalid" when one is found but it
+    does not satisfy the TD1/TD3 layout and every check digit.
+    """
+    from passporteye.mrz.image import read_mrz as _pe_read_mrz
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    found = _pe_read_mrz(buf)
+    if found is None:
+        return MRZResult("absent")
+    raw = found.aux.get("raw_text") or ""
+    if "<" not in raw:
+        return MRZResult("absent")
+    return _from_ocr_text(raw)

@@ -1,9 +1,6 @@
 package handler
 
 import (
-	"bytes"
-	"context"
-	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
@@ -72,7 +69,7 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.openedSession(w, out.Result.SessionToken)
-	h.afterSignIn(r, out.Result.AccountID, out.Result.PIALID)
+	h.afterSignIn(r, out.Result.AccountID)
 
 	// Backup codes are mandatory. Gate every login until codes are generated.
 	if out.Result.NeedsBackupCodes {
@@ -81,64 +78,6 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	// Signing in changes the Shell (nav, account row, theme): a document load.
 	hxAwareRedirect(w, r, "/")
-}
-
-// loginRiskSignal sends device/UA signals to Verity on each login.
-// If risk score is too high, marks user for re-verification.
-func (h *Handler) loginRiskSignal(pialID string, r *http.Request) {
-	if h.cfg.VerityURL == "" || pialID == "" {
-		return
-	}
-	ua := r.UserAgent()
-	if len(ua) > 200 {
-		ua = ua[:200]
-	}
-	body, _ := json.Marshal(map[string]interface{}{
-		"pial_id":        pialID,
-		"signal":         "login",
-		"ip_reputation":  0.85,
-		"velocity_score": 0.0,
-		"context":        "user_login",
-	})
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		h.cfg.VerityURL+"/v1/risk/signal", bytes.NewReader(body))
-	if err != nil {
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-	// Verity's risk lane is service-to-service — an account may not clear its own
-	// score. feed-engine is the peer, so it holds the shared secret.
-	req.Header.Set("X-Internal-Key", h.cfg.InternalAPIKey)
-	resp, err := h.httpClient.Do(req)
-	if err != nil {
-		return
-	}
-	defer resp.Body.Close()
-	var result struct {
-		RiskScore float64 `json:"risk_score"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		log.Printf("[kyc] risk signal answer for %s unreadable: %v", pialID, err)
-		return
-	}
-	if result.RiskScore < 0.8 {
-		return
-	}
-	// High risk: the age verification is withdrawn until the person verifies
-	// again. That is an identity fact, so elohim-veni records it. If it does
-	// not, the account keeps a verification this pipeline decided it should
-	// not have, so the log must not claim the flag was applied.
-	unverified := false
-	if err := h.identity.Client().PutFacts(context.Background(), pialID, identity.FactsUpdate{
-		AgeVerified: &unverified, Source: "risk_signal",
-	}); err != nil {
-		log.Printf("[kyc] high risk login (%.2f) for %s but the re-verify flag FAILED to apply: %v",
-			result.RiskScore, pialID, err)
-		return
-	}
-	log.Printf("[kyc] high risk login (%.2f) — flagged %s for re-verify", result.RiskScore, pialID)
 }
 
 func (h *Handler) deactivatedPage(w http.ResponseWriter, r *http.Request) {

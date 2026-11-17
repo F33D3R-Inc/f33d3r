@@ -5,6 +5,8 @@ FACET home_feed_tabs
   inputs:
     User            *User      — nil-safe; drives NSFW tab visibility
     PinnedSurfaces  []Surface  — user-pinned interest surfaces
+    TopicTabs       []SportsTopicTab — a tab per league the viewer follows as
+                                 a topic (#nfl), opening that league's timeline
     SessionID       string     — forwarded to feed_surface_tabs
     Active          string     — the surface shown in #feed-container
     OOB             bool       — true when appended out of band to a works feed
@@ -31,6 +33,9 @@ FACET home_feed_tabs
   {{template "feed_tab" (dict "Surface" "following" "Label" "Following" "Active" (eq $a "following") "HasTopicFilter" false)}}
   {{template "feed_tab" (dict "Surface" "trending"  "Label" "Trending"  "Active" (eq $a "trending")  "HasTopicFilter" false)}}
   {{template "feed_tab" (dict "Surface" "feed"      "Label" "For You"   "Active" (eq $a "feed")      "HasTopicFilter" false)}}
+  {{range .TopicTabs}}
+    {{template "feed_tab" (dict "Surface" .Surface "Label" .Label "Active" (eq $a .Surface) "HasTopicFilter" false)}}
+  {{end}}
   {{if .User}}{{if .User.IsAdult}}{{if eq .User.ContentSetting "adult_enabled"}}
     {{template "feed_tab" (dict "Surface" "nsfw" "Label" "NSFW" "Active" (eq $a "nsfw") "HasTopicFilter" false)}}
   {{end}}{{end}}{{end}}

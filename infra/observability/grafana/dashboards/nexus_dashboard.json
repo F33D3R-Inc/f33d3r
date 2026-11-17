@@ -113,52 +113,6 @@
         "defaults": { "color": { "mode": "palette-classic" }, "custom": { "axisCenteredZero": false, "fillOpacity": 10, "lineWidth": 2 }, "unit": "reqps" },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
-      "id": 8,
-      "options": { "legend": { "calcs": ["rate"], "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
-      "title": "Biometric Hash Rate by Result",
-      "type": "timeseries",
-      "targets": [{
-        "datasource": { "type": "prometheus", "uid": "prometheus" },
-        "expr": "rate(ekyc_nexus_biometric_hashes_total[5m])",
-        "legendFormat": "{{result}}"
-      }]
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "fieldConfig": {
-        "defaults": { "color": { "mode": "palette-classic" }, "custom": { "axisCenteredZero": false, "fillOpacity": 10, "lineWidth": 2 }, "unit": "s" },
-        "overrides": []
-      },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
-      "id": 9,
-      "options": { "legend": { "calcs": ["mean", "p95"], "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
-      "title": "Hash Computation Latency (p50/p95/p99)",
-      "type": "timeseries",
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "histogram_quantile(0.50, rate(ekyc_nexus_hash_duration_seconds_bucket[5m]))",
-          "legendFormat": "p50"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "histogram_quantile(0.95, rate(ekyc_nexus_hash_duration_seconds_bucket[5m]))",
-          "legendFormat": "p95"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "histogram_quantile(0.99, rate(ekyc_nexus_hash_duration_seconds_bucket[5m]))",
-          "legendFormat": "p99"
-        }
-      ]
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "fieldConfig": {
-        "defaults": { "color": { "mode": "palette-classic" }, "custom": { "axisCenteredZero": false, "fillOpacity": 10, "lineWidth": 2 }, "unit": "reqps" },
-        "overrides": []
-      },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
       "id": 10,
       "options": { "legend": { "calcs": ["rate"], "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
@@ -166,8 +120,8 @@
       "type": "timeseries",
       "targets": [{
         "datasource": { "type": "prometheus", "uid": "prometheus" },
-        "expr": "rate(ekyc_verifications_total[5m])",
-        "legendFormat": "{{result}}"
+        "expr": "sum by (decision, purpose) (rate(ekyc_verify_decisions_total[5m]))",
+        "legendFormat": "{{decision}} · {{purpose}}"
       }]
     },
     {
@@ -184,12 +138,12 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "histogram_quantile(0.50, rate(ekyc_verification_duration_seconds_bucket[5m]))",
+          "expr": "histogram_quantile(0.50, rate(ekyc_verify_duration_seconds_bucket[5m]))",
           "legendFormat": "p50"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "histogram_quantile(0.95, rate(ekyc_verification_duration_seconds_bucket[5m]))",
+          "expr": "histogram_quantile(0.95, rate(ekyc_verify_duration_seconds_bucket[5m]))",
           "legendFormat": "p95"
         }
       ]

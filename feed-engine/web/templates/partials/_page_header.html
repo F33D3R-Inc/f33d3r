@@ -16,7 +16,6 @@ FACET page_header
     StatusLabel    string — optional status indicator label shown after the title row (e.g. "Live" / "Cached")
     StatusOK       bool   — true → green dot; false → dot--muted
     StatusTitle    string — tooltip title attribute on the status dot wrapper
-    VerityTier     int    — when > 0 renders a kyc-tier-badge span after the title
     HasMarkAllRead bool   — when true renders a "Mark all read" button aligned to the right (notifications page)
 
   states:
@@ -66,7 +65,6 @@ FACET page_header
   </div>
   {{- else}}
   <div class="main-head-title">{{.Title}}</div>
-  {{- if .VerityTier}}{{if gt .VerityTier 0}}<span class="kyc-tier-badge">Tier {{.VerityTier}}</span>{{end}}{{- end}}
   {{- if .Subtitle}}<div class="main-head-sub">{{.Subtitle}}</div>{{- end}}
   {{- if .HasMarkAllRead}}
   <button class="btn-ghost" style="font-size:12px;margin-left:auto" type="button"

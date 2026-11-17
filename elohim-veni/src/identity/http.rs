@@ -415,7 +415,8 @@ fn parse_dob(raw: Option<&str>) -> ApiResult<Option<NaiveDate>> {
 /// Two body shapes, one meaning each:
 ///
 /// The stated facts — {kyc_tier?, age_verified?, dob?, dob_locked?, source,
-/// account_id?}: each field present is set; is_adult / is_minor are worked out
+/// reason?, account_id?}: each field present is set; an admin source
+/// ("admin:<handle>") must carry a reason, recorded in the ledger; is_adult / is_minor are worked out
 /// here from the date of birth (pial::set_facts_direct).
 ///
 /// The operations — {dob?, dob_documented?, kyc?: {verified, tier?}, by,
@@ -434,6 +435,11 @@ pub async fn put_facts(
         Some(v) => Some(serde_json::from_value::<Uuid>(v.clone()).map_err(|_| bad_json("account_id must be a UUID"))?),
     };
     let dob = parse_dob(body.get("dob").and_then(Value::as_str))?;
+    let reason: Option<String> = match body.get("reason") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(r)) => Some(r.trim().chars().take(500).collect::<String>()).filter(|r| !r.is_empty()),
+        Some(_) => return Err(bad_json("reason must be a string")),
+    };
     let operations = body.get("kyc").is_some() || body.get("dob_documented").is_some();
     let mut tx = state.pool.begin().await?;
     if operations {
@@ -456,6 +462,7 @@ pub async fn put_facts(
             dob_documented: body["dob_documented"].as_bool().unwrap_or(false),
             kyc,
             by,
+            reason,
             account_id,
         })
         .await?;
@@ -479,6 +486,7 @@ pub async fn put_facts(
             dob_locked: bool_field("dob_locked")?,
             source: body["source"].as_str().or(body["by"].as_str()).map(str::trim).filter(|s| !s.is_empty())
                 .unwrap_or("unspecified").to_string(),
+            reason,
             account_id,
         };
         if facts.kyc_tier.is_none() && facts.age_verified.is_none() && facts.dob.is_none() && facts.dob_locked.is_none() {

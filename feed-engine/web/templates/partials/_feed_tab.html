@@ -14,7 +14,9 @@ FACET feed_tab
   children: none
 
   signals:
-    emits:    GET /facets/works/feed?surface=<Surface> → #feed-container; the
+    emits:    GET /facets/works/feed?surface=<Surface>&placement=home
+              → #feed-container (placement=home names Home's Playground, the
+              only place timeline frames are drawn); the
               answer carries the whole tab strip re-rendered out of band with
               this tab active, so no page script toggles a class
     receives: none
@@ -25,7 +27,7 @@ FACET feed_tab
 {{define "feed_tab"}}
 <button class="feed-tab{{if .Active}} is-active{{end}}"
         data-surface="{{.Surface}}"
-        hx-get="/facets/works/feed?surface={{.Surface}}"
+        hx-get="/facets/works/feed?surface={{.Surface}}&placement=home"
         hx-target="#feed-container"
         hx-swap="innerHTML"
         hx-push-url="/?surface={{.Surface}}"

@@ -434,6 +434,11 @@ func (h *Handler) createWork(ctx context.Context, user *model.User, rawBody map[
 	if bad != nil {
 		return bad
 	}
+	if draft.IsNSFW {
+		if refused := h.adultPublishGate(ctx, user); refused != nil {
+			return refused
+		}
+	}
 	outcome, err := dbpkg.InsertWork(h.db, *draft)
 	if err != nil {
 		return &workCreateAnswer{State: WorkStateServerError, Detail: err.Error()}

@@ -40,6 +40,7 @@ func (h *Handler) indexPage(w http.ResponseWriter, r *http.Request) {
 		"Themes":         ThemesWithActive(user.ThemeID),
 		"EngineOnline":   h.engineOnline(r.Context()),
 		"PinnedSurfaces": pinnedSurfaces,
+		"TopicTabs":      h.sportsTopicTabs(user),
 	}, user, "feed"))
 }
 

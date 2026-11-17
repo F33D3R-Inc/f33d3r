@@ -137,6 +137,11 @@ func (h *Handler) facetWorksFeed(w http.ResponseWriter, r *http.Request) {
 		ExcludeID: r.URL.Query().Get("exclude_id"),
 		Terms:     r.URL.Query()["term"],
 	}
+	// Only Home's Playground carries frames; the server writes this into the
+	// addresses Home asks for, and into every next-page address after them.
+	if r.URL.Query().Get("placement") == timelinePlacementHome {
+		q.Placement = timelinePlacementHome
+	}
 	if strings.HasPrefix(surface, "profile_") && surface != "profile_saves" && q.Handle == "" {
 		http.Error(w, "handle required", http.StatusBadRequest)
 		return
@@ -194,21 +199,9 @@ func (h *Handler) facetWorksFeed(w http.ResponseWriter, r *http.Request) {
 	// page toggled on itself.
 	h.writeFeedTabsOOB(w, r, user, surface)
 
-	// Facet(sports_strip) — the slate is the head lane of the sports surface and
-	// of nothing else. It is written here, ahead of the works, because this
-	// response IS the Playground content for the requested surface: switching to
-	// another tab replaces this container and the strip goes with it, which is
-	// what keeps the Home feed from carrying the same games the right rail is
-	// already carrying persistently. Head lanes are not paginated, so it is
-	// written on the first page only and can never reappear on page 2.
-	// One strip per league, in the order sportsStripsData decides: a league with
-	// something being played leads, and a league with nothing on writes nothing
-	// at all — no header, no empty row.
-	if surfaceDef != nil && surfaceDef.ID == sportsSurfaceID && before == "" {
-		for _, strip := range h.sportsStripsData() {
-			h.renderPartial(w, "sports_strip", strip)
-		}
-	}
+	// Frames — the scoreboards and game cards placed among this page's works.
+	// A frame that fails is left out; the works are served either way.
+	frames := h.sportsTimelineFrames(spec, q, before == "", len(cards))
 
 	if len(cards) == 0 && before == "" && result.Next == "" {
 		empty := spec.Empty
@@ -218,15 +211,15 @@ func (h *Handler) facetWorksFeed(w http.ResponseWriter, r *http.Request) {
 				"Works tagged for this feed will appear here",
 			}
 		}
+		// A league with no posts yet still has its scoreboard pinned above.
+		writeTimeline(w, nil, frames)
 		h.renderPartial(w, "stateEmpty", map[string]interface{}{
 			"Title": empty.Title,
 			"Sub":   empty.Sub,
 		})
 		return
 	}
-	for _, c := range cards {
-		_, _ = w.Write([]byte(c.Fragment))
-	}
+	writeTimeline(w, cards, frames)
 	if result.Next != "" {
 		h.renderPartial(w, "feed_sentinel", map[string]interface{}{"URL": timelineNextURL(surface, q, result.Next), "Cursor": result.Next})
 	}
@@ -261,6 +254,7 @@ func (h *Handler) writeFeedTabsOOB(w http.ResponseWriter, r *http.Request, viewe
 		h.renderPartial(w, "home_feed_tabs", map[string]interface{}{
 			"User":           viewer,
 			"PinnedSurfaces": pinned,
+			"TopicTabs":      h.sportsTopicTabs(viewer),
 			"SessionID":      q.Get("session_id"),
 			"Active":         homeTabSurface(surface),
 			"OOB":            true,

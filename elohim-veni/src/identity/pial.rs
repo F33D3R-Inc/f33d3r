@@ -73,7 +73,7 @@ pub async fn mint(conn: &mut PgConnection, dob: NaiveDate, role: &str) -> anyhow
 // ── Facts ─────────────────────────────────────────────────────────────────────
 
 pub enum Kyc {
-    /// SetPIALVerified, with the requested tier (basic | soft | full).
+    /// SetPIALVerified, with the requested tier (basic | full).
     Verify(Option<String>),
     /// SetPIALUnverified.
     Unverify,
@@ -86,10 +86,18 @@ pub struct FactsChange {
     pub dob_documented: bool,
     pub kyc: Option<Kyc>,
     pub by: String,
+    /// Why; required when `by` is an admin ("admin:<handle>").
+    pub reason: Option<String>,
     pub account_id: Option<Uuid>,
 }
 
 pub async fn set_facts(conn: &mut PgConnection, pial_id: Uuid, change: FactsChange) -> ApiResult<()> {
+    if change.by.starts_with("admin:") && change.reason.as_deref().map_or(true, |r| r.trim().is_empty()) {
+        return Err(ApiError::bad_request(
+            "reason_required",
+            "An admin change to identity facts names its reason.",
+        ));
+    }
     let (status, _) = lock(conn, pial_id).await?;
     if vocab::is_gone(&status) {
         return Err(ApiError::conflict("pial_tombstoned", "This identity no longer exists."));
@@ -141,10 +149,17 @@ pub async fn set_facts(conn: &mut PgConnection, pial_id: Uuid, change: FactsChan
 
     match change.kyc {
         Some(Kyc::Verify(tier)) => {
-            // SetPIALVerified. An unknown tier becomes 'soft', as it did there.
+            // SetPIALVerified. The tier is named; an unnamed or unknown one is
+            // refused (it used to become the MRZ-only 'soft' tier, now retired
+            // by migration 0005).
             let tier = match tier.as_deref() {
-                Some(t @ ("basic" | "soft" | "full")) => t.to_string(),
-                _ => "soft".to_string(),
+                Some(t @ ("basic" | "full")) => t.to_string(),
+                _ => {
+                    return Err(ApiError::bad_request(
+                        "invalid_kyc_tier",
+                        "kyc.tier is basic or full.",
+                    ))
+                }
             };
             sqlx::query(
                 "UPDATE pial_states
@@ -157,7 +172,7 @@ pub async fn set_facts(conn: &mut PgConnection, pial_id: Uuid, change: FactsChan
             .execute(&mut *conn)
             .await?;
             ledger::append(conn, pial_id, change.account_id, "age_verified",
-                json!({ "tier": tier, "granted_by": change.by }), &change.by).await?;
+                json!({ "tier": tier, "granted_by": change.by, "reason": change.reason }), &change.by).await?;
             changed.push("kyc");
         }
         Some(Kyc::Unverify) => {
@@ -174,7 +189,7 @@ pub async fn set_facts(conn: &mut PgConnection, pial_id: Uuid, change: FactsChan
             .execute(&mut *conn)
             .await?;
             ledger::append(conn, pial_id, change.account_id, "age_unverified",
-                json!({ "granted_by": change.by }), &change.by).await?;
+                json!({ "granted_by": change.by, "reason": change.reason }), &change.by).await?;
             changed.push("kyc");
         }
         None => {}
@@ -186,7 +201,7 @@ pub async fn set_facts(conn: &mut PgConnection, pial_id: Uuid, change: FactsChan
 /// The facts as a writer states them (feed-engine's PIAL setters, carried
 /// over as one body): any of kyc_tier, age_verified, dob, dob_locked. is_adult
 /// and is_minor are never sent; they are worked out here — from the date of
-/// birth when one is on file, and as adult for a documented (soft/full)
+/// birth when one is on file, and as adult for a documented (full)
 /// verification without one, as SetPIALVerified did. A date of birth is not
 /// rewritten once locked unless the same write locks it again (a documented
 /// date replacing a self-reported one).
@@ -196,6 +211,10 @@ pub struct DirectFacts {
     pub dob: Option<NaiveDate>,
     pub dob_locked: Option<bool>,
     pub source: String,
+    /// Why the change was made. Required when the source is an admin
+    /// ("admin:<handle>"): a person overriding a verification says why, and
+    /// the reason is recorded in the ledger with the change.
+    pub reason: Option<String>,
     pub account_id: Option<Uuid>,
 }
 
@@ -205,9 +224,15 @@ pub async fn set_facts_direct(conn: &mut PgConnection, pial_id: Uuid, f: DirectF
         return Err(ApiError::conflict("pial_tombstoned", "This identity no longer exists."));
     }
     if let Some(tier) = &f.kyc_tier {
-        if !matches!(tier.as_str(), "none" | "basic" | "soft" | "full") {
-            return Err(ApiError::bad_request("invalid_kyc_tier", "kyc_tier is none, basic, soft or full."));
+        if !matches!(tier.as_str(), "none" | "basic" | "full") {
+            return Err(ApiError::bad_request("invalid_kyc_tier", "kyc_tier is none, basic or full."));
         }
+    }
+    if f.source.starts_with("admin:") && f.reason.as_deref().map_or(true, |r| r.trim().is_empty()) {
+        return Err(ApiError::bad_request(
+            "reason_required",
+            "An admin change to identity facts names its reason.",
+        ));
     }
     if let Some(dob) = f.dob {
         if dob > Utc::now().date_naive() {
@@ -226,7 +251,7 @@ pub async fn set_facts_direct(conn: &mut PgConnection, pial_id: Uuid, f: DirectF
         "UPDATE pial_states SET
              dob             = COALESCE($2::date, dob),
              dob_locked      = COALESCE($3, dob_locked),
-             kyc_verified_at = CASE WHEN $4::text IN ('soft','full') AND $4::text IS DISTINCT FROM kyc_tier
+             kyc_verified_at = CASE WHEN $4::text = 'full' AND $4::text IS DISTINCT FROM kyc_tier
                                     THEN NOW() ELSE kyc_verified_at END,
              kyc_tier        = COALESCE($4, kyc_tier),
              age_verified    = COALESCE($5, age_verified),
@@ -243,10 +268,10 @@ pub async fn set_facts_direct(conn: &mut PgConnection, pial_id: Uuid, f: DirectF
     sqlx::query(
         "UPDATE pial_states SET
              is_adult = CASE WHEN dob IS NOT NULL THEN date_part('year', age(dob)) >= 18
-                             WHEN age_verified AND kyc_tier IN ('soft','full') THEN TRUE
+                             WHEN age_verified AND kyc_tier = 'full' THEN TRUE
                              ELSE is_adult END,
              is_minor = CASE WHEN dob IS NOT NULL THEN date_part('year', age(dob)) < 18
-                             WHEN age_verified AND kyc_tier IN ('soft','full') THEN FALSE
+                             WHEN age_verified AND kyc_tier = 'full' THEN FALSE
                              ELSE is_minor END
           WHERE pial_id = $1",
     )
@@ -256,6 +281,7 @@ pub async fn set_facts_direct(conn: &mut PgConnection, pial_id: Uuid, f: DirectF
     let detail = json!({
         "kyc_tier": f.kyc_tier, "age_verified": f.age_verified,
         "dob_set": f.dob.is_some(), "dob_locked": f.dob_locked, "source": f.source,
+        "reason": f.reason,
     });
     ledger::append(conn, pial_id, f.account_id, "facts_set", detail.clone(), &f.source).await?;
     events::emit_pial(conn, pial_id, "pial.facts_changed", detail).await?;

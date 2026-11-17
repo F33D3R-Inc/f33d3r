@@ -101,6 +101,11 @@ type sseSession struct {
 	// bound: it neither counts toward it nor is evicted by it. See
 	// maxSSEConnsPerUser.
 	room bool
+	// native marks a stream held by a native Shell (Android) rather than by the
+	// web runtime. A native Shell applies the fragments it is sent but cannot
+	// say which surfaces it has on screen, so the few lanes that still address
+	// it by event name (sports_facet) reach these sessions and no others.
+	native bool
 }
 
 // userSessions holds every live SSE session under one registry key — one entry per connected device
@@ -194,7 +199,14 @@ func removeFromRegistry(reg *sync.Map, key string, s *sseSession) {
 // signals (notifications/wallet/likes). pial may be "" (anonymous/no identity) — then only the
 // account index is used. The connection set is bounded per ACCOUNT (evict-oldest).
 func RegisterSSESession(account, pial string) (<-chan SSEEvent, <-chan struct{}, func()) {
-	return registerSSESession(account, pial, false)
+	return registerSSESession(account, pial, false, false)
+}
+
+// RegisterNativeSSESession is RegisterSSESession for a native Shell's stream.
+// It is bounded and evicted exactly like a web stream; it differs only in also
+// receiving the native-only lanes (see deliverNative).
+func RegisterNativeSSESession(account, pial string) (<-chan SSEEvent, <-chan struct{}, func()) {
+	return registerSSESession(account, pial, false, true)
 }
 
 // RegisterRoomSSESession registers a stream held onto a PLACE — a live room, a frequency room —
@@ -203,10 +215,10 @@ func RegisterSSESession(account, pial string) (<-chan SSEEvent, <-chan struct{},
 // maxSSEConnsPerUser nor is ever chosen as the oldest session to evict. Being in a room must never
 // cost the user the stream that carries their notifications.
 func RegisterRoomSSESession(account, pial string) (<-chan SSEEvent, <-chan struct{}, func()) {
-	return registerSSESession(account, pial, true)
+	return registerSSESession(account, pial, true, false)
 }
 
-func registerSSESession(account, pial string, room bool) (<-chan SSEEvent, <-chan struct{}, func()) {
+func registerSSESession(account, pial string, room, native bool) (<-chan SSEEvent, <-chan struct{}, func()) {
 	s := &sseSession{
 		high:    make(chan SSEEvent, sseBufferSize),
 		low:     make(chan SSEEvent, sseBufferSize),
@@ -218,6 +230,7 @@ func registerSSESession(account, pial string, room bool) (<-chan SSEEvent, <-cha
 		account: account,
 		pial:    pial,
 		room:    room,
+		native:  native,
 	}
 
 	acctBucket := addToRegistry(&accountRegistry, account, s)
@@ -645,6 +658,57 @@ func PublishToUser(pial string, event SSEEvent) {
 // PublishToPostWatchers pushes an event to every person currently watching postID.
 func PublishToPostWatchers(postID string, event SSEEvent) {
 	publishLive(liveKindPost, postID, event)
+}
+
+// deliverNative hands an event to every native-Shell stream on this replica and
+// to nothing else. It is unnumbered and unlogged: every fragment on a native
+// lane is a complete snapshot of its Facet, so a native Shell that missed one
+// is corrected by the next and has nothing to replay.
+func deliverNative(event SSEEvent) {
+	event.ID = 0
+	accountRegistry.Range(func(_, v interface{}) bool {
+		us := v.(*userSessions)
+		us.mu.RLock()
+		for s := range us.sessions {
+			if s.native {
+				s.offer(event)
+			}
+		}
+		us.mu.RUnlock()
+		return true
+	})
+}
+
+// deliverWatchedLocal numbers an event and hands it to the people on THIS
+// replica watching key, without relaying it. It is for lanes every replica
+// produces for itself — a poller that runs on each replica — where relaying
+// would deliver every update once per replica.
+func deliverWatchedLocal(key string, event SSEEvent) {
+	event.ID = nextLiveID()
+	deliverLive(liveKindPost, key, event)
+}
+
+// watchedKeysWithPrefix lists the distinct watch keys on this replica that
+// begin with prefix, with the prefix removed. It is how a lane that produces
+// work per watched thing (a game page's poller) learns what is being watched,
+// from the same registry that delivers to the watchers.
+func watchedKeysWithPrefix(prefix string) []string {
+	seen := map[string]bool{}
+	var out []string
+	pialRegistry.Range(func(_, v interface{}) bool {
+		us := v.(*userSessions)
+		us.mu.RLock()
+		for key := range us.ctx.postIDs {
+			if rest, ok := strings.CutPrefix(key, prefix); ok && !seen[rest] {
+				seen[rest] = true
+				out = append(out, rest)
+			}
+		}
+		us.mu.RUnlock()
+		return true
+	})
+	sort.Strings(out)
+	return out
 }
 
 // PublishToAllSessions broadcasts an event to every active connection.

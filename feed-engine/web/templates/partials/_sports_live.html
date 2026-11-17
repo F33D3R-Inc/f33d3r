@@ -1,0 +1,249 @@
+{{/*
+FACET sports_tile
+  version: 1.0 | status: stable | layer: 2 (composite)
+
+  One game as a card in a scoreboard row or the hub's Games grid.
+
+    live       red dot, period and clock, both clubs with records, both scores,
+               the possession marker, how many people are watching, and a
+               "Join chat" button to the game page's chat
+    final      "Final" (or "Final/OT"), the winner emphasised, "View game"
+    scheduled  the kickoff time in the league's own zone, the broadcaster,
+               "View game"
+    every other state reads its own words from sports.Game.StatusLabel
+
+  The card is an article, not a link: it holds two destinations (the game and
+  its chat), and a link inside a link is not a thing a browser can honour. The
+  team rows are the link to the game.
+
+  inputs:
+    SportsTileData — .Game .Surface ("tile") .Stale .Audience
+                     .FacetID .WatchID .Href .ChatHref .Clock .Score .AudienceFacet
+
+  states:
+    scheduled | in_progress | halftime | end_period | delayed | postponed
+    | canceled | final | unknown ; stale
+
+  children:
+    sports_live_clock, sports_live_score (×2), sports_live_audience
+
+  signals:
+    emits:    watch sports:tile:<game> while on screen
+    receives: facet.mutate — the whole tile on a structural change; its atomic
+              children when only a score, the clock or the audience moved
+
+  context:
+    sports_scoreboard → the row; sports_games → the Games tab grid
+*/}}
+{{define "sports_tile"}}
+{{$g := .Game}}
+<article class="sp-tile sp-tile--{{$g.State}}{{if $g.Live}} is-live{{end}}{{if .Stale}} is-stale{{end}}"
+         data-facet-id="{{.FacetID}}"
+         data-watch-id="{{.WatchID}}"
+         data-state="{{$g.State}}">
+  <header class="sp-tile__head">
+    {{template "sports_live_clock" .Clock}}
+    {{if $g.Broadcast}}<span class="sp-tile__tv">{{$g.Broadcast}}</span>{{end}}
+  </header>
+  <a class="sp-tile__teams" href="{{.Href}}" aria-label="{{$g.Matchup}}, view game">
+    {{template "sports_team_row" (dict "Side" $g.Away "Live" $g.Live "Lost" (and $g.Final $g.HomeLeads) "Score" (.Score "away"))}}
+    {{template "sports_team_row" (dict "Side" $g.Home "Live" $g.Live "Lost" (and $g.Final $g.AwayLeads) "Score" (.Score "home"))}}
+  </a>
+  <footer class="sp-tile__foot">
+    {{if $g.Live}}
+    {{template "sports_live_audience" .AudienceFacet}}
+    <a class="sp-btn sp-btn--primary" href="{{.ChatHref}}">Join chat</a>
+    {{else}}
+    <a class="sp-tile__view" href="{{.Href}}">View game</a>
+    {{end}}
+  </footer>
+</article>
+{{end}}
+
+{{/* One club's row inside a tile or a frame. Markup owned by the parent
+     Facet; the score inside it is its own atomic Facet. */}}
+{{define "sports_team_row"}}
+<div class="sp-team{{if .Lost}} sp-team--lost{{end}}">
+  {{if .Side.Team.LogoURL}}<img class="sp-team__logo" src="{{.Side.Team.LogoURL}}" alt="" width="24" height="24" loading="lazy" decoding="async">{{else}}<span class="sp-team__logo" aria-hidden="true">{{.Side.Team.Initials}}</span>{{end}}
+  <span class="sp-team__abbr" aria-hidden="true">{{.Side.Team.Label}}</span>
+  <span class="sr-only">{{.Side.Team.Name}}</span>
+  {{if .Side.Team.Record}}<span class="sp-team__record">{{.Side.Team.Record}}</span>{{end}}
+  {{if and .Live .Side.HasBall}}<span class="sp-team__ball" title="Possession"><span aria-hidden="true"></span><span class="sr-only">has possession</span></span>{{end}}
+  {{template "sports_live_score" .Score}}
+</div>
+{{end}}
+
+{{/*
+FACET sports_frame
+  version: 1.0 | status: stable | layer: 2 (composite)
+
+  One game as a card among a timeline's works — the rotating card For You
+  places every seventh work for a viewer who follows the league. It is the wide
+  shape of the same game: both clubs face each other across the condition, the
+  way a broadcast scoreboard reads, with the down and distance under the clock
+  while a football game is being played.
+
+  inputs:
+    SportsTileData — as sports_tile, with .Surface "frame"
+
+  states:
+    as sports_tile
+
+  children:
+    sports_live_clock, sports_live_score (×2), sports_live_audience
+
+  signals:
+    emits:    watch sports:frame:<game> while on screen
+    receives: facet.mutate — as sports_tile, addressed to the frame's own ids
+
+  context:
+    playground → among the works of For You, placed by sportsTimelineFrames
+*/}}
+{{define "sports_frame"}}
+{{$g := .Game}}
+<article class="sp-frame sp-frame--{{$g.State}}{{if $g.Live}} is-live{{end}}{{if .Stale}} is-stale{{end}}"
+         data-facet-id="{{.FacetID}}"
+         data-watch-id="{{.WatchID}}"
+         data-state="{{$g.State}}">
+  <header class="sp-frame__head">
+    <span class="sp-frame__league">{{$g.LeagueLabel}}</span>
+    {{if $g.WeekLabel}}<span class="sp-frame__meta">{{$g.WeekLabel}}</span>{{end}}
+    {{if $g.Broadcast}}<span class="sp-frame__meta">{{$g.Broadcast}}</span>{{end}}
+  </header>
+  <a class="sp-frame__board" href="{{.Href}}" aria-label="{{$g.Matchup}}, view game">
+    {{template "sports_frame_side" (dict "Side" $g.Away "Live" $g.Live "Lost" (and $g.Final $g.HomeLeads) "Score" (.Score "away") "End" "away")}}
+    <div class="sp-frame__status">
+      {{template "sports_live_clock" .Clock}}
+      {{if and $g.Live $g.DownDistance}}
+      <span class="sp-frame__down">{{$g.DownDistance}}{{if $g.PossessionText}} at {{$g.PossessionText}}{{end}}</span>
+      {{end}}
+      {{if and $g.Live $g.RedZone}}<span class="sp-frame__redzone">Red zone</span>{{end}}
+    </div>
+    {{template "sports_frame_side" (dict "Side" $g.Home "Live" $g.Live "Lost" (and $g.Final $g.AwayLeads) "Score" (.Score "home") "End" "home")}}
+  </a>
+  <footer class="sp-frame__foot">
+    {{if $g.Live}}{{template "sports_live_audience" .AudienceFacet}}{{end}}
+    <span class="sp-frame__actions">
+      <a class="sp-btn" href="{{.Href}}">View game</a>
+      {{if $g.Live}}<a class="sp-btn sp-btn--primary" href="{{.ChatHref}}">Join chat</a>{{end}}
+    </span>
+  </footer>
+</article>
+{{end}}
+
+{{/* One club's half of a frame. Markup owned by sports_frame. */}}
+{{define "sports_frame_side"}}
+<div class="sp-frame__side sp-frame__side--{{.End}}{{if .Lost}} sp-team--lost{{end}}">
+  <span class="sp-frame__club">
+    {{if .Side.Team.LogoURL}}<img class="sp-frame__logo" src="{{.Side.Team.LogoURL}}" alt="" width="40" height="40" loading="lazy" decoding="async">{{else}}<span class="sp-frame__logo" aria-hidden="true">{{.Side.Team.Initials}}</span>{{end}}
+    <span class="sp-frame__abbr" aria-hidden="true">{{.Side.Team.Label}}</span>
+    <span class="sr-only">{{.Side.Team.Name}}</span>
+    {{if .Side.Team.Record}}<span class="sp-team__record">{{.Side.Team.Record}}</span>{{end}}
+  </span>
+  <span class="sp-frame__score">
+    {{template "sports_live_score" .Score}}
+    {{if and .Live .Side.HasBall}}<span class="sp-team__ball" title="Possession"><span aria-hidden="true"></span><span class="sr-only">has possession</span></span>{{end}}
+  </span>
+</div>
+{{end}}
+
+{{/*
+FACET sports_live_score
+  version: 1.0 | status: stable | layer: 1 (atomic)
+
+  One side's score in a tile or a frame. Before a game starts there is no
+  score: the fragment shows an em dash and says why. A pushed fragment whose
+  number just moved carries is-changed, which plays the score-change animation
+  once as the fragment lands; a page render never carries it.
+
+  inputs:
+    SportsLiveScoreData — .FacetID .Team .Score .Show .Reason .Leading .Changed
+
+  states:
+    unplayed | trailing | leading ; changed (pushed only)
+
+  children: none
+
+  signals:
+    emits:    none
+    receives: facet.mutate on a scoring play
+
+  context:
+    sports_tile, sports_frame → beside the club
+*/}}
+{{define "sports_live_score"}}
+<span class="sp-score{{if .Leading}} sp-score--lead{{end}}{{if not .Show}} sp-score--none{{end}}{{if .Changed}} is-changed{{end}}"
+      data-facet-id="{{.FacetID}}">
+  {{- if .Show -}}
+  <span class="sr-only">{{.Team.Name}} score </span>{{.Score}}
+  {{- else -}}
+  <span class="sr-only">{{.Team.Name}} has not scored — {{.Reason}}</span><span aria-hidden="true">—</span>
+  {{- end -}}
+</span>
+{{end}}
+
+{{/*
+FACET sports_live_clock
+  version: 1.0 | status: stable | layer: 1 (atomic)
+
+  The game's condition in one line: the kickoff time before, a red LIVE dot
+  with the clock and period during, "Halftime" or "End 3rd" between, "Final"
+  after. Every word comes from sports.Game; the screen reader hears the
+  sentence (SpokenStatus) and never the abbreviation.
+
+  inputs:
+    SportsLiveClockData — .FacetID .Game .Stale
+
+  states:
+    every sports.State ; stale
+
+  children: none
+
+  signals:
+    emits:    none
+    receives: facet.mutate on every clock change
+
+  context:
+    sports_tile head, sports_frame centre
+*/}}
+{{define "sports_live_clock"}}
+{{$g := .Game}}
+<span class="sp-clock sp-clock--{{$g.State}}{{if .Stale}} is-stale{{end}}" data-facet-id="{{.FacetID}}">
+  {{if $g.Live}}<span class="sp-clock__live" aria-hidden="true"><span class="sp-clock__dot"></span>Live</span>{{end}}
+  <span class="sp-clock__label" aria-hidden="true">{{$g.StatusLabel}}</span>
+  <span class="sr-only">{{$g.SpokenStatus}}</span>
+  {{if .Stale}}<span class="sp-clock__stale" title="The score feed has not answered recently">delayed feed</span>{{end}}
+</span>
+{{end}}
+
+{{/*
+FACET sports_live_audience
+  version: 1.0 | status: stable | layer: 1 (atomic)
+
+  How many people have this game on screen right now, counted on the server at
+  each poll. Nothing at all before anyone is counted: a "0 watching" is not
+  worth the space, and the Join chat button beside it already says the room is
+  open.
+
+  inputs:
+    SportsLiveAudienceData — .FacetID .Live .Count
+
+  states:
+    empty | counted
+
+  children: none
+
+  signals:
+    emits:    none
+    receives: facet.mutate when the count moves
+
+  context:
+    sports_tile foot, sports_frame foot — only while the game is live
+*/}}
+{{define "sports_live_audience"}}
+<span class="sp-audience" data-facet-id="{{.FacetID}}">
+  {{- if and .Live (gt .Count 0) -}}
+  <span class="sp-audience__icon" aria-hidden="true"></span>{{fmtNum .Count}} watching
+  {{- end -}}
+</span>
+{{end}}

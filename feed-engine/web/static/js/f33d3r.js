@@ -324,8 +324,6 @@ window.F33D3R = window.F33D3R || {};
     // (viewer tally, LIVE badge, player, feed card). live-chat.js applies them.
     es.addEventListener('live_chat',       function(e) { window._onSSELiveChat       && window._onSSELiveChat(e);       });
     es.addEventListener('live_facet',      function(e) { window._onSSELiveFacet      && window._onSSELiveFacet(e);      });
-    // Sports lane: a re-rendered game Facet (strip, card, score, clock, rail).
-    es.addEventListener('sports_facet',    function(e) { window._onSSESportsFacet    && window._onSSESportsFacet(e);    });
     // Gnosis: a new message bubble arrived. Append it live if its thread is open,
     // otherwise bump the Messages badge and refresh the conversation list (if shown).
     es.addEventListener('gnosis_message', function(e) {
@@ -402,11 +400,6 @@ window._onSSEPostEngagement = function(e) {
   }
 };
 
-// sports_facet: the server sends a complete, already-rendered sports Facet.
-// The browser's whole job is to find the element that claims that facet id and
-// swap it for the fragment. It parses no score, derives no clock and decides
-// nothing about the game — if the page does not mount that facet, nothing
-// happens. Rendering stays on the server; this is a projection surface.
 // Applies one facet.mutate event. The server has already rendered the fragment;
 // this only finds where it goes. A Facet that is not on this page is not an
 // error, because a person's stream carries changes for surfaces they are not on.
@@ -452,19 +445,6 @@ window._applyFacetMutation = function(raw) {
     if (m.mode === 'prepend') parent.prepend(frag); else parent.append(frag);
     settle(frag);
   });
-};
-
-window._onSSESportsFacet = function(e) {
-  if (!e.data) return;
-  var tmp = document.createElement('div');
-  tmp.innerHTML = e.data.trim();
-  var incoming = tmp.firstElementChild;
-  if (!incoming) return;
-  var facetID = incoming.getAttribute('data-facet-id');
-  if (!facetID) return;
-  var target = document.querySelector('[data-facet-id="' + facetID + '"]');
-  if (!target) return;
-  target.replaceWith(incoming);
 };
 
 window._onSSEPriceUpdate = function(e) {

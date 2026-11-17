@@ -196,6 +196,8 @@ type espnCompetitor struct {
 		DisplayName      string `json:"displayName"`
 		ShortDisplayName string `json:"shortDisplayName"`
 		Logo             string `json:"logo"`
+		Color            string `json:"color"`
+		AlternateColor   string `json:"alternateColor"`
 	} `json:"team"`
 	// Records is the club's win-loss summary. The shape is league-neutral: the
 	// NFL sends [{"type":"total","summary":"0-1"}] and the NBA sends
@@ -259,10 +261,9 @@ func (p *espnProvider) game(doc espnScoreboard, ev espnEvent) (Game, bool) {
 		League:      p.league.Slug,
 		LeagueLabel: p.league.Label,
 		SeasonYear:  doc.Season.Year,
-		State:       espnState(st),
-		Period:      st.Period,
 		Venue:       comp.Venue.FullName,
 	}
+	applyESPNStatus(&g, st)
 	// The week label exists only where the league has weeks. Verified against
 	// the upstream: the NFL scoreboard carries {"week":{"number":1}} and the NBA
 	// scoreboard carries no week object at all — the NBA schedule is a calendar
@@ -287,19 +288,6 @@ func (p *espnProvider) game(doc espnScoreboard, ev espnEvent) (Game, bool) {
 	// silently landing on the zero time, which would print a wrong kickoff.
 	g.Start = parseESPNTime(date)
 
-	// The clock is only meaningful while the game is live. Carrying "0:00" into a
-	// scheduled or final card would put a stopped clock on a card that has no
-	// clock, which reads as a game frozen at zero.
-	if g.State.Active() {
-		g.Clock = strings.TrimSpace(st.DisplayClock)
-	}
-	// A period number outside a live game is history, not state: a final past
-	// regulation means overtime happened, which Overtime() reads off the
-	// league's own regulation length, but nothing should print an ordinal.
-	if !g.State.Active() && g.State != StateFinal {
-		g.Period = 0
-	}
-
 	for _, c := range comp.Competitors {
 		side := Side{
 			Team: Team{
@@ -307,8 +295,10 @@ func (p *espnProvider) game(doc espnScoreboard, ev espnEvent) (Game, bool) {
 				Name:      firstNonEmpty(c.Team.DisplayName, strings.TrimSpace(c.Team.Location+" "+c.Team.Name), c.Team.Name),
 				ShortName: firstNonEmpty(c.Team.ShortDisplayName, c.Team.Name),
 				Abbr:      c.Team.Abbreviation,
-				LogoURL:   c.Team.Logo,
+				LogoURL:   ImageURL(c.Team.Logo, LogoWidth),
 				Record:    totalRecord(c.Records),
+				Color:     hexColor(c.Team.Color),
+				AltColor:  hexColor(c.Team.AlternateColor),
 			},
 		}
 		if n, err := strconv.Atoi(strings.TrimSpace(c.Score)); err == nil {
@@ -325,14 +315,7 @@ func (p *espnProvider) game(doc espnScoreboard, ev espnEvent) (Game, bool) {
 		return Game{}, false
 	}
 
-	// Scores only exist once the game has started. Before that both are "0" in
-	// the document and mean "no score yet", not "nil–nil". An unrecognised
-	// status is in the same position: the lane does not know the game started,
-	// so it must not report a score it cannot vouch for.
-	switch g.State {
-	case StateInProgress, StateHalftime, StateEndPeriod, StateDelayed, StateFinal:
-		g.HasScore = true
-	}
+	g.HasScore = scoreKnown(g.State)
 
 	if s := comp.Situation; s != nil && g.State == StateInProgress {
 		g.RedZone = s.IsRedZone
@@ -359,6 +342,55 @@ func (p *espnProvider) game(doc espnScoreboard, ev espnEvent) (Game, bool) {
 	}
 
 	return g, true
+}
+
+// applyESPNStatus sets a game's state, period and clock from an upstream
+// status. The scoreboard and the per-game summary carry the same status object,
+// and both are read through here so the card and the game page can never
+// disagree about what a game is doing.
+func applyESPNStatus(g *Game, st espnStatus) {
+	g.State = espnState(st)
+	g.Period = st.Period
+	g.Clock = ""
+	// The clock is only meaningful while the game is live. Carrying "0:00" into a
+	// scheduled or final card would put a stopped clock on a card that has no
+	// clock, which reads as a game frozen at zero.
+	if g.State.Active() {
+		g.Clock = strings.TrimSpace(st.DisplayClock)
+	}
+	// A period number outside a live game is history, not state: a final past
+	// regulation means overtime happened, which Overtime() reads off the
+	// league's own regulation length, but nothing should print an ordinal.
+	if !g.State.Active() && g.State != StateFinal {
+		g.Period = 0
+	}
+}
+
+// scoreKnown reports whether a game in this state has a score to show. Before
+// the start both sides are "0" in the document and that means "no score yet",
+// not "nil–nil". An unrecognised status is in the same position: the lane does
+// not know the game started, so it must not report a score it cannot vouch for.
+func scoreKnown(s State) bool {
+	switch s {
+	case StateInProgress, StateHalftime, StateEndPeriod, StateDelayed, StateFinal:
+		return true
+	}
+	return false
+}
+
+// hexColor accepts a club colour only as exactly six hex digits, so nothing
+// else the upstream sends can reach a style attribute.
+func hexColor(s string) string {
+	s = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(s), "#"))
+	if len(s) != 6 {
+		return ""
+	}
+	for _, r := range s {
+		if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f') {
+			return ""
+		}
+	}
+	return s
 }
 
 // espnState maps the upstream status onto a state this lane knows how to draw.

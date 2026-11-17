@@ -2704,6 +2704,7 @@ version = "1.0.0"
 dependencies = [
  "anyhow",
  "axum",
+ "base64 0.22.1",
  "chrono",
  "hex",
  "manhattan-client",
@@ -2713,6 +2714,7 @@ dependencies = [
  "once_cell",
  "rand 0.8.6",
  "reqwest",
+ "ring",
  "serde",
  "serde_json",
  "sha2",

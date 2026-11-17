@@ -134,35 +134,50 @@ pub async fn creator_enable(State(state): State<Arc<AppState>>, headers: HeaderM
     require_identity(&state.manhattan, &pial)
         .await
         .map_err(|e| identity_refused(&pial, e))?;
-    let tier = clients::kyc_tier(&state.http, &state.cfg.verity_url, &pial.text()).await;
+    // Monetization is for a verified identity. The level is elohim-veni's
+    // fact, read now; this brain does not keep a copy of it.
+    let tier = clients::identity_kyc_tier(
+        &state.http,
+        &state.cfg.elohim_veni_url,
+        &state.cfg.internal_api_key,
+        &pial.text(),
+    )
+    .await
+    .map_err(|e| {
+        tracing::warn!(pial = %pial, error = %e, "creator enable: identity authority could not be asked");
+        cerr(StatusCode::SERVICE_UNAVAILABLE, "the identity authority could not be asked; nothing was changed")
+    })?;
+    if tier != "full" {
+        return Err(cerr(
+            StatusCode::FORBIDDEN,
+            "monetization requires a verified identity (a document, a face match and a live check)",
+        ));
+    }
     sqlx::query(
-        "INSERT INTO creator_eligibility (pial_id, kyc_tier, monetization_enabled, enabled_at) \
-         VALUES ($1, $2, true, NOW()) \
+        "INSERT INTO creator_eligibility (pial_id, monetization_enabled, enabled_at) \
+         VALUES ($1, true, NOW()) \
          ON CONFLICT (pial_id) DO UPDATE \
-         SET kyc_tier = $2, monetization_enabled = true, enabled_at = NOW(), \
+         SET monetization_enabled = true, enabled_at = NOW(), \
              disabled_at = NULL, disabled_reason = NULL",
     )
     .bind(pial.text())
-    .bind(tier)
     .execute(&state.pool)
     .await
     .map_err(cdberr)?;
-    Ok(Json(json!({"monetization_enabled": true, "kyc_tier": tier})))
+    Ok(Json(json!({"monetization_enabled": true})))
 }
 
 pub async fn creator_status(
     State(state): State<Arc<AppState>>,
     Path(pial_id): Path<PialRef>,
 ) -> CommerceRes<Value> {
-    let row: Option<(bool, i32)> = sqlx::query_as(
-        "SELECT monetization_enabled, kyc_tier FROM creator_eligibility WHERE pial_id = $1",
-    )
-    .bind(pial_id.text())
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(cdberr)?;
-    let (enabled, tier) = row.unwrap_or((false, 0));
-    Ok(Json(json!({"monetization_enabled": enabled, "kyc_tier": tier})))
+    let enabled: Option<bool> =
+        sqlx::query_scalar("SELECT monetization_enabled FROM creator_eligibility WHERE pial_id = $1")
+            .bind(pial_id.text())
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(cdberr)?;
+    Ok(Json(json!({"monetization_enabled": enabled.unwrap_or(false)})))
 }
 
 pub async fn list_plans(

@@ -1,0 +1,185 @@
+{{/*
+FACET kyc_flow
+  version: 2.0 | status: stable | layer: 3
+
+  inputs:
+    kycFlow (handler/kyc.go). Account names the Facet; Step selects the surface:
+    unavailable | consent | declined | capture | result | verified | statement | creator_active
+
+  states:
+    unavailable | consent | declined | capture | result | verified | statement | creator_active
+
+  children: kyc_liveness (inside capture)
+
+  signals:
+    emits:    POST /kyc/consent, POST /kyc/submit, POST /kyc/creator/accept (each answered
+              with a new kyc_flow Fragment that replaces this one)
+    receives: facet.mutate — the htmx answer to the account's own request
+
+  context:
+    kyc.html → the Playground of /kyc
+*/}}
+{{define "kyc_flow"}}<section class="kyc-flow" id="kyc-flow" data-facet-id="facet:f33d3r:kyc:{{.Account}}:flow" data-kyc-step="{{.Step}}">
+  {{if .Notice}}<p class="kyc-notice" role="status">{{.Notice}}</p>{{end}}
+
+  {{if eq .Step "unavailable"}}
+  <div class="kyc-card kyc-card--muted">
+    <h2 class="kyc-step-title">Verification is not available right now</h2>
+    <p class="kyc-step-sub">The services that check identity documents are not running here, so nothing can be verified and nothing will be collected. Try again later.</p>
+  </div>
+
+  {{else if eq .Step "consent"}}
+  <form class="kyc-card" hx-post="/kyc/consent" hx-target="#kyc-flow" hx-swap="outerHTML">
+    <input type="hidden" name="purpose" value="{{.Purpose}}">
+    <input type="hidden" name="return_to" value="{{.ReturnTo}}">
+    <h2 class="kyc-step-title">{{if eq .Purpose "creator"}}Creator verification{{else}}Age verification{{end}}</h2>
+    <p class="kyc-step-sub">{{if eq .Purpose "creator"}}To publish 18+ work you verify your identity and accept the 18 U.S.C. § 2257 record-keeping statement.{{else}}Verify that you are 18 or older with a government ID and a short live face check.{{end}} Read what this involves before anything is collected.</p>
+    <div class="kyc-consent-text">
+      {{range .ConsentText}}<p>{{.}}</p>{{end}}
+      <p class="kyc-consent-version">Consent text version {{.ConsentVersion}}</p>
+    </div>
+    <fieldset class="kyc-doc-choice">
+      <legend class="kyc-field-label">The document you will use</legend>
+      {{range $i, $d := .DocumentTypes}}<label class="kyc-radio"><input type="radio" name="document_type" value="{{$d.Value}}"{{if eq $i 0}} required{{end}}> {{$d.Label}}</label>{{end}}
+    </fieldset>
+    <label class="kyc-check">
+      <input type="checkbox" name="consent" value="yes" required>
+      <span>I have read this, and I agree to the collection and retention described above.</span>
+    </label>
+    <div class="kyc-actions">
+      <button type="submit" name="decision" value="agree" class="kyc-btn">Agree and continue</button>
+      <button type="submit" name="decision" value="decline" class="kyc-btn kyc-btn--secondary" formnovalidate>Not now</button>
+    </div>
+  </form>
+
+  {{else if eq .Step "declined"}}
+  <div class="kyc-card kyc-card--muted">
+    <h2 class="kyc-step-title">Nothing was collected</h2>
+    <p class="kyc-step-sub">You did not agree, so no camera was opened and nothing was uploaded or stored. You can verify whenever you choose.</p>
+    <div class="kyc-actions">
+      <a class="kyc-btn kyc-btn--secondary" href="/kyc{{if eq .Purpose "creator"}}?mode=creator{{end}}">Start again</a>
+      <a class="kyc-btn kyc-btn--secondary" href="{{if .ReturnTo}}{{.ReturnTo}}{{else}}/{{end}}">Back</a>
+    </div>
+  </div>
+
+  {{else if eq .Step "capture"}}
+  <form class="kyc-card" id="kyc-capture-form" hx-post="/kyc/submit" hx-target="#kyc-flow" hx-swap="outerHTML"
+        hx-encoding="multipart/form-data" hx-trigger="kyc-submit" hx-indicator="#kyc-processing">
+    <input type="hidden" name="attempt_id" value="{{.AttemptID}}">
+    <input type="hidden" name="purpose" value="{{.Purpose}}">
+    <input type="hidden" name="return_to" value="{{.ReturnTo}}">
+    <h2 class="kyc-step-title">Photograph your {{.DocumentLabel}}</h2>
+    <p class="kyc-step-sub">Lay the document flat in good light with all four corners in view and no glare.{{if .NeedsBack}} Capture the front, then the back — the barcode on the back must be sharp.{{else}} The two lines of text at the bottom of the photo page must be sharp.{{end}}</p>
+
+    {{template "kyc_capture_slot" (dict "Slot" "document_front" "Title" "Front" "Account" .Account)}}
+    {{if .NeedsBack}}{{template "kyc_capture_slot" (dict "Slot" "document_back" "Title" "Back" "Account" .Account)}}{{end}}
+
+    <input type="hidden" name="face_image" data-kyc-slot="face_image">
+    <input type="hidden" name="liveness_challenge_frames" data-kyc-slot="liveness_challenge_frames">
+    <h3 class="kyc-section-title">Live face check</h3>
+    <p class="kyc-step-sub">When the document is captured, start the face scan. First look straight at the camera with a neutral expression for your selfie. Then our server's prompts appear one at a time; follow each one while your face stays in the frame. The result is decided by our server, not by this page.</p>
+    {{template "kyc_liveness" .Liveness}}
+
+    <div class="kyc-processing htmx-indicator" id="kyc-processing">
+      <div class="kyc-processing-spinner"></div>
+      <div class="kyc-processing-title">Checking your documents…</div>
+      <div class="kyc-processing-sub">This takes up to a minute. Keep this page open.</div>
+    </div>
+  </form>
+
+  {{else if eq .Step "result"}}
+  <div class="kyc-card kyc-result kyc-result--{{.Outcome}}">
+    <h2 class="kyc-step-title">{{.Title}}</h2>
+    <ul class="kyc-reasons">{{range .Reasons}}<li>{{.}}</li>{{end}}</ul>
+    {{if .Ref}}<p class="kyc-ref">Reference: {{.Ref}}</p>{{end}}
+    <div class="kyc-actions">
+      {{if eq .Outcome "pass"}}
+      <a class="kyc-btn" href="{{if .ReturnTo}}{{.ReturnTo}}{{else}}/{{end}}">Continue</a>
+      {{else}}
+      <a class="kyc-btn" href="/kyc{{if eq .Purpose "creator"}}?mode=creator{{end}}">Start again</a>
+      {{end}}
+    </div>
+  </div>
+
+  {{else if eq .Step "verified"}}
+  <div class="kyc-card kyc-result kyc-result--pass">
+    <h2 class="kyc-step-title">Your identity is verified</h2>
+    <p class="kyc-step-sub">A government ID, a face match and a live face check were completed for this account.{{if not .AgeVerified}} Your access to 18+ content is paused until you verify again.{{end}}</p>
+    {{if .ShowCreatorCTA}}<div class="kyc-actions"><a class="kyc-btn kyc-btn--secondary" href="/kyc?mode=creator">Become an adult creator</a></div>{{end}}
+  </div>
+
+  {{else if eq .Step "statement"}}
+  <form class="kyc-card" hx-post="/kyc/creator/accept" hx-target="#kyc-flow" hx-swap="outerHTML">
+    <input type="hidden" name="return_to" value="{{.ReturnTo}}">
+    <h2 class="kyc-step-title">18 U.S.C. § 2257 statement</h2>
+    <p class="kyc-step-sub">Your creator verification has passed. Read and accept the record-keeping statement to turn on adult creator mode.</p>
+    <div class="kyc-agreement-scroll">{{.Statement}}</div>
+    <label class="kyc-check">
+      <input type="checkbox" name="accept_2257" value="yes" required>
+      <span>I am 18 or older, and I accept the statement above.</span>
+    </label>
+    <div class="kyc-actions"><button type="submit" class="kyc-btn">Turn on adult creator mode</button></div>
+  </form>
+
+  {{else if eq .Step "creator_active"}}
+  <div class="kyc-card kyc-result kyc-result--pass">
+    <h2 class="kyc-step-title">Adult creator mode is on</h2>
+    <p class="kyc-step-sub">Your creator verification is on record, and every 18+ work you publish is linked to it as its 2257 record.</p>
+    <div class="kyc-actions"><a class="kyc-btn" href="{{if .ReturnTo}}{{.ReturnTo}}{{else}}/shop{{end}}">Continue</a></div>
+  </div>
+  {{end}}
+</section>{{end}}
+
+{{/* One document side: a camera preview, a capture, and the hidden field the
+     image is posted in. kyc.js drives the camera; the server decides. */}}
+{{define "kyc_capture_slot"}}<div class="kyc-capture" data-kyc-capture="{{.Slot}}">
+  <h3 class="kyc-section-title">{{.Title}}</h3>
+  <input type="hidden" name="{{.Slot}}" data-kyc-slot="{{.Slot}}">
+  <div class="kyc-viewfinder kyc-viewfinder--id">
+    <video playsinline muted data-kyc-video></video>
+    <img class="kyc-capture-preview" alt="" data-kyc-preview hidden>
+  </div>
+  <div class="kyc-actions">
+    <button type="button" class="kyc-btn kyc-btn--secondary" data-kyc-action="camera">Open camera</button>
+    <button type="button" class="kyc-btn" data-kyc-action="shoot" disabled>Capture</button>
+    <label class="kyc-btn kyc-btn--secondary">Upload a photo<input class="kyc-file" type="file" accept="image/jpeg,image/png,image/webp" data-kyc-action="file"></label>
+  </div>
+  <p class="kyc-capture-state" data-kyc-state>Not captured yet.</p>
+</div>{{end}}
+
+{{/*
+FACET kyc_liveness
+  version: 1.0 | status: stable | layer: 2
+
+  inputs:
+    kycLiveness (handler/kyc.go): Account, State (idle | ready | error), AttemptID,
+    SessionID, Challenges [{Name, Label, Hint}], Message
+
+  states:
+    idle | ready | error
+
+  children: none
+
+  signals:
+    emits:    POST /kyc/liveness (answered with a new kyc_liveness Fragment)
+    receives: facet.mutate — the htmx answer to that request
+
+  context:
+    kyc_flow (capture) → inside the capture form, so the session id is submitted
+*/}}
+{{define "kyc_liveness"}}<div class="kyc-liveness" id="kyc-liveness" data-facet-id="facet:f33d3r:kyc:{{.Account}}:liveness" data-kyc-liveness="{{.State}}">
+  {{if eq .State "ready"}}
+  <input type="hidden" name="liveness_session_id" value="{{.SessionID}}">
+  <div class="kyc-viewfinder kyc-viewfinder--face">
+    <video class="camera-preview--front" playsinline muted data-kyc-video></video>
+  </div>
+  <ol class="kyc-challenges">
+    {{range .Challenges}}<li class="kyc-challenge" data-kyc-challenge="{{.Name}}"><strong>{{.Label}}</strong> <span>{{.Hint}}</span></li>{{end}}
+  </ol>
+  <p class="kyc-capture-state" data-kyc-state>Look straight at the camera with a neutral expression.</p>
+  {{else}}
+  {{if .Message}}<p class="kyc-notice" role="status">{{.Message}}</p>{{end}}
+  <button type="button" class="kyc-btn kyc-btn--full" hx-post="/kyc/liveness" hx-target="#kyc-liveness" hx-swap="outerHTML"
+          hx-params="attempt_id">Start face scan</button>
+  {{end}}
+</div>{{end}}

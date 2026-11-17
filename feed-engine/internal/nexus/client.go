@@ -28,6 +28,18 @@ func NewClient(baseURL, internalKey string) *Client {
 	}
 }
 
+// get issues a GET carrying the service credential: Verity's reads are
+// service-only too.
+func (c *Client) get(url string) (*http.Response, error) {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("X-Internal-Key", c.InternalKey)
+	return c.HTTPClient.Do(req)
+}
+
 // postJSON issues a POST carrying the service credential. The mutating NEXUS
 // routes reject a request that does not hold it, so it goes on every one of them
 // in a single place rather than being re-set (or forgotten) per call site.
@@ -41,29 +53,6 @@ func (c *Client) postJSON(path string, body []byte) (*http.Response, error) {
 	return c.HTTPClient.Do(req)
 }
 
-// TierResponse is returned by GET /v1/nexus/tier/:shard.
-type TierResponse struct {
-	PIALShardID string `json:"pial_shard_id"`
-	Tier        int    `json:"tier"`
-	TierSource  string `json:"tier_source"`
-	IsSuspended bool   `json:"is_suspended"`
-}
-
-// GetTier calls GET /v1/nexus/tier/:shard and returns the tier for a PIAL.
-// Returns tier=0 and no error if the PIAL has no NEXUS.
-func (c *Client) GetTier(pialShard string) (TierResponse, error) {
-	resp, err := c.HTTPClient.Get(fmt.Sprintf("%s/v1/nexus/tier/%s", c.BaseURL, pialShard))
-	if err != nil {
-		return TierResponse{Tier: 0}, err
-	}
-	defer resp.Body.Close()
-	var tr TierResponse
-	if err := json.NewDecoder(resp.Body).Decode(&tr); err != nil {
-		return TierResponse{Tier: 0}, err
-	}
-	return tr, nil
-}
-
 // VerifyRequest is the payload sent to POST /v1/nexus/verify.
 type VerifyRequest struct {
 	PIALShardID   string  `json:"pial_shard_id"`
@@ -75,8 +64,7 @@ type VerifyRequest struct {
 
 // VerifyResponse is returned by POST /v1/nexus/verify.
 type VerifyResponse struct {
-	Result    string `json:"result"` // "created" | "already_linked" | "match_found"
-	Tier      int    `json:"tier"`
+	Result    string `json:"result"`     // "created" | "already_linked" | "match_found"
 	RequestID string `json:"request_id"` // only when result == "match_found"
 }
 
@@ -88,8 +76,13 @@ func (c *Client) Verify(req VerifyRequest) (VerifyResponse, error) {
 		return VerifyResponse{}, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return VerifyResponse{}, fmt.Errorf("verity /v1/nexus/verify returned %d", resp.StatusCode)
+	}
 	var vr VerifyResponse
-	json.NewDecoder(resp.Body).Decode(&vr)
+	if err := json.NewDecoder(resp.Body).Decode(&vr); err != nil {
+		return VerifyResponse{}, fmt.Errorf("verity /v1/nexus/verify: undecodable answer: %w", err)
+	}
 	return vr, nil
 }
 
@@ -104,7 +97,6 @@ type PersonaEntry struct {
 // PersonasResponse is the response from GET /v1/nexus/personas.
 type PersonasResponse struct {
 	Personas []PersonaEntry `json:"personas"`
-	Tier     int            `json:"tier"`
 	Count    int            `json:"count"`
 }
 
@@ -112,7 +104,7 @@ type PersonasResponse struct {
 // Returns nil, nil when the shard is not linked to any NEXUS (single-account).
 func (c *Client) ListPersonas(pialShard string) (*PersonasResponse, error) {
 	url := fmt.Sprintf("%s/v1/nexus/personas?pial_shard_id=%s", c.BaseURL, pialShard)
-	resp, err := c.HTTPClient.Get(url)
+	resp, err := c.get(url)
 	if err != nil {
 		return nil, err
 	}
@@ -225,7 +217,7 @@ type PendingLinksResponse struct {
 // Returns incoming link requests the user has not yet accepted or declined.
 func (c *Client) ListPendingLinks(targetShard string) (*PendingLinksResponse, error) {
 	url := fmt.Sprintf("%s/v1/nexus/link/pending?target_pial_shard_id=%s", c.BaseURL, targetShard)
-	resp, err := c.HTTPClient.Get(url)
+	resp, err := c.get(url)
 	if err != nil {
 		return nil, err
 	}

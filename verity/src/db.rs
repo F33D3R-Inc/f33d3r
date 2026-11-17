@@ -1,148 +1,215 @@
 use anyhow::Result;
 use sqlx::PgPool;
 
-const SCHEMA: &str = r#"
--- ── Attestations ─────────────────────────────────────────────────────────────
--- One row per verification event per PIAL.
--- Immutable once written. New decisions append as new rows.
-CREATE TABLE IF NOT EXISTS attestations (
-    id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    pial_id         UUID        NOT NULL,
-    context         TEXT        NOT NULL,           -- onboarding | age_gate | creator_signup | payout
-    status          TEXT        NOT NULL DEFAULT 'pending'
-                    CHECK (status IN ('approved','denied','pending_review','pending')),
-    age_band        TEXT        NOT NULL DEFAULT 'unknown'
-                    CHECK (age_band IN ('18+','21+','underage','unknown')),
-    creator_tier    INTEGER     NOT NULL DEFAULT 0 CHECK (creator_tier BETWEEN 0 AND 3),
-    payout_enabled  BOOLEAN     NOT NULL DEFAULT FALSE,
-    nsfw_access     BOOLEAN     NOT NULL DEFAULT FALSE,
-    risk_score      REAL        NOT NULL DEFAULT 0.0 CHECK (risk_score BETWEEN 0.0 AND 1.0),
-    required_actions TEXT[]     NOT NULL DEFAULT '{}',
-    -- Cryptographic anchor: SHA-256(pial_id + status + age_band + tier + timestamp)
-    decision_hash   TEXT        NOT NULL DEFAULT '',
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    expires_at      TIMESTAMPTZ,
-    metadata        JSONB       NOT NULL DEFAULT '{}'
-);
-CREATE INDEX IF NOT EXISTS idx_att_pial    ON attestations(pial_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_att_status  ON attestations(status, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_att_context ON attestations(context, pial_id);
+/// Verity owns evidence and legal records — never a verification level.
+///
+/// Before this reshape verity also decided and stored a TIER: `attestations`
+/// carried `creator_tier`, `/v1/admin/tier` wrote one, `/v1/kyc/submit` promoted
+/// to one, and a risk profile fed a decision engine that computed one. Identity
+/// (elohim-veni) is the single owner of an account's verification level, so
+/// every one of those tables leaves here.
+///
+/// The old shapes are removed only when they hold nothing that is evidence. A
+/// legacy `kyc_submissions`, `records_2257` or `attestations` that still has
+/// rows stops the boot with the count, because KYC evidence and 2257 records
+/// are legal records and are never discarded as a side effect of a deploy.
+/// `risk_profiles` and `csam_scans` are dropped outright: the first fed only
+/// the removed tier engine, the second was the log of a stub that answered
+/// "clean" to every hash and was called by nothing. `verity_audit` is reshaped
+/// in place, so its existing rows survive.
+const RESHAPE: &str = r#"
+DO $$
+DECLARE
+    n BIGINT;
+BEGIN
+    IF to_regclass('public.attestations') IS NOT NULL THEN
+        EXECUTE 'SELECT COUNT(*) FROM attestations' INTO n;
+        IF n > 0 THEN
+            RAISE EXCEPTION 'verity reshape refused: attestations holds % rows; tiers now live in identity (elohim-veni) — move them there before this deploy', n;
+        END IF;
+        DROP TABLE attestations;
+    END IF;
 
--- ── KYC submissions ───────────────────────────────────────────────────────────
--- Tracks verification attempts. Raw documents are NEVER stored here.
--- Only hashes, status, and non-sensitive extracted values.
-CREATE TABLE IF NOT EXISTS kyc_submissions (
-    id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    pial_id         UUID        NOT NULL,
-    submission_type TEXT        NOT NULL   -- gov_id | liveness | phone | email
-                    CHECK (submission_type IN ('gov_id','liveness','phone','email','manual')),
-    status          TEXT        NOT NULL DEFAULT 'pending'
-                    CHECK (status IN ('pending','processing','passed','failed','manual_review')),
-    -- Hash of the submitted document (SHA-256) — document itself is never stored
-    document_hash   TEXT,
-    age_band        TEXT        DEFAULT 'unknown',
-    confidence      REAL        DEFAULT 0.0,
-    failure_reason  TEXT,
-    provider        TEXT        NOT NULL DEFAULT 'internal', -- 'internal' | 'jumio' | 'persona' | etc
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    processed_at    TIMESTAMPTZ,
-    metadata        JSONB       NOT NULL DEFAULT '{}'
-);
-CREATE INDEX IF NOT EXISTS idx_kyc_pial   ON kyc_submissions(pial_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_kyc_status ON kyc_submissions(status);
+    IF EXISTS (SELECT 1 FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'records_2257'
+                  AND column_name = 'creator_pial_id') THEN
+        EXECUTE 'SELECT COUNT(*) FROM records_2257' INTO n;
+        IF n > 0 THEN
+            RAISE EXCEPTION 'verity reshape refused: legacy records_2257 holds % rows; 2257 records are never dropped by a migration', n;
+        END IF;
+        DROP TABLE records_2257;
+    END IF;
 
--- ── Risk profiles ─────────────────────────────────────────────────────────────
--- Per-PIAL aggregated fraud signals. Mutable — updated on each decision.
-CREATE TABLE IF NOT EXISTS risk_profiles (
-    pial_id             UUID    PRIMARY KEY,
-    risk_score          REAL    NOT NULL DEFAULT 0.0,
-    device_count        INTEGER NOT NULL DEFAULT 0,
-    failed_kyc_attempts INTEGER NOT NULL DEFAULT 0,
-    ip_reputation_score REAL    NOT NULL DEFAULT 1.0,  -- 1.0 = clean, 0.0 = datacenter/VPN
-    velocity_score      REAL    NOT NULL DEFAULT 0.0,  -- 0.0 = normal, 1.0 = burst anomaly
-    duplicate_detected  BOOLEAN NOT NULL DEFAULT FALSE,
-    last_evaluated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+    IF EXISTS (SELECT 1 FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'kyc_submissions'
+                  AND column_name = 'submission_type') THEN
+        EXECUTE 'SELECT COUNT(*) FROM kyc_submissions' INTO n;
+        IF n > 0 THEN
+            RAISE EXCEPTION 'verity reshape refused: legacy kyc_submissions holds % rows; KYC evidence is never dropped by a migration', n;
+        END IF;
+        DROP TABLE kyc_submissions;
+    END IF;
 
--- ── Audit log ─────────────────────────────────────────────────────────────────
--- Append-only. Every decision recorded.
-CREATE TABLE IF NOT EXISTS verity_audit (
-    id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    pial_id     UUID        NOT NULL,
-    action      TEXT        NOT NULL,  -- decision | kyc_submit | risk_update | tier_change
-    context     TEXT,
-    before_tier INTEGER,
-    after_tier  INTEGER,
-    metadata    JSONB       NOT NULL DEFAULT '{}',
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-CREATE INDEX IF NOT EXISTS idx_audit_pial ON verity_audit(pial_id, created_at DESC);
+    DROP TABLE IF EXISTS risk_profiles;
+    DROP TABLE IF EXISTS csam_scans;
+END $$;
+
+-- The audit trail keeps its rows; only the tier columns go.
+ALTER TABLE IF EXISTS verity_audit DROP COLUMN IF EXISTS before_tier;
+ALTER TABLE IF EXISTS verity_audit DROP COLUMN IF EXISTS after_tier;
+ALTER TABLE IF EXISTS verity_audit DROP COLUMN IF EXISTS context;
+ALTER TABLE IF EXISTS verity_audit ADD COLUMN IF NOT EXISTS attempt_id    UUID;
+ALTER TABLE IF EXISTS verity_audit ADD COLUMN IF NOT EXISTS submission_id UUID;
 "#;
 
-const COMPLIANCE_SCHEMA: &str = r#"
--- ── 18 U.S.C. 2257 Records ──────────────────────────────────────────────────
--- One record per verified adult creator. Immutable once created.
--- We store a decision hash and document hash only — no ID images or biometrics.
--- Record-keeper statement is derived from this row at query time.
-CREATE TABLE IF NOT EXISTS records_2257 (
-    id                  UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    creator_pial_id     UUID        NOT NULL UNIQUE,
-    -- Linked to the KYC submission that established age verification
-    kyc_submission_id   UUID        REFERENCES kyc_submissions(id),
-    age_band            TEXT        NOT NULL CHECK (age_band IN ('18+','21+')),
-    document_type       TEXT        NOT NULL DEFAULT 'gov_id',
-    -- SHA-256 hash of the verified document — document itself is never stored
-    document_hash       TEXT        NOT NULL,
-    verification_date   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    record_keeper       TEXT        NOT NULL DEFAULT 'F33D3R Platform',
-    -- Custodian URL per 18 USC 2257(f)(5)
-    record_location     TEXT        NOT NULL DEFAULT 'https://f33d3r.com/legal/2257',
-    -- SHA-256 of (creator_pial_id + age_band + verification_date) — audit anchor
-    statement_hash      TEXT        NOT NULL,
-    is_active           BOOLEAN     NOT NULL DEFAULT TRUE,
-    revoked_at          TIMESTAMPTZ,
-    revocation_reason   TEXT,
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-CREATE INDEX IF NOT EXISTS idx_2257_creator ON records_2257(creator_pial_id);
-CREATE INDEX IF NOT EXISTS idx_2257_active  ON records_2257(is_active);
+const SCHEMA: &str = r#"
+-- ── KYC submissions ──────────────────────────────────────────────────────────
+-- The evidence for ONE verification attempt, as decided by ekyc and forwarded
+-- by feed-engine. One row per attempt; attempt_id is the idempotency key.
+--
+-- What is held, and for how long, is enforced here rather than trusted to the
+-- writer:
+--   * legal_name and dob exist only on a pass;
+--   * a pass always carries the document facts that justify it;
+--   * a fail's PII (document facts, consent ip / user agent) is purged by the
+--     retention job after 30 days — reasons, decision and scores stay.
+-- The raw document number never reaches verity; doc_hmac is ekyc's keyed hash.
+CREATE TABLE IF NOT EXISTS kyc_submissions (
+    id                   UUID        PRIMARY KEY,
+    attempt_id           UUID        NOT NULL UNIQUE,
+    pial_id              UUID        NOT NULL,
+    purpose              TEXT        NOT NULL CHECK (purpose  IN ('age','creator')),
+    decision             TEXT        NOT NULL CHECK (decision IN ('pass','fail')),
+    reasons              TEXT[]      NOT NULL DEFAULT '{}',
+    evidence_types       TEXT[]      NOT NULL DEFAULT '{}',
+    doc_hmac             TEXT        CHECK (doc_hmac ~ '^[0-9a-f]{64}$'),
+    doc_type             TEXT        CHECK (doc_type IN ('passport','id_card','drivers_license')),
+    issuing_country      TEXT,
+    issuing_region       TEXT,
+    doc_expiry           DATE,
+    legal_name           TEXT,
+    dob                  DATE,
+    face_cosine          REAL,
+    pad_score            REAL,
+    liveness_score       REAL,
+    consent_version      TEXT        NOT NULL CHECK (consent_version <> ''),
+    consent_accepted_at  TIMESTAMPTZ NOT NULL,
+    consent_ip           TEXT,
+    consent_user_agent   TEXT,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    pii_purged_at        TIMESTAMPTZ,
 
--- ── CSAM scan log ─────────────────────────────────────────────────────────────
--- Every media upload is checked. We store the result for audit and repeat-check avoidance.
--- In production this integrates with NCMEC / PhotoDNA. Local dev: stub returns "clean".
-CREATE TABLE IF NOT EXISTS csam_scans (
-    id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    -- Perceptual hash of the uploaded content (SHA-256 of raw bytes)
-    content_hash    TEXT        NOT NULL,
-    uploader_pial   UUID        NOT NULL,
-    -- Provider: ncmec_stub | photodna | aws_rekognition
-    scan_provider   TEXT        NOT NULL DEFAULT 'ncmec_stub',
-    -- Result: clean | flagged | error | skipped
-    result          TEXT        NOT NULL DEFAULT 'clean'
-                    CHECK (result IN ('clean','flagged','error','skipped')),
-    match_count     INTEGER     NOT NULL DEFAULT 0,
-    -- If flagged: was a CyberTip report sent to NCMEC?
-    report_sent     BOOLEAN     NOT NULL DEFAULT FALSE,
-    report_sent_at  TIMESTAMPTZ,
-    media_url       TEXT,
-    media_type      TEXT,
-    scanned_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    CONSTRAINT kyc_identity_only_on_pass
+        CHECK (decision = 'pass' OR (legal_name IS NULL AND dob IS NULL)),
+    CONSTRAINT kyc_pass_is_documented
+        CHECK (decision = 'fail' OR (doc_hmac IS NOT NULL AND doc_type IS NOT NULL
+                                     AND issuing_country IS NOT NULL AND doc_expiry IS NOT NULL
+                                     AND legal_name IS NOT NULL AND dob IS NOT NULL)),
+    CONSTRAINT kyc_only_fails_are_purged
+        CHECK (pii_purged_at IS NULL OR decision = 'fail'),
+    CONSTRAINT kyc_consent_ip_until_purged
+        CHECK (pii_purged_at IS NOT NULL OR consent_ip IS NOT NULL),
+    CONSTRAINT kyc_purge_is_complete
+        CHECK (pii_purged_at IS NULL OR (doc_hmac IS NULL AND doc_type IS NULL
+                                         AND issuing_country IS NULL AND issuing_region IS NULL
+                                         AND doc_expiry IS NULL AND consent_ip IS NULL
+                                         AND consent_user_agent IS NULL)),
+    -- The key the dependent tables reference, so the database itself refuses
+    -- an ID copy, a binding or a 2257 record hung off the wrong kind of attempt
+    -- or the wrong person.
+    CONSTRAINT kyc_submission_identity UNIQUE (id, pial_id, purpose, decision)
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_csam_hash     ON csam_scans(content_hash);
-CREATE        INDEX IF NOT EXISTS idx_csam_flagged  ON csam_scans(result) WHERE result = 'flagged';
-CREATE        INDEX IF NOT EXISTS idx_csam_uploader ON csam_scans(uploader_pial, scanned_at DESC);
+CREATE INDEX IF NOT EXISTS idx_kyc_pial_latest ON kyc_submissions(pial_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_kyc_fail_purge
+    ON kyc_submissions(created_at) WHERE decision = 'fail' AND pii_purged_at IS NULL;
+
+-- ── Document binding ─────────────────────────────────────────────────────────
+-- One passing document → one PIAL. The primary key on doc_hmac IS the rule: a
+-- second PIAL cannot bind a document another PIAL has passed with. The first
+-- passing submission is recorded as the reason the binding exists.
+CREATE TABLE IF NOT EXISTS kyc_document_bindings (
+    doc_hmac       TEXT        PRIMARY KEY CHECK (doc_hmac ~ '^[0-9a-f]{64}$'),
+    pial_id        UUID        NOT NULL,
+    submission_id  UUID        NOT NULL,
+    purpose        TEXT        NOT NULL,
+    decision       TEXT        NOT NULL CHECK (decision = 'pass'),
+    bound_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    FOREIGN KEY (submission_id, pial_id, purpose, decision)
+        REFERENCES kyc_submissions(id, pial_id, purpose, decision)
+);
+CREATE INDEX IF NOT EXISTS idx_kyc_binding_pial ON kyc_document_bindings(pial_id);
+
+-- ── ID copies (2257) ─────────────────────────────────────────────────────────
+-- The copy of a creator's identification document that 18 U.S.C. 2257
+-- requires. Only a passing purpose=creator submission may own one (the
+-- composite key below), and every image is AES-256-GCM ciphertext under
+-- VERITY_RECORDS_KEY: nonce + ciphertext-with-tag per image, plus the id of
+-- the key that sealed it. No plaintext image is ever stored. The back is
+-- absent for documents that have none (passports).
+CREATE TABLE IF NOT EXISTS kyc_id_copies (
+    submission_id    UUID        PRIMARY KEY,
+    pial_id          UUID        NOT NULL,
+    purpose          TEXT        NOT NULL CHECK (purpose  = 'creator'),
+    decision         TEXT        NOT NULL CHECK (decision = 'pass'),
+    key_id           TEXT        NOT NULL,
+    front_nonce      BYTEA       NOT NULL CHECK (length(front_nonce) = 12),
+    front_ct         BYTEA       NOT NULL,
+    back_nonce       BYTEA       CHECK (back_nonce IS NULL OR length(back_nonce) = 12),
+    back_ct          BYTEA,
+    portrait_nonce   BYTEA       NOT NULL CHECK (length(portrait_nonce) = 12),
+    portrait_ct      BYTEA       NOT NULL,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT id_copy_back_whole CHECK ((back_nonce IS NULL) = (back_ct IS NULL)),
+    FOREIGN KEY (submission_id, pial_id, purpose, decision)
+        REFERENCES kyc_submissions(id, pial_id, purpose, decision)
+);
+CREATE INDEX IF NOT EXISTS idx_id_copy_pial ON kyc_id_copies(pial_id);
+
+-- ── 18 U.S.C. 2257 records ───────────────────────────────────────────────────
+-- One row per (performer, piece of content): links the content to the passing
+-- creator submission whose ID copy is the record for it. removed_at is the
+-- last time feed-engine reported the content removed; the retention clock for
+-- the ID copy runs from the latest removal across all of its records.
+CREATE TABLE IF NOT EXISTS records_2257 (
+    id             UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    pial_id        UUID        NOT NULL,
+    content_id     TEXT        NOT NULL CHECK (content_id <> ''),
+    record_type    TEXT        NOT NULL CHECK (record_type ~ '^[a-z][a-z0-9_]{0,63}$'),
+    submission_id  UUID        NOT NULL,
+    purpose        TEXT        NOT NULL CHECK (purpose  = 'creator'),
+    decision       TEXT        NOT NULL CHECK (decision = 'pass'),
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    removed_at     TIMESTAMPTZ,
+    CONSTRAINT records_2257_one_per_content UNIQUE (pial_id, content_id),
+    FOREIGN KEY (submission_id, pial_id, purpose, decision)
+        REFERENCES kyc_submissions(id, pial_id, purpose, decision)
+);
+CREATE INDEX IF NOT EXISTS idx_2257_pial       ON records_2257(pial_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_2257_content    ON records_2257(content_id);
+CREATE INDEX IF NOT EXISTS idx_2257_submission ON records_2257(submission_id);
+
+-- ── Audit log ────────────────────────────────────────────────────────────────
+-- Append-only. Every step is a row, written in the same transaction as the
+-- step: received, decided, document_in_use, id_copy_stored, 2257_record,
+-- 2257_content_removed, purge. Metadata never carries PII or images.
+CREATE TABLE IF NOT EXISTS verity_audit (
+    id             UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    pial_id        UUID        NOT NULL,
+    action         TEXT        NOT NULL,
+    attempt_id     UUID,
+    submission_id  UUID,
+    metadata       JSONB       NOT NULL DEFAULT '{}',
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_audit_pial    ON verity_audit(pial_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_attempt ON verity_audit(attempt_id) WHERE attempt_id IS NOT NULL;
 "#;
 
 const NEXUS_SCHEMA: &str = r#"
--- nexus_id references will be added after nexus_identities table exists
-ALTER TABLE attestations ADD COLUMN IF NOT EXISTS nexus_id UUID;
-
 CREATE TABLE IF NOT EXISTS nexus_identities (
     nexus_id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     biometric_hash    VARCHAR(128) NOT NULL,
     document_hash     VARCHAR(128) NOT NULL,
-    verity_tier       SMALLINT    NOT NULL DEFAULT 1,
     jurisdiction      VARCHAR(10),
     created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     last_verified_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -150,20 +217,13 @@ CREATE TABLE IF NOT EXISTS nexus_identities (
     suspension_reason TEXT,
     linking_refused   BOOL        NOT NULL DEFAULT false,
     CONSTRAINT uq_biometric UNIQUE (biometric_hash),
-    CONSTRAINT uq_document  UNIQUE (document_hash),
-    CONSTRAINT chk_tier CHECK (verity_tier BETWEEN 0 AND 3)
+    CONSTRAINT uq_document  UNIQUE (document_hash)
 );
 
--- Add FK after table exists
-DO $$ BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM information_schema.table_constraints
-        WHERE constraint_name = 'attestations_nexus_id_fkey'
-    ) THEN
-        ALTER TABLE attestations ADD CONSTRAINT attestations_nexus_id_fkey
-            FOREIGN KEY (nexus_id) REFERENCES nexus_identities(nexus_id);
-    END IF;
-END $$;
+-- A NEXUS groups a person's PIALs; it does not grade them. The verification
+-- level is identity's (elohim-veni) alone, so the tier column that used to
+-- live here is gone, along with its CHECK.
+ALTER TABLE nexus_identities DROP COLUMN IF EXISTS verity_tier;
 
 CREATE TABLE IF NOT EXISTS nexus_persona_links (
     nexus_id          UUID        NOT NULL REFERENCES nexus_identities(nexus_id),
@@ -225,11 +285,10 @@ CREATE INDEX IF NOT EXISTS idx_nexus_session_nid   ON nexus_session_context(nexu
 CREATE INDEX IF NOT EXISTS idx_nexus_session_exp   ON nexus_session_context(expires_at);
 CREATE INDEX IF NOT EXISTS idx_nexus_link_status   ON nexus_link_requests(nexus_id, status, expires_at);
 CREATE INDEX IF NOT EXISTS idx_nexus_aml_period    ON nexus_aml_aggregates(nexus_id, period_start DESC);
-CREATE INDEX IF NOT EXISTS idx_att_nexus_id        ON attestations(nexus_id) WHERE nexus_id IS NOT NULL;
 
 -- ── NEXUS v2 migrations: user-initiated linking without biometrics ─────────────
 -- Allow NULL biometric/document hashes for user-initiated NEXUS (no KYC required
--- to link your own accounts; KYC upgrades tier later).
+-- to link your own accounts).
 ALTER TABLE nexus_identities ALTER COLUMN biometric_hash DROP NOT NULL;
 ALTER TABLE nexus_identities ALTER COLUMN document_hash  DROP NOT NULL;
 
@@ -281,9 +340,7 @@ const SCHEMA_MANHATTAN: &str = r#"
 --
 -- Verity names one person two ways inside one database:
 --
---   pial_id        UUID  — attestations, kyc_submissions, risk_profiles,
---                          records_2257 (creator_pial_id), csam_scans
---                          (uploader_pial), verity_audit
+--   pial_id        UUID  — kyc_submissions, records_2257, verity_audit
 --   pial_shard_id  TEXT  — every NEXUS table
 --
 -- They are not two concepts. A shard is
@@ -301,10 +358,9 @@ const SCHEMA_MANHATTAN: &str = r#"
 -- that person — a property of the link, not a thing of its own.
 --
 -- What made this unfixable before was the direction of the hash. Given a
--- shard, nothing can recover the PIAL; nexus.rs says so in as many words
--- ("Since Verity doesn't store the mapping…") and get_tier's fallback returns
--- tier 0 for that exact reason. But given a PIAL, the shard is one line — and
--- Verity holds a PIAL for every person it has ever decided about. So the map
+-- shard, nothing can recover the PIAL. But given a PIAL, the shard is one
+-- line — and Verity holds a PIAL for every person it has ever recorded
+-- evidence about. So the map
 -- is built forwards, from the side that can build it, and kept.
 CREATE TABLE IF NOT EXISTS pial_shard_index (
     pial_shard_id TEXT        PRIMARY KEY,
@@ -435,9 +491,8 @@ CREATE SEQUENCE IF NOT EXISTS manhattan_link_event_seq;
 -- pial_shard_index is what lets every NEXUS relationship below be expressed
 -- with the canonical `pial:` name instead of a blinded alias nothing resolves.
 --
--- The column carrying the PIAL differs per table (pial_id, creator_pial_id,
--- uploader_pial), so it is passed as a trigger argument and read off the row —
--- one function, not six that must be kept in step.
+-- The column carrying the PIAL is passed as a trigger argument and read off
+-- the row — one function, not one per table that must be kept in step.
 CREATE OR REPLACE FUNCTION manhattan_register_identity_ref() RETURNS TRIGGER AS $$
 DECLARE
     v_pial    TEXT;
@@ -466,30 +521,15 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-DROP TRIGGER IF EXISTS trg_manhattan_attestations ON attestations;
-CREATE TRIGGER trg_manhattan_attestations
-    AFTER INSERT ON attestations
-    FOR EACH ROW EXECUTE FUNCTION manhattan_register_identity_ref('pial_id');
-
 DROP TRIGGER IF EXISTS trg_manhattan_kyc_submissions ON kyc_submissions;
 CREATE TRIGGER trg_manhattan_kyc_submissions
     AFTER INSERT ON kyc_submissions
     FOR EACH ROW EXECUTE FUNCTION manhattan_register_identity_ref('pial_id');
 
-DROP TRIGGER IF EXISTS trg_manhattan_risk_profiles ON risk_profiles;
-CREATE TRIGGER trg_manhattan_risk_profiles
-    AFTER INSERT ON risk_profiles
-    FOR EACH ROW EXECUTE FUNCTION manhattan_register_identity_ref('pial_id');
-
 DROP TRIGGER IF EXISTS trg_manhattan_records_2257 ON records_2257;
 CREATE TRIGGER trg_manhattan_records_2257
     AFTER INSERT ON records_2257
-    FOR EACH ROW EXECUTE FUNCTION manhattan_register_identity_ref('creator_pial_id');
-
-DROP TRIGGER IF EXISTS trg_manhattan_csam_scans ON csam_scans;
-CREATE TRIGGER trg_manhattan_csam_scans
-    AFTER INSERT ON csam_scans
-    FOR EACH ROW EXECUTE FUNCTION manhattan_register_identity_ref('uploader_pial');
+    FOR EACH ROW EXECUTE FUNCTION manhattan_register_identity_ref('pial_id');
 
 DROP TRIGGER IF EXISTS trg_manhattan_verity_audit ON verity_audit;
 CREATE TRIGGER trg_manhattan_verity_audit
@@ -753,12 +793,9 @@ BEGIN
 
     INSERT INTO pial_shard_index (pial_shard_id, pial_id)
     SELECT manhattan_pial_shard(pial::text), pial
-      FROM (SELECT pial_id         AS pial FROM attestations
-            UNION SELECT pial_id         FROM kyc_submissions
-            UNION SELECT pial_id         FROM risk_profiles
-            UNION SELECT creator_pial_id FROM records_2257
-            UNION SELECT uploader_pial   FROM csam_scans
-            UNION SELECT pial_id         FROM verity_audit) p
+      FROM (SELECT pial_id AS pial FROM kyc_submissions
+            UNION SELECT pial_id FROM records_2257
+            UNION SELECT pial_id FROM verity_audit) p
      WHERE pial IS NOT NULL
     ON CONFLICT DO NOTHING;
 
@@ -807,8 +844,10 @@ END $$;
 "#;
 
 pub async fn migrate(pool: &PgPool) -> Result<()> {
+    // First: the old tier-owning shapes leave before the evidence tables are
+    // created under the same names.
+    sqlx::raw_sql(RESHAPE).execute(pool).await?;
     sqlx::raw_sql(SCHEMA).execute(pool).await?;
-    sqlx::raw_sql(COMPLIANCE_SCHEMA).execute(pool).await?;
     sqlx::raw_sql(NEXUS_SCHEMA).execute(pool).await?;
     // Last: the outbox triggers hang off every table above, so they are created
     // once those tables exist.
@@ -816,172 +855,46 @@ pub async fn migrate(pool: &PgPool) -> Result<()> {
     Ok(())
 }
 
-/// Returns the latest attestation for a PIAL + context combination.
-pub async fn get_latest_attestation(
-    pool: &PgPool,
-    pial_id: uuid::Uuid,
-    context: &str,
-) -> Option<crate::models::AttestationRow> {
-    sqlx::query_as(
-        "SELECT * FROM attestations WHERE pial_id = $1 AND context = $2
-         ORDER BY created_at DESC LIMIT 1",
-    )
-    .bind(pial_id)
-    .bind(context)
-    .fetch_optional(pool)
-    .await
-    .unwrap_or(None)
+// ── Audit ─────────────────────────────────────────────────────────────────────
+
+/// The audit vocabulary. One constant per step, so a step cannot be spelled two
+/// ways in two places.
+pub mod action {
+    pub const RECEIVED: &str = "received";
+    pub const DECIDED: &str = "decided";
+    pub const DOCUMENT_IN_USE: &str = "document_in_use";
+    pub const ID_COPY_STORED: &str = "id_copy_stored";
+    pub const RECORD_2257: &str = "2257_record";
+    pub const CONTENT_REMOVED_2257: &str = "2257_content_removed";
+    pub const PURGE: &str = "purge";
 }
 
-/// Returns the current risk profile, or a default if none exists.
-pub async fn get_risk_profile(pool: &PgPool, pial_id: uuid::Uuid) -> crate::models::RiskProfile {
-    sqlx::query_as("SELECT * FROM risk_profiles WHERE pial_id = $1")
-        .bind(pial_id)
-        .fetch_optional(pool)
-        .await
-        .unwrap_or(None)
-        .unwrap_or_else(|| crate::models::RiskProfile {
-            pial_id,
-            risk_score: 0.0,
-            device_count: 0,
-            failed_kyc_attempts: 0,
-            ip_reputation_score: 1.0,
-            velocity_score: 0.0,
-            duplicate_detected: false,
-            last_evaluated_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-        })
-}
-
-/// Upserts a risk profile.
-pub async fn upsert_risk_profile(pool: &PgPool, p: &crate::models::RiskProfile) {
-    let _ = sqlx::query(
-        "INSERT INTO risk_profiles
-            (pial_id, risk_score, device_count, failed_kyc_attempts,
-             ip_reputation_score, velocity_score, duplicate_detected, last_evaluated_at, updated_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,NOW(),NOW())
-         ON CONFLICT (pial_id) DO UPDATE SET
-            risk_score          = EXCLUDED.risk_score,
-            device_count        = EXCLUDED.device_count,
-            failed_kyc_attempts = EXCLUDED.failed_kyc_attempts,
-            ip_reputation_score = EXCLUDED.ip_reputation_score,
-            velocity_score      = EXCLUDED.velocity_score,
-            duplicate_detected  = EXCLUDED.duplicate_detected,
-            last_evaluated_at   = NOW(),
-            updated_at          = NOW()",
-    )
-    .bind(p.pial_id)
-    .bind(p.risk_score)
-    .bind(p.device_count)
-    .bind(p.failed_kyc_attempts)
-    .bind(p.ip_reputation_score)
-    .bind(p.velocity_score)
-    .bind(p.duplicate_detected)
-    .execute(pool)
-    .await;
-}
-
-/// Returns the 2257 record for a creator, if it exists and is active.
-pub async fn get_2257_record(
-    pool: &PgPool,
-    creator_pial: uuid::Uuid,
-) -> Option<crate::models::Record2257> {
-    sqlx::query_as("SELECT * FROM records_2257 WHERE creator_pial_id = $1 AND is_active = true")
-        .bind(creator_pial)
-        .fetch_optional(pool)
-        .await
-        .unwrap_or(None)
-}
-
-/// Inserts a new 2257 record.
-pub async fn create_2257_record(
-    pool: &PgPool,
-    r: &crate::models::Record2257,
-) -> anyhow::Result<uuid::Uuid> {
-    let id: uuid::Uuid = sqlx::query_scalar(
-        "INSERT INTO records_2257
-           (creator_pial_id, kyc_submission_id, age_band, document_type, document_hash,
-            record_keeper, record_location, statement_hash)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id",
-    )
-    .bind(r.creator_pial_id)
-    .bind(r.kyc_submission_id)
-    .bind(&r.age_band)
-    .bind(&r.document_type)
-    .bind(&r.document_hash)
-    .bind(&r.record_keeper)
-    .bind(&r.record_location)
-    .bind(&r.statement_hash)
-    .fetch_one(pool)
-    .await?;
-    Ok(id)
-}
-
-/// Gets a CSAM scan result by content hash. Returns None if never scanned.
-pub async fn get_csam_scan(pool: &PgPool, content_hash: &str) -> Option<crate::models::CsamScan> {
-    sqlx::query_as("SELECT * FROM csam_scans WHERE content_hash = $1")
-        .bind(content_hash)
-        .fetch_optional(pool)
-        .await
-        .unwrap_or(None)
-}
-
-/// Records a CSAM scan result.
-pub async fn record_csam_scan(
-    pool: &PgPool,
-    content_hash: &str,
-    uploader_pial: uuid::Uuid,
-    result: &str,
-    match_count: i32,
-    media_url: Option<&str>,
-    media_type: Option<&str>,
-) -> anyhow::Result<uuid::Uuid> {
-    let id: uuid::Uuid = sqlx::query_scalar(
-        // RETURNING closes the statement; it cannot sit between VALUES and
-        // ON CONFLICT. Written that way this never parsed, so every scan
-        // errored and no scan was ever recorded — including, until now, the
-        // uploader's identity registration that hangs off this insert.
-        "INSERT INTO csam_scans (content_hash, uploader_pial, result, match_count, media_url, media_type)
-         VALUES ($1,$2,$3,$4,$5,$6)
-         ON CONFLICT (content_hash) DO UPDATE SET
-           result      = EXCLUDED.result,
-           match_count = EXCLUDED.match_count,
-           scanned_at  = NOW()
-         RETURNING id",
-    )
-    .bind(content_hash)
-    .bind(uploader_pial)
-    .bind(result)
-    .bind(match_count)
-    .bind(media_url)
-    .bind(media_type)
-    .fetch_one(pool)
-    .await?;
-    Ok(id)
-}
-
-/// Appends an audit event.
-pub async fn audit(
-    pool: &PgPool,
+/// Appends one audit row on the caller's executor — always the transaction
+/// that performs the step, so a step and its audit row commit or fail together.
+/// A failed audit write fails the step; it is never discarded.
+pub async fn audit<'e, E>(
+    exec: E,
     pial_id: uuid::Uuid,
     action: &str,
-    context: Option<&str>,
-    before_tier: Option<i32>,
-    after_tier: Option<i32>,
+    attempt_id: Option<uuid::Uuid>,
+    submission_id: Option<uuid::Uuid>,
     metadata: serde_json::Value,
-) {
-    let _ = sqlx::query(
-        "INSERT INTO verity_audit (pial_id, action, context, before_tier, after_tier, metadata)
-         VALUES ($1,$2,$3,$4,$5,$6)",
+) -> Result<(), sqlx::Error>
+where
+    E: sqlx::PgExecutor<'e>,
+{
+    sqlx::query(
+        "INSERT INTO verity_audit (pial_id, action, attempt_id, submission_id, metadata)
+         VALUES ($1, $2, $3, $4, $5)",
     )
     .bind(pial_id)
     .bind(action)
-    .bind(context)
-    .bind(before_tier)
-    .bind(after_tier)
+    .bind(attempt_id)
+    .bind(submission_id)
     .bind(metadata)
-    .execute(pool)
-    .await;
+    .execute(exec)
+    .await?;
+    Ok(())
 }
 
 // ── Manhattan outbox ──────────────────────────────────────────────────────────

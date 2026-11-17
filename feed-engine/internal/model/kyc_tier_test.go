@@ -13,7 +13,7 @@ func TestKYCTierIsIdentity(t *testing.T) {
 	}{
 		{KYCTierNone, false, "nothing recorded"},
 		{KYCTierBasic, false, "self-attested birthday typed into the signup form — every account reaches this"},
-		{KYCTierSoft, false, "document read, but no face match and no liveness: a scraped passport image satisfies it"},
+		{"soft", false, "the retired MRZ-only tier: a document read with no face match and no liveness"},
 		{KYCTierFull, true, "document + face match + liveness — the only tier that names the human operating the account"},
 		{"", false, "unset"},
 		{"FULL", false, "case must not be coerced"},
@@ -59,7 +59,7 @@ func TestCanMonetize(t *testing.T) {
 		{"no tier", &User{Role: RoleUser}, false},
 		{"none", &User{Role: RoleUser, KYCTier: KYCTierNone}, false},
 		{"basic", &User{Role: RoleUser, KYCTier: KYCTierBasic}, false},
-		{"soft — document but no liveness", &User{Role: RoleUser, KYCTier: KYCTierSoft}, false},
+		{"retired soft tier", &User{Role: RoleUser, KYCTier: "soft"}, false},
 		{"full", &User{Role: RoleUser, KYCTier: KYCTierFull}, true},
 		{"admin bypass at basic", &User{Role: RoleAdmin, KYCTier: KYCTierBasic}, true},
 		{"founder bypass at none", &User{Role: RoleFounder, KYCTier: KYCTierNone}, true},
@@ -75,7 +75,7 @@ func TestCanMonetize(t *testing.T) {
 // TestKYCTierRankOrdering pins the ladder order itself, so the tiers cannot be
 // silently reordered underneath the predicate.
 func TestKYCTierRankOrdering(t *testing.T) {
-	ordered := []string{KYCTierNone, KYCTierBasic, KYCTierSoft, KYCTierFull}
+	ordered := []string{KYCTierNone, KYCTierBasic, KYCTierFull}
 	for i := 1; i < len(ordered); i++ {
 		if kycTierRank(ordered[i]) <= kycTierRank(ordered[i-1]) {
 			t.Fatalf("tier %q does not rank above %q", ordered[i], ordered[i-1])

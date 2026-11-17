@@ -175,7 +175,7 @@ var railManifest = []railPanelBudget{
 			"stand roughly where six trending rows stood before this change. And it " +
 			"is the one panel that already had a real way out: 'All scores' has been " +
 			"in its head since it shipped. Read the ranking argument in full beside " +
-			"sportsRailData in sports.go.",
+			"sportsRailData in sports_hub.go.",
 		SeeAll: "",
 		SeeAllNote: "HAS A HATCH, RESOLVED PER RENDER. sportsRailData writes HubHref " +
 			"— the league's own board when every row is one league, the cross-league " +

@@ -15,7 +15,6 @@ pub struct Config {
     pub confirmation_threshold_low: u32,
     pub confirmation_threshold_high: u32,
     pub ain_soph_url: String,
-    pub verity_url: String,
     /// Caeor: the media authority every encrypted listing body must belong to.
     pub caeor_url: String,
     /// Sitra Achra brokers, for the commerce.events relay.
@@ -55,7 +54,6 @@ impl Config {
                 .unwrap_or(3),
             ain_soph_url: std::env::var("AIN_SOPH_URL")
                 .unwrap_or_else(|_| "http://ain-soph:8089".into()),
-            verity_url: std::env::var("VERITY_URL").unwrap_or_else(|_| "http://verity:8095".into()),
             caeor_url: required("CAEOR_URL")?,
             // commerce.events is how feed-engine's subscription projection
             // learns anything; without a broker it would silently go stale.

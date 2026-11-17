@@ -1911,21 +1911,23 @@ func IsFollowingTopic(database *sql.DB, userID, tag string) bool {
 	return exists
 }
 
-func GetSubscribedTopics(database *sql.DB, userID string) []string {
+// GetSubscribedTopics is every topic tag the user follows, in tag order.
+func GetSubscribedTopics(database *sql.DB, userID string) ([]string, error) {
 	rows, err := database.Query(
 		`SELECT tag FROM user_topic_subscriptions WHERE user_id=$1 ORDER BY tag`, userID)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer rows.Close()
 	var tags []string
 	for rows.Next() {
 		var t string
-		if rows.Scan(&t) == nil {
-			tags = append(tags, t)
+		if err := rows.Scan(&t); err != nil {
+			return nil, err
 		}
+		tags = append(tags, t)
 	}
-	return tags
+	return tags, rows.Err()
 }
 
 // ── Lists ────────────────────────────────────────────────────────────────────

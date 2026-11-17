@@ -303,7 +303,6 @@ services:
       RUST_LOG: "${RUST_LOG:-info}"
       PORT: "8093"
       DATABASE_URL: "postgres://${POSTGRES_USER:-f33d3r}:${POSTGRES_PASSWORD}@postgres:5432/f33d3r_security?sslmode=disable"
-      VERITY_URL: "http://verity:8095"
       INTERNAL_API_KEY: "${INTERNAL_API_KEY}"
       # Ed25519 seed (base64, 32 bytes) signing contact key bundles. Unset means
       # bundles ship unsigned and report themselves as unsigned.
@@ -915,7 +914,6 @@ services:
       CONF_THRESHOLD_LOW: "1"
       CONF_THRESHOLD_HIGH: "3"
       AIN_SOPH_URL: "http://ain-soph:8089"
-      VERITY_URL: "http://verity:8095"
     depends_on:
       postgres:
         condition: service_healthy

@@ -30,13 +30,16 @@ func Start(database *sql.DB, cfg *config.Config, client *http.Client) {
 	// sender does not have to type them again while the knock is outstanding;
 	// they are not held for ever.
 	go gnosisPendingSweep(database)
+	// Verification attempts whose consent was given and never used. A consent
+	// carries an IP address and a user agent; it is not kept past the attempt.
+	go kycAttemptSweep(database)
 	// The Vision lane's object collector. Expiry itself is enforced in SQL on every
 	// read, so this only reclaims bytes and is allowed to lag.
 	go visionMediaSweep(database, cfg)
 	// The Manhattan outbox drain. Registrations are queued transactionally by
 	// database triggers; this is what delivers them to the naming plane.
 	go manhattan.StartDrain(context.Background(), database, manhattan.New(cfg.ManhattanURL))
-	log.Println("[cron] background jobs started: health-monitor, stale-scan-alert, gnosis-pending-sweep, vision-media-purge, manhattan-outbox-drain")
+	log.Println("[cron] background jobs started: health-monitor, stale-scan-alert, gnosis-pending-sweep, kyc-attempt-sweep, vision-media-purge, manhattan-outbox-drain")
 }
 
 // healthMonitor pings critical services every 5 minutes and logs if any are down.
@@ -351,6 +354,27 @@ func gnosisPendingSweep(database *sql.DB) {
 		}
 		if n, _ := result.RowsAffected(); n > 0 {
 			log.Printf("[cron] gnosis pending sweep: released %d undelivered message(s) older than %s", n, gnosisPendingMaxAge)
+		}
+	}
+}
+
+// kycAttemptSweep deletes verification attempts abandoned before submission.
+// A submitted attempt deletes its own row once it is answered (kyc.go); this
+// catches the rest.
+func kycAttemptSweep(database *sql.DB) {
+	tick := time.NewTicker(1 * time.Hour)
+	defer tick.Stop()
+	for range tick.C {
+		if database == nil {
+			continue
+		}
+		n, err := dbpkg.SweepAbandonedKYCAttempts(database)
+		if err != nil {
+			log.Printf("[cron] %v", err)
+			continue
+		}
+		if n > 0 {
+			log.Printf("[cron] kyc attempt sweep: deleted %d abandoned attempt(s) and their consent records", n)
 		}
 	}
 }

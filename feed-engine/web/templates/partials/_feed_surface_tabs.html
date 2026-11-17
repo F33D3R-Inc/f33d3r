@@ -28,7 +28,7 @@ FACET feed_surface_tabs
 {{range .Surfaces}}
 <button class="feed-tab user-surface-tab{{if eq $active .ID}} is-active{{end}}"
         data-surface="{{.ID}}"
-        hx-get="/facets/works/feed?surface={{.ID}}"
+        hx-get="/facets/works/feed?surface={{.ID}}&placement=home"
         hx-target="#feed-container"
         hx-swap="innerHTML"
         hx-push-url="/?surface={{.ID}}"

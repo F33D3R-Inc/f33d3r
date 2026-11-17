@@ -1,0 +1,566 @@
+{{/*
+FACETS sports_gp_* — one game's page, /sports/{league}/{game}
+  version: 1.0 | status: stable
+
+  Every Facet below is rendered by the server from a reading of the game
+  (handler/sports_game.go, SportsGameView) and replaced or extended over FA Live
+  by facet.mutate, addressed to the watch sports:page:<game> that the page's top
+  bar carries. The browser computes nothing: no clock ticks, no score is
+  counted, no list is ordered and no tab is chosen in it.
+
+  Tabs are server state. A tab is an hx-get that answers the whole tab set with
+  the chosen tab marked and its panel filled, replacing the tab set's Facet.
+
+  A list that grows (Highlights, the Plays panel, the chat log) has its rows in
+  a list Facet of its own, so a new row is prepended into that list and nothing
+  else on the page moves. A row rendered for a mutation carries sg-fresh, whose
+  keyframes slide it in; a page load never sets it.
+
+  Club colours are never written into a Fragment: a Fragment names the club's
+  class (sportsTeamClass), and /css/sports/teams.css carries the colours.
+
+  context:
+    sports_game.html → the center column and the right panel
+    /facets/sports/{league}/{game}/{header|center|panel|box} → re-reads
+    sportsGameMutation → stream mutations
+*/}}
+
+{{/* A club's mark. With a logo, the image carries the club's initials in
+     data-initials: a logo that fails to load is drawn as those initials on the
+     club's colour by the stylesheet (img::before renders only on a broken
+     image), with no script. With no logo, the initials are drawn directly. */}}
+{{define "sports_gp_mark"}}
+{{- if .Team.LogoURL -}}
+<img class="sg-mark sg-mark--{{.Size}} {{.Class}}" src="{{.Team.LogoURL}}" alt="" data-initials="{{.Team.Initials}}" loading="lazy" decoding="async" width="{{.Size}}" height="{{.Size}}">
+{{- else -}}
+<span class="sg-mark sg-mark--{{.Size}} sg-mark--init {{.Class}}" aria-hidden="true">{{.Team.Initials}}</span>
+{{- end -}}
+{{end}}
+
+{{/* A player's headshot, with their initials when there is none or it fails. */}}
+{{define "sports_gp_headshot"}}
+{{- if .Headshot -}}
+<img class="sg-hs" src="{{.Headshot}}" alt="" data-initials="{{.Initials}}" loading="lazy" decoding="async" width="36" height="36">
+{{- else -}}
+<span class="sg-hs sg-hs--init" aria-hidden="true">{{.Initials}}</span>
+{{- end -}}
+{{end}}
+
+{{/*
+FACET sports_gp_pills — layer 2 (composite)
+  The league's other games, one pill each, in the top bar. Re-sent whole when
+  any of them moves. facet:f33d3r:sports:<game>:gp_pills
+*/}}
+{{define "sports_gp_pills"}}
+<nav class="sg-pills" data-facet-id="{{.FacetID}}" aria-label="Other games">
+  {{range .Games}}
+  <a class="sg-pill{{if .Live}} sg-pill--live{{end}}" href="/sports/{{.League}}/{{.ID}}">
+    {{template "sports_gp_mark" (sportsMark .League .Away.Team 20)}}
+    <span class="sg-pill__label" aria-hidden="true">{{.CompactStatus}}{{if .Final}} {{.Away.Score}}-{{.Home.Score}}{{end}}</span>
+    {{template "sports_gp_mark" (sportsMark .League .Home.Team 20)}}
+    <span class="sr-only">{{.Matchup}}{{if .HasScore}}, {{.Away.Score}} to {{.Home.Score}}{{end}}. {{.SpokenStatus}}</span>
+  </a>
+  {{end}}
+</nav>
+{{end}}
+
+{{/*
+FACET sports_gp_header — layer 2 (composite)
+  The scoreboard: each club's mark, abbreviation and record, its score, the
+  possession football and its timeouts; the clock and down & distance in the
+  middle; the latest play beneath. Re-sent whole when the game changes state,
+  otherwise only its atoms move. facet:f33d3r:sports:<game>:gp_header
+
+  children:
+    sports_game_score ×2, sports_gp_side ×2, sports_game_clock,
+    sports_game_situation, sports_gp_latest
+*/}}
+{{define "sports_gp_header"}}
+{{$g := .Game}}
+<section class="sg-head" data-facet-id="{{.FacetID "header"}}" data-state="{{$g.State}}"
+         aria-label="Scoreboard"
+         hx-get="{{.Endpoint "header"}}" hx-trigger="fa:resync from:body" hx-swap="outerHTML">
+  <span class="sg-head__glow sg-head__glow--away {{sportsTeamClass $g.League $g.Away.Team.ID}}" aria-hidden="true"></span>
+  <span class="sg-head__glow sg-head__glow--home {{sportsTeamClass $g.League $g.Home.Team.ID}}" aria-hidden="true"></span>
+  <div class="sg-head__board">
+    <div class="sg-head__team sg-head__team--away">
+      {{template "sports_gp_mark" (sportsMark $g.League $g.Away.Team 40)}}
+      <span class="sg-head__abbr" aria-hidden="true">{{$g.Away.Team.Label}}</span>
+      <span class="sr-only">{{$g.Away.Team.Name}}</span>
+      {{if $g.Away.Team.Record}}<span class="sg-head__record"><span class="sr-only">record </span>{{$g.Away.Team.Record}}</span>{{end}}
+    </div>
+    <div class="sg-head__num sg-head__num--away">
+      {{template "sports_game_score" (.Score "away")}}
+      {{template "sports_gp_side" (.SideData "away")}}
+    </div>
+    <div class="sg-head__mid">
+      {{template "sports_game_clock" .Card}}
+      {{template "sports_game_situation" .Card}}
+    </div>
+    <div class="sg-head__num sg-head__num--home">
+      {{template "sports_game_score" (.Score "home")}}
+      {{template "sports_gp_side" (.SideData "home")}}
+    </div>
+    <div class="sg-head__team sg-head__team--home">
+      {{template "sports_gp_mark" (sportsMark $g.League $g.Home.Team 40)}}
+      <span class="sg-head__abbr" aria-hidden="true">{{$g.Home.Team.Label}}</span>
+      <span class="sr-only">{{$g.Home.Team.Name}}</span>
+      {{if $g.Home.Team.Record}}<span class="sg-head__record"><span class="sr-only">record </span>{{$g.Home.Team.Record}}</span>{{end}}
+    </div>
+  </div>
+  {{/* The live region is the stable wrapper, so a replaced card inside it is
+       announced; a region that is itself replaced is not. */}}
+  <div class="sg-head__latest" aria-live="polite" aria-atomic="true">
+    {{template "sports_gp_latest" .}}
+  </div>
+</section>
+{{end}}
+
+{{/*
+FACET sports_gp_side — layer 1 (atomic)
+  Beside one side's score: the possession football and one pip per timeout,
+  filled while still in hand. facet:f33d3r:sports:<game>:gp_side_<side>
+*/}}
+{{define "sports_gp_side"}}
+<span class="sg-side" data-facet-id="{{.FacetID}}">
+  {{if .HasBall}}
+  <svg class="sg-side__ball" viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="12" rx="9" ry="5.5" transform="rotate(-35 12 12)" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M9.5 14.5l5-5M10.7 11.3l2 2M12.3 9.7l2 2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+  <span class="sr-only">{{.Team.Label}} has the ball.</span>
+  {{end}}
+  {{with .Pips}}
+  <span class="sg-side__pips" aria-hidden="true">{{range .}}<span class="sg-pip{{if .}} sg-pip--on{{end}}"></span>{{end}}</span>
+  <span class="sr-only">{{$.TimeoutsLeft}} timeouts left.</span>
+  {{end}}
+</span>
+{{end}}
+
+{{/*
+FACET sports_gp_latest — layer 1 (atomic)
+  The latest play: its headline and its account. Replaced on every new play.
+  facet:f33d3r:sports:<game>:gp_latest
+*/}}
+{{define "sports_gp_latest"}}
+{{$r := .LatestRow}}
+<div class="sg-latest{{if not $r.Play.ID}} sg-latest--none{{else if .Fresh}} sg-fresh{{end}}" data-facet-id="{{.FacetID "latest"}}">
+  {{if $r.Play.ID}}
+  {{template "sports_gp_mark" (sportsMark $r.League $r.Team 28)}}
+  <div class="sg-latest__body">
+    <p class="sg-latest__head"><strong>{{$r.Play.Headline}}</strong> <span class="sg-latest__tag">Last play</span></p>
+    <p class="sg-latest__text">{{$r.Play.Text}}</p>
+  </div>
+  {{end}}
+</div>
+{{end}}
+
+{{/*
+FACET sports_gp_center — layer 2 (composite)
+  Top · Latest · Highlights. Top and Latest are the works about the game;
+  Highlights is the game's big plays by period. facet:f33d3r:sports:<game>:gp_center
+*/}}
+{{define "sports_gp_center"}}
+<section class="sg-center" data-facet-id="{{.FacetID}}"
+         hx-get="{{.Self}}" hx-trigger="fa:resync from:body" hx-swap="outerHTML">
+  <div class="sg-tabs" role="tablist" aria-label="About this game">
+    {{range .Tabs}}
+    <button type="button" role="tab" class="sg-tab{{if .Active}} sg-tab--on{{end}}"
+            id="sg-ctab-{{$.View.ID}}-{{.Key}}"
+            aria-selected="{{if .Active}}true{{else}}false{{end}}" aria-controls="sg-cpanel-{{$.View.ID}}"
+            hx-get="{{.Href}}" hx-target="closest .sg-center" hx-swap="outerHTML">{{.Label}}</button>
+    {{end}}
+  </div>
+  <div class="sg-center__panel" role="tabpanel" id="sg-cpanel-{{.View.ID}}" aria-labelledby="sg-ctab-{{.View.ID}}-{{.Tab}}">
+    {{if eq .Tab "highlights"}}
+    {{template "sports_gp_highlights" .View}}
+    {{else if .Feed.Failed}}
+    {{template "feed_error" .ErrorArgs}}
+    {{else if .Feed.Works}}
+    <div class="sg-feed" role="feed" aria-busy="false">
+      {{range .Feed.Works}}{{template "work_card" ($.CardArgs .)}}{{end}}
+      {{if .Feed.NextURL}}{{template "feed_sentinel" .SentinelArgs}}{{end}}
+    </div>
+    {{else}}
+    {{template "stateEmpty" .EmptyArgs}}
+    {{end}}
+  </div>
+</section>
+{{end}}
+
+{{/*
+FACET sports_gp_highlights — layer 2 (composite)
+  The game's big plays — scores, turnovers, sacks, long gains — newest period
+  and newest play first. A new period's group is prepended into this list.
+  facet:f33d3r:sports:<game>:gp_highlights
+*/}}
+{{define "sports_gp_highlights"}}
+<div class="sg-list" data-facet-id="{{.FacetID "highlights"}}">
+  {{if .D.HasPlays}}
+  {{range .HighlightGroups}}{{template "sports_gp_play_group" .}}{{end}}
+  <p class="sg-empty">No highlights yet. Scores, turnovers and big plays land here as they happen.</p>
+  {{else}}
+  <p class="sg-empty">This game's feed does not carry plays.</p>
+  {{end}}
+</div>
+{{end}}
+
+{{/*
+FACET sports_gp_play_group — layer 2 (composite)
+  One period's plays in one list. New plays are prepended into its rows list.
+  facet:f33d3r:sports:<game>:gp_<hl|play>_p<period>
+  rows: facet:f33d3r:sports:<game>:gp_<hl|play>_p<period>_rows
+*/}}
+{{define "sports_gp_play_group"}}
+<section class="sg-group{{if .Fresh}} sg-fresh{{end}}" data-facet-id="{{.FacetID}}">
+  <h3 class="sg-group__head">{{.Heading}}</h3>
+  <ol class="sg-group__rows" data-facet-id="{{.RowsID}}">
+    {{range .Rows}}{{template "sports_gp_play_row" .}}{{end}}
+  </ol>
+</section>
+{{end}}
+
+{{/*
+FACET sports_gp_play_row — layer 1 (atomic)
+  One play: down and distance and clock, the LATEST badge on the newest, the
+  headline, the score after a scoring play, and the account.
+  facet:f33d3r:sports:<game>:gp_<hl|play>_<play>
+*/}}
+{{define "sports_gp_play_row"}}
+<li class="sg-play{{if .Fresh}} sg-fresh{{end}}{{if .Play.Scoring}} sg-play--score{{end}}{{if .Latest}} sg-play--latest{{end}}" data-facet-id="{{.FacetID}}">
+  {{template "sports_gp_mark" (sportsMark .League .Team 28)}}
+  <div class="sg-play__body">
+    <p class="sg-play__meta">
+      {{with .Play.SituationLine}}<span>{{.}}</span>{{end}}
+      {{if .Latest}}<span class="sg-badge">Latest</span>{{end}}
+    </p>
+    <p class="sg-play__head">{{.Play.Headline}}</p>
+    {{with .ScoreLine}}<p class="sg-play__score">{{.}}</p>{{end}}
+    <p class="sg-play__text">{{.Play.Text}}</p>
+  </div>
+</li>
+{{end}}
+
+{{/*
+FACET sports_gp_panel — layer 2 (composite)
+  Stats · Plays · Chat, the right panel. facet:f33d3r:sports:<game>:gp_panel
+*/}}
+{{define "sports_gp_panel"}}
+<section class="sg-panel" data-facet-id="{{.FacetID}}" aria-label="Game details"
+         hx-get="{{.Self}}" hx-trigger="fa:resync from:body" hx-swap="outerHTML">
+  <div class="sg-tabs sg-tabs--panel" role="tablist" aria-label="Game details">
+    {{range .Tabs}}
+    <button type="button" role="tab" class="sg-tab{{if .Active}} sg-tab--on{{end}}"
+            id="sg-ptab-{{$.View.ID}}-{{.Key}}"
+            aria-selected="{{if .Active}}true{{else}}false{{end}}" aria-controls="sg-ppanel-{{$.View.ID}}"
+            hx-get="{{.Href}}" hx-target="closest .sg-panel" hx-swap="outerHTML">{{.Label}}</button>
+    {{end}}
+  </div>
+  <div class="sg-panel__body" role="tabpanel" id="sg-ppanel-{{.View.ID}}" aria-labelledby="sg-ptab-{{.View.ID}}-{{.Tab}}">
+    {{if eq .Tab "stats"}}
+    <h2 class="sr-only">Stats</h2>
+    {{template "sports_gp_linescore" .View}}
+    {{template "sports_gp_winprob" .View}}
+    {{template "sports_gp_leaders" .View}}
+    {{template "sports_gp_box" .BoxData}}
+    {{else if eq .Tab "plays"}}
+    <h2 class="sr-only">Plays</h2>
+    {{template "sports_gp_plays" .View}}
+    {{else}}
+    <div class="sg-chat" id="game-chat">
+      <h2 class="sr-only">Chat</h2>
+      {{template "sports_gp_vote" .Vote}}
+      <ol class="sg-chat__log" id="{{.Chat.Composer.LogDOMID}}" data-facet-id="{{.Chat.LogID}}"
+          aria-live="polite" aria-label="Chat messages">
+        {{range .Chat.Rows}}{{template "sports_gp_chat_row" .}}{{end}}
+        <li class="sg-empty">No messages yet. Say something about the game.</li>
+      </ol>
+      {{template "sports_gp_composer" .Chat.Composer}}
+    </div>
+    {{end}}
+  </div>
+</section>
+{{end}}
+
+{{/*
+FACET sports_gp_linescore — layer 1 (atomic)
+  The score by period, a chip per cell. facet:f33d3r:sports:<game>:gp_linescore
+*/}}
+{{define "sports_gp_linescore"}}
+{{$g := .Game}}{{$ls := .D.Linescore}}
+<div class="sg-card sg-ls" data-facet-id="{{.FacetID "linescore"}}">
+  {{if $ls.Periods}}
+  <table class="sg-ls__table">
+    <caption class="sr-only">Score by {{if eq $g.League "nfl"}}quarter{{else}}period{{end}}</caption>
+    <thead><tr>
+      <th scope="col"><span class="sr-only">Team</span></th>
+      {{range $ls.Periods}}<th scope="col">{{.}}</th>{{end}}
+      <th scope="col"><abbr title="Total">T</abbr></th>
+    </tr></thead>
+    <tbody>
+      <tr>
+        <th scope="row">{{template "sports_gp_mark" (sportsMark $g.League $g.Away.Team 20)}}<span>{{$g.Away.Team.Label}}</span></th>
+        {{range $ls.Away}}<td><span class="sg-chip">{{if .}}{{.}}{{else}}<span aria-label="not played">—</span>{{end}}</span></td>{{end}}
+        <td><span class="sg-chip sg-chip--total">{{if $ls.AwayTotal}}{{$ls.AwayTotal}}{{else}}—{{end}}</span></td>
+      </tr>
+      <tr>
+        <th scope="row">{{template "sports_gp_mark" (sportsMark $g.League $g.Home.Team 20)}}<span>{{$g.Home.Team.Label}}</span></th>
+        {{range $ls.Home}}<td><span class="sg-chip">{{if .}}{{.}}{{else}}<span aria-label="not played">—</span>{{end}}</span></td>{{end}}
+        <td><span class="sg-chip sg-chip--total">{{if $ls.HomeTotal}}{{$ls.HomeTotal}}{{else}}—{{end}}</span></td>
+      </tr>
+    </tbody>
+  </table>
+  {{else}}
+  <p class="sg-empty">The score by period appears once the game starts.</p>
+  {{end}}
+</div>
+{{end}}
+
+{{/*
+FACET sports_gp_winprob — layer 1 (atomic)
+  Each side's chance of winning, as the upstream models it.
+  facet:f33d3r:sports:<game>:gp_winprob
+*/}}
+{{define "sports_gp_winprob"}}
+{{$g := .Game}}
+<div class="sg-card sg-wp" data-facet-id="{{.FacetID "winprob"}}">
+  {{if .D.HasWinProb}}
+  <p class="sg-wp__row">
+    <span class="sg-wp__side">{{$g.Away.Team.Label}} {{.WinAway}}%</span>
+    <span class="sg-wp__title">Win probability</span>
+    <span class="sg-wp__side">{{.WinHome}}% {{$g.Home.Team.Label}}</span>
+  </p>
+  <meter class="sg-wp__meter {{sportsTeamClass $g.League $g.Away.Team.ID}}" min="0" max="100" value="{{.WinAway}}"
+         aria-label="{{$g.Away.Team.Name}} {{.WinAway}} percent, {{$g.Home.Team.Name}} {{.WinHome}} percent"></meter>
+  <span class="sg-wp__home {{sportsTeamClass $g.League $g.Home.Team.ID}}" aria-hidden="true"></span>
+  {{end}}
+</div>
+{{end}}
+
+{{/*
+FACET sports_gp_leaders — layer 1 (atomic)
+  Game leaders: each category with each side's leader — headshot, the big
+  number, the name and the stat line. facet:f33d3r:sports:<game>:gp_leaders
+*/}}
+{{define "sports_gp_leaders"}}
+{{$g := .Game}}
+<div class="sg-card sg-leaders" data-facet-id="{{.FacetID "leaders"}}">
+  <div class="sg-leaders__head">
+    <span class="sg-leaders__club">{{template "sports_gp_mark" (sportsMark $g.League $g.Away.Team 20)}}{{$g.Away.Team.Label}}</span>
+    <h3 class="sg-leaders__title">Game leaders</h3>
+    <span class="sg-leaders__club sg-leaders__club--home">{{$g.Home.Team.Label}}{{template "sports_gp_mark" (sportsMark $g.League $g.Home.Team 20)}}</span>
+  </div>
+  {{range .D.Leaders}}
+  <div class="sg-leader-row">
+    <div class="sg-leader">
+      {{if .Away.Present}}
+      <div class="sg-leader__top">{{template "sports_gp_headshot" .Away.Athlete}}<span class="sg-leader__value">{{.Away.Value}}</span></div>
+      <p class="sg-leader__name">{{.Away.Athlete.Name}}</p>
+      {{with .Away.Line}}<p class="sg-leader__line">{{.}}</p>{{end}}
+      {{else}}<span class="sg-leader__none" aria-label="no leader">—</span>{{end}}
+    </div>
+    <p class="sg-leader-row__label">{{.Label}}</p>
+    <div class="sg-leader sg-leader--home">
+      {{if .Home.Present}}
+      <div class="sg-leader__top"><span class="sg-leader__value">{{.Home.Value}}</span>{{template "sports_gp_headshot" .Home.Athlete}}</div>
+      <p class="sg-leader__name">{{.Home.Athlete.Name}}</p>
+      {{with .Home.Line}}<p class="sg-leader__line">{{.}}</p>{{end}}
+      {{else}}<span class="sg-leader__none" aria-label="no leader">—</span>{{end}}
+    </div>
+  </div>
+  {{else}}
+  <p class="sg-empty">Leaders appear once the game starts.</p>
+  {{end}}
+</div>
+{{end}}
+
+{{/*
+FACET sports_gp_box — layer 2 (composite)
+  The box score: a team toggle and that team's tables. The toggle is an hx-get
+  that answers this Facet with the other team chosen.
+  facet:f33d3r:sports:<game>:gp_box
+*/}}
+{{define "sports_gp_box"}}
+{{$g := .View.Game}}
+<div class="sg-card sg-box" data-facet-id="{{.FacetID}}">
+  <h3 class="sr-only">Box score</h3>
+  <div class="sg-box__toggle" role="tablist" aria-label="Box score team">
+    {{range .Toggle}}
+    <button type="button" role="tab" class="sg-box__team{{if .Active}} sg-box__team--on{{end}}"
+            aria-selected="{{if .Active}}true{{else}}false{{end}}" aria-controls="sg-box-{{$g.ID}}"
+            hx-get="{{.Href}}" hx-target="closest .sg-box" hx-swap="outerHTML">
+      {{template "sports_gp_mark" (sportsMark $g.League ($.ToggleTeam .Key) 20)}}{{.Label}}
+    </button>
+    {{end}}
+  </div>
+  <div id="sg-box-{{$g.ID}}" role="tabpanel">
+    {{template "sports_gp_box_table" .Table}}
+  </div>
+</div>
+{{end}}
+
+{{/*
+FACET sports_gp_box_table — layer 1 (atomic)
+  One side's tables. facet:f33d3r:sports:<game>:gp_box_<side>
+*/}}
+{{define "sports_gp_box_table"}}
+<div class="sg-boxt" data-facet-id="{{.FacetID}}">
+  {{range .Box.Groups}}
+  <div class="sg-boxt__scroll">
+    <table class="sg-stat">
+      <caption class="sr-only">{{$.Box.Team.Name}} {{.Label}}</caption>
+      <thead><tr>
+        <th scope="col" class="sg-stat__name">{{.Label}}</th>
+        {{range .Columns}}<th scope="col">{{.}}</th>{{end}}
+      </tr></thead>
+      <tbody>
+        {{range .Rows}}<tr><th scope="row" class="sg-stat__name">{{.Athlete.Name}}</th>{{range .Values}}<td>{{.}}</td>{{end}}</tr>{{end}}
+      </tbody>
+    </table>
+  </div>
+  {{else}}
+  <p class="sg-empty">No box score yet.</p>
+  {{end}}
+</div>
+{{end}}
+
+{{/*
+FACET sports_gp_plays — layer 2 (composite)
+  The Plays panel: by period, then by drive where the league has drives, the
+  drive in progress open. facet:f33d3r:sports:<game>:gp_plays
+*/}}
+{{define "sports_gp_plays"}}
+<div class="sg-list" data-facet-id="{{.FacetID "plays"}}">
+  {{if not .D.HasPlays}}
+  <p class="sg-empty">This game's feed does not carry plays.</p>
+  {{else}}
+  {{if .D.Drives}}
+  {{range .DriveGroups}}{{template "sports_gp_drive_group" .}}{{end}}
+  {{else}}
+  {{range .PlayGroups}}{{template "sports_gp_play_group" .}}{{end}}
+  {{end}}
+  <p class="sg-empty">No plays yet.</p>
+  {{end}}
+</div>
+{{end}}
+
+{{/*
+FACET sports_gp_drive_group — layer 2 (composite)
+  One period's drives. New drives are prepended into its list.
+  facet:f33d3r:sports:<game>:gp_drives_p<period>, list …_list
+*/}}
+{{define "sports_gp_drive_group"}}
+<section class="sg-group{{if .Fresh}} sg-fresh{{end}}" data-facet-id="{{.FacetID}}">
+  <h3 class="sg-group__head">{{.Heading}}</h3>
+  <div class="sg-drives" data-facet-id="{{.ListID}}">
+    {{range .Drives}}{{template "sports_gp_drive" .}}{{end}}
+  </div>
+</section>
+{{end}}
+
+{{/*
+FACET sports_gp_drive — layer 2 (composite)
+  One drive, a disclosure: its heading and its plays, newest first. The drive in
+  progress is open; a finished drive is collapsed.
+  facet:f33d3r:sports:<game>:gp_drive_<drive>, rows …_rows
+*/}}
+{{define "sports_gp_drive"}}
+<details class="sg-drive{{if .Fresh}} sg-fresh{{end}}{{if .Drive.InProgress}} sg-drive--live{{end}}" data-facet-id="{{.FacetID}}"{{if .Drive.InProgress}} open{{end}}>
+  {{template "sports_gp_drive_head" .}}
+  <ol class="sg-drive__plays" data-facet-id="{{.RowsID}}">
+    {{range .Rows}}{{template "sports_gp_play_row" .}}{{end}}
+  </ol>
+</details>
+{{end}}
+
+{{/*
+FACET sports_gp_drive_head — layer 1 (atomic)
+  "In progress · 2 plays, 34 yards", "Touchdown · Justin Herbert · 7 plays, 63
+  yards", or the club and its result. facet:f33d3r:sports:<game>:gp_drive_<drive>_head
+*/}}
+{{define "sports_gp_drive_head"}}
+<summary class="sg-drive__head" data-facet-id="{{.HeadID}}">
+  {{template "sports_gp_mark" (sportsMark .League .Drive.Team 28)}}
+  <span class="sg-drive__text">
+    <span class="sg-drive__title">{{.Drive.Title}}{{with .Drive.Chip}} <span class="sg-chip sg-chip--result">{{.}}</span>{{end}}</span>
+    <span class="sg-drive__sum">{{.Drive.Summary}}</span>
+  </span>
+  <svg class="sg-drive__chev" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+</summary>
+{{end}}
+
+{{/*
+FACET sports_gp_vote — layer 2 (composite), per viewer
+  Who wins: a button per club with its share. The viewer's own choice is marked
+  here and only here; the shares are their own atoms, which move for everyone.
+  facet:f33d3r:sports:<game>:gp_vote
+*/}}
+{{define "sports_gp_vote"}}
+<form class="sg-vote" data-facet-id="{{.FacetID}}" hx-post="{{.Action}}" hx-target="this" hx-swap="outerHTML">
+  <p class="sg-vote__q" id="sg-vote-q-{{.GameID}}">Who wins?</p>
+  <div class="sg-vote__btns" role="group" aria-labelledby="sg-vote-q-{{.GameID}}">
+    {{range .Buttons}}
+    <button type="submit" name="side" value="{{.Side}}"
+            class="sg-vote__btn {{sportsTeamClass $.League .Team.ID}}{{if .Mine}} sg-vote__btn--mine{{end}}"
+            aria-pressed="{{if .Mine}}true{{else}}false{{end}}"{{if not $.CanVote}} disabled{{end}}>
+      {{template "sports_gp_vote_pct" .Pct}}
+    </button>
+    {{end}}
+  </div>
+  {{template "sports_gp_vote_total" .TotalData}}
+  {{if not .Signed}}<p class="sg-vote__note"><a href="/login">Log in</a> to vote.</p>
+  {{else if .Mine}}<p class="sg-vote__note">You backed {{if eq .Mine "home"}}{{.Home.Label}}{{else}}{{.Away.Label}}{{end}}.</p>
+  {{else if .Settled}}<p class="sg-vote__note">Voting has closed.</p>{{end}}
+</form>
+{{end}}
+
+{{/* FACET sports_gp_vote_pct — layer 1 (atomic). "BAL · 54%".
+     facet:f33d3r:sports:<game>:gp_vote_<side> */}}
+{{define "sports_gp_vote_pct"}}
+<span class="sg-vote__pct" data-facet-id="{{.FacetID}}">{{.Team.Label}} · {{if .Voted}}{{.Pct}}%{{else}}—{{end}}</span>
+{{end}}
+
+{{/* FACET sports_gp_vote_total — layer 1 (atomic).
+     facet:f33d3r:sports:<game>:gp_vote_total */}}
+{{define "sports_gp_vote_total"}}
+<p class="sg-vote__total" data-facet-id="{{.FacetID}}">{{.Total}} {{if eq .Total 1}}vote{{else}}votes{{end}}</p>
+{{end}}
+
+{{/*
+FACET sports_gp_chat_row — layer 1 (atomic)
+  One chat line, with the club the sender backed. Prepended into the log, which
+  is laid out bottom-up, so it lands at the bottom.
+  facet:f33d3r:sports:<game>:gp_chat_<message>
+*/}}
+{{define "sports_gp_chat_row"}}
+<li class="sg-msg{{if .Fresh}} sg-fresh{{end}}" data-facet-id="{{.FacetID}}">
+  <a class="sg-msg__av" href="/{{.M.Handle}}" tabindex="-1" aria-hidden="true">{{template "avatar_img" .AvatarArgs}}</a>
+  <p class="sg-msg__line">
+    <a class="sg-msg__who" href="/{{.M.Handle}}">{{.M.Name}}</a>
+    {{if .M.Badge}}<span class="sg-msg__badge {{.M.BadgeClass}}"><span class="sr-only">backs </span>{{.M.Badge}}</span>{{end}}
+    <span class="sg-msg__text">{{.M.Body}}</span>
+    <time class="sg-msg__time" datetime="{{.M.CreatedAt.UTC.Format "2006-01-02T15:04:05Z"}}">{{.M.TimeLabel}}</time>
+  </p>
+</li>
+{{end}}
+
+{{/*
+FACET sports_gp_composer — layer 1 (atomic), per viewer
+  "Talk about the game" and the quick reactions. Sending answers a fresh
+  composer, so the input clears with no script.
+  facet:f33d3r:sports:<game>:gp_composer
+*/}}
+{{define "sports_gp_composer"}}
+<form class="sg-composer" data-facet-id="{{.FacetID}}" hx-post="{{.Action}}" hx-target="this" hx-swap="outerHTML">
+  {{if .Signed}}
+  <div class="sg-composer__reacts" role="group" aria-label="Quick reactions">
+    {{range .Reactions}}<button type="submit" name="reaction" value="{{.}}" class="sg-react" aria-label="Send {{.}}">{{.}}</button>{{end}}
+  </div>
+  <div class="sg-composer__row">
+    <label class="sr-only" for="sg-chat-input-{{.GameID}}">Talk about the game</label>
+    <input class="sg-composer__input" id="sg-chat-input-{{.GameID}}" name="body" type="text"
+           maxlength="280" autocomplete="off" placeholder="Talk about the game"{{if .Focus}} autofocus{{end}}>
+    <button type="submit" class="sg-composer__send">Send</button>
+  </div>
+  {{else}}
+  <p class="sg-composer__login"><a href="/login">Log in</a> to talk about the game.</p>
+  {{end}}
+</form>
+{{end}}

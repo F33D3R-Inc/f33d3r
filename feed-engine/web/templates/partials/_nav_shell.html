@@ -98,27 +98,38 @@ FACET nav_shell
     {{/* Go Live — the broadcast lane's entry point. Every signed-in account can
          reach it; the server decides on POST whether the identity may publish. */}}
     <a href="/golive"    class="nav-item {{block "nav-active-golive"        .}}{{end}}"><span class="nav-icon"><svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="m23 7-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg></span><span class="nav-label">Go Live</span></a>
-    {{/* Create — Creator OS dashboard. Visible to creators and admins. */}}
-    {{if .User}}{{if or .User.IsCreator .User.IsAdmin}}
-    <a href="/create" class="nav-item {{block "nav-active-create" .}}{{end}}"><span class="nav-icon"><svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg></span><span class="nav-label">Create</span></a>
-    {{end}}{{end}}
-    {{if .User}}
-    <a href="/articles" class="nav-item {{block "nav-active-articles" .}}{{end}}"><span class="nav-icon"><svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg></span><span class="nav-label">Articles</span></a>
-    {{end}}
-    <a href="/achievements" class="nav-item {{block "nav-active-achievements"   .}}{{end}}"><span class="nav-icon"><svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="8" r="6"/><path d="M15.477 12.89L17 22l-5-3-5 3 1.523-9.11"/></svg></span><span class="nav-label">Leaderboard</span></a>
-    <a href="/wallet"    class="nav-item {{block "nav-active-wallet"        .}}{{end}}"><span class="nav-icon"><svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"/><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"/><path d="M18 12a2 2 0 0 0 0 4h4v-4Z"/></svg></span><span class="nav-label">Wallet</span></a>
-    {{if .User}}{{if .User.IsVerified}}
-    <a href="/marketplace" class="nav-item {{block "nav-active-marketplace" .}}{{end}}"><span class="nav-icon"><svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm-10 2a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg></span><span class="nav-label">Market</span></a>
-    {{end}}{{end}}
-    <a href="/analytics" class="nav-item {{block "nav-active-analytics"    .}}{{end}}"><span class="nav-icon"><svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg></span><span class="nav-label">Analytics</span></a>
     <a href="/profile"   class="nav-item {{block "nav-active-profile"       .}}{{end}}"><span class="nav-icon"><svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></span><span class="nav-label">Profile</span></a>
-    <a href="/settings"  class="nav-item {{block "nav-active-settings"     .}}{{end}}"><span class="nav-icon"><svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></span><span class="nav-label">Settings</span></a>
-    {{/* Org Panel — only for verified business/government accounts */}}
-    {{if .User}}{{if ne .User.OfficialType ""}}
-    <a href="/org/panel" class="nav-item {{block "nav-active-org-panel" .}}{{end}}"><span class="nav-icon"><svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M3 21h18M3 10h18M5 6l7-3 7 3M4 10v11M20 10v11M8 14v3M12 14v3M16 14v3"/></svg></span><span class="nav-label">Org Panel</span></a>
-    {{end}}{{end}}
-    {{/* Admin panel — IsAdmin() checks admin|founder roles */}}
-    {{if .User}}{{if .User.IsAdmin}}
-    <a href="/admin" class="nav-item {{block "nav-active-admin" .}}{{end}}" style="color:var(--accent)"><span class="nav-icon"><svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></span><span class="nav-label">Admin</span></a>
-    {{end}}{{end}}
+
+    {{/* Facet(nav_more) — the More drawer, as on x.com: the rail keeps the
+         everyday destinations and More holds the rest, so the rail never
+         scrolls. Native popover: the browser opens and closes it (click
+         outside / Esc) with no script and no client state. More is marked
+         active when the page on screen is one of the drawer's. */}}
+    <button type="button" class="nav-item nav-more-btn {{template "nav-active-create" .}}{{template "nav-active-articles" .}}{{template "nav-active-achievements" .}}{{template "nav-active-wallet" .}}{{template "nav-active-marketplace" .}}{{template "nav-active-analytics" .}}{{template "nav-active-settings" .}}{{template "nav-active-org-panel" .}}{{template "nav-active-admin" .}}" popovertarget="nav-more-drawer" aria-haspopup="menu"><span class="nav-icon"><svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="8" cy="12" r="1" fill="currentColor"/><circle cx="12" cy="12" r="1" fill="currentColor"/><circle cx="16" cy="12" r="1" fill="currentColor"/></svg></span><span class="nav-label">More</span></button>
+    <div id="nav-more-drawer" class="nav-more-drawer" popover role="menu" aria-label="More">
+      {{/* Create — Creator OS dashboard. Visible to creators and admins. */}}
+      {{if .User}}{{if or .User.IsCreator .User.IsAdmin}}
+      <a href="/create" class="user-menu-item {{block "nav-active-create" .}}{{end}}" role="menuitem"><svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>Create</a>
+      {{end}}{{end}}
+      {{if .User}}
+      <a href="/articles" class="user-menu-item {{block "nav-active-articles" .}}{{end}}" role="menuitem"><svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>Articles</a>
+      {{end}}
+      <a href="/sports" class="user-menu-item" role="menuitem"><svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 2a15 15 0 0 1 0 20M12 2a15 15 0 0 0 0 20M2 12h20"/></svg>Sports</a>
+      <a href="/frequencies" class="user-menu-item" role="menuitem"><svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M2 12h3l3-8 4 16 3-8h7"/></svg>Frequencies</a>
+      <a href="/achievements" class="user-menu-item {{block "nav-active-achievements" .}}{{end}}" role="menuitem"><svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="8" r="6"/><path d="M15.477 12.89L17 22l-5-3-5 3 1.523-9.11"/></svg>Leaderboard</a>
+      <a href="/wallet" class="user-menu-item {{block "nav-active-wallet" .}}{{end}}" role="menuitem"><svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"/><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"/><path d="M18 12a2 2 0 0 0 0 4h4v-4Z"/></svg>Wallet</a>
+      {{if .User}}{{if .User.IsVerified}}
+      <a href="/marketplace" class="user-menu-item {{block "nav-active-marketplace" .}}{{end}}" role="menuitem"><svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm-10 2a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg>Market</a>
+      {{end}}{{end}}
+      <a href="/analytics" class="user-menu-item {{block "nav-active-analytics" .}}{{end}}" role="menuitem"><svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>Analytics</a>
+      <a href="/settings" class="user-menu-item {{block "nav-active-settings" .}}{{end}}" role="menuitem"><svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>Settings</a>
+      {{/* Org Panel — only for verified business/government accounts */}}
+      {{if .User}}{{if ne .User.OfficialType ""}}
+      <a href="/org/panel" class="user-menu-item {{block "nav-active-org-panel" .}}{{end}}" role="menuitem"><svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M3 21h18M3 10h18M5 6l7-3 7 3M4 10v11M20 10v11M8 14v3M12 14v3M16 14v3"/></svg>Org Panel</a>
+      {{end}}{{end}}
+      {{/* Admin panel — IsAdmin() checks admin|founder roles */}}
+      {{if .User}}{{if .User.IsAdmin}}
+      <a href="/admin" class="user-menu-item {{block "nav-active-admin" .}}{{end}}" role="menuitem" style="color:var(--accent)"><svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>Admin</a>
+      {{end}}{{end}}
+    </div>
 {{end}}

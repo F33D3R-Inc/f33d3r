@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -10,12 +11,18 @@ import (
 	"github.com/f33d3r/feed-engine/internal/model"
 )
 
-// sendEmail sends a plain HTML email via configured SMTP.
-// Logs and no-ops if SMTP is not configured (dev mode).
-func (h *Handler) sendEmail(to, subject, bodyHTML string) {
+// errSMTPNotConfigured is sendEmail's answer when SMTP_HOST is unset: nothing
+// was sent, and the caller says so in its own words.
+var errSMTPNotConfigured = errors.New("email: SMTP_HOST is not configured")
+
+// sendEmail sends one HTML email through the configured SMTP server. It returns
+// why nothing was sent, so no caller can mistake an unsent email for a sent one.
+func (h *Handler) sendEmail(to, subject, bodyHTML string) error {
 	if h.cfg.SMTPHost == "" {
-		log.Printf("[email] SMTP not configured — skipping send to %s: %s", to, subject)
-		return
+		return errSMTPNotConfigured
+	}
+	if to == "" {
+		return errors.New("email: no recipient address")
 	}
 	auth := smtp.PlainAuth("", h.cfg.SMTPUser, h.cfg.SMTPPass, h.cfg.SMTPHost)
 	msg := fmt.Sprintf(
@@ -24,8 +31,9 @@ func (h *Handler) sendEmail(to, subject, bodyHTML string) {
 	)
 	addr := fmt.Sprintf("%s:%d", h.cfg.SMTPHost, h.cfg.SMTPPort)
 	if err := smtp.SendMail(addr, auth, h.cfg.SMTPFrom, []string{to}, []byte(msg)); err != nil {
-		log.Printf("[email] send failed to %s: %v", to, err)
+		return fmt.Errorf("email: sending %q: %w", subject, err)
 	}
+	return nil
 }
 
 // sendNewDeviceAlert emails the user when a login from an unrecognised device or IP is detected.
@@ -42,7 +50,11 @@ func (h *Handler) sendNewDeviceAlert(user *model.User, r *http.Request) {
 	}
 
 	// Resolve email — not stored on model.User; fetch from DB.
-	email := dbpkg.GetUserEmail(h.db, user.ID)
+	email, err := dbpkg.GetUserEmail(h.db, user.ID)
+	if err != nil {
+		log.Printf("[security] new-device alert for user %s: %v", user.ID, err)
+		return
+	}
 	if email == "" || h.cfg.SMTPHost == "" {
 		return
 	}
@@ -56,6 +68,9 @@ func (h *Handler) sendNewDeviceAlert(user *model.User, r *http.Request) {
 			`<p>If this wasn't you, go to <strong>Settings &rarr; Security &rarr; Active Sessions</strong> and revoke it immediately.</p>`,
 		user.Handle, ip, ua,
 	)
-	h.sendEmail(email, subject, body)
+	if err := h.sendEmail(email, subject, body); err != nil {
+		log.Printf("[security] new-device alert for user %s from %s not emailed: %v", user.ID, ip, err)
+		return
+	}
 	log.Printf("[security] new-device alert sent to user %s from %s", user.ID, ip)
 }

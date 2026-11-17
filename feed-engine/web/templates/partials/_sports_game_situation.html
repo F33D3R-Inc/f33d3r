@@ -3,8 +3,8 @@ FACET sports_game_situation
   version: 1.0 | status: stable | layer: 1 (atomic)
 
   Down, distance, field position and the red zone — the football-specific line
-  that only exists while a game is being played. It is absent, not empty, in
-  every other state: a scheduled game has no third down and a final game has no
+  that only exists while a game is being played. In every other state its root
+  is empty: a scheduled game has no third down and a final game has no
   possession.
 
   The red zone is the one piece of a scoreboard that is genuinely time-critical,
@@ -15,21 +15,25 @@ FACET sports_game_situation
                        .PossessionLabel
 
   states:
-    absent | normal | red_zone
+    empty | normal | red_zone
 
   children: none
 
   signals:
     emits:    none
-    receives: sports_facet (SSE) — carried inside a sports_game_card replacement
+    receives: facet.mutate — replacement fragment when the down, the distance,
+              the spot or possession moves, to the watchers of the game page
 
   context:
-    sports_game_card → beneath the status row, while the game is in progress
+    sports_gp_header → beneath the clock. The root is always mounted there so
+                       a replacement always has somewhere to land; it is empty
+                       outside a game being played.
 */}}
 {{define "sports_game_situation"}}
 {{$g := .Game}}
 <div class="sports-situation{{if $g.RedZone}} sports-situation--redzone{{end}}"
      data-facet-id="{{sportsSituationFacetID $g.ID}}">
+  {{- if $g.HasSituation}}
   {{if $g.RedZone}}<span class="sports-situation__flag">Red zone</span>{{end}}
   {{if $g.DownDistance}}
   <span class="sports-situation__down">{{$g.DownDistance}}</span>
@@ -40,5 +44,6 @@ FACET sports_game_situation
   {{if $g.PossessionLabel}}
   <span class="sports-situation__poss">{{$g.PossessionLabel}} ball</span>
   {{end}}
+  {{end -}}
 </div>
 {{end}}

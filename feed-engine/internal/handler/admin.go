@@ -1,12 +1,12 @@
 package handler
 
 import (
-	"github.com/google/uuid"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/google/uuid"
 	"html/template"
 	"log"
 	"net/http"
@@ -307,16 +307,21 @@ func adminIdentityRefusal(err error) string {
 // verification from one that is. Withdrawing drops the tier to basic, not none —
 // a self-reported date of birth is still on file; only the documented-identity
 // claim goes.
-func adminVerificationChange(database *sql.DB, pialID string, verify bool, by string) (identity.FactsUpdate, bool) {
+//
+// It is an override of identity only. It never satisfies 18 U.S.C. § 2257: an
+// 18+ work is published only when Verity holds a passing creator verification
+// with an ID copy (adultPublishGate), which no admin write creates. The reason
+// is required and recorded in elohim-veni's identity ledger with the change.
+func adminVerificationChange(database *sql.DB, pialID string, verify bool, by, reason string) (identity.FactsUpdate, bool) {
 	current := dbpkg.LoadPIALState(database, pialID)
 	isVerified := current != nil && model.KYCTierIsIdentity(current.KYCTier)
 	switch {
 	case verify && !isVerified:
 		tier, yes := model.KYCTierFull, true
-		return identity.FactsUpdate{KYCTier: &tier, AgeVerified: &yes, DOBLocked: &yes, Source: by}, true
+		return identity.FactsUpdate{KYCTier: &tier, AgeVerified: &yes, DOBLocked: &yes, Source: by, Reason: reason}, true
 	case !verify && isVerified:
 		tier, no := model.KYCTierBasic, false
-		return identity.FactsUpdate{KYCTier: &tier, AgeVerified: &no, Source: by}, true
+		return identity.FactsUpdate{KYCTier: &tier, AgeVerified: &no, Source: by, Reason: reason}, true
 	default:
 		return identity.FactsUpdate{}, false
 	}
@@ -346,6 +351,12 @@ func (h *Handler) adminSetRole(w http.ResponseWriter, r *http.Request) {
 	badgeType := r.FormValue("badge_type")
 	isVerified := r.FormValue("is_verified") == "1"
 	isCreator := r.FormValue("is_creator") == "1"
+	// The reason for a manual verification override; required when the
+	// Verified box changes what is recorded.
+	verificationReason := strings.TrimSpace(r.FormValue("verification_reason"))
+	if len(verificationReason) > 500 {
+		verificationReason = verificationReason[:500]
+	}
 
 	// platform_role names the three roles; creator is a perm, not a role. Anything
 	// else is refused rather than read as "user", which would silently demote an
@@ -373,6 +384,13 @@ func (h *Handler) adminSetRole(w http.ResponseWriter, r *http.Request) {
 		target, _ := dbpkg.GetUserByHandle(h.db, targetHandle)
 		if target == nil || target.PIALID == "" {
 			w.Write([]byte(`<span style="color:#ef4444;font-size:12px">User not found.</span>`))
+			return
+		}
+		// A verification override names its reason, and the form is refused
+		// before anything is written when it does not.
+		verificationUpdate, verificationChanged := adminVerificationChange(h.db, target.PIALID, isVerified, "admin:"+caller.Handle, verificationReason)
+		if verificationChanged && verificationReason == "" {
+			w.Write([]byte(`<span class="admin-action-error">Changing Verified needs a reason. Nothing was changed.</span>`))
 			return
 		}
 		// Founder is never assigned here and never taken away: it belongs to the
@@ -405,8 +423,8 @@ func (h *Handler) adminSetRole(w http.ResponseWriter, r *http.Request) {
 		// stands in for eKYC. It is an identity fact, written to elohim-veni with
 		// admin provenance, and only when it changes what is recorded — the badge
 		// and permission forms re-post it unchanged on every save.
-		if update, changed := adminVerificationChange(h.db, target.PIALID, isVerified, "admin:"+caller.Handle); changed {
-			if err := h.identity.Client().PutFacts(r.Context(), target.PIALID, update); err != nil {
+		if verificationChanged {
+			if err := h.identity.Client().PutFacts(r.Context(), target.PIALID, verificationUpdate); err != nil {
 				log.Printf("[admin] verification=%v for @%s: %v", isVerified, targetHandle, err)
 				fmt.Fprintf(w, `<span style="color:#ef4444;font-size:12px">%s</span>`, template.HTMLEscapeString(adminIdentityRefusal(err)))
 				return

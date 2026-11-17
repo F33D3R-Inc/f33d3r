@@ -28,60 +28,86 @@ func (h *Handler) privacyPage(w http.ResponseWriter, r *http.Request) {
 	sections := []legalSection{
 		{
 			Title: "1. What we collect",
-			Body: `We collect: account handle and display name, email or phone (for verification tier 1),
-			a SHA-256 hash of your government ID document (never the document image itself), device identifiers,
-			IP addresses at login, session tokens, content you post, messages you send (end-to-end encrypted —
-			we cannot read them), and engagement signals (likes, views, follows). We do NOT sell your data.`,
+			Body: `We collect: account handle and display name, an email address if one is set on your
+			account, device identifiers, IP addresses at login, session tokens, content you post, messages
+			you send (end-to-end encrypted — we cannot read them), and engagement signals (likes, views,
+			follows). If you verify your identity, we collect what is described in section 3. We do NOT
+			sell your data.`,
 		},
 		{
 			Title: "2. How we use it",
 			Body: `Your data is used to: operate the platform, deliver your personalised feed (AethyrRank),
-			comply with legal obligations (18 U.S.C. § 2257, CSAM detection), detect fraud and abuse,
-			and facilitate creator monetisation when you opt in. AethyrRank ranking signals are computed
-			internally and never shared with third parties.`,
+			comply with legal obligations (18 U.S.C. § 2257 record-keeping, CSAM detection and reporting),
+			detect fraud and abuse, and facilitate creator monetisation when you opt in. AethyrRank ranking
+			signals are computed internally and never shared with third parties.`,
 		},
 		{
-			Title: "3. Adult content",
-			Body: `F33D3R hosts adult content created by verified adults. All creators of adult content
-			must complete identity verification (Verity Tier 2+). Age-band confirmation is stored as a
-			cryptographic hash. We maintain records as required by 18 U.S.C. § 2257. CSAM detection runs
-			on every upload. Any detected CSAM is immediately removed, reported to NCMEC, and the account
-			is permanently terminated and reported to law enforcement.`,
+			Title: "3. Identity verification and biometric data",
+			Body: `Identity verification is done entirely on our own servers; no outside verification
+			company sees your documents. Before any camera opens we ask for your consent, and we record the
+			version of the consent text you agreed to, the time, your IP address and your browser's user
+			agent with the attempt. We collect photographs of your government ID (the front, and the back
+			of a driving licence or ID card), a selfie, and a few frames of a short live face check. We read
+			the document's barcode or machine-readable zone, check that the document is not expired, that
+			you are 18 or older, that your selfie matches the document portrait, and that the face check was
+			done live by a real person. The document number itself is never stored: we keep only a keyed
+			hash of it, so one document can verify one identity. We do not keep face templates or any other
+			biometric template after the decision; we keep the face-match score, the presentation-attack
+			score and the liveness score with the attempt. For an age verification we keep the name and date
+			of birth on the document as the record of your age, and no images. For a creator verification,
+			18 U.S.C. § 2257 requires us to keep a copy of your ID: the document images and your selfie are
+			kept encrypted (AES-256-GCM) as the custodian of records. If an attempt fails, its images are
+			not kept and its personal details are deleted after 30 days; the audit entry and the reasons it
+			failed are kept.`,
 		},
 		{
-			Title: "4. Data sharing",
-			Body: `We share data with: payment processors (for creator payouts — only what they require for
-			KYC/AML compliance), law enforcement when legally compelled, NCMEC for CSAM reports (mandatory).
-			We do not share data with advertisers.`,
+			Title: "4. Adult content",
+			Body: `F33D3R hosts adult content created by verified adults. A creator can publish 18+ work
+			only after a creator verification has passed; every 18+ work is linked to that verification as
+			its 18 U.S.C. § 2257 record. Every upload is matched by Abraxas, our integrity service, against
+			a list of hashes of known banned material, including CSAM. A match is refused and never served,
+			the account is acted on, and the case goes to a CSAM queue where an administrator files the
+			report with NCMEC. CSAM reports and their records are kept as the law requires.`,
 		},
 		{
-			Title: "5. Data retention",
+			Title: "5. Data sharing",
+			Body: `We share data with: law enforcement when legally compelled, and NCMEC, to which an
+			administrator files a report for every CSAM match. Identity documents and selfies are never
+			shared with an outside verification service. We do not share data with advertisers.`,
+		},
+		{
+			Title: "6. Data retention",
 			Body: `Active account data is retained while your account is active. Deleted posts are removed
-			from feeds within 24 hours and from databases within 30 days. 2257 records are retained for
-			7 years as required by law. Session tokens expire after 30 days of inactivity. You can request
-			full data export or deletion under GDPR/CCPA — see below.`,
+			from feeds within 24 hours and from databases within 30 days. Failed verification attempts: the
+			personal details and images are deleted after 30 days; the audit entry and the reasons are kept.
+			Passing age verifications: the name and date of birth on the document are kept as the record of
+			your age, with no images. Creator ID copies (18 U.S.C. § 2257): kept for as long as the creator
+			has content on the platform, and for 7 years after their last content is removed; deleting the
+			account alone does not end this retention. Session tokens expire after 30 days of inactivity.
+			You can request full data export or deletion under GDPR/CCPA — see below.`,
 		},
 		{
-			Title: "6. Your rights (GDPR / CCPA)",
+			Title: "7. Your rights (GDPR / CCPA)",
 			Body: `You have the right to: access your data, correct inaccurate data, delete your account
 			and associated data (except legally mandated retention), port your data, and opt out of
 			non-essential processing. Submit requests to privacy@f33d3r.app. We respond within 30 days.
-			Some data (2257 records, CSAM reports, fraud logs) cannot be deleted due to legal obligations.`,
+			Some data (2257 records and creator ID copies, the age record of a passing verification, CSAM
+			reports, fraud logs) cannot be deleted on request due to legal obligations.`,
 		},
 		{
-			Title: "7. Security",
+			Title: "8. Security",
 			Body: `All data in transit is encrypted with TLS 1.3. Messages are end-to-end encrypted —
 			we cannot read your messages. Private keys never leave your device. Passwords are
 			bcrypt-hashed. Sessions use cryptographically random tokens. We run regular security audits.`,
 		},
 		{
-			Title: "8. Cookies",
+			Title: "9. Cookies",
 			Body: `We use a single session cookie (f33d3r_session) for authentication. No advertising
 			cookies, no third-party tracking pixels. LocalStorage is used only for your messaging vault keys
 			(encrypted, never transmitted to us).`,
 		},
 		{
-			Title: "9. Changes to this policy",
+			Title: "10. Changes to this policy",
 			Body: `Material changes will be notified via in-app notification at least 14 days before taking
 			effect. Continued use after the effective date constitutes acceptance.`,
 		},
@@ -115,10 +141,12 @@ func (h *Handler) termsPage(w http.ResponseWriter, r *http.Request) {
 		},
 		{
 			Title: "3. Adult content",
-			Body: `Adult content is permitted only from creators who have completed Verity Tier 2 identity
-			verification (age 18+) and enabled adult creator mode. All depicted persons must be 18+.
-			Creators certify compliance with 18 U.S.C. § 2257. F33D3R files records on creators' behalf.
-			Viewers must complete age verification to access adult content.`,
+			Body: `Adult content is permitted only from creators who have passed creator verification
+			(a government ID, a face match and a live face check, age 18+), accepted the 18 U.S.C. § 2257
+			statement and enabled adult creator mode. An 18+ work by anyone without a passing creator
+			verification is refused. All depicted persons must be 18+. F33D3R keeps the 2257 records as
+			custodian of records and links every 18+ work to its creator's verification. Viewers must
+			complete age verification to access adult content.`,
 		},
 		{
 			Title: "4. Intellectual property",
@@ -131,7 +159,7 @@ func (h *Handler) termsPage(w http.ResponseWriter, r *http.Request) {
 			Title: "5. Creator monetisation",
 			Body: `Creators may earn AET tokens through subscriptions, tips, and pay-per-view content.
 			F33D3R retains a 2.5% platform fee. Creators are responsible for their own tax obligations.
-			Payouts require identity verification (Verity Tier 3). F33D3R is not liable for payment
+			Payouts require identity verification. F33D3R is not liable for payment
 			processor decisions.`,
 		},
 		{
@@ -290,40 +318,6 @@ func (h *Handler) dmcaAdminQueue(w http.ResponseWriter, r *http.Request) {
 	_ = uuid.New() // keep import used
 }
 
-// ── 2257 per-content record creation ─────────────────────────────────────────
-// Called when a creator publishes a post with is_nsfw=true.
-// Stores a compliance record in Verity linking the creator's PIAL to the content ID.
-
-func (h *Handler) create2257Record(pialID, contentID string) {
-	if h.cfg.VerityURL == "" || pialID == "" || contentID == "" {
-		return
-	}
-	payload, _ := json.Marshal(map[string]string{
-		"pial_id":     pialID,
-		"content_id":  contentID,
-		"record_type": "content_post",
-	})
-	go func() {
-		// Fire and forget — Verity stores the record
-		req, err := http.NewRequest(http.MethodPost, h.cfg.VerityURL+"/v1/compliance/2257/record", strings.NewReader(string(payload)))
-		if err != nil {
-			return
-		}
-		req.Header.Set("Content-Type", "application/json")
-		// 2257 record write is service-to-service.
-		req.Header.Set("X-Internal-Key", h.cfg.InternalAPIKey)
-		resp, err := h.httpClient.Do(req)
-		if err != nil {
-			log.Printf("[2257] record failed for content %s: %v", contentID, err)
-			return
-		}
-		resp.Body.Close()
-		if resp.StatusCode >= 300 {
-			log.Printf("[2257] record non-2xx for content %s: %d", contentID, resp.StatusCode)
-		}
-	}()
-}
-
 // ── GDPR / CCPA data deletion request ────────────────────────────────────────
 
 func (h *Handler) requestDataDeletion(w http.ResponseWriter, r *http.Request) {
@@ -452,7 +446,10 @@ func (h *Handler) compliancePage(w http.ResponseWriter, r *http.Request) {
 		"Title":  "Compliance & Transparency",
 		"Themes": ThemesWithActive(user.ThemeID),
 		"Sections": []legalSection{
-			{Title: "Content Moderation", Body: "F33D3R uses automated scanning and human review to enforce our Community Standards. Posts containing illegal content, CSAM, or credible threats are removed immediately."},
+			{Title: "Content Moderation", Body: "Every upload is checked by Abraxas, our integrity service, which matches it against a list of hashes of known banned material and sends what needs a person to the review queue. Posts containing illegal content or credible threats are removed."},
+			{Title: "CSAM", Body: "A match against the banned-hash list for child sexual abuse material is refused and never served, and the account is acted on. The match opens a case in the CSAM queue, from which an administrator files the report with NCMEC. These records are kept as 18 U.S.C. § 2258A requires and cannot be deleted on request."},
+			{Title: "18 U.S.C. § 2257", Body: `An 18+ work can be published only by a creator whose creator verification has passed, and each one is linked to that verification as its record. The creator's ID copy is kept encrypted for as long as they have content on the platform and for 7 years after their last content is removed. See the <a href="/legal/2257">2257 statement</a>.`},
+			{Title: "Identity verification", Body: "Verification runs on our own servers. Failed attempts are purged of personal details after 30 days, keeping the audit entry and reasons. A passing age verification keeps the name and date of birth as the age record, with no images. No biometric template is kept after a decision; the face-match score is kept with the attempt."},
 			{Title: "Government Requests", Body: "We publish transparency reports for government data requests. We notify users of requests unless prohibited by law."},
 			{Title: "DMCA", Body: `Copyright complaints are handled via our <a href="/dmca">DMCA process</a>. Repeat infringers are removed from the platform.`},
 			{Title: "Contact", Body: `For compliance inquiries: <a href="mailto:f33d3r@f33d3r.pro">f33d3r@f33d3r.pro</a>`},
